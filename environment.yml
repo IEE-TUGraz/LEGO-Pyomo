@@ -1,0 +1,7 @@
+name: Simplified-Technical-Representation_env
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - pip=24.0
+  - python=3.12.2
