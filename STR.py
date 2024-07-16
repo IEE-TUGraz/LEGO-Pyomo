@@ -73,7 +73,11 @@ for i in model.i:
                 model.vSlack_DemandNotServed[rp, k] +  # Slack variable for demand not served
                 model.vSlack_OverProduction[rp, k])  # Slack variable for overproduction
 
-# TODO: Reactance
+model.cReactance = pyo.ConstraintList(doc='Reactance constraint for each line (for DC-OPF)')
+for (i, j) in model.e:
+    for rp in model.rp:
+        for k in model.k:
+            model.cReactance.add(model.t[(i, j), rp, k] == model.pReactance[(i, j)] * (model.delta[i, rp, k] - model.delta[j, rp, k]))
 
 # Objective function
 model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(sum(model.pProductionCost[g] * model.p[g, rp, k] for g in model.g) + (model.vSlack_DemandNotServed[rp, k] + model.vSlack_OverProduction[rp, k]) * model.pSlackPrice for rp in model.rp for k in model.k))
@@ -88,8 +92,11 @@ if __name__ == '__main__':
     print("\nDisplaying Solution\n" + '-' * 60)
     model.p.pprint()
     model.t.pprint()
-    model.vSlack_DemandNotServed.pprint()
-    model.vSlack_OverProduction.pprint()
+
+    # Print sum of slack variables
+    print("\nSlack Variables\n" + '-' * 60)
+    print("Slack variable sum of demand not served:", sum(pyo.value(model.vSlack_DemandNotServed[rp, k]) for rp in model.rp for k in model.k))
+    print("Slack variable sum of overproduction:", sum(pyo.value(model.vSlack_OverProduction[rp, k]) for rp in model.rp for k in model.k))
 
     print("\nObjective Function Value\n" + '-' * 60)
     print("Objective value:", pyo.value(model.objective))
