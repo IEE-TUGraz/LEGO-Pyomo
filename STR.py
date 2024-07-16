@@ -26,7 +26,10 @@ dPower_Demand = dPower_Demand.rename(columns={dPower_Demand.columns[0]: "rp", dP
 dPower_Demand = dPower_Demand.melt(id_vars=['rp', 'i'], var_name='k', value_name='Demand')
 dPower_Demand = dPower_Demand.set_index(['rp', 'i', 'k'])
 
-# Model
+########################################################################################################################
+# Model creation
+########################################################################################################################
+
 model = pyo.ConcreteModel()
 
 # Sets
@@ -42,7 +45,8 @@ model.p = pyo.Var(model.g, model.rp, model.k, doc='Power output of generator g',
 for g in model.g:
     model.p[g, :, :].setub(dPower_ThermalGen.loc[g, 'MaxProd'])
 
-model.vSlack = pyo.Var(model.rp, model.k, doc='Slack variable', bounds=(None, None))
+model.vSlack_DemandNotServed = pyo.Var(model.rp, model.k, doc='Slack variable demand not served', bounds=(0, None))
+model.vSlack_OverProduction = pyo.Var(model.rp, model.k, doc='Slack variable overproduction', bounds=(0, None))
 model.t = pyo.Var(model.e, model.rp, model.k, doc='Power flow from bus i to j', bounds=(None, None))
 for (i, j) in model.e:
     for rp in model.rp:
@@ -56,10 +60,8 @@ model.pProductionCost = pyo.Param(model.g, initialize=dPower_ThermalGen['FuelCos
 model.pReactance = pyo.Param(model.e, initialize=dPower_Network['R'], doc='Reactance of line e')
 model.pSlackPrice = pyo.Param(initialize=max(model.pProductionCost.values()) * 100, doc='Price of slack variable')
 
-# Constraints
-
-# Power Balance constraint for each bus
-model.cPower_Balance = pyo.ConstraintList()
+# Constraint(s)
+model.cPower_Balance = pyo.ConstraintList(doc='Power balance constraint for each bus')
 for i in model.i:
     for rp in model.rp:
         for k in model.k:
@@ -67,32 +69,29 @@ for i in model.i:
                 sum(model.p[g, rp, k] for g in model.g if dPower_ThermalGen.loc[g, 'i'] == i) -  # Production of generators at bus i
                 sum(model.t[e, rp, k] for e in model.e if (e[0] == i)) +  # Power flow from bus i to bus j
                 sum(model.t[e, rp, k] for e in model.e if (e[1] == i)) ==  # Power flow from bus j to bus i
-                model.pDemand[rp, i, k] +  # Demand at bus i
-                model.vSlack[rp, k])  # Slack variable
+                model.pDemand[rp, i, k] -  # Demand at bus i
+                model.vSlack_DemandNotServed[rp, k] +  # Slack variable for demand not served
+                model.vSlack_OverProduction[rp, k])  # Slack variable for overproduction
 
 # TODO: Reactance
 
-
 # Objective function
-model.objective = pyo.Objective(doc='Total production cost', sense=pyo.minimize, expr=sum(sum(model.pProductionCost[g] * model.p[g, rp, k] for g in model.g) + model.vSlack[rp, k] * model.pSlackPrice for rp in model.rp for k in model.k))
+model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(sum(model.pProductionCost[g] * model.p[g, rp, k] for g in model.g) + (model.vSlack_DemandNotServed[rp, k] + model.vSlack_OverProduction[rp, k]) * model.pSlackPrice for rp in model.rp for k in model.k))
 
-# This is an optional code path that allows the script to be run outside of
-# pyomo command-line.  For example:  python transport.py
 if __name__ == '__main__':
-    # This emulates what the pyomo command-line tools does
     from pyomo.opt import SolverFactory
 
     opt = SolverFactory("gurobi")
     results = opt.solve(model)
-    # sends results to stdout
     results.write()
+
     print("\nDisplaying Solution\n" + '-' * 60)
-    # Display the solution
     model.p.pprint()
     model.t.pprint()
-    model.vSlack.pprint()
+    model.vSlack_DemandNotServed.pprint()
+    model.vSlack_OverProduction.pprint()
+
     print("\nObjective Function Value\n" + '-' * 60)
-    # Display objective function value
     print("Objective value:", pyo.value(model.objective))
 
     print("Done")
