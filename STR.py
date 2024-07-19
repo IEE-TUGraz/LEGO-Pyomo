@@ -60,6 +60,11 @@ model.pProductionCost = pyo.Param(model.g, initialize=dPower_ThermalGen['FuelCos
 model.pReactance = pyo.Param(model.e, initialize=dPower_Network['R'], doc='Reactance of line e')
 model.pSlackPrice = pyo.Param(initialize=max(model.pProductionCost.values()) * 100, doc='Price of slack variable')
 
+# Slack node (TODO: Make selection of slack node dynamic)
+for rp in model.rp:
+    for k in model.k:
+        model.delta[model.i[1], rp, k].fix(0)
+
 # Constraint(s)
 model.cPower_Balance = pyo.ConstraintList(doc='Power balance constraint for each bus')
 for i in model.i:
@@ -92,6 +97,7 @@ if __name__ == '__main__':
     print("\nDisplaying Solution\n" + '-' * 60)
     model.p.pprint()
     model.t.pprint()
+    model.delta.pprint()
 
     # Print sum of slack variables
     print("\nSlack Variables\n" + '-' * 60)
