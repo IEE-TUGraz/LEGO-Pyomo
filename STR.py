@@ -80,9 +80,16 @@ for i in model.i:
 
 model.cReactance = pyo.ConstraintList(doc='Reactance constraint for each line (for DC-OPF)')
 for (i, j) in model.e:
-    for rp in model.rp:
-        for k in model.k:
-            model.cReactance.add(model.t[(i, j), rp, k] == model.pReactance[(i, j)] * (model.delta[i, rp, k] - model.delta[j, rp, k]))
+    match dPower_Network.loc[i, j]["Technical Representation"]:
+        case "DC-OPF":
+            for rp in model.rp:
+                for k in model.k:
+                    model.cReactance.add(model.t[(i, j), rp, k] == model.pReactance[(i, j)] * (model.delta[i, rp, k] - model.delta[j, rp, k]))
+        case "TP":
+            continue
+        case _:
+            raise ValueError(f"Technical representation '{dPower_Network.loc[i, j]["Technical Representation"]}' "
+                             f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
 
 # Objective function
 model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(sum(model.pProductionCost[g] * model.p[g, rp, k] for g in model.g) + (model.vSlack_DemandNotServed[rp, k] + model.vSlack_OverProduction[rp, k]) * model.pSlackPrice for rp in model.rp for k in model.k))
