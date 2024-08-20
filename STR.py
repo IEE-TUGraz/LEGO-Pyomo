@@ -14,11 +14,17 @@ dPower_Network = dPower_Network.drop(dPower_Network.columns[0], axis=1)
 dPower_Network = dPower_Network.rename(columns={dPower_Network.columns[0]: "i", dPower_Network.columns[1]: "j", dPower_Network.columns[2]: "Circuit ID"})
 dPower_Network = dPower_Network.set_index(['i', 'j'])
 
-# TODO: Also include other generators (as subsets)
-dPower_ThermalGen = pd.read_excel(example_folder + "Power_ThermalGen.xlsx", skiprows=[0, 1, 3, 4, 5])
-dPower_ThermalGen = dPower_ThermalGen.drop(dPower_ThermalGen.columns[0], axis=1)
-dPower_ThermalGen = dPower_ThermalGen.rename(columns={dPower_ThermalGen.columns[0]: "g", dPower_ThermalGen.columns[1]: "tec", dPower_ThermalGen.columns[2]: "i"})
-dPower_ThermalGen = dPower_ThermalGen.set_index('g')
+
+# Function to read generator data
+def read_generator_data(file_path):
+    d_generator = pd.read_excel(file_path, skiprows=[0, 1, 3, 4, 5])
+    d_generator = d_generator.drop(d_generator.columns[0], axis=1)
+    d_generator = d_generator.rename(columns={d_generator.columns[0]: "g", d_generator.columns[1]: "tec", d_generator.columns[2]: "i"})
+    d_generator = d_generator.set_index('g')
+    return d_generator
+
+
+dPower_ThermalGen = read_generator_data(example_folder + "Power_ThermalGen.xlsx")
 
 dPower_Demand = pd.read_excel(example_folder + "Power_Demand.xlsx", skiprows=[0, 1, 3, 4, 5])
 dPower_Demand = dPower_Demand.drop(dPower_Demand.columns[0], axis=1)
@@ -35,15 +41,17 @@ model = pyo.ConcreteModel()
 # Sets
 model.i = pyo.Set(doc='Buses', initialize=dPower_BusInfo.index.tolist())
 model.e = pyo.Set(doc='Lines', initialize=dPower_Network.index.tolist())
-model.g = pyo.Set(doc='Generators', initialize=dPower_ThermalGen.index.tolist())
+model.thermalGenerators = pyo.Set(doc='Thermal Generators', initialize=dPower_ThermalGen.index.tolist())
 model.rp = pyo.Set(doc='Representative periods', initialize=dPower_Demand.index.get_level_values('rp').unique().tolist())
 model.k = pyo.Set(doc='Timestep within representative period', initialize=dPower_Demand.index.get_level_values('k').unique().tolist())
 
 # Variables
 model.delta = pyo.Var(model.i, model.rp, model.k, doc='Angle of bus i', bounds=(-60, 60))
+
 model.p = pyo.Var(model.g, model.rp, model.k, doc='Power output of generator g', bounds=(0, None))
-for g in model.g:
+for g in model.thermalGenerators:
     model.p[g, :, :].setub(dPower_ThermalGen.loc[g, 'MaxProd'])
+    # TODO: Add min production (needs unit commitment)
 
 model.vSlack_DemandNotServed = pyo.Var(model.rp, model.k, doc='Slack variable demand not served', bounds=(0, None))
 model.vSlack_OverProduction = pyo.Var(model.rp, model.k, doc='Slack variable overproduction', bounds=(0, None))
