@@ -26,6 +26,7 @@ def read_generator_data(file_path):
 
 dPower_ThermalGen = read_generator_data(example_folder + "Power_ThermalGen.xlsx")
 dPower_RoR = read_generator_data(example_folder + "Power_RoR.xlsx")
+dPower_VRES = read_generator_data(example_folder + "Power_VRES.xlsx")
 
 dPower_Demand = pd.read_excel(example_folder + "Power_Demand.xlsx", skiprows=[0, 1, 3, 4, 5])
 dPower_Demand = dPower_Demand.drop(dPower_Demand.columns[0], axis=1)
@@ -38,6 +39,12 @@ dPower_Inflows = dPower_Inflows.drop(dPower_Inflows.columns[0], axis=1)
 dPower_Inflows = dPower_Inflows.rename(columns={dPower_Inflows.columns[0]: "rp", dPower_Inflows.columns[1]: "g"})
 dPower_Inflows = dPower_Inflows.melt(id_vars=['rp', 'g'], var_name='k', value_name='Inflow')
 dPower_Inflows = dPower_Inflows.set_index(['rp', 'g', 'k'])
+
+dPower_VRESProfiles = pd.read_excel(example_folder + "Power_VRESProfiles.xlsx", skiprows=[0, 1, 3, 4, 5])
+dPower_VRESProfiles = dPower_VRESProfiles.drop(dPower_VRESProfiles.columns[0], axis=1)
+dPower_VRESProfiles = dPower_VRESProfiles.rename(columns={dPower_VRESProfiles.columns[0]: "rp", dPower_VRESProfiles.columns[1]: "i", dPower_VRESProfiles.columns[2]: "tec"})
+dPower_VRESProfiles = dPower_VRESProfiles.melt(id_vars=['rp', 'i', 'tec'], var_name='k', value_name='Capacity')
+dPower_VRESProfiles = dPower_VRESProfiles.set_index(['rp', 'i', 'k', 'tec'])
 
 ########################################################################################################################
 # Model creation
@@ -65,6 +72,11 @@ for g in model.rorGenerators:
     for rp in model.rp:
         for k in model.k:
             model.p[g, rp, k].setub(min(dPower_RoR.loc[g, 'MaxProd'], dPower_Inflows.loc[rp, g, k]['Inflow']))  # TODO: Check if this is correct
+
+for g in model.vresGenerators:
+    for rp in model.rp:
+        for k in model.k:
+            model.p[g, rp, k].setub(dPower_VRES.loc[g, 'MaxProd'] * dPower_VRESProfiles.loc[rp, dPower_VRES.loc[g, 'i'], k, dPower_VRES.loc[g, 'tec']]['Capacity'])
 
 model.vSlack_DemandNotServed = pyo.Var(model.rp, model.k, doc='Slack variable demand not served', bounds=(0, None))
 model.vSlack_OverProduction = pyo.Var(model.rp, model.k, doc='Slack variable overproduction', bounds=(0, None))
