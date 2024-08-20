@@ -60,6 +60,8 @@ model.i = pyo.Set(doc='Buses', initialize=dPower_BusInfo.index.tolist())
 model.e = pyo.Set(doc='Lines', initialize=dPower_Network.index.tolist())
 model.thermalGenerators = pyo.Set(doc='Thermal Generators', initialize=dPower_ThermalGen.index.tolist())
 model.rorGenerators = pyo.Set(doc='Run-of-river generators', initialize=dPower_RoR.index.tolist())
+model.vresGenerators = pyo.Set(doc='Variable renewable energy sources', initialize=dPower_VRES.index.tolist())
+model.g = pyo.Set(doc='Generators', initialize=model.thermalGenerators | model.rorGenerators | model.vresGenerators)
 model.rp = pyo.Set(doc='Representative periods', initialize=dPower_Demand.index.get_level_values('rp').unique().tolist())
 model.k = pyo.Set(doc='Timestep within representative period', initialize=dPower_Demand.index.get_level_values('k').unique().tolist())
 
@@ -85,10 +87,8 @@ model.vSlack_DemandNotServed = pyo.Var(model.rp, model.k, doc='Slack variable de
 model.vSlack_OverProduction = pyo.Var(model.rp, model.k, doc='Slack variable overproduction', bounds=(0, None))
 model.t = pyo.Var(model.e, model.rp, model.k, doc='Power flow from bus i to j', bounds=(None, None))
 for (i, j) in model.e:
-    for rp in model.rp:
-        for k in model.k:
-            model.t[(i, j), rp, k].setlb(-dPower_Network.loc[i, j]['Pmax'])
-            model.t[(i, j), rp, k].setub(dPower_Network.loc[i, j]['Pmax'])
+    model.t[(i, j), :, :].setlb(-dPower_Network.loc[i, j]['Pmax'])
+    model.t[(i, j), :, :].setub(dPower_Network.loc[i, j]['Pmax'])
 
 # Parameters
 model.pDemand = pyo.Param(model.rp, model.i, model.k, initialize=dPower_Demand['Demand'], doc='Demand at bus i in representative period rp and timestep k')
@@ -103,9 +103,7 @@ model.pSlackPrice = pyo.Param(initialize=max(model.pProductionCost.values()) * 1
 # Select slack node with highest demand (TODO: Check if this is the best way to select slack node)
 slack_node = dPower_Demand.groupby('i').sum().idxmax().values[0]
 print("Slack node:", slack_node)
-for rp in model.rp:
-    for k in model.k:
-        model.delta[slack_node, rp, k].fix(0)
+model.delta[slack_node, :, :].fix(0)
 
 # Constraint(s)
 model.cPower_Balance = pyo.ConstraintList(doc='Power balance constraint for each bus')
