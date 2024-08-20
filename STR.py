@@ -25,12 +25,19 @@ def read_generator_data(file_path):
 
 
 dPower_ThermalGen = read_generator_data(example_folder + "Power_ThermalGen.xlsx")
+dPower_RoR = read_generator_data(example_folder + "Power_RoR.xlsx")
 
 dPower_Demand = pd.read_excel(example_folder + "Power_Demand.xlsx", skiprows=[0, 1, 3, 4, 5])
 dPower_Demand = dPower_Demand.drop(dPower_Demand.columns[0], axis=1)
 dPower_Demand = dPower_Demand.rename(columns={dPower_Demand.columns[0]: "rp", dPower_Demand.columns[1]: "i"})
 dPower_Demand = dPower_Demand.melt(id_vars=['rp', 'i'], var_name='k', value_name='Demand')
 dPower_Demand = dPower_Demand.set_index(['rp', 'i', 'k'])
+
+dPower_Inflows = pd.read_excel(example_folder + "Power_Inflows.xlsx", skiprows=[0, 1, 3, 4, 5])
+dPower_Inflows = dPower_Inflows.drop(dPower_Inflows.columns[0], axis=1)
+dPower_Inflows = dPower_Inflows.rename(columns={dPower_Inflows.columns[0]: "rp", dPower_Inflows.columns[1]: "g"})
+dPower_Inflows = dPower_Inflows.melt(id_vars=['rp', 'g'], var_name='k', value_name='Inflow')
+dPower_Inflows = dPower_Inflows.set_index(['rp', 'g', 'k'])
 
 ########################################################################################################################
 # Model creation
@@ -42,6 +49,7 @@ model = pyo.ConcreteModel()
 model.i = pyo.Set(doc='Buses', initialize=dPower_BusInfo.index.tolist())
 model.e = pyo.Set(doc='Lines', initialize=dPower_Network.index.tolist())
 model.thermalGenerators = pyo.Set(doc='Thermal Generators', initialize=dPower_ThermalGen.index.tolist())
+model.rorGenerators = pyo.Set(doc='Run-of-river generators', initialize=dPower_RoR.index.tolist())
 model.rp = pyo.Set(doc='Representative periods', initialize=dPower_Demand.index.get_level_values('rp').unique().tolist())
 model.k = pyo.Set(doc='Timestep within representative period', initialize=dPower_Demand.index.get_level_values('k').unique().tolist())
 
@@ -52,6 +60,11 @@ model.p = pyo.Var(model.g, model.rp, model.k, doc='Power output of generator g',
 for g in model.thermalGenerators:
     model.p[g, :, :].setub(dPower_ThermalGen.loc[g, 'MaxProd'])
     # TODO: Add min production (needs unit commitment)
+    
+for g in model.rorGenerators:
+    for rp in model.rp:
+        for k in model.k:
+            model.p[g, rp, k].setub(min(dPower_RoR.loc[g, 'MaxProd'], dPower_Inflows.loc[rp, g, k]['Inflow']))  # TODO: Check if this is correct
 
 model.vSlack_DemandNotServed = pyo.Var(model.rp, model.k, doc='Slack variable demand not served', bounds=(0, None))
 model.vSlack_OverProduction = pyo.Var(model.rp, model.k, doc='Slack variable overproduction', bounds=(0, None))
