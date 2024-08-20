@@ -46,6 +46,9 @@ dPower_VRESProfiles = dPower_VRESProfiles.rename(columns={dPower_VRESProfiles.co
 dPower_VRESProfiles = dPower_VRESProfiles.melt(id_vars=['rp', 'i', 'tec'], var_name='k', value_name='Capacity')
 dPower_VRESProfiles = dPower_VRESProfiles.set_index(['rp', 'i', 'k', 'tec'])
 
+# dataframe that shows connections between g and i, only concatenating g and i from the dataframes
+hGenerators_to_Buses = pd.concat([dPower_ThermalGen[['i']], dPower_RoR[['i']], dPower_VRES[['i']]])
+
 ########################################################################################################################
 # Model creation
 ########################################################################################################################
@@ -89,7 +92,11 @@ for (i, j) in model.e:
 
 # Parameters
 model.pDemand = pyo.Param(model.rp, model.i, model.k, initialize=dPower_Demand['Demand'], doc='Demand at bus i in representative period rp and timestep k')
-model.pProductionCost = pyo.Param(model.g, initialize=dPower_ThermalGen['FuelCost'], doc='Production cost of generator g')
+
+# Helper for FuelCost that has dPower_ThermalGen['FuelCost'] for ThermalGen, and 0 for all gs in ror and vres
+hFuelCost = pd.concat([dPower_ThermalGen['FuelCost'].copy(), pd.Series(0, index=model.rorGenerators), pd.Series(0, index=model.vresGenerators)])
+model.pProductionCost = pyo.Param(model.g, initialize=hFuelCost, doc='Production cost of generator g')
+
 model.pReactance = pyo.Param(model.e, initialize=dPower_Network['R'], doc='Reactance of line e')
 model.pSlackPrice = pyo.Param(initialize=max(model.pProductionCost.values()) * 100, doc='Price of slack variable')
 
@@ -106,7 +113,7 @@ for i in model.i:
     for rp in model.rp:
         for k in model.k:
             model.cPower_Balance.add(
-                sum(model.p[g, rp, k] for g in model.g if dPower_ThermalGen.loc[g, 'i'] == i) -  # Production of generators at bus i
+                sum(model.p[g, rp, k] for g in model.g if hGenerators_to_Buses.loc[g]['i'] == i) -  # Production of generators at bus i
                 sum(model.t[e, rp, k] for e in model.e if (e[0] == i)) +  # Power flow from bus i to bus j
                 sum(model.t[e, rp, k] for e in model.e if (e[1] == i)) ==  # Power flow from bus j to bus i
                 model.pDemand[rp, i, k] -  # Demand at bus i
