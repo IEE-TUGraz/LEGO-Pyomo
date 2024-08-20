@@ -63,7 +63,7 @@ model.pSlackPrice = pyo.Param(initialize=max(model.pProductionCost.values()) * 1
 # Slack node (TODO: Make selection of slack node dynamic)
 for rp in model.rp:
     for k in model.k:
-        model.delta[model.i[1], rp, k].fix(0)
+        model.delta[model.i.at(1), rp, k].fix(0)
 
 # Constraint(s)
 model.cPower_Balance = pyo.ConstraintList(doc='Power balance constraint for each bus')
