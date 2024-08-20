@@ -40,7 +40,7 @@ model.rp = pyo.Set(doc='Representative periods', initialize=dPower_Demand.index.
 model.k = pyo.Set(doc='Timestep within representative period', initialize=dPower_Demand.index.get_level_values('k').unique().tolist())
 
 # Variables
-model.delta = pyo.Var(model.i, model.rp, model.k, doc='Angle of bus i', bounds=(None, None))
+model.delta = pyo.Var(model.i, model.rp, model.k, doc='Angle of bus i', bounds=(-60, 60))
 model.p = pyo.Var(model.g, model.rp, model.k, doc='Power output of generator g', bounds=(0, None))
 for g in model.g:
     model.p[g, :, :].setub(dPower_ThermalGen.loc[g, 'MaxProd'])
@@ -60,10 +60,12 @@ model.pProductionCost = pyo.Param(model.g, initialize=dPower_ThermalGen['FuelCos
 model.pReactance = pyo.Param(model.e, initialize=dPower_Network['R'], doc='Reactance of line e')
 model.pSlackPrice = pyo.Param(initialize=max(model.pProductionCost.values()) * 100, doc='Price of slack variable')
 
-# Slack node (TODO: Make selection of slack node dynamic)
+# Select slack node with highest demand (TODO: Check if this is the best way to select slack node)
+slack_node = dPower_Demand.groupby('i').sum().idxmax().values[0]
+print("Slack node:", slack_node)
 for rp in model.rp:
     for k in model.k:
-        model.delta[model.i.at(1), rp, k].fix(0)
+        model.delta[slack_node, rp, k].fix(0)
 
 # Constraint(s)
 model.cPower_Balance = pyo.ConstraintList(doc='Power balance constraint for each bus')
