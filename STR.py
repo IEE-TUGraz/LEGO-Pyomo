@@ -164,9 +164,9 @@ def pprint_var(var, zoi, index_positions: list = None, decimals: int = 2):
         if not any(i in zoi for i in index):
             continue
         key_list.append(str(index))
-        lower_list.append(f"{var[index].lb:.2f}")
+        lower_list.append(f"{var[index].lb:.2f}" if var[index].has_lb() else str(var[index].lb))
         value_list.append(f"{pyo.value(var[index]):.2f}")
-        upper_list.append(f"{var[index].ub:.2f}")
+        upper_list.append(f"{var[index].ub:.2f}" if var[index].has_ub() else str(var[index].ub))
         fixed_list.append(str(var[index].fixed))
         stale_list.append(str(var[index].stale))
         domain_list.append(str(var[index].domain.name))
