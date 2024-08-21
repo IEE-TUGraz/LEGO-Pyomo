@@ -72,7 +72,7 @@ model.p = pyo.Var(model.g, model.rp, model.k, doc='Power output of generator g',
 for g in model.thermalGenerators:
     model.p[g, :, :].setub(dPower_ThermalGen.loc[g, 'MaxProd'])
     # TODO: Add min production (needs unit commitment)
-    
+
 for g in model.rorGenerators:
     for rp in model.rp:
         for k in model.k:
@@ -87,8 +87,15 @@ model.vSlack_DemandNotServed = pyo.Var(model.rp, model.k, doc='Slack variable de
 model.vSlack_OverProduction = pyo.Var(model.rp, model.k, doc='Slack variable overproduction', bounds=(0, None))
 model.t = pyo.Var(model.e, model.rp, model.k, doc='Power flow from bus i to j', bounds=(None, None))
 for (i, j) in model.e:
-    model.t[(i, j), :, :].setlb(-dPower_Network.loc[i, j]['Pmax'])
-    model.t[(i, j), :, :].setub(dPower_Network.loc[i, j]['Pmax'])
+    match dPower_Network.loc[i, j]["Technical Representation"]:
+        case "DC-OPF" | "TP":
+            model.t[(i, j), :, :].setlb(-dPower_Network.loc[i, j]['Pmax'])
+            model.t[(i, j), :, :].setub(dPower_Network.loc[i, j]['Pmax'])
+        case "SN":
+            continue  # No bounds for power flow in "Single Node" representation
+        case _:
+            raise ValueError(f"Technical representation '{dPower_Network.loc[i, j]["Technical Representation"]}' "
+                             f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
 
 # Parameters
 model.pDemand = pyo.Param(model.rp, model.i, model.k, initialize=dPower_Demand['Demand'], doc='Demand at bus i in representative period rp and timestep k')
@@ -125,7 +132,7 @@ for (i, j) in model.e:
             for rp in model.rp:
                 for k in model.k:
                     model.cReactance.add(model.t[(i, j), rp, k] == model.pReactance[(i, j)] * (model.delta[i, rp, k] - model.delta[j, rp, k]))
-        case "TP":
+        case "TP" | "SN":
             continue
         case _:
             raise ValueError(f"Technical representation '{dPower_Network.loc[i, j]["Technical Representation"]}' "
