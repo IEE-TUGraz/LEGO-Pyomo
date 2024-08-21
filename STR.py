@@ -65,6 +65,10 @@ model.g = pyo.Set(doc='Generators', initialize=model.thermalGenerators | model.r
 model.rp = pyo.Set(doc='Representative periods', initialize=dPower_Demand.index.get_level_values('rp').unique().tolist())
 model.k = pyo.Set(doc='Timestep within representative period', initialize=dPower_Demand.index.get_level_values('k').unique().tolist())
 
+# Helper Sets for zone of interest
+model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=dPower_BusInfo.loc[dPower_BusInfo["ZoneOfInterest"] == "yes"].index.tolist(), within=model.i)
+model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=hGenerators_to_Buses.loc[hGenerators_to_Buses["i"].isin(model.zoi_i)].index.tolist(), within=model.g)
+
 # Variables
 model.delta = pyo.Var(model.i, model.rp, model.k, doc='Angle of bus i', bounds=(-60, 60))
 
@@ -141,6 +145,48 @@ for (i, j) in model.e:
 # Objective function
 model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(sum(model.pProductionCost[g] * model.p[g, rp, k] for g in model.g) + (model.vSlack_DemandNotServed[rp, k] + model.vSlack_OverProduction[rp, k]) * model.pSlackPrice for rp in model.rp for k in model.k))
 
+
+# Helper function to pretty-print the values of a Pyomo indexed variable within zone of interest
+def pprint_var(var, zoi, index_positions: list = None, decimals: int = 2):
+    if index_positions is None:
+        index_positions = [0]
+
+    key_list = ["Key"]
+    lower_list = ["Lower"]
+    value_list = ["Value"]
+    upper_list = ["Upper"]
+    fixed_list = ["Fixed"]
+    stale_list = ["Stale"]
+    domain_list = ["Domain"]
+
+    for index in var:
+        # check if at least one index is in zone of interest
+        if not any(i in zoi for i in index):
+            continue
+        key_list.append(str(index))
+        lower_list.append(f"{var[index].lb:.2f}")
+        value_list.append(f"{pyo.value(var[index]):.2f}")
+        upper_list.append(f"{var[index].ub:.2f}")
+        fixed_list.append(str(var[index].fixed))
+        stale_list.append(str(var[index].stale))
+        domain_list.append(str(var[index].domain.name))
+
+    key_spacer = len(max(key_list, key=len))
+    lower_spacer = len(max(lower_list, key=len))
+    value_spacer = len(max(value_list, key=len))
+    upper_spacer = len(max(upper_list, key=len))
+    fixed_spacer = len(max(fixed_list, key=len))
+    stale_spacer = len(max(stale_list, key=len))
+    domain_spacer = len(max(domain_list, key=len))
+
+    print(f"{var.name} : {var.doc}")
+    print(f"    Size={len(var)}, In Zone of Interest={len(key_list) - 1}, Index={var.index_set()}")
+
+    # Iterate over all lists and print the values
+    for i in range(len(value_list)):
+        print(f"    {key_list[i]:>{key_spacer}} : {lower_list[i]:>{lower_spacer}} : {value_list[i]:>{value_spacer}} : {upper_list[i]:>{upper_spacer}} : {fixed_list[i]:>{fixed_spacer}} : {stale_list[i]:>{stale_spacer}} : {domain_list[i]:>{domain_spacer}}")
+
+
 if __name__ == '__main__':
     from pyomo.opt import SolverFactory
 
@@ -149,9 +195,9 @@ if __name__ == '__main__':
     results.write()
 
     print("\nDisplaying Solution\n" + '-' * 60)
-    model.p.pprint()
-    model.t.pprint()
-    model.delta.pprint()
+    pprint_var(model.p, model.zoi_g)
+    pprint_var(model.t, model.zoi_i, index_positions=[0, 1])
+    pprint_var(model.delta, model.zoi_i)
 
     # Print sum of slack variables
     print("\nSlack Variables\n" + '-' * 60)
