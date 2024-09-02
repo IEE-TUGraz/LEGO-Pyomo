@@ -29,6 +29,7 @@ def read_generator_data(file_path):
     d_generator = d_generator.drop(d_generator.columns[0], axis=1)
     d_generator = d_generator.rename(columns={d_generator.columns[0]: "g", d_generator.columns[1]: "tec", d_generator.columns[2]: "i"})
     d_generator = d_generator.set_index('g')
+    d_generator = d_generator[d_generator["ExisUnits"] > 0]
     return d_generator
 
 
@@ -79,10 +80,12 @@ model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=hGenerato
 
 # Variables
 model.delta = pyo.Var(model.i, model.rp, model.k, doc='Angle of bus i', bounds=(-60, 60))
+model.vSlack_DemandNotServed = pyo.Var(model.rp, model.k, model.i, doc='Slack variable demand not served', bounds=(0, None))
+model.vSlack_OverProduction = pyo.Var(model.rp, model.k, model.i, doc='Slack variable overproduction', bounds=(0, None))
 
 model.p = pyo.Var(model.g, model.rp, model.k, doc='Power output of generator g', bounds=(0, None))
 for g in model.thermalGenerators:
-    model.p[g, :, :].setub(dPower_ThermalGen.loc[g, 'MaxProd'])
+    model.p[g, :, :].setub(dPower_ThermalGen.loc[g, 'MaxProd'] * dPower_ThermalGen.loc[g, 'ExisUnits'])
     # TODO: Add min production (needs unit commitment)
 
 for g in model.rorGenerators:
@@ -93,10 +96,8 @@ for g in model.rorGenerators:
 for g in model.vresGenerators:
     for rp in model.rp:
         for k in model.k:
-            model.p[g, rp, k].setub(dPower_VRES.loc[g, 'MaxProd'] * dPower_VRESProfiles.loc[rp, dPower_VRES.loc[g, 'i'], k, dPower_VRES.loc[g, 'tec']]['Capacity'])
+            model.p[g, rp, k].setub(dPower_VRES.loc[g, 'MaxProd'] * dPower_VRESProfiles.loc[rp, dPower_VRES.loc[g, 'i'], k, dPower_VRES.loc[g, 'tec']]['Capacity'] * dPower_VRES.loc[g, 'ExisUnits'])
 
-model.vSlack_DemandNotServed = pyo.Var(model.rp, model.k, model.i, doc='Slack variable demand not served', bounds=(0, None))
-model.vSlack_OverProduction = pyo.Var(model.rp, model.k, model.i, doc='Slack variable overproduction', bounds=(0, None))
 model.t = pyo.Var(model.e, model.rp, model.k, doc='Power flow from bus i to j', bounds=(None, None))
 for (i, j) in model.e:
     match dPower_Network.loc[i, j]["Technical Representation"]:
@@ -134,7 +135,7 @@ for i in model.i:
                 sum(model.t[e, rp, k] for e in model.e if (e[0] == i)) +  # Power flow from bus i to bus j
                 sum(model.t[e, rp, k] for e in model.e if (e[1] == i)) ==  # Power flow from bus j to bus i
                 model.pDemand[rp, i, k] -  # Demand at bus i
-                model.vSlack_DemandNotServed[rp, k, i]  +  # Slack variable for demand not served
+                model.vSlack_DemandNotServed[rp, k, i] +  # Slack variable for demand not served
                 model.vSlack_OverProduction[rp, k, i])  # Slack variable for overproduction
 
 model.cReactance = pyo.ConstraintList(doc='Reactance constraint for each line (for DC-OPF)')
