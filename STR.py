@@ -95,8 +95,8 @@ for g in model.vresGenerators:
         for k in model.k:
             model.p[g, rp, k].setub(dPower_VRES.loc[g, 'MaxProd'] * dPower_VRESProfiles.loc[rp, dPower_VRES.loc[g, 'i'], k, dPower_VRES.loc[g, 'tec']]['Capacity'])
 
-model.vSlack_DemandNotServed = pyo.Var(model.rp, model.k, doc='Slack variable demand not served', bounds=(0, None))
-model.vSlack_OverProduction = pyo.Var(model.rp, model.k, doc='Slack variable overproduction', bounds=(0, None))
+model.vSlack_DemandNotServed = pyo.Var(model.rp, model.k, model.i, doc='Slack variable demand not served', bounds=(0, None))
+model.vSlack_OverProduction = pyo.Var(model.rp, model.k, model.i, doc='Slack variable overproduction', bounds=(0, None))
 model.t = pyo.Var(model.e, model.rp, model.k, doc='Power flow from bus i to j', bounds=(None, None))
 for (i, j) in model.e:
     match dPower_Network.loc[i, j]["Technical Representation"]:
@@ -134,8 +134,8 @@ for i in model.i:
                 sum(model.t[e, rp, k] for e in model.e if (e[0] == i)) +  # Power flow from bus i to bus j
                 sum(model.t[e, rp, k] for e in model.e if (e[1] == i)) ==  # Power flow from bus j to bus i
                 model.pDemand[rp, i, k] -  # Demand at bus i
-                model.vSlack_DemandNotServed[rp, k] +  # Slack variable for demand not served
-                model.vSlack_OverProduction[rp, k])  # Slack variable for overproduction
+                model.vSlack_DemandNotServed[rp, k, i]  +  # Slack variable for demand not served
+                model.vSlack_OverProduction[rp, k, i])  # Slack variable for overproduction
 
 model.cReactance = pyo.ConstraintList(doc='Reactance constraint for each line (for DC-OPF)')
 for (i, j) in model.e:
@@ -151,7 +151,8 @@ for (i, j) in model.e:
                              f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
 
 # Objective function
-model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(sum(model.pProductionCost[g] * model.p[g, rp, k] for g in model.g) + (model.vSlack_DemandNotServed[rp, k] + model.vSlack_OverProduction[rp, k]) * model.pSlackPrice for rp in model.rp for k in model.k))
+model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.g) +
+                                                                                                           (sum(model.vSlack_DemandNotServed[:, :, :]) + sum(model.vSlack_OverProduction[:, :, :])) * model.pSlackPrice)
 
 
 # Helper function to pretty-print the values of a Pyomo indexed variable within zone of interest
@@ -219,8 +220,8 @@ if __name__ == '__main__':
 
     # Print sum of slack variables
     print("\nSlack Variables\n" + '-' * 60)
-    print("Slack variable sum of demand not served:", sum(pyo.value(model.vSlack_DemandNotServed[rp, k]) for rp in model.rp for k in model.k))
-    print("Slack variable sum of overproduction:", sum(pyo.value(model.vSlack_OverProduction[rp, k]) for rp in model.rp for k in model.k))
+    print("Slack variable sum of demand not served:", sum(model.vSlack_DemandNotServed[rp, k, i].value if model.vSlack_DemandNotServed[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i))
+    print("Slack variable sum of overproduction:", sum(model.vSlack_OverProduction[rp, k, i].value if model.vSlack_OverProduction[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i))
 
     print("\nObjective Function Value\n" + '-' * 60)
     print("Objective value:", pyo.value(model.objective))
