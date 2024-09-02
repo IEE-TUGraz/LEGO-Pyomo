@@ -1,7 +1,15 @@
+import logging
+
 import pandas as pd
 import pyomo.environ as pyo
+from pyomo.util.infeasible import log_infeasible_constraints
 
+# Settings
 example_folder = "data/example/"
+
+# Setup
+pyomo_logger = logging.getLogger('pyomo')
+pyomo_logger.setLevel(logging.INFO)
 
 # Data
 dPower_BusInfo = pd.read_excel(example_folder + "Power_BusInfo.xlsx", skiprows=[0, 1, 3, 4, 5])
@@ -193,6 +201,16 @@ if __name__ == '__main__':
     opt = SolverFactory("gurobi")
     results = opt.solve(model)
     results.write()
+
+    match results.solver.termination_condition:
+        case pyo.TerminationCondition.optimal:
+            print("Optimal solution found")
+        case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
+            print(f"ERROR: Model is {results.solver.termination_condition}, logging infeasible constraints:")
+            log_infeasible_constraints(model)
+            exit(-1)
+        case _:
+            print("Solver terminated with condition:", results.solver.termination_condition)
 
     print("\nDisplaying Solution\n" + '-' * 60)
     pprint_var(model.p, model.zoi_g)
