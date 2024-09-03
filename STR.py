@@ -1,4 +1,5 @@
 import logging
+import warnings
 
 import pandas as pd
 import pyomo.environ as pyo
@@ -56,6 +57,143 @@ dPower_VRESProfiles = dPower_VRESProfiles.melt(id_vars=['rp', 'i', 'tec'], var_n
 dPower_VRESProfiles = dPower_VRESProfiles.set_index(['rp', 'i', 'k', 'tec'])
 
 # dataframe that shows connections between g and i, only concatenating g and i from the dataframes
+########################################################################################################################
+# Pre-processing
+########################################################################################################################
+
+# Merge SN-connected buses
+dBusMerging = pd.DataFrame(index=dPower_BusInfo.index, columns=[dPower_BusInfo.index], data=False)
+
+for index, entry in dPower_Network.iterrows():
+    if dPower_Network.loc[(index[0], index[1])]["Technical Representation"] == "SN":
+        dBusMerging.loc[index[0], index[1]] = True
+        dBusMerging.loc[index[1], index[0]] = True
+
+merged_buses = set()  # Set of buses that have been merged already
+for index, entry in dBusMerging.iterrows():
+    if index in merged_buses or entry[entry == True].empty:  # Skip if bus has already been merged or has no connections
+        continue
+
+    connected_buses = []
+    stack = [index]
+    while stack:
+        current_bus = stack.pop()
+        connected_buses.append(current_bus)
+
+        connected_to_current_bus = [multiindex[0] for multiindex in dBusMerging.loc[current_bus][dBusMerging.loc[current_bus] == True].index.tolist()]
+        for node in connected_to_current_bus:
+            if node not in connected_buses:
+                stack.append(node)
+
+    for bus in connected_buses:
+        merged_buses.add(bus)
+
+    connected_buses.sort()
+    new_bus_name = "merged-" + "-".join(connected_buses)
+
+    # Adapt dPower_BusInfo
+    dPower_BusInfo_entry = dPower_BusInfo.loc[connected_buses]  # Entry for the new bus
+    zoneOfInterest = "yes" if any(dPower_BusInfo_entry['ZoneOfInterest'] == "yes") else "no"
+    aggregation_methods_for_columns = {  # TODO: Check if those aggregations are correct
+        'System': 'max',
+        'BaseVolt': 'mean',
+        'maxVolt': 'max',
+        'minVolt': 'min',
+        'Bs': 'mean',
+        'Gs': 'mean',
+        'PowerFactor': 'mean',
+        'YearCom': 'mean',
+        'YearDecom': 'mean',
+        'lat': 'mean',
+        'long': 'mean'
+    }
+    dPower_BusInfo_entry = dPower_BusInfo_entry.agg(aggregation_methods_for_columns)
+    dPower_BusInfo_entry['ZoneOfInterest'] = zoneOfInterest
+    dPower_BusInfo_entry = dPower_BusInfo_entry.to_frame().T
+    dPower_BusInfo_entry.index = [new_bus_name]
+
+    dPower_BusInfo = dPower_BusInfo.drop(connected_buses)
+    with warnings.catch_warnings():  # Suppressing FutureWarning because some entries might include NaN values
+        warnings.simplefilter(action='ignore', category=FutureWarning)
+        dPower_BusInfo = pd.concat([dPower_BusInfo, dPower_BusInfo_entry])
+
+    # Adapt dPower_Network
+    dPower_Network = dPower_Network.reset_index()
+    rows_to_drop = []
+    for i, row in dPower_Network.iterrows():
+        if row['i'] in connected_buses and row['j'] in connected_buses:
+            rows_to_drop.append(i)
+        elif row['i'] in connected_buses:
+            row['i'] = new_bus_name
+            dPower_Network.iloc[i] = row
+        elif row['j'] in connected_buses:
+            row['j'] = new_bus_name
+            dPower_Network.iloc[i] = row
+    dPower_Network = dPower_Network.drop(rows_to_drop)
+
+    # Always put new_bus_name to 'j' (handles case where e.g. 2->3 and 4->2 would lead to 2->34 and 34->2 (because 3 and 4 are merged))
+    for i, row in dPower_Network.iterrows():
+        if row['i'] == new_bus_name:
+            row['i'] = row['j']
+            row['j'] = new_bus_name
+            dPower_Network.loc[i] = row
+
+    # Handle case where e.g. 2->3 and 2->4 would lead to 2->34 and 2->34 (because 3 and 4 are merged); also incl. handling 2->3 and 4->2
+    dPower_Network['Technical Representation'] = dPower_Network.groupby(['i', 'j'])['Technical Representation'].transform(lambda series: 'DC-OPF' if 'DC-OPF' in series.values else series.iloc[0])
+    aggregation_methods_for_columns = {  # TODO: Check if those aggregations are correct
+        'Circuit ID': 'first',
+        'InService': 'max',
+        'R': 'mean',
+        'X': 'mean',
+        'Bc': 'mean',
+        'TapAngle': 'mean',
+        'TapRatio': 'mean',
+        'Pmax': 'mean',
+        'FixedCost': 'mean',
+        'FxChargeRate': 'mean',
+        'Technical Representation': 'first',
+        'LineID': 'first',
+        'YearCom': 'mean',
+        'YearDecom': 'mean'
+    }
+    dPower_Network = dPower_Network.groupby(['i', 'j']).agg(aggregation_methods_for_columns)
+
+    # Adapt dPower_ThermalGen
+    for i, row in dPower_ThermalGen.iterrows():
+        if row['i'] in connected_buses:
+            row['i'] = new_bus_name
+            dPower_ThermalGen.loc[i] = row
+
+    # Adapt dPower_RoR
+    for i, row in dPower_RoR.iterrows():
+        if row['i'] in connected_buses:
+            row['i'] = new_bus_name
+            dPower_RoR.loc[i] = row
+
+    # Adapt dPower_VRES
+    for i, row in dPower_VRES.iterrows():
+        if row['i'] in connected_buses:
+            row['i'] = new_bus_name
+            dPower_VRES.loc[i] = row
+
+    # Adapt dPower_Demand
+    dPower_Demand = dPower_Demand.reset_index()
+    for i, row in dPower_Demand.iterrows():
+        if row['i'] in connected_buses:
+            row['i'] = new_bus_name
+            dPower_Demand.loc[i] = row
+    dPower_Demand = dPower_Demand.groupby(['rp', 'i', 'k']).sum()
+
+    # Adapt dPower_VRESProfiles
+    dPower_VRESProfiles = dPower_VRESProfiles.reset_index()
+    for i, row in dPower_VRESProfiles.iterrows():
+        if row['i'] in connected_buses:
+            row['i'] = new_bus_name
+            dPower_VRESProfiles.loc[i] = row
+    dPower_VRESProfiles = dPower_VRESProfiles.set_index(['rp', 'i', 'k', 'tec'])
+    dPower_VRESProfiles.sort_index(inplace=True)
+
+# Dataframe that shows connections between g and i, only concatenating g and i from the dataframes
 hGenerators_to_Buses = pd.concat([dPower_ThermalGen[['i']], dPower_RoR[['i']], dPower_VRES[['i']]])
 
 ########################################################################################################################
@@ -105,7 +243,7 @@ for (i, j) in model.e:
             model.t[(i, j), :, :].setlb(-dPower_Network.loc[i, j]['Pmax'])
             model.t[(i, j), :, :].setub(dPower_Network.loc[i, j]['Pmax'])
         case "SN":
-            continue  # No bounds for power flow in "Single Node" representation
+            assert False  # Should not happen, as we merged all "Single Node" representations
         case _:
             raise ValueError(f"Technical representation '{dPower_Network.loc[i, j]["Technical Representation"]}' "
                              f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
