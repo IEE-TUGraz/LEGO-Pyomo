@@ -8,6 +8,10 @@ from pyomo.util.infeasible import log_infeasible_constraints
 # Settings
 example_folder = "data/example/"
 
+# Constants
+const_angleLimit = 180
+const_angleDifferenceLimit = 60
+
 # Setup
 pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
@@ -217,7 +221,7 @@ model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=dPower_BusInfo
 model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=hGenerators_to_Buses.loc[hGenerators_to_Buses["i"].isin(model.zoi_i)].index.tolist(), within=model.g)
 
 # Variables
-model.delta = pyo.Var(model.i, model.rp, model.k, doc='Angle of bus i', bounds=(-60, 60))
+model.delta = pyo.Var(model.i, model.rp, model.k, doc='Angle of bus i', bounds=(-const_angleLimit, const_angleLimit))  # TODO: Discuss impact on runtime etc.(based on discussion with Prof. Renner)
 model.vSlack_DemandNotServed = pyo.Var(model.rp, model.k, model.i, doc='Slack variable demand not served', bounds=(0, None))
 model.vSlack_OverProduction = pyo.Var(model.rp, model.k, model.i, doc='Slack variable overproduction', bounds=(0, None))
 
@@ -258,10 +262,40 @@ model.pProductionCost = pyo.Param(model.g, initialize=hFuelCost, doc='Production
 model.pReactance = pyo.Param(model.e, initialize=dPower_Network['R'], doc='Reactance of line e')
 model.pSlackPrice = pyo.Param(initialize=max(model.pProductionCost.values()) * 100, doc='Price of slack variable')
 
-# Select slack node with highest demand (TODO: Check if this is the best way to select slack node)
-slack_node = dPower_Demand.groupby('i').sum().idxmax().values[0]
-print("Slack node:", slack_node)
-model.delta[slack_node, :, :].fix(0)
+# For each DC-OPF "island", set node with highest demand as slack node
+dDCOPFIslands = pd.DataFrame(index=dPower_BusInfo.index, columns=[dPower_BusInfo.index], data=False)
+
+for index, entry in dPower_Network.iterrows():
+    if dPower_Network.loc[(index[0], index[1])]["Technical Representation"] == "DC-OPF":
+        dDCOPFIslands.loc[index[0], index[1]] = True
+        dDCOPFIslands.loc[index[1], index[0]] = True
+
+completed_buses = set()  # Set of buses that have been looked at already
+i = 0
+for index, entry in dDCOPFIslands.iterrows():
+    if index in completed_buses or entry[entry == True].empty:  # Skip if bus has already been looked at or has no connections
+        continue
+
+    connected_buses = []
+    stack = [index]
+    while stack:
+        current_bus = stack.pop()
+        connected_buses.append(current_bus)
+
+        connected_to_current_bus = [multiindex[0] for multiindex in dDCOPFIslands.loc[current_bus][dDCOPFIslands.loc[current_bus] == True].index.tolist()]
+        for node in connected_to_current_bus:
+            if node not in connected_buses:
+                stack.append(node)
+
+    for bus in connected_buses:
+        completed_buses.add(bus)
+
+    # Set slack node
+    slack_node = dPower_Demand.loc[:, connected_buses, :].groupby('i').sum().idxmax().values[0]
+    if i == 0: print("Setting slack nodes for DC-OPF zones:")
+    print(f"DC-OPF Zone {i:00} - Slack node: {slack_node}")
+    i += 1
+    model.delta[slack_node, :, :].fix(0)
 
 # Constraint(s)
 model.cPower_Balance = pyo.ConstraintList(doc='Power balance constraint for each bus')
@@ -277,12 +311,15 @@ for i in model.i:
                 model.vSlack_OverProduction[rp, k, i])  # Slack variable for overproduction
 
 model.cReactance = pyo.ConstraintList(doc='Reactance constraint for each line (for DC-OPF)')
+model.cDeltaDifferenceLimits = pyo.ConstraintList(doc='Delta difference limits for each pair of DC-OPF buses')
 for (i, j) in model.e:
     match dPower_Network.loc[i, j]["Technical Representation"]:
         case "DC-OPF":
             for rp in model.rp:
                 for k in model.k:
                     model.cReactance.add(model.t[(i, j), rp, k] == model.pReactance[(i, j)] * (model.delta[i, rp, k] - model.delta[j, rp, k]))
+                    model.cDeltaDifferenceLimits.add((model.delta[i, rp, k] - model.delta[j, rp, k]) >= -const_angleDifferenceLimit)
+                    model.cDeltaDifferenceLimits.add((model.delta[i, rp, k] - model.delta[j, rp, k]) <= const_angleDifferenceLimit)
         case "TP" | "SN":
             continue
         case _:
