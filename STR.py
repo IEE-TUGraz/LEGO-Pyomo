@@ -70,8 +70,8 @@ dPower_VRESProfiles = dPower_VRESProfiles.set_index(['rp', 'i', 'k', 'tec'])
 dBusMerging = pd.DataFrame(index=dPower_BusInfo.index, columns=[dPower_BusInfo.index], data=False)
 
 for index, entry in dPower_Network.iterrows():
-    if dPower_Network.loc[(index[0], index[1])]["Technical Representation"] == "SN":
-        dBusMerging.loc[index[0], index[1]] = True
+    if entry["Technical Representation"] == "SN":
+        dBusMerging.loc[index] = True
         dBusMerging.loc[index[1], index[0]] = True
 
 merged_buses = set()  # Set of buses that have been merged already
@@ -242,7 +242,11 @@ for g in model.rorGenerators:
 for g in model.vresGenerators:
     for rp in model.rp:
         for k in model.k:
-            model.p[g, rp, k].setub(dPower_VRES.loc[g, 'MaxProd'] * dPower_VRESProfiles.loc[rp, dPower_VRES.loc[g, 'i'], k, dPower_VRES.loc[g, 'tec']]['Capacity'] * dPower_VRES.loc[g, 'ExisUnits'])
+            maxProd = dPower_VRES.loc[g, 'MaxProd']
+            capacity = dPower_VRESProfiles.loc[rp, dPower_VRES.loc[g, 'i'], k, dPower_VRES.loc[g, 'tec']]['Capacity']
+            capacity = capacity.values[0] if isinstance(capacity, pd.Series) else capacity
+            exisUnits = dPower_VRES.loc[g, 'ExisUnits']
+            model.p[g, rp, k].setub(maxProd * capacity * exisUnits)
 
 model.t = pyo.Var(model.e, model.rp, model.k, doc='Power flow from bus i to j', bounds=(None, None))
 for (i, j) in model.e:
@@ -297,7 +301,7 @@ for index, entry in dDCOPFIslands.iterrows():
     # Set slack node
     slack_node = dPower_Demand.loc[:, connected_buses, :].groupby('i').sum().idxmax().values[0]
     if i == 0: print("Setting slack nodes for DC-OPF zones:")
-    print(f"DC-OPF Zone {i:00} - Slack node: {slack_node}")
+    print(f"DC-OPF Zone {i:>2} - Slack node: {slack_node}")
     i += 1
     model.delta[slack_node, :, :].fix(0)
 
@@ -351,7 +355,7 @@ def pprint_var(var, zoi, index_positions: list = None, decimals: int = 2):
             continue
         key_list.append(str(index))
         lower_list.append(f"{var[index].lb:.2f}" if var[index].has_lb() else str(var[index].lb))
-        value_list.append(f"{pyo.value(var[index]):.2f}")
+        value_list.append(f"{pyo.value(var[index]):.2f}" if not var[index].value is None else str(var[index].value))
         upper_list.append(f"{var[index].ub:.2f}" if var[index].has_ub() else str(var[index].ub))
         fixed_list.append(str(var[index].fixed))
         stale_list.append(str(var[index].stale))
