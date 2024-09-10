@@ -101,13 +101,13 @@ for index, entry in dBusMerging.iterrows():
     dPower_BusInfo_entry = dPower_BusInfo.loc[connected_buses]  # Entry for the new bus
     zoneOfInterest = "yes" if any(dPower_BusInfo_entry['ZoneOfInterest'] == "yes") else "no"
     aggregation_methods_for_columns = {  # TODO: Check if those aggregations are correct
-        'System': 'max',
-        'BaseVolt': 'mean',
-        'maxVolt': 'max',
-        'minVolt': 'min',
-        'Bs': 'mean',
-        'Gs': 'mean',
-        'PowerFactor': 'mean',
+        # 'System': 'max',
+        # 'BaseVolt': 'mean',
+        # 'maxVolt': 'max',
+        # 'minVolt': 'min',
+        # 'Bs': 'mean',
+        # 'Gs': 'mean',
+        # 'PowerFactor': 'mean',
         'YearCom': 'mean',
         'YearDecom': 'mean',
         'lat': 'mean',
@@ -147,16 +147,16 @@ for index, entry in dBusMerging.iterrows():
     # Handle case where e.g. 2->3 and 2->4 would lead to 2->34 and 2->34 (because 3 and 4 are merged); also incl. handling 2->3 and 4->2
     dPower_Network['Technical Representation'] = dPower_Network.groupby(['i', 'j'])['Technical Representation'].transform(lambda series: 'DC-OPF' if 'DC-OPF' in series.values else series.iloc[0])
     aggregation_methods_for_columns = {  # TODO: Check if those aggregations are correct
-        'Circuit ID': 'first',
-        'InService': 'max',
-        'R': 'mean',
-        'X': 'mean',
-        'Bc': 'mean',
-        'TapAngle': 'mean',
-        'TapRatio': 'mean',
-        'Pmax': 'mean',
-        'FixedCost': 'mean',
-        'FxChargeRate': 'mean',
+        # 'Circuit ID': 'first',
+        # 'InService': 'max',
+        # 'R': 'mean',
+        'X': 'mean',  # TODO: 1/Xeq = sum((i,j), 1/Xij) (e.g., 1/Xeq = 1/Xij_1 +1/Xij_2 + 1/Xij_3...)
+        # 'Bc': 'mean',
+        # 'TapAngle': 'mean',
+        # 'TapRatio': 'mean',
+        'Pmax': 'min', # TODO: multiply by number of lines
+        # 'FixedCost': 'mean',
+        # 'FxChargeRate': 'mean',
         'Technical Representation': 'first',
         'LineID': 'first',
         'YearCom': 'mean',
@@ -196,8 +196,11 @@ for index, entry in dBusMerging.iterrows():
         if row['i'] in connected_buses:
             row['i'] = new_bus_name
             dPower_VRESProfiles.loc[i] = row
+            # TODO: Aggregate using 'mean' (or make even more complex (capacity * productionCapacity * ... * / Total Production Capacity)
     dPower_VRESProfiles = dPower_VRESProfiles.set_index(['rp', 'i', 'k', 'tec'])
     dPower_VRESProfiles.sort_index(inplace=True)
+
+    # TODO: Aggregate Inflows using 'sum'
 
 # Dataframe that shows connections between g and i, only concatenating g and i from the dataframes
 hGenerators_to_Buses = pd.concat([dPower_ThermalGen[['i']], dPower_RoR[['i']], dPower_VRES[['i']]])
