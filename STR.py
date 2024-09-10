@@ -1,23 +1,26 @@
 import logging
 import warnings
 
+import numpy as np
 import pandas as pd
 import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
-import numpy as np
 
 # Settings
 example_folder = "data/example/"
-
-# Constants
-const_angleLimit = 180 * np.pi/ 180
-pSBase = 100  # TODO: Read in from Power Parameters
 
 # Setup
 pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
 # Data
+dPower_Parameters = pd.read_excel(example_folder + "Power_Parameters.xlsx", skiprows=[0, 1])
+dPower_Parameters = dPower_Parameters.drop(dPower_Parameters.columns[0], axis=1)
+dPower_Parameters = dPower_Parameters.dropna(how="all")
+dPower_Parameters = dPower_Parameters.set_index('General')
+pMaxAngleDCOPF = dPower_Parameters.loc["pMaxAngleDCOPF"].iloc[0] * np.pi / 180  # Read and convert to radians
+pSBase = dPower_Parameters.loc["pSBase"].iloc[0]
+
 dPower_BusInfo = pd.read_excel(example_folder + "Power_BusInfo.xlsx", skiprows=[0, 1, 3, 4, 5])
 dPower_BusInfo = dPower_BusInfo.drop(dPower_BusInfo.columns[0], axis=1)
 dPower_BusInfo = dPower_BusInfo.rename(columns={dPower_BusInfo.columns[0]: "i", dPower_BusInfo.columns[1]: "System"})
@@ -225,7 +228,7 @@ model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=dPower_BusInfo
 model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=hGenerators_to_Buses.loc[hGenerators_to_Buses["i"].isin(model.zoi_i)].index.tolist(), within=model.g)
 
 # Variables
-model.delta = pyo.Var(model.i, model.rp, model.k, doc='Angle of bus i', bounds=(-const_angleLimit, const_angleLimit))  # TODO: Discuss impact on runtime etc.(based on discussion with Prof. Renner)
+model.delta = pyo.Var(model.i, model.rp, model.k, doc='Angle of bus i', bounds=(-pMaxAngleDCOPF, pMaxAngleDCOPF))  # TODO: Discuss impact on runtime etc.(based on discussion with Prof. Renner)
 model.vSlack_DemandNotServed = pyo.Var(model.rp, model.k, model.i, doc='Slack variable demand not served', bounds=(0, None))
 model.vSlack_OverProduction = pyo.Var(model.rp, model.k, model.i, doc='Slack variable overproduction', bounds=(0, None))
 
