@@ -11,7 +11,6 @@ example_folder = "data/example/"
 
 # Constants
 const_angleLimit = 180 * np.pi/ 180
-const_angleDifferenceLimit = 60 * np.pi / 180
 pSBase = 100  # TODO: Read in from Power Parameters
 
 # Setup
@@ -316,15 +315,12 @@ for i in model.i:
                 model.vSlack_OverProduction[rp, k, i])  # Slack variable for overproduction
 
 model.cReactance = pyo.ConstraintList(doc='Reactance constraint for each line (for DC-OPF)')
-model.cDeltaDifferenceLimits = pyo.ConstraintList(doc='Delta difference limits for each pair of DC-OPF buses')
 for (i, j) in model.e:
     match dPower_Network.loc[i, j]["Technical Representation"]:
         case "DC-OPF":
             for rp in model.rp:
                 for k in model.k:
                     model.cReactance.add(model.t[(i, j), rp, k] == (model.delta[i, rp, k] - model.delta[j, rp, k]) * pSBase / model.pReactance[(i, j)])
-                    model.cDeltaDifferenceLimits.add((model.delta[i, rp, k] - model.delta[j, rp, k]) >= -const_angleDifferenceLimit)
-                    model.cDeltaDifferenceLimits.add((model.delta[i, rp, k] - model.delta[j, rp, k]) <= const_angleDifferenceLimit)
         case "TP" | "SN":
             continue
         case _:
