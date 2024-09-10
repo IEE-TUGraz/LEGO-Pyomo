@@ -4,13 +4,15 @@ import warnings
 import pandas as pd
 import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
+import numpy as np
 
 # Settings
 example_folder = "data/example/"
 
 # Constants
-const_angleLimit = 180
-const_angleDifferenceLimit = 60
+const_angleLimit = 180 * np.pi/ 180
+const_angleDifferenceLimit = 60 * np.pi / 180
+pSBase = 100  # TODO: Read in from Power Parameters
 
 # Setup
 pyomo_logger = logging.getLogger('pyomo')
@@ -317,7 +319,7 @@ for (i, j) in model.e:
         case "DC-OPF":
             for rp in model.rp:
                 for k in model.k:
-                    model.cReactance.add(model.t[(i, j), rp, k] == model.pReactance[(i, j)] * (model.delta[i, rp, k] - model.delta[j, rp, k]))
+                    model.cReactance.add(model.t[(i, j), rp, k] == (model.delta[i, rp, k] - model.delta[j, rp, k]) * pSBase / model.pReactance[(i, j)])
                     model.cDeltaDifferenceLimits.add((model.delta[i, rp, k] - model.delta[j, rp, k]) >= -const_angleDifferenceLimit)
                     model.cDeltaDifferenceLimits.add((model.delta[i, rp, k] - model.delta[j, rp, k]) <= const_angleDifferenceLimit)
         case "TP" | "SN":
