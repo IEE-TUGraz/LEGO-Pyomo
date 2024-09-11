@@ -198,11 +198,9 @@ for index, entry in dBusMerging.iterrows():
         if row['i'] in connected_buses:
             row['i'] = new_bus_name
             dPower_VRESProfiles.loc[i] = row
-            # TODO: Aggregate using 'mean' (or make even more complex (capacity * productionCapacity * ... * / Total Production Capacity)
-    dPower_VRESProfiles = dPower_VRESProfiles.set_index(['rp', 'i', 'k', 'tec'])
-    dPower_VRESProfiles.sort_index(inplace=True)
 
-    # TODO: Aggregate Inflows using 'sum'
+    dPower_VRESProfiles = dPower_VRESProfiles.groupby(['rp', 'i', 'k', 'tec']).mean()  # TODO: Aggregate using more complex method (capacity * productionCapacity * ... * / Total Production Capacity)
+    dPower_VRESProfiles.sort_index(inplace=True)
 
 # Dataframe that shows connections between g and i, only concatenating g and i from the dataframes
 hGenerators_to_Buses = pd.concat([dPower_ThermalGen[['i']], dPower_RoR[['i']], dPower_VRES[['i']]])
