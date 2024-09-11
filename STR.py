@@ -102,7 +102,7 @@ for index, entry in dBusMerging.iterrows():
     # Adapt dPower_BusInfo
     dPower_BusInfo_entry = dPower_BusInfo.loc[connected_buses]  # Entry for the new bus
     zoneOfInterest = "yes" if any(dPower_BusInfo_entry['ZoneOfInterest'] == "yes") else "no"
-    aggregation_methods_for_columns = {  # TODO: Check if those aggregations are correct
+    aggregation_methods_for_columns = {
         # 'System': 'max',
         # 'BaseVolt': 'mean',
         # 'maxVolt': 'max',
@@ -148,15 +148,15 @@ for index, entry in dBusMerging.iterrows():
 
     # Handle case where e.g. 2->3 and 2->4 would lead to 2->34 and 2->34 (because 3 and 4 are merged); also incl. handling 2->3 and 4->2
     dPower_Network['Technical Representation'] = dPower_Network.groupby(['i', 'j'])['Technical Representation'].transform(lambda series: 'DC-OPF' if 'DC-OPF' in series.values else series.iloc[0])
-    aggregation_methods_for_columns = {  # TODO: Check if those aggregations are correct
+    aggregation_methods_for_columns = {
         # 'Circuit ID': 'first',
         # 'InService': 'max',
         # 'R': 'mean',
-        'X': 'mean',  # TODO: 1/Xeq = sum((i,j), 1/Xij) (e.g., 1/Xeq = 1/Xij_1 +1/Xij_2 + 1/Xij_3...)
+        'X': lambda x: x.map(lambda a: 1 / a).sum() ** -1,  # Formula: 1/X = sum((i,j), 1/Xij)) (e.g., 1/X = 1/Xij_1 +1/Xij_2 + 1/Xij_3...)
         # 'Bc': 'mean',
         # 'TapAngle': 'mean',
         # 'TapRatio': 'mean',
-        'Pmax': 'min', # TODO: multiply by number of lines
+        'Pmax': lambda x: x.min() * x.count(),  # Number of lines times the minimum Pmax for new Pmax of the merged lines
         # 'FixedCost': 'mean',
         # 'FxChargeRate': 'mean',
         'Technical Representation': 'first',
