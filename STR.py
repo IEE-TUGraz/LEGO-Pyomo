@@ -1,5 +1,4 @@
 import logging
-import warnings
 
 import numpy as np
 import pandas as pd
@@ -8,165 +7,22 @@ from pyomo.util.infeasible import log_infeasible_constraints
 
 from CaseStudy import CaseStudy
 
+########################################################################################################################
 # Setup
+########################################################################################################################
+
 pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
+########################################################################################################################
 # Data input from case study
-caseStudy = CaseStudy("data/example/")
-
-dPower_Parameters = caseStudy.get_dPower_Parameters()
-dPower_BusInfo = caseStudy.get_dPower_BusInfo()
-dPower_Network = caseStudy.get_dPower_Network()
-dPower_ThermalGen = caseStudy.get_dPower_ThermalGen()
-dPower_RoR = caseStudy.get_dPower_RoR()
-dPower_VRES = caseStudy.get_dPower_VRES()
-dPower_Demand = caseStudy.get_dPower_Demand()
-dPower_Inflows = caseStudy.get_dPower_Inflows()
-dPower_VRESProfiles = caseStudy.get_dPower_VRESProfiles()
-
-pMaxAngleDCOPF = dPower_Parameters.loc["pMaxAngleDCOPF"].iloc[0] * np.pi / 180  # Read and convert to radians
-pSBase = dPower_Parameters.loc["pSBase"].iloc[0]
-
-########################################################################################################################
-# Pre-processing
 ########################################################################################################################
 
-# Merge SN-connected buses
-dBusMerging = pd.DataFrame(index=dPower_BusInfo.index, columns=[dPower_BusInfo.index], data=False)
+cs = CaseStudy("data/example/", merge_single_node_buses=True)
 
-for index, entry in dPower_Network.iterrows():
-    if entry["Technical Representation"] == "SN":
-        dBusMerging.loc[index] = True
-        dBusMerging.loc[index[1], index[0]] = True
+pMaxAngleDCOPF = cs.dPower_Parameters.loc["pMaxAngleDCOPF"].iloc[0] * np.pi / 180  # Read and convert to radians
+pSBase = cs.dPower_Parameters.loc["pSBase"].iloc[0]
 
-merged_buses = set()  # Set of buses that have been merged already
-for index, entry in dBusMerging.iterrows():
-    if index in merged_buses or entry[entry == True].empty:  # Skip if bus has already been merged or has no connections
-        continue
-
-    connected_buses = []
-    stack = [index]
-    while stack:
-        current_bus = stack.pop()
-        connected_buses.append(current_bus)
-
-        connected_to_current_bus = [multiindex[0] for multiindex in dBusMerging.loc[current_bus][dBusMerging.loc[current_bus] == True].index.tolist()]
-        for node in connected_to_current_bus:
-            if node not in connected_buses:
-                stack.append(node)
-
-    for bus in connected_buses:
-        merged_buses.add(bus)
-
-    connected_buses.sort()
-    new_bus_name = "merged-" + "-".join(connected_buses)
-
-    # Adapt dPower_BusInfo
-    dPower_BusInfo_entry = dPower_BusInfo.loc[connected_buses]  # Entry for the new bus
-    zoneOfInterest = "yes" if any(dPower_BusInfo_entry['ZoneOfInterest'] == "yes") else "no"
-    aggregation_methods_for_columns = {
-        # 'System': 'max',
-        # 'BaseVolt': 'mean',
-        # 'maxVolt': 'max',
-        # 'minVolt': 'min',
-        # 'Bs': 'mean',
-        # 'Gs': 'mean',
-        # 'PowerFactor': 'mean',
-        'YearCom': 'mean',
-        'YearDecom': 'mean',
-        'lat': 'mean',
-        'long': 'mean'
-    }
-    dPower_BusInfo_entry = dPower_BusInfo_entry.agg(aggregation_methods_for_columns)
-    dPower_BusInfo_entry['ZoneOfInterest'] = zoneOfInterest
-    dPower_BusInfo_entry = dPower_BusInfo_entry.to_frame().T
-    dPower_BusInfo_entry.index = [new_bus_name]
-
-    dPower_BusInfo = dPower_BusInfo.drop(connected_buses)
-    with warnings.catch_warnings():  # Suppressing FutureWarning because some entries might include NaN values
-        warnings.simplefilter(action='ignore', category=FutureWarning)
-        dPower_BusInfo = pd.concat([dPower_BusInfo, dPower_BusInfo_entry])
-
-    # Adapt dPower_Network
-    dPower_Network = dPower_Network.reset_index()
-    rows_to_drop = []
-    for i, row in dPower_Network.iterrows():
-        if row['i'] in connected_buses and row['j'] in connected_buses:
-            rows_to_drop.append(i)
-        elif row['i'] in connected_buses:
-            row['i'] = new_bus_name
-            dPower_Network.iloc[i] = row
-        elif row['j'] in connected_buses:
-            row['j'] = new_bus_name
-            dPower_Network.iloc[i] = row
-    dPower_Network = dPower_Network.drop(rows_to_drop)
-
-    # Always put new_bus_name to 'j' (handles case where e.g. 2->3 and 4->2 would lead to 2->34 and 34->2 (because 3 and 4 are merged))
-    for i, row in dPower_Network.iterrows():
-        if row['i'] == new_bus_name:
-            row['i'] = row['j']
-            row['j'] = new_bus_name
-            dPower_Network.loc[i] = row
-
-    # Handle case where e.g. 2->3 and 2->4 would lead to 2->34 and 2->34 (because 3 and 4 are merged); also incl. handling 2->3 and 4->2
-    dPower_Network['Technical Representation'] = dPower_Network.groupby(['i', 'j'])['Technical Representation'].transform(lambda series: 'DC-OPF' if 'DC-OPF' in series.values else series.iloc[0])
-    aggregation_methods_for_columns = {
-        # 'Circuit ID': 'first',
-        # 'InService': 'max',
-        # 'R': 'mean',
-        'X': lambda x: x.map(lambda a: 1 / a).sum() ** -1,  # Formula: 1/X = sum((i,j), 1/Xij)) (e.g., 1/X = 1/Xij_1 +1/Xij_2 + 1/Xij_3...)
-        # 'Bc': 'mean',
-        # 'TapAngle': 'mean',
-        # 'TapRatio': 'mean',
-        'Pmax': lambda x: x.min() * x.count(),  # Number of lines times the minimum Pmax for new Pmax of the merged lines
-        # 'FixedCost': 'mean',
-        # 'FxChargeRate': 'mean',
-        'Technical Representation': 'first',
-        'LineID': 'first',
-        'YearCom': 'mean',
-        'YearDecom': 'mean'
-    }
-    dPower_Network = dPower_Network.groupby(['i', 'j']).agg(aggregation_methods_for_columns)
-
-    # Adapt dPower_ThermalGen
-    for i, row in dPower_ThermalGen.iterrows():
-        if row['i'] in connected_buses:
-            row['i'] = new_bus_name
-            dPower_ThermalGen.loc[i] = row
-
-    # Adapt dPower_RoR
-    for i, row in dPower_RoR.iterrows():
-        if row['i'] in connected_buses:
-            row['i'] = new_bus_name
-            dPower_RoR.loc[i] = row
-
-    # Adapt dPower_VRES
-    for i, row in dPower_VRES.iterrows():
-        if row['i'] in connected_buses:
-            row['i'] = new_bus_name
-            dPower_VRES.loc[i] = row
-
-    # Adapt dPower_Demand
-    dPower_Demand = dPower_Demand.reset_index()
-    for i, row in dPower_Demand.iterrows():
-        if row['i'] in connected_buses:
-            row['i'] = new_bus_name
-            dPower_Demand.loc[i] = row
-    dPower_Demand = dPower_Demand.groupby(['rp', 'i', 'k']).sum()
-
-    # Adapt dPower_VRESProfiles
-    dPower_VRESProfiles = dPower_VRESProfiles.reset_index()
-    for i, row in dPower_VRESProfiles.iterrows():
-        if row['i'] in connected_buses:
-            row['i'] = new_bus_name
-            dPower_VRESProfiles.loc[i] = row
-
-    dPower_VRESProfiles = dPower_VRESProfiles.groupby(['rp', 'i', 'k', 'tec']).mean()  # TODO: Aggregate using more complex method (capacity * productionCapacity * ... * / Total Production Capacity)
-    dPower_VRESProfiles.sort_index(inplace=True)
-
-# Dataframe that shows connections between g and i, only concatenating g and i from the dataframes
-hGenerators_to_Buses = pd.concat([dPower_ThermalGen[['i']], dPower_RoR[['i']], dPower_VRES[['i']]])
 
 ########################################################################################################################
 # Model creation
@@ -175,18 +31,18 @@ hGenerators_to_Buses = pd.concat([dPower_ThermalGen[['i']], dPower_RoR[['i']], d
 model = pyo.ConcreteModel()
 
 # Sets
-model.i = pyo.Set(doc='Buses', initialize=dPower_BusInfo.index.tolist())
-model.e = pyo.Set(doc='Lines', initialize=dPower_Network.index.tolist())
-model.thermalGenerators = pyo.Set(doc='Thermal Generators', initialize=dPower_ThermalGen.index.tolist())
-model.rorGenerators = pyo.Set(doc='Run-of-river generators', initialize=dPower_RoR.index.tolist())
-model.vresGenerators = pyo.Set(doc='Variable renewable energy sources', initialize=dPower_VRES.index.tolist())
+model.i = pyo.Set(doc='Buses', initialize=cs.dPower_BusInfo.index.tolist())
+model.e = pyo.Set(doc='Lines', initialize=cs.dPower_Network.index.tolist())
+model.thermalGenerators = pyo.Set(doc='Thermal Generators', initialize=cs.dPower_ThermalGen.index.tolist())
+model.rorGenerators = pyo.Set(doc='Run-of-river generators', initialize=cs.dPower_RoR.index.tolist())
+model.vresGenerators = pyo.Set(doc='Variable renewable energy sources', initialize=cs.dPower_VRES.index.tolist())
 model.g = pyo.Set(doc='Generators', initialize=model.thermalGenerators | model.rorGenerators | model.vresGenerators)
-model.rp = pyo.Set(doc='Representative periods', initialize=dPower_Demand.index.get_level_values('rp').unique().tolist())
-model.k = pyo.Set(doc='Timestep within representative period', initialize=dPower_Demand.index.get_level_values('k').unique().tolist())
+model.rp = pyo.Set(doc='Representative periods', initialize=cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
+model.k = pyo.Set(doc='Timestep within representative period', initialize=cs.dPower_Demand.index.get_level_values('k').unique().tolist())
 
 # Helper Sets for zone of interest
-model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=dPower_BusInfo.loc[dPower_BusInfo["ZoneOfInterest"] == "yes"].index.tolist(), within=model.i)
-model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=hGenerators_to_Buses.loc[hGenerators_to_Buses["i"].isin(model.zoi_i)].index.tolist(), within=model.g)
+model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=cs.dPower_BusInfo.loc[cs.dPower_BusInfo["ZoneOfInterest"] == "yes"].index.tolist(), within=model.i)
+model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=cs.hGenerators_to_Buses.loc[cs.hGenerators_to_Buses["i"].isin(model.zoi_i)].index.tolist(), within=model.g)
 
 # Variables
 model.delta = pyo.Var(model.i, model.rp, model.k, doc='Angle of bus i', bounds=(-pMaxAngleDCOPF, pMaxAngleDCOPF))  # TODO: Discuss impact on runtime etc.(based on discussion with Prof. Renner)
@@ -195,50 +51,52 @@ model.vSlack_OverProduction = pyo.Var(model.rp, model.k, model.i, doc='Slack var
 
 model.p = pyo.Var(model.g, model.rp, model.k, doc='Power output of generator g', bounds=(0, None))
 for g in model.thermalGenerators:
-    model.p[g, :, :].setub(dPower_ThermalGen.loc[g, 'MaxProd'] * dPower_ThermalGen.loc[g, 'ExisUnits'])
+    model.p[g, :, :].setub(cs.dPower_ThermalGen.loc[g, 'MaxProd'] * cs.dPower_ThermalGen.loc[g, 'ExisUnits'])
     # TODO: Add min production (needs unit commitment)
 
 for g in model.rorGenerators:
     for rp in model.rp:
         for k in model.k:
-            model.p[g, rp, k].setub(min(dPower_RoR.loc[g, 'MaxProd'], dPower_Inflows.loc[rp, g, k]['Inflow']))  # TODO: Check if this is correct
+            model.p[g, rp, k].setub(min(cs.dPower_RoR.loc[g, 'MaxProd'], cs.dPower_Inflows.loc[rp, g, k]['Inflow']))  # TODO: Check and adapt for storage
 
 for g in model.vresGenerators:
     for rp in model.rp:
         for k in model.k:
-            maxProd = dPower_VRES.loc[g, 'MaxProd']
-            capacity = dPower_VRESProfiles.loc[rp, dPower_VRES.loc[g, 'i'], k, dPower_VRES.loc[g, 'tec']]['Capacity']
+            maxProd = cs.dPower_VRES.loc[g, 'MaxProd']
+            capacity = cs.dPower_VRESProfiles.loc[rp, cs.dPower_VRES.loc[g, 'i'], k, cs.dPower_VRES.loc[g, 'tec']]['Capacity']
             capacity = capacity.values[0] if isinstance(capacity, pd.Series) else capacity
-            exisUnits = dPower_VRES.loc[g, 'ExisUnits']
+            exisUnits = cs.dPower_VRES.loc[g, 'ExisUnits']
             model.p[g, rp, k].setub(maxProd * capacity * exisUnits)
+            if maxProd * capacity * exisUnits == 0:
+                model.p[g, rp, k].fix(0)
 
 model.t = pyo.Var(model.e, model.rp, model.k, doc='Power flow from bus i to j', bounds=(None, None))
 for (i, j) in model.e:
-    match dPower_Network.loc[i, j]["Technical Representation"]:
+    match cs.dPower_Network.loc[i, j]["Technical Representation"]:
         case "DC-OPF" | "TP":
-            model.t[(i, j), :, :].setlb(-dPower_Network.loc[i, j]['Pmax'])
-            model.t[(i, j), :, :].setub(dPower_Network.loc[i, j]['Pmax'])
+            model.t[(i, j), :, :].setlb(-cs.dPower_Network.loc[i, j]['Pmax'])
+            model.t[(i, j), :, :].setub(cs.dPower_Network.loc[i, j]['Pmax'])
         case "SN":
             assert False  # Should not happen, as we merged all "Single Node" representations
         case _:
-            raise ValueError(f"Technical representation '{dPower_Network.loc[i, j]["Technical Representation"]}' "
+            raise ValueError(f"Technical representation '{cs.dPower_Network.loc[i, j]["Technical Representation"]}' "
                              f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
 
 # Parameters
-model.pDemand = pyo.Param(model.rp, model.i, model.k, initialize=dPower_Demand['Demand'], doc='Demand at bus i in representative period rp and timestep k')
+model.pDemand = pyo.Param(model.rp, model.i, model.k, initialize=cs.dPower_Demand['Demand'], doc='Demand at bus i in representative period rp and timestep k')
 
 # Helper for FuelCost that has dPower_ThermalGen['FuelCost'] for ThermalGen, and 0 for all gs in ror and vres
-hFuelCost = pd.concat([dPower_ThermalGen['FuelCost'].copy(), pd.Series(0, index=model.rorGenerators), pd.Series(0, index=model.vresGenerators)])
+hFuelCost = pd.concat([cs.dPower_ThermalGen['FuelCost'].copy(), pd.Series(0, index=model.rorGenerators), pd.Series(0, index=model.vresGenerators)])
 model.pProductionCost = pyo.Param(model.g, initialize=hFuelCost, doc='Production cost of generator g')
 
-model.pReactance = pyo.Param(model.e, initialize=dPower_Network['R'], doc='Reactance of line e')
+model.pReactance = pyo.Param(model.e, initialize=cs.dPower_Network['X'], doc='Reactance of line e')
 model.pSlackPrice = pyo.Param(initialize=max(model.pProductionCost.values()) * 100, doc='Price of slack variable')
 
 # For each DC-OPF "island", set node with highest demand as slack node
-dDCOPFIslands = pd.DataFrame(index=dPower_BusInfo.index, columns=[dPower_BusInfo.index], data=False)
+dDCOPFIslands = pd.DataFrame(index=cs.dPower_BusInfo.index, columns=[cs.dPower_BusInfo.index], data=False)
 
-for index, entry in dPower_Network.iterrows():
-    if dPower_Network.loc[(index[0], index[1])]["Technical Representation"] == "DC-OPF":
+for index, entry in cs.dPower_Network.iterrows():
+    if cs.dPower_Network.loc[(index[0], index[1])]["Technical Representation"] == "DC-OPF":
         dDCOPFIslands.loc[index[0], index[1]] = True
         dDCOPFIslands.loc[index[1], index[0]] = True
 
@@ -248,22 +106,13 @@ for index, entry in dDCOPFIslands.iterrows():
     if index in completed_buses or entry[entry == True].empty:  # Skip if bus has already been looked at or has no connections
         continue
 
-    connected_buses = []
-    stack = [index]
-    while stack:
-        current_bus = stack.pop()
-        connected_buses.append(current_bus)
-
-        connected_to_current_bus = [multiindex[0] for multiindex in dDCOPFIslands.loc[current_bus][dDCOPFIslands.loc[current_bus] == True].index.tolist()]
-        for node in connected_to_current_bus:
-            if node not in connected_buses:
-                stack.append(node)
+    connected_buses = cs.get_connected_buses(dDCOPFIslands, str(index))
 
     for bus in connected_buses:
         completed_buses.add(bus)
 
     # Set slack node
-    slack_node = dPower_Demand.loc[:, connected_buses, :].groupby('i').sum().idxmax().values[0]
+    slack_node = cs.dPower_Demand.loc[:, connected_buses, :].groupby('i').sum().idxmax().values[0]
     if i == 0: print("Setting slack nodes for DC-OPF zones:")
     print(f"DC-OPF Zone {i:>2} - Slack node: {slack_node}")
     i += 1
@@ -275,7 +124,7 @@ for i in model.i:
     for rp in model.rp:
         for k in model.k:
             model.cPower_Balance.add(
-                sum(model.p[g, rp, k] for g in model.g if hGenerators_to_Buses.loc[g]['i'] == i) -  # Production of generators at bus i
+                sum(model.p[g, rp, k] for g in model.g if cs.hGenerators_to_Buses.loc[g]['i'] == i) -  # Production of generators at bus i
                 sum(model.t[e, rp, k] for e in model.e if (e[0] == i)) +  # Power flow from bus i to bus j
                 sum(model.t[e, rp, k] for e in model.e if (e[1] == i)) ==  # Power flow from bus j to bus i
                 model.pDemand[rp, i, k] -  # Demand at bus i
@@ -284,7 +133,7 @@ for i in model.i:
 
 model.cReactance = pyo.ConstraintList(doc='Reactance constraint for each line (for DC-OPF)')
 for (i, j) in model.e:
-    match dPower_Network.loc[i, j]["Technical Representation"]:
+    match cs.dPower_Network.loc[i, j]["Technical Representation"]:
         case "DC-OPF":
             for rp in model.rp:
                 for k in model.k:
@@ -292,7 +141,7 @@ for (i, j) in model.e:
         case "TP" | "SN":
             continue
         case _:
-            raise ValueError(f"Technical representation '{dPower_Network.loc[i, j]["Technical Representation"]}' "
+            raise ValueError(f"Technical representation '{cs.dPower_Network.loc[i, j]["Technical Representation"]}' "
                              f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
 
 # Objective function
