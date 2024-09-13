@@ -6,16 +6,39 @@ import pandas as pd
 
 class CaseStudy:
 
-    def __init__(self, example_folder: str, merge_single_node_buses: bool = True):
+    def __init__(self, example_folder: str, merge_single_node_buses: bool = True,
+                 power_parameters_file: str = "Power_Parameters.xlsx", power_businfo_file: str = "Power_BusInfo.xlsx",
+                 power_network_file: str = "Power_Network.xlsx", power_thermalgen_file: str = "Power_ThermalGen.xlsx",
+                 power_ror_file: str = "Power_RoR.xlsx", power_vres_file: str = "Power_VRES.xlsx",
+                 power_demand_file: str = "Power_Demand.xlsx", power_inflows_file: str = "Power_Inflows.xlsx",
+                 power_vresprofiles_file: str = "Power_VRESProfiles.xlsx"):
         self.example_folder = example_folder
+
+        self.power_parameters_file = power_parameters_file
         self.dPower_Parameters = self.get_dPower_Parameters()
+
+        self.power_businfo_file = power_businfo_file
         self.dPower_BusInfo = self.get_dPower_BusInfo()
+
+        self.power_network_file = power_network_file
         self.dPower_Network = self.get_dPower_Network()
+
+        self.power_thermalgen_file = power_thermalgen_file
         self.dPower_ThermalGen = self.get_dPower_ThermalGen()
+
+        self.power_ror_file = power_ror_file
         self.dPower_RoR = self.get_dPower_RoR()
+
+        self.power_vres_file = power_vres_file
         self.dPower_VRES = self.get_dPower_VRES()
+
+        self.power_demand_file = power_demand_file
         self.dPower_Demand = self.get_dPower_Demand()
+
+        self.power_inflows_file = power_inflows_file
         self.dPower_Inflows = self.get_dPower_Inflows()
+
+        self.power_vresprofiles_file = power_vresprofiles_file
         self.dPower_VRESProfiles = self.get_dPower_VRESProfiles()
 
         self.pMaxAngleDCOPF = self.dPower_Parameters.loc["pMaxAngleDCOPF"].iloc[0] * np.pi / 180  # Read and convert to radians
@@ -28,37 +51,37 @@ class CaseStudy:
             self.merge_single_node_buses()
 
     def get_dPower_Parameters(self):
-        dPower_Parameters = pd.read_excel(self.example_folder + "Power_Parameters.xlsx", skiprows=[0, 1])
+        dPower_Parameters = pd.read_excel(self.example_folder + self.power_parameters_file, skiprows=[0, 1])
         dPower_Parameters = dPower_Parameters.drop(dPower_Parameters.columns[0], axis=1)
         dPower_Parameters = dPower_Parameters.dropna(how="all")
         dPower_Parameters = dPower_Parameters.set_index('General')
         return dPower_Parameters
 
     def get_dPower_BusInfo(self):
-        dPower_BusInfo = pd.read_excel(self.example_folder + "Power_BusInfo.xlsx", skiprows=[0, 1, 3, 4, 5])
+        dPower_BusInfo = pd.read_excel(self.example_folder + self.power_businfo_file, skiprows=[0, 1, 3, 4, 5])
         dPower_BusInfo = dPower_BusInfo.drop(dPower_BusInfo.columns[0], axis=1)
         dPower_BusInfo = dPower_BusInfo.rename(columns={dPower_BusInfo.columns[0]: "i", dPower_BusInfo.columns[1]: "System"})
         dPower_BusInfo = dPower_BusInfo.set_index('i')
         return dPower_BusInfo
 
     def get_dPower_Network(self):
-        dPower_Network = pd.read_excel(self.example_folder + "Power_Network.xlsx", skiprows=[0, 1, 3, 4, 5])
+        dPower_Network = pd.read_excel(self.example_folder + self.power_network_file, skiprows=[0, 1, 3, 4, 5])
         dPower_Network = dPower_Network.drop(dPower_Network.columns[0], axis=1)
         dPower_Network = dPower_Network.rename(columns={dPower_Network.columns[0]: "i", dPower_Network.columns[1]: "j", dPower_Network.columns[2]: "Circuit ID"})
         dPower_Network = dPower_Network.set_index(['i', 'j'])
         return dPower_Network
 
     def get_dPower_ThermalGen(self):
-        return self.read_generator_data(self.example_folder + "Power_ThermalGen.xlsx")
+        return self.read_generator_data(self.example_folder + self.power_thermalgen_file)
 
     def get_dPower_RoR(self):
-        return self.read_generator_data(self.example_folder + "Power_RoR.xlsx")
+        return self.read_generator_data(self.example_folder + self.power_ror_file)
 
     def get_dPower_VRES(self):
-        return self.read_generator_data(self.example_folder + "Power_VRES.xlsx")
+        return self.read_generator_data(self.example_folder + self.power_vres_file)
 
     def get_dPower_Demand(self):
-        dPower_Demand = pd.read_excel(self.example_folder + "Power_Demand.xlsx", skiprows=[0, 1, 3, 4, 5])
+        dPower_Demand = pd.read_excel(self.example_folder + self.power_demand_file, skiprows=[0, 1, 3, 4, 5])
         dPower_Demand = dPower_Demand.drop(dPower_Demand.columns[0], axis=1)
         dPower_Demand = dPower_Demand.rename(columns={dPower_Demand.columns[0]: "rp", dPower_Demand.columns[1]: "i"})
         dPower_Demand = dPower_Demand.melt(id_vars=['rp', 'i'], var_name='k', value_name='Demand')
@@ -66,7 +89,7 @@ class CaseStudy:
         return dPower_Demand
 
     def get_dPower_Inflows(self):
-        dPower_Inflows = pd.read_excel(self.example_folder + "Power_Inflows.xlsx", skiprows=[0, 1, 3, 4, 5])
+        dPower_Inflows = pd.read_excel(self.example_folder + self.power_inflows_file, skiprows=[0, 1, 3, 4, 5])
         dPower_Inflows = dPower_Inflows.drop(dPower_Inflows.columns[0], axis=1)
         dPower_Inflows = dPower_Inflows.rename(columns={dPower_Inflows.columns[0]: "rp", dPower_Inflows.columns[1]: "g"})
         dPower_Inflows = dPower_Inflows.melt(id_vars=['rp', 'g'], var_name='k', value_name='Inflow')
@@ -74,7 +97,7 @@ class CaseStudy:
         return dPower_Inflows
 
     def get_dPower_VRESProfiles(self):
-        dPower_VRESProfiles = pd.read_excel(self.example_folder + "Power_VRESProfiles.xlsx", skiprows=[0, 1, 3, 4, 5])
+        dPower_VRESProfiles = pd.read_excel(self.example_folder + self.power_vresprofiles_file, skiprows=[0, 1, 3, 4, 5])
         dPower_VRESProfiles = dPower_VRESProfiles.drop(dPower_VRESProfiles.columns[0], axis=1)
         dPower_VRESProfiles = dPower_VRESProfiles.rename(columns={dPower_VRESProfiles.columns[0]: "rp", dPower_VRESProfiles.columns[1]: "i", dPower_VRESProfiles.columns[2]: "tec"})
         dPower_VRESProfiles = dPower_VRESProfiles.melt(id_vars=['rp', 'i', 'tec'], var_name='k', value_name='Capacity')
