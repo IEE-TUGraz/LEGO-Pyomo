@@ -1,5 +1,6 @@
 import warnings
 
+import numpy as np
 import pandas as pd
 
 
@@ -16,6 +17,9 @@ class CaseStudy:
         self.dPower_Demand = self.get_dPower_Demand()
         self.dPower_Inflows = self.get_dPower_Inflows()
         self.dPower_VRESProfiles = self.get_dPower_VRESProfiles()
+
+        self.pMaxAngleDCOPF = self.dPower_Parameters.loc["pMaxAngleDCOPF"].iloc[0] * np.pi / 180  # Read and convert to radians
+        self.pSBase = self.dPower_Parameters.loc["pSBase"].iloc[0]
 
         # Dataframe that shows connections between g and i, only concatenating g and i from the dataframes
         self.hGenerators_to_Buses = pd.concat([self.dPower_ThermalGen[['i']], self.dPower_RoR[['i']], self.dPower_VRES[['i']]])
