@@ -17,8 +17,8 @@ class LEGO:
         model.rorGenerators = pyo.Set(doc='Run-of-river generators', initialize=self.cs.dPower_RoR.index.tolist())
         model.vresGenerators = pyo.Set(doc='Variable renewable energy sources', initialize=self.cs.dPower_VRES.index.tolist())
         model.g = pyo.Set(doc='Generators', initialize=model.thermalGenerators | model.rorGenerators | model.vresGenerators)
-        model.rp = pyo.Set(doc='Representative periods', initialize=self.cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
-        model.k = pyo.Set(doc='Timestep within representative period', initialize=self.cs.dPower_Demand.index.get_level_values('k').unique().tolist())
+        model.rp = pyo.Set(doc='Representative periods', initialize=self.cs.dPower_Demand.index.get_level_values('rp').unique().tolist(), ordered=True)
+        model.k = pyo.Set(doc='Timestep within representative period', initialize=self.cs.dPower_Demand.index.get_level_values('k').unique().tolist(), ordered=True)
 
         # Helper Sets for zone of interest
         model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=self.cs.dPower_BusInfo.loc[self.cs.dPower_BusInfo["ZoneOfInterest"] == "yes"].index.tolist(), within=model.i)
@@ -29,10 +29,15 @@ class LEGO:
         model.vSlack_DemandNotServed = pyo.Var(model.rp, model.k, model.i, doc='Slack variable demand not served', bounds=(0, None))
         model.vSlack_OverProduction = pyo.Var(model.rp, model.k, model.i, doc='Slack variable overproduction', bounds=(0, None))
 
+        model.vUC = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Unit commitment of generator g', domain=pyo.Binary)
+        model.vStartup = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Start-up of thermal generator g', domain=pyo.Binary)
+        model.vShutdown = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Shut-down of thermal generator g', domain=pyo.Binary)
+        model.vThermalOutput = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Power output of thermal generator g', bounds=(0, None))  # TODO: Move up and set upper bound
+
         model.p = pyo.Var(model.g, model.rp, model.k, doc='Power output of generator g', bounds=(0, None))
         for g in model.thermalGenerators:
             model.p[g, :, :].setub(self.cs.dPower_ThermalGen.loc[g, 'MaxProd'] * self.cs.dPower_ThermalGen.loc[g, 'ExisUnits'])
-            # TODO: Add min production (needs unit commitment)
+            model.vThermalOutput[g, :, :].setub(self.cs.dPower_ThermalGen.loc[g, 'MaxProd'] * self.cs.dPower_ThermalGen.loc[g, 'ExisUnits'] - self.cs.dPower_ThermalGen.loc[g, 'MinProd'] * self.cs.dPower_ThermalGen.loc[g, 'ExisUnits'])
 
         for g in model.rorGenerators:
             for rp in model.rp:
@@ -121,6 +126,18 @@ class LEGO:
                 case _:
                     raise ValueError(f"Technical representation '{self.cs.dPower_Network.loc[i, j]["Technical Representation"]}' "
                                      f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
+
+        # Thermal Generator production with unit commitment & ramping
+        model.cPowerOutput = pyo.ConstraintList(doc='Power output of thermal generators')
+        model.cRampUp = pyo.ConstraintList(doc='Ramp-up constraint for thermal generators')
+        model.cRampDown = pyo.ConstraintList(doc='Ramp-down constraint for thermal generators')
+        model.cStartupLogic = pyo.ConstraintList(doc='Start-up and shut-down logic for thermal generators')
+
+        for g in model.thermalGenerators:
+            model.cPowerOutput.add(model.p[g, rp, k] >= self.cs.dPower_ThermalGen.loc[g, 'MinProd'] * model.vUC[g, rp, k] + model.vThermalOutput[g, rp, k])
+            model.cStartupLogic.add(model.vUC[g, rp, k] - model.vUC[g, rp, model.k.prevw(k)] == model.vStartup[g, rp, k] - model.vShutdown[g, rp, k])
+            model.cRampUp.add(model.vThermalOutput[g, rp, k] - model.vThermalOutput[g, rp, model.k.prevw(k)] <= self.cs.dPower_ThermalGen.loc[g, 'RampUp'] * model.vUC[g, rp, k])
+            model.cRampDown.add(model.vThermalOutput[g, rp, k] - model.vThermalOutput[g, rp, model.k.prevw(k)] >= self.cs.dPower_ThermalGen.loc[g, 'RampDw'] * -model.vUC[g, rp, model.k.prevw(k)])
 
         # Objective function
         model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.g) +

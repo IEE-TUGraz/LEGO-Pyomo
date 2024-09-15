@@ -91,6 +91,7 @@ caseStudies.append(("All SN", csAllSN))
 ########################################################################################################################
 
 resultslist = pd.DataFrame(columns=["Objective Value", "Model building time", "Solving time", "Slack variable sum of demand not served", "Slack variable sum of overproduction"])
+modelList = {}
 
 for caseName, cs in caseStudies:
     print(f"\n\n{'=' * 60}\n{caseName}\n{'=' * 60}")
@@ -134,6 +135,8 @@ for caseName, cs in caseStudies:
                                  "Solving time": endSolve - startSolve,
                                  "Slack variable sum of demand not served": sum(model.vSlack_DemandNotServed[rp, k, i].value if model.vSlack_DemandNotServed[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
                                  "Slack variable sum of overproduction": sum(model.vSlack_OverProduction[rp, k, i].value if model.vSlack_OverProduction[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i)}
+
+    modelList.update({caseName: model})
 
 # Print results in pretty table
 print("\n\nResults\n")
