@@ -47,8 +47,6 @@ class LEGO:
                     capacity = capacity.values[0] if isinstance(capacity, pd.Series) else capacity
                     exisUnits = self.cs.dPower_VRES.loc[g, 'ExisUnits']
                     model.p[g, rp, k].setub(maxProd * capacity * exisUnits)
-                    if maxProd * capacity * exisUnits == 0:
-                        model.p[g, rp, k].fix(0)
 
         model.t = pyo.Var(model.e, model.rp, model.k, doc='Power flow from bus i to j', bounds=(None, None))
         for (i, j) in model.e:
@@ -57,7 +55,7 @@ class LEGO:
                     model.t[(i, j), :, :].setlb(-self.cs.dPower_Network.loc[i, j]['Pmax'])
                     model.t[(i, j), :, :].setub(self.cs.dPower_Network.loc[i, j]['Pmax'])
                 case "SN":
-                    assert False  # Should not happen, as we merged all "Single Node" representations
+                    assert False  # "SN" line found, although all "Single Node" buses should be merged
                 case _:
                     raise ValueError(f"Technical representation '{self.cs.dPower_Network.loc[i, j]["Technical Representation"]}' "
                                      f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")

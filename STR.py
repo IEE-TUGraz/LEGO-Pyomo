@@ -34,19 +34,19 @@ csAllDCOPF = cs.copy()
 csAllDCOPF.dPower_Network['Technical Representation'] = 'DC-OPF'
 caseStudies.append(("All DC-OPF", csAllDCOPF))
 
-### Mixed DC-OPF, TP & SN
+### Mixed DC-OPF & TP
 csMixed = cs.copy()
 technicalRepresentations = [(("Node_1", "Node_6"), "DC-OPF"),
                             (("Node_2", "Node_3"), "DC-OPF"),
-                            (("Node_2", "Node_6"), "TP"),
-                            (("Node_3", "Node_4"), "TP"),
-                            (("Node_3", "Node_6"), "SN"),
+                            (("Node_2", "Node_6"), "DC-OPF"),
+                            (("Node_3", "Node_4"), "DC-OPF"),
+                            (("Node_3", "Node_6"), "TP"),
                             (("Node_4", "Node_5"), "DC-OPF"),
                             (("Node_4", "Node_6"), "TP"),
                             (("Node_4", "Node_9"), "TP"),
                             (("Node_6", "Node_7"), "DC-OPF"),
-                            (("Node_6", "Node_8"), "SN"),
-                            (("Node_7", "Node_8"), "SN"),
+                            (("Node_6", "Node_8"), "DC-OPF"),
+                            (("Node_7", "Node_8"), "DC-OPF"),
                             (("Node_8", "Node_9"), "DC-OPF"),
                             (("Node_1", "Node_4"), "TP")]
 for (i, j), tr in technicalRepresentations:
