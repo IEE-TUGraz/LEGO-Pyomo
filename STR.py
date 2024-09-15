@@ -5,6 +5,7 @@ import pandas as pd
 import pyomo.environ as pyo
 from pyomo.opt import SolverFactory
 from pyomo.util.infeasible import log_infeasible_constraints
+from tabulate import tabulate
 
 from CaseStudy import CaseStudy
 from LEGO import LEGO
@@ -52,7 +53,7 @@ technicalRepresentations = [(("Node_1", "Node_6"), "DC-OPF"),
 for (i, j), tr in technicalRepresentations:
     csMixed.dPower_Network.loc[(i, j), 'Technical Representation'] = tr
 csMixed.merge_single_node_buses()
-caseStudies.append(("Mixed DC-OPF, TP & SN", csMixed))
+caseStudies.append(("Mixed DC-OPF & TP", csMixed))
 
 ### All TP
 csAllTP = cs.copy()
@@ -135,7 +136,7 @@ for caseName, cs in caseStudies:
                                  "Slack variable sum of overproduction": sum(model.vSlack_OverProduction[rp, k, i].value if model.vSlack_OverProduction[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i)}
 
 # Print results in pretty table
-print("\n\nResults\n" + '-' * 60)
-print(resultslist)
+print("\n\nResults\n")
+print(tabulate(resultslist, headers='keys', floatfmt=(".2f", ".2f", ".2f", ".2f", ".2f", ".2f"), colalign=("left", "right", "right", "right", "right", "right")))
 
 print("Done")
