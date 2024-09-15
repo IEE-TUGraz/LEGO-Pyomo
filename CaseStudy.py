@@ -6,40 +6,72 @@ import pandas as pd
 
 class CaseStudy:
 
-    def __init__(self, example_folder: str, merge_single_node_buses: bool = True,
-                 power_parameters_file: str = "Power_Parameters.xlsx", power_businfo_file: str = "Power_BusInfo.xlsx",
-                 power_network_file: str = "Power_Network.xlsx", power_thermalgen_file: str = "Power_ThermalGen.xlsx",
-                 power_ror_file: str = "Power_RoR.xlsx", power_vres_file: str = "Power_VRES.xlsx",
-                 power_demand_file: str = "Power_Demand.xlsx", power_inflows_file: str = "Power_Inflows.xlsx",
-                 power_vresprofiles_file: str = "Power_VRESProfiles.xlsx"):
+    def __init__(self, example_folder: str, do_not_merge_single_node_buses: bool = False,
+                 power_parameters_file: str = "Power_Parameters.xlsx", dPower_Parameters: pd.DataFrame = None,
+                 power_businfo_file: str = "Power_BusInfo.xlsx", dPower_BusInfo: pd.DataFrame = None,
+                 power_network_file: str = "Power_Network.xlsx", dPower_Network: pd.DataFrame = None,
+                 power_thermalgen_file: str = "Power_ThermalGen.xlsx", dPower_ThermalGen: pd.DataFrame = None,
+                 power_ror_file: str = "Power_RoR.xlsx", dPower_RoR: pd.DataFrame = None,
+                 power_vres_file: str = "Power_VRES.xlsx", dPower_VRES: pd.DataFrame = None,
+                 power_demand_file: str = "Power_Demand.xlsx", dPower_Demand: pd.DataFrame = None,
+                 power_inflows_file: str = "Power_Inflows.xlsx", dPower_Inflows: pd.DataFrame = None,
+                 power_vresprofiles_file: str = "Power_VRESProfiles.xlsx", dPower_VRESProfiles: pd.DataFrame = None):
         self.example_folder = example_folder
+        self.do_not_merge_single_node_buses = do_not_merge_single_node_buses
 
-        self.power_parameters_file = power_parameters_file
-        self.dPower_Parameters = self.get_dPower_Parameters()
+        if dPower_Parameters is not None:
+            self.dPower_Parameters = dPower_Parameters
+        else:
+            self.power_parameters_file = power_parameters_file
+            self.dPower_Parameters = self.get_dPower_Parameters()
 
-        self.power_businfo_file = power_businfo_file
-        self.dPower_BusInfo = self.get_dPower_BusInfo()
+        if dPower_BusInfo is not None:
+            self.dPower_BusInfo = dPower_BusInfo
+        else:
+            self.power_businfo_file = power_businfo_file
+            self.dPower_BusInfo = self.get_dPower_BusInfo()
 
-        self.power_network_file = power_network_file
-        self.dPower_Network = self.get_dPower_Network()
+        if dPower_Network is not None:
+            self.dPower_Network = dPower_Network
+        else:
+            self.power_network_file = power_network_file
+            self.dPower_Network = self.get_dPower_Network()
 
-        self.power_thermalgen_file = power_thermalgen_file
-        self.dPower_ThermalGen = self.get_dPower_ThermalGen()
+        if dPower_ThermalGen is not None:
+            self.dPower_ThermalGen = dPower_ThermalGen
+        else:
+            self.power_thermalgen_file = power_thermalgen_file
+            self.dPower_ThermalGen = self.get_dPower_ThermalGen()
 
-        self.power_ror_file = power_ror_file
-        self.dPower_RoR = self.get_dPower_RoR()
+        if dPower_RoR is not None:
+            self.dPower_RoR = dPower_RoR
+        else:
+            self.power_ror_file = power_ror_file
+            self.dPower_RoR = self.get_dPower_RoR()
 
-        self.power_vres_file = power_vres_file
-        self.dPower_VRES = self.get_dPower_VRES()
+        if dPower_VRES is not None:
+            self.dPower_VRES = dPower_VRES
+        else:
+            self.power_vres_file = power_vres_file
+            self.dPower_VRES = self.get_dPower_VRES()
 
-        self.power_demand_file = power_demand_file
-        self.dPower_Demand = self.get_dPower_Demand()
+        if dPower_Demand is not None:
+            self.dPower_Demand = dPower_Demand
+        else:
+            self.power_demand_file = power_demand_file
+            self.dPower_Demand = self.get_dPower_Demand()
 
-        self.power_inflows_file = power_inflows_file
-        self.dPower_Inflows = self.get_dPower_Inflows()
+        if dPower_Inflows is not None:
+            self.dPower_Inflows = dPower_Inflows
+        else:
+            self.power_inflows_file = power_inflows_file
+            self.dPower_Inflows = self.get_dPower_Inflows()
 
-        self.power_vresprofiles_file = power_vresprofiles_file
-        self.dPower_VRESProfiles = self.get_dPower_VRESProfiles()
+        if dPower_VRESProfiles is not None:
+            self.dPower_VRESProfiles = dPower_VRESProfiles
+        else:
+            self.power_vresprofiles_file = power_vresprofiles_file
+            self.dPower_VRESProfiles = self.get_dPower_VRESProfiles()
 
         self.pMaxAngleDCOPF = self.dPower_Parameters.loc["pMaxAngleDCOPF"].iloc[0] * np.pi / 180  # Read and convert to radians
         self.pSBase = self.dPower_Parameters.loc["pSBase"].iloc[0]
@@ -47,8 +79,15 @@ class CaseStudy:
         # Dataframe that shows connections between g and i, only concatenating g and i from the dataframes
         self.hGenerators_to_Buses = pd.concat([self.dPower_ThermalGen[['i']], self.dPower_RoR[['i']], self.dPower_VRES[['i']]])
 
-        if merge_single_node_buses:
+        if not do_not_merge_single_node_buses:
             self.merge_single_node_buses()
+
+    def copy(self):
+        return CaseStudy(example_folder=self.example_folder, do_not_merge_single_node_buses=True,
+                         dPower_Parameters=self.dPower_Parameters.copy(), dPower_BusInfo=self.dPower_BusInfo.copy(),
+                         dPower_Network=self.dPower_Network.copy(), dPower_ThermalGen=self.dPower_ThermalGen.copy(),
+                         dPower_RoR=self.dPower_RoR.copy(), dPower_VRES=self.dPower_VRES.copy(), dPower_Demand=self.dPower_Demand.copy(),
+                         dPower_Inflows=self.dPower_Inflows.copy(), dPower_VRESProfiles=self.dPower_VRESProfiles.copy())
 
     def get_dPower_Parameters(self):
         dPower_Parameters = pd.read_excel(self.example_folder + self.power_parameters_file, skiprows=[0, 1])
