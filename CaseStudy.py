@@ -169,7 +169,7 @@ class CaseStudy:
 
             connected_to_current_bus = [multiindex[0] for multiindex in connection_matrix.loc[current_bus][connection_matrix.loc[current_bus] == True].index.tolist()]
             for node in connected_to_current_bus:
-                if node not in connected_buses:
+                if node not in connected_buses and node not in stack:
                     stack.append(node)
 
         connected_buses.sort()
