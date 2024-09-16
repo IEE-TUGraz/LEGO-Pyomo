@@ -71,6 +71,8 @@ class LEGO:
         # Helper for FuelCost that has dPower_ThermalGen['FuelCost'] for ThermalGen, and 0 for all gs in ror and vres
         hFuelCost = pd.concat([self.cs.dPower_ThermalGen['FuelCost'].copy(), pd.Series(0, index=model.rorGenerators), pd.Series(0, index=model.vresGenerators)])
         model.pProductionCost = pyo.Param(model.g, initialize=hFuelCost, doc='Production cost of generator g')
+        model.pInterVarCost = pyo.Param(model.thermalGenerators, initialize=self.cs.dPower_ThermalGen['pInterVarCostEUR'], doc='Inter-variable cost of thermal generator g')
+        model.pSlopeVarCost = pyo.Param(model.thermalGenerators, initialize=self.cs.dPower_ThermalGen['pSlopeVarCostEUR'], doc='Slope of variable cost of thermal generator g')
 
         model.pReactance = pyo.Param(model.e, initialize=self.cs.dPower_Network['X'], doc='Reactance of line e')
         model.pSlackPrice = pyo.Param(initialize=max(model.pProductionCost.values()) * 100, doc='Price of slack variable')
@@ -129,17 +131,24 @@ class LEGO:
 
         # Thermal Generator production with unit commitment & ramping
         model.cPowerOutput = pyo.ConstraintList(doc='Power output of thermal generators')
+        model.cPHatProduction = pyo.ConstraintList(doc='Production between min and max production of thermal generators')
         model.cRampUp = pyo.ConstraintList(doc='Ramp-up constraint for thermal generators')
         model.cRampDown = pyo.ConstraintList(doc='Ramp-down constraint for thermal generators')
         model.cStartupLogic = pyo.ConstraintList(doc='Start-up and shut-down logic for thermal generators')
 
         for g in model.thermalGenerators:
-            model.cPowerOutput.add(model.p[g, rp, k] >= self.cs.dPower_ThermalGen.loc[g, 'MinProd'] * model.vUC[g, rp, k] + model.vThermalOutput[g, rp, k])
-            model.cStartupLogic.add(model.vUC[g, rp, k] - model.vUC[g, rp, model.k.prevw(k)] == model.vStartup[g, rp, k] - model.vShutdown[g, rp, k])
-            model.cRampUp.add(model.vThermalOutput[g, rp, k] - model.vThermalOutput[g, rp, model.k.prevw(k)] <= self.cs.dPower_ThermalGen.loc[g, 'RampUp'] * model.vUC[g, rp, k])
-            model.cRampDown.add(model.vThermalOutput[g, rp, k] - model.vThermalOutput[g, rp, model.k.prevw(k)] >= self.cs.dPower_ThermalGen.loc[g, 'RampDw'] * -model.vUC[g, rp, model.k.prevw(k)])
+            for rp in model.rp:
+                for k in model.k:
+                    model.cPowerOutput.add(model.p[g, rp, k] == self.cs.dPower_ThermalGen.loc[g, 'MinProd'] * model.vUC[g, rp, k] + model.vThermalOutput[g, rp, k])
+                    model.cPHatProduction.add(model.vThermalOutput[g, rp, k] <= (self.cs.dPower_ThermalGen.loc[g, 'MaxProd'] - self.cs.dPower_ThermalGen.loc[g, 'MinProd']) * model.vUC[g, rp, k])
+                    model.cStartupLogic.add(model.vUC[g, rp, k] - model.vUC[g, rp, model.k.prevw(k)] == model.vStartup[g, rp, k] - model.vShutdown[g, rp, k])
+                    model.cRampUp.add(model.vThermalOutput[g, rp, k] - model.vThermalOutput[g, rp, model.k.prevw(k)] <= self.cs.dPower_ThermalGen.loc[g, 'RampUp'] * model.vUC[g, rp, k])
+                    model.cRampDown.add(model.vThermalOutput[g, rp, k] - model.vThermalOutput[g, rp, model.k.prevw(k)] >= self.cs.dPower_ThermalGen.loc[g, 'RampDw'] * -model.vUC[g, rp, model.k.prevw(k)])
 
         # Objective function
-        model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.g) +
+        model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pInterVarCost[g] * sum(model.vUC[g, :, :]) +  # Fixed cost of thermal generators
+                                                                                                                       model.pSlopeVarCost[g] * sum(model.p[g, :, :]) for g in model.thermalGenerators) +  # Production cost of thermal generators
+                                                                                                                   sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.vresGenerators) +
+                                                                                                                   sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.rorGenerators) +
                                                                                                                    (sum(model.vSlack_DemandNotServed[:, :, :]) + sum(model.vSlack_OverProduction[:, :, :])) * model.pSlackPrice)
         return model

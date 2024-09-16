@@ -111,7 +111,13 @@ class CaseStudy:
         return dPower_Network
 
     def get_dPower_ThermalGen(self):
-        return self.read_generator_data(self.example_folder + self.power_thermalgen_file)
+        dPower_ThermalGen = self.read_generator_data(self.example_folder + self.power_thermalgen_file)
+
+        dPower_ThermalGen['pSlopeVarCostEUR'] = (dPower_ThermalGen['OMVarCost'] * 1e-3 +
+                                                 dPower_ThermalGen['SlopeVarCost'] * 1e-3 * dPower_ThermalGen['FuelCost'])
+
+        dPower_ThermalGen['pInterVarCostEUR'] = dPower_ThermalGen['InterVarCost'] * 1e-6 * dPower_ThermalGen['FuelCost']
+        return dPower_ThermalGen
 
     def get_dPower_RoR(self):
         return self.read_generator_data(self.example_folder + self.power_ror_file)
