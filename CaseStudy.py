@@ -117,6 +117,7 @@ class CaseStudy:
                                                  dPower_ThermalGen['SlopeVarCost'] * 1e-3 * dPower_ThermalGen['FuelCost'])
 
         dPower_ThermalGen['pInterVarCostEUR'] = dPower_ThermalGen['InterVarCost'] * 1e-6 * dPower_ThermalGen['FuelCost']
+        dPower_ThermalGen['pStartupCostEUR'] = dPower_ThermalGen['StartupCost'] * 1e-6 * dPower_ThermalGen['FuelCost']
         return dPower_ThermalGen
 
     def get_dPower_RoR(self):
@@ -254,7 +255,7 @@ class CaseStudy:
                 # 'Bc': 'mean',
                 # 'TapAngle': 'mean',
                 # 'TapRatio': 'mean',
-                'Pmax': lambda x: x.min() * x.count(),  # Number of lines times the minimum Pmax for new Pmax of the merged lines
+                'Pmax': lambda x: x.min() * x.count(),  # Number of lines times the minimum Pmax for new Pmax of the merged lines TODO: Calculate this based on more complex method (flow is relative to R, talk to Benjamin)
                 # 'FixedCost': 'mean',
                 # 'FxChargeRate': 'mean',
                 'Technical Representation': 'first',

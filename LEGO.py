@@ -1,6 +1,7 @@
-from CaseStudy import CaseStudy
-import pyomo.environ as pyo
 import pandas as pd
+import pyomo.environ as pyo
+
+from CaseStudy import CaseStudy
 
 
 class LEGO:
@@ -32,7 +33,7 @@ class LEGO:
         model.vUC = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Unit commitment of generator g', domain=pyo.Binary)
         model.vStartup = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Start-up of thermal generator g', domain=pyo.Binary)
         model.vShutdown = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Shut-down of thermal generator g', domain=pyo.Binary)
-        model.vThermalOutput = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Power output of thermal generator g', bounds=(0, None))  # TODO: Move up and set upper bound
+        model.vThermalOutput = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Power output of thermal generator g', bounds=(0, None))
 
         model.p = pyo.Var(model.g, model.rp, model.k, doc='Power output of generator g', bounds=(0, None))
         for g in model.thermalGenerators:
@@ -73,6 +74,7 @@ class LEGO:
         model.pProductionCost = pyo.Param(model.g, initialize=hFuelCost, doc='Production cost of generator g')
         model.pInterVarCost = pyo.Param(model.thermalGenerators, initialize=self.cs.dPower_ThermalGen['pInterVarCostEUR'], doc='Inter-variable cost of thermal generator g')
         model.pSlopeVarCost = pyo.Param(model.thermalGenerators, initialize=self.cs.dPower_ThermalGen['pSlopeVarCostEUR'], doc='Slope of variable cost of thermal generator g')
+        model.pStartupCost = pyo.Param(model.thermalGenerators, initialize=self.cs.dPower_ThermalGen['pStartupCostEUR'], doc='Startup cost of thermal generator g')
 
         model.pReactance = pyo.Param(model.e, initialize=self.cs.dPower_Network['X'], doc='Reactance of line e')
         model.pSlackPrice = pyo.Param(initialize=max(model.pProductionCost.values()) * 100, doc='Price of slack variable')
@@ -147,6 +149,7 @@ class LEGO:
 
         # Objective function
         model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pInterVarCost[g] * sum(model.vUC[g, :, :]) +  # Fixed cost of thermal generators
+                                                                                                                       model.pStartupCost[g] * sum(model.vStartup[g, :, :]) +  # Startup cost of thermal generators
                                                                                                                        model.pSlopeVarCost[g] * sum(model.p[g, :, :]) for g in model.thermalGenerators) +  # Production cost of thermal generators
                                                                                                                    sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.vresGenerators) +
                                                                                                                    sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.rorGenerators) +
