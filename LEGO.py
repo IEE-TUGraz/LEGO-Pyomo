@@ -75,6 +75,8 @@ class LEGO:
         model.pInterVarCost = pyo.Param(model.thermalGenerators, initialize=self.cs.dPower_ThermalGen['pInterVarCostEUR'], doc='Inter-variable cost of thermal generator g')
         model.pSlopeVarCost = pyo.Param(model.thermalGenerators, initialize=self.cs.dPower_ThermalGen['pSlopeVarCostEUR'], doc='Slope of variable cost of thermal generator g')
         model.pStartupCost = pyo.Param(model.thermalGenerators, initialize=self.cs.dPower_ThermalGen['pStartupCostEUR'], doc='Startup cost of thermal generator g')
+        model.pMinUpTime = pyo.Param(model.thermalGenerators, initialize=self.cs.dPower_ThermalGen['MinUpTime'], doc='Minimum up time of thermal generator g')
+        model.pMinDownTime = pyo.Param(model.thermalGenerators, initialize=self.cs.dPower_ThermalGen['MinDownTime'], doc='Minimum down time of thermal generator g')
 
         model.pReactance = pyo.Param(model.e, initialize=self.cs.dPower_Network['X'], doc='Reactance of line e')
         model.pSlackPrice = pyo.Param(initialize=max(model.pProductionCost.values()) * 100, doc='Price of slack variable')
@@ -137,6 +139,8 @@ class LEGO:
         model.cRampUp = pyo.ConstraintList(doc='Ramp-up constraint for thermal generators')
         model.cRampDown = pyo.ConstraintList(doc='Ramp-down constraint for thermal generators')
         model.cStartupLogic = pyo.ConstraintList(doc='Start-up and shut-down logic for thermal generators')
+        model.cMinUpTime = pyo.ConstraintList(doc='Minimum up time for thermal generators')
+        model.cMinDownTime = pyo.ConstraintList(doc='Minimum down time for thermal generators')
 
         for g in model.thermalGenerators:
             for rp in model.rp:
@@ -147,6 +151,12 @@ class LEGO:
                     model.cRampUp.add(model.vThermalOutput[g, rp, k] - model.vThermalOutput[g, rp, model.k.prevw(k)] <= self.cs.dPower_ThermalGen.loc[g, 'RampUp'] * model.vUC[g, rp, k])
                     model.cRampDown.add(model.vThermalOutput[g, rp, k] - model.vThermalOutput[g, rp, model.k.prevw(k)] >= self.cs.dPower_ThermalGen.loc[g, 'RampDw'] * -model.vUC[g, rp, model.k.prevw(k)])
 
+                    # TODO: Check if implementation is correct
+                    # Only enforce MinUpTime and MinDownTime after the minimum time has passed
+                    if self.k_to_int(k) >= max(self.cs.dPower_ThermalGen.loc[g, 'MinUpTime'], self.cs.dPower_ThermalGen.loc[g, 'MinDownTime']):
+                        model.cMinUpTime.add(sum(model.vStartup[g, rp, self.int_to_k(i)] for i in range(self.k_to_int(k) - model.pMinUpTime[g] + 1, self.k_to_int(k))) <= model.vUC[g, rp, k])  # Minimum Up-Time
+                        model.cMinDownTime.add(sum(model.vShutdown[g, rp, self.int_to_k(i)] for i in range(self.k_to_int(k) - model.pMinDownTime[g] + 1, self.k_to_int(k))) <= 1 - model.vUC[g, rp, k])  # Minimum Down-Time
+
         # Objective function
         model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pInterVarCost[g] * sum(model.vUC[g, :, :]) +  # Fixed cost of thermal generators
                                                                                                                        model.pStartupCost[g] * sum(model.vStartup[g, :, :]) +  # Startup cost of thermal generators
@@ -155,3 +165,13 @@ class LEGO:
                                                                                                                    sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.rorGenerators) +
                                                                                                                    (sum(model.vSlack_DemandNotServed[:, :, :]) + sum(model.vSlack_OverProduction[:, :, :])) * model.pSlackPrice)
         return model
+
+    @staticmethod
+    # Turns "k0001" into 1, "k0002" into 2, etc.
+    def k_to_int(k: str):
+        return int(k[1:])
+
+    @staticmethod
+    # Turns 1 into "k0001", 2 into "k0002", etc.
+    def int_to_k(i: int, digits: int = 4):
+        return f"k{i:0{digits}d}"

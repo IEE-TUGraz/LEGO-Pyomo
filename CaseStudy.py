@@ -118,6 +118,19 @@ class CaseStudy:
 
         dPower_ThermalGen['pInterVarCostEUR'] = dPower_ThermalGen['InterVarCost'] * 1e-6 * dPower_ThermalGen['FuelCost']
         dPower_ThermalGen['pStartupCostEUR'] = dPower_ThermalGen['StartupCost'] * 1e-6 * dPower_ThermalGen['FuelCost']
+
+        # Fill NaN values with 0 for MinUpTime and MinDownTime
+        dPower_ThermalGen['MinUpTime'] = dPower_ThermalGen['MinUpTime'].fillna(0)
+        dPower_ThermalGen['MinDownTime'] = dPower_ThermalGen['MinDownTime'].fillna(0)
+
+        # Check that both MinUpTime and MinDownTime are integers and raise error if not
+        if not dPower_ThermalGen['MinUpTime'].apply(float.is_integer).all():
+            raise ValueError("MinUpTime must be an integer.")
+        if not dPower_ThermalGen['MinDownTime'].apply(float.is_integer).all():
+            raise ValueError("MinDownTime must be an integer.")
+        dPower_ThermalGen['MinUpTime'] = dPower_ThermalGen['MinUpTime'].astype(int)
+        dPower_ThermalGen['MinDownTime'] = dPower_ThermalGen['MinDownTime'].astype(int)
+
         return dPower_ThermalGen
 
     def get_dPower_RoR(self):
