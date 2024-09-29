@@ -33,7 +33,6 @@ caseStudies = []
 ### All DC-OPF
 csAllDCOPF = cs.copy()
 csAllDCOPF.dPower_Network['Technical Representation'] = 'DC-OPF'
-caseStudies.append(("All DC-OPF", csAllDCOPF))
 
 ### Mixed DC-OPF & TP
 csMixed = cs.copy()
@@ -53,12 +52,10 @@ technicalRepresentations = [(("Node_1", "Node_6"), "DC-OPF"),
 for (i, j), tr in technicalRepresentations:
     csMixed.dPower_Network.loc[(i, j), 'Technical Representation'] = tr
 csMixed.merge_single_node_buses()
-caseStudies.append(("Mixed DC-OPF & TP", csMixed))
 
 ### All TP
 csAllTP = cs.copy()
 csAllTP.dPower_Network['Technical Representation'] = 'TP'
-caseStudies.append(("All TP", csAllTP))
 
 ### Mixed TP & SN
 csMixedTPSN = cs.copy()
@@ -78,12 +75,16 @@ technicalRepresentations = [(("Node_1", "Node_6"), "TP"),
 for (i, j), tr in technicalRepresentations:
     csMixedTPSN.dPower_Network.loc[(i, j), 'Technical Representation'] = tr
 csMixedTPSN.merge_single_node_buses()
-caseStudies.append(("Mixed TP & SN", csMixedTPSN))
 
 ### All SN
 csAllSN = cs.copy()
 csAllSN.dPower_Network['Technical Representation'] = 'SN'
 csAllSN.merge_single_node_buses()
+
+caseStudies.append(("All DC-OPF", csAllDCOPF))
+caseStudies.append(("Mixed DC-OPF & TP", csMixed))
+caseStudies.append(("All TP", csAllTP))
+caseStudies.append(("Mixed TP & SN", csMixedTPSN))
 caseStudies.append(("All SN", csAllSN))
 
 ########################################################################################################################

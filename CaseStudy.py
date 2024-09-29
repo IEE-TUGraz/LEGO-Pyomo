@@ -15,7 +15,8 @@ class CaseStudy:
                  power_vres_file: str = "Power_VRES.xlsx", dPower_VRES: pd.DataFrame = None,
                  power_demand_file: str = "Power_Demand.xlsx", dPower_Demand: pd.DataFrame = None,
                  power_inflows_file: str = "Power_Inflows.xlsx", dPower_Inflows: pd.DataFrame = None,
-                 power_vresprofiles_file: str = "Power_VRESProfiles.xlsx", dPower_VRESProfiles: pd.DataFrame = None):
+                 power_vresprofiles_file: str = "Power_VRESProfiles.xlsx", dPower_VRESProfiles: pd.DataFrame = None,
+                 power_Storage: str = "Power_Storage.xlsx", dPower_Storage: pd.DataFrame = None):
         self.example_folder = example_folder
         self.do_not_merge_single_node_buses = do_not_merge_single_node_buses
 
@@ -73,11 +74,17 @@ class CaseStudy:
             self.power_vresprofiles_file = power_vresprofiles_file
             self.dPower_VRESProfiles = self.get_dPower_VRESProfiles()
 
+        if dPower_Storage is not None:
+            self.dPower_Storage = dPower_Storage
+        else:
+            self.power_storage_file = power_Storage
+            self.dPower_Storage = self.get_dPower_Storage()
+
         self.pMaxAngleDCOPF = self.dPower_Parameters.loc["pMaxAngleDCOPF"].iloc[0] * np.pi / 180  # Read and convert to radians
         self.pSBase = self.dPower_Parameters.loc["pSBase"].iloc[0]
 
         # Dataframe that shows connections between g and i, only concatenating g and i from the dataframes
-        self.hGenerators_to_Buses = pd.concat([self.dPower_ThermalGen[['i']], self.dPower_RoR[['i']], self.dPower_VRES[['i']]])
+        self.hGenerators_to_Buses = self.update_hGenerators_to_Buses()
 
         if not do_not_merge_single_node_buses:
             self.merge_single_node_buses()
@@ -139,6 +146,11 @@ class CaseStudy:
     def get_dPower_VRES(self):
         return self.read_generator_data(self.example_folder + self.power_vres_file)
 
+    def get_dPower_Storage(self):
+        dPower_Storage = self.read_generator_data(self.example_folder + self.power_storage_file)
+        dPower_Storage['pOMVarCostEUR'] = dPower_Storage['OMVarCost'] * 1e-3
+        return dPower_Storage
+
     def get_dPower_Demand(self):
         dPower_Demand = pd.read_excel(self.example_folder + self.power_demand_file, skiprows=[0, 1, 3, 4, 5])
         dPower_Demand = dPower_Demand.drop(dPower_Demand.columns[0], axis=1)
@@ -162,6 +174,9 @@ class CaseStudy:
         dPower_VRESProfiles = dPower_VRESProfiles.melt(id_vars=['rp', 'i', 'tec'], var_name='k', value_name='Capacity')
         dPower_VRESProfiles = dPower_VRESProfiles.set_index(['rp', 'i', 'k', 'tec'])
         return dPower_VRESProfiles
+
+    def update_hGenerators_to_Buses(self):
+        return pd.concat([self.dPower_ThermalGen[['i']], self.dPower_RoR[['i']], self.dPower_VRES[['i']], self.dPower_Storage[['i']]])
 
     # Function to read generator data
     @staticmethod
@@ -296,6 +311,12 @@ class CaseStudy:
                     row['i'] = new_bus_name
                     self.dPower_VRES.loc[i] = row
 
+            # Adapt dPower_Storage
+            for i, row in self.dPower_Storage.iterrows():
+                if row['i'] in connected_buses:
+                    row['i'] = new_bus_name
+                    self.dPower_Storage.loc[i] = row
+
             # Adapt dPower_Demand
             self.dPower_Demand = self.dPower_Demand.reset_index()
             for i, row in self.dPower_Demand.iterrows():
@@ -315,4 +336,4 @@ class CaseStudy:
             self.dPower_VRESProfiles.sort_index(inplace=True)
 
             # Update hGenerators_to_Buses
-            self.hGenerators_to_Buses = pd.concat([self.dPower_ThermalGen[['i']], self.dPower_RoR[['i']], self.dPower_VRES[['i']]])
+            self.hGenerators_to_Buses = self.update_hGenerators_to_Buses()

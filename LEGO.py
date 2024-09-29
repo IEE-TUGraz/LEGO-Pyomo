@@ -17,7 +17,8 @@ class LEGO:
         model.thermalGenerators = pyo.Set(doc='Thermal Generators', initialize=self.cs.dPower_ThermalGen.index.tolist())
         model.rorGenerators = pyo.Set(doc='Run-of-river generators', initialize=self.cs.dPower_RoR.index.tolist())
         model.vresGenerators = pyo.Set(doc='Variable renewable energy sources', initialize=self.cs.dPower_VRES.index.tolist())
-        model.g = pyo.Set(doc='Generators', initialize=model.thermalGenerators | model.rorGenerators | model.vresGenerators)
+        model.storageUnits = pyo.Set(doc='Storage units', initialize=self.cs.dPower_Storage.index.tolist())
+        model.g = pyo.Set(doc='Generators', initialize=model.thermalGenerators | model.rorGenerators | model.vresGenerators | model.storageUnits)
         model.rp = pyo.Set(doc='Representative periods', initialize=self.cs.dPower_Demand.index.get_level_values('rp').unique().tolist(), ordered=True)
         model.k = pyo.Set(doc='Timestep within representative period', initialize=self.cs.dPower_Demand.index.get_level_values('k').unique().tolist(), ordered=True)
 
@@ -34,6 +35,8 @@ class LEGO:
         model.vStartup = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Start-up of thermal generator g', domain=pyo.Binary)
         model.vShutdown = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Shut-down of thermal generator g', domain=pyo.Binary)
         model.vThermalOutput = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Power output of thermal generator g', bounds=(0, None))
+        model.vCharge = pyo.Var(model.storageUnits, model.rp, model.k, doc='Charging of storage unit g', bounds=(0, None))
+        model.vStIntraRes = pyo.Var(model.storageUnits, model.rp, model.k, doc='Intra-reserve of storage unit g', bounds=(0, None))
 
         model.p = pyo.Var(model.g, model.rp, model.k, doc='Power output of generator g', bounds=(0, None))
         for g in model.thermalGenerators:
@@ -53,6 +56,13 @@ class LEGO:
                     capacity = capacity.values[0] if isinstance(capacity, pd.Series) else capacity
                     exisUnits = self.cs.dPower_VRES.loc[g, 'ExisUnits']
                     model.p[g, rp, k].setub(maxProd * capacity * exisUnits)
+
+        for g in model.storageUnits:
+            for rp in model.rp:
+                for k in model.k:
+                    model.p[g, rp, k].setub(self.cs.dPower_Storage.loc[g, 'MaxProd'] * self.cs.dPower_Storage.loc[g, 'ExisUnits'])
+                    model.vCharge[g, rp, k].setub(self.cs.dPower_Storage.loc[g, 'MaxProd'] * self.cs.dPower_Storage.loc[g, 'ExisUnits'])
+                    model.vStIntraRes[g, rp, k].setub(self.cs.dPower_Storage.loc[g, 'MaxProd'] * self.cs.dPower_Storage.loc[g, 'ExisUnits'] * self.cs.dPower_Storage.loc[g, 'Ene2PowRatio'])
 
         model.t = pyo.Var(model.e, model.rp, model.k, doc='Power flow from bus i to j', bounds=(None, None))
         for (i, j) in model.e:
@@ -77,6 +87,8 @@ class LEGO:
         model.pStartupCost = pyo.Param(model.thermalGenerators, initialize=self.cs.dPower_ThermalGen['pStartupCostEUR'], doc='Startup cost of thermal generator g')
         model.pMinUpTime = pyo.Param(model.thermalGenerators, initialize=self.cs.dPower_ThermalGen['MinUpTime'], doc='Minimum up time of thermal generator g')
         model.pMinDownTime = pyo.Param(model.thermalGenerators, initialize=self.cs.dPower_ThermalGen['MinDownTime'], doc='Minimum down time of thermal generator g')
+
+        model.pOMVarCost = pyo.Param(model.storageUnits, initialize=self.cs.dPower_Storage['pOMVarCostEUR'], doc='Variable O&M cost of storage unit g')
 
         model.pReactance = pyo.Param(model.e, initialize=self.cs.dPower_Network['X'], doc='Reactance of line e')
         model.pSlackPrice = pyo.Param(initialize=max(model.pProductionCost.values()) * 100, doc='Price of slack variable')
@@ -157,12 +169,23 @@ class LEGO:
                         model.cMinUpTime.add(sum(model.vStartup[g, rp, self.int_to_k(i)] for i in range(self.k_to_int(k) - model.pMinUpTime[g] + 1, self.k_to_int(k))) <= model.vUC[g, rp, k])  # Minimum Up-Time
                         model.cMinDownTime.add(sum(model.vShutdown[g, rp, self.int_to_k(i)] for i in range(self.k_to_int(k) - model.pMinDownTime[g] + 1, self.k_to_int(k))) <= 1 - model.vUC[g, rp, k])  # Minimum Down-Time
 
+        # Storage unit charging and discharging
+        model.cStIntraRes = pyo.ConstraintList(doc='Intra-reserve constraint for storage units')
+        for g in model.storageUnits:
+            for rp in model.rp:
+                for k in model.k:
+                    if self.rp_to_int(rp) == 1 and self.k_to_int(k) != 1:  # Only cyclic if it has multiple representative periods (and skipping first timestep)
+                        model.cStIntraRes.add(model.vStIntraRes[g, rp, k] == model.vStIntraRes[g, rp, model.k.prev(k)] - model.p[g, rp, k] / self.cs.dPower_Storage.loc[g, 'DisEffic'] + model.vCharge[g, rp, k] * self.cs.dPower_Storage.loc[g, 'ChEffic'])
+                    elif self.rp_to_int(rp) > 1:
+                        model.cStIntraRes.add(model.vStIntraRes[g, rp, k] == model.vStIntraRes[g, rp, model.k.prevw(k)] - model.p[g, rp, k] / self.cs.dPower_Storage.loc[g, 'DisEffic'] + model.vCharge[g, rp, k] * self.cs.dPower_Storage.loc[g, 'ChEffic'])
+
         # Objective function
         model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pInterVarCost[g] * sum(model.vUC[g, :, :]) +  # Fixed cost of thermal generators
                                                                                                                        model.pStartupCost[g] * sum(model.vStartup[g, :, :]) +  # Startup cost of thermal generators
                                                                                                                        model.pSlopeVarCost[g] * sum(model.p[g, :, :]) for g in model.thermalGenerators) +  # Production cost of thermal generators
                                                                                                                    sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.vresGenerators) +
                                                                                                                    sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.rorGenerators) +
+                                                                                                                   sum(model.pOMVarCost[g] * sum(model.p[g, :, :]) for g in model.storageUnits) +
                                                                                                                    (sum(model.vSlack_DemandNotServed[:, :, :]) + sum(model.vSlack_OverProduction[:, :, :])) * model.pSlackPrice)
         return model
 
@@ -175,3 +198,13 @@ class LEGO:
     # Turns 1 into "k0001", 2 into "k0002", etc.
     def int_to_k(i: int, digits: int = 4):
         return f"k{i:0{digits}d}"
+
+    @staticmethod
+    # Turns "rp01" into 1, "rp02" into 2, etc.
+    def rp_to_int(rp: str):
+        return int(rp[2:])
+
+    @staticmethod
+    # Turns 1 into "rp01", 2 into "rp02", etc.
+    def int_to_rp(i: int, digits: int = 2):
+        return f"rp{i:0{digits}d}"
