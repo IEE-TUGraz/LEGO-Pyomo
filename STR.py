@@ -10,6 +10,7 @@ from tabulate import tabulate
 from CaseStudy import CaseStudy
 from LEGO import LEGO
 from tools.printer import pprint_var
+from PyomoResult import model_to_sqlite
 
 ########################################################################################################################
 # Setup
@@ -138,9 +139,10 @@ for caseName, cs in caseStudies:
                                  "Slack variable sum of overproduction": sum(model.vSlack_OverProduction[rp, k, i].value if model.vSlack_OverProduction[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i)}
 
     modelList.update({caseName: model})
+    model_to_sqlite(model, f"results/{caseName}.sqlite")
 
 # Print results in pretty table
-print("\n\nResults\n")
+print("\n\nResults")
 print(tabulate(resultslist, headers='keys', floatfmt=(".2f", ".2f", ".2f", ".2f", ".2f", ".2f"), colalign=("left", "right", "right", "right", "right", "right")))
 
 print("Done")

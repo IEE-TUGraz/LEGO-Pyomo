@@ -1,3 +1,9 @@
+# Result files
+results/
+
+# Python cache
+__pycache__/
+
 # Temporary files
 ~$*.xlsx
 
