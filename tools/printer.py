@@ -1,4 +1,47 @@
-import pyomo.environ as pyo
+from pyomo import environ as pyo
+from rich.console import Console
+
+
+class Printer:
+    __instance = None
+
+    @staticmethod
+    def getInstance():
+        if Printer.__instance is None:
+            Printer(Console(width=80))
+        return Printer.__instance
+
+    def __init__(self, console):
+        if Printer.__instance is not None:
+            raise Exception("Printer is a singleton but got initialized twice")
+
+        Printer.__instance = self
+        self.console = console
+
+    # Definition of standard output for errors
+    def error(self, text: str, prefix="Error: "):
+        self.console.print(f"[red]{prefix}{text}[/red]")
+        return None
+
+    # Definition of standard output for warnings
+    def warning(self, text: str, prefix="Warning: "):
+        self.console.print(f"[yellow]{prefix}{text}[/yellow]")
+        return None
+
+    # Definition of standard output for notes
+    def note(self, text: str, prefix="Note: "):
+        self.console.print(f"[yellow]{prefix}{text}[/yellow]")
+        return None
+
+    # Definition of standard output for success
+    def success(self, text="", prefix=""):
+        self.console.print(f"[green]{prefix}{text}[/green]")
+        return None
+
+    # Definition of standard output for information
+    def information(self, text: str, prefix=""):
+        self.console.print(f"{prefix}{text}")
+        return None
 
 
 # Helper function to pretty-print the values of a Pyomo indexed variable within zone of interest

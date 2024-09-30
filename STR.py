@@ -9,7 +9,7 @@ from tabulate import tabulate
 
 from CaseStudy import CaseStudy
 from LEGO import LEGO
-from Pretty import pprint_var
+from tools.printer import pprint_var
 
 ########################################################################################################################
 # Setup
