@@ -31,9 +31,9 @@ class LEGO:
         model.vSlack_DemandNotServed = pyo.Var(model.rp, model.k, model.i, doc='Slack variable demand not served', bounds=(0, None))
         model.vSlack_OverProduction = pyo.Var(model.rp, model.k, model.i, doc='Slack variable overproduction', bounds=(0, None))
 
-        model.vUC = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Unit commitment of generator g', domain=pyo.Binary)
-        model.vStartup = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Start-up of thermal generator g', domain=pyo.Binary)
-        model.vShutdown = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Shut-down of thermal generator g', domain=pyo.Binary)
+        model.bUC = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Unit commitment of generator g', domain=pyo.Binary)
+        model.bStartup = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Start-up of thermal generator g', domain=pyo.Binary)
+        model.bShutdown = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Shut-down of thermal generator g', domain=pyo.Binary)
         model.vThermalOutput = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Power output of thermal generator g', bounds=(0, None))
         model.vCharge = pyo.Var(model.storageUnits, model.rp, model.k, doc='Charging of storage unit g', bounds=(0, None))
         model.vStIntraRes = pyo.Var(model.storageUnits, model.rp, model.k, doc='Intra-reserve of storage unit g', bounds=(0, None))
@@ -157,17 +157,17 @@ class LEGO:
         for g in model.thermalGenerators:
             for rp in model.rp:
                 for k in model.k:
-                    model.cPowerOutput.add(model.p[g, rp, k] == self.cs.dPower_ThermalGen.loc[g, 'MinProd'] * model.vUC[g, rp, k] + model.vThermalOutput[g, rp, k])
-                    model.cPHatProduction.add(model.vThermalOutput[g, rp, k] <= (self.cs.dPower_ThermalGen.loc[g, 'MaxProd'] - self.cs.dPower_ThermalGen.loc[g, 'MinProd']) * model.vUC[g, rp, k])
-                    model.cStartupLogic.add(model.vUC[g, rp, k] - model.vUC[g, rp, model.k.prevw(k)] == model.vStartup[g, rp, k] - model.vShutdown[g, rp, k])
-                    model.cRampUp.add(model.vThermalOutput[g, rp, k] - model.vThermalOutput[g, rp, model.k.prevw(k)] <= self.cs.dPower_ThermalGen.loc[g, 'RampUp'] * model.vUC[g, rp, k])
-                    model.cRampDown.add(model.vThermalOutput[g, rp, k] - model.vThermalOutput[g, rp, model.k.prevw(k)] >= self.cs.dPower_ThermalGen.loc[g, 'RampDw'] * -model.vUC[g, rp, model.k.prevw(k)])
+                    model.cPowerOutput.add(model.p[g, rp, k] == self.cs.dPower_ThermalGen.loc[g, 'MinProd'] * model.bUC[g, rp, k] + model.vThermalOutput[g, rp, k])
+                    model.cPHatProduction.add(model.vThermalOutput[g, rp, k] <= (self.cs.dPower_ThermalGen.loc[g, 'MaxProd'] - self.cs.dPower_ThermalGen.loc[g, 'MinProd']) * model.bUC[g, rp, k])
+                    model.cStartupLogic.add(model.bUC[g, rp, k] - model.bUC[g, rp, model.k.prevw(k)] == model.bStartup[g, rp, k] - model.bShutdown[g, rp, k])
+                    model.cRampUp.add(model.vThermalOutput[g, rp, k] - model.vThermalOutput[g, rp, model.k.prevw(k)] <= self.cs.dPower_ThermalGen.loc[g, 'RampUp'] * model.bUC[g, rp, k])
+                    model.cRampDown.add(model.vThermalOutput[g, rp, k] - model.vThermalOutput[g, rp, model.k.prevw(k)] >= self.cs.dPower_ThermalGen.loc[g, 'RampDw'] * -model.bUC[g, rp, model.k.prevw(k)])
 
                     # TODO: Check if implementation is correct
                     # Only enforce MinUpTime and MinDownTime after the minimum time has passed
                     if self.k_to_int(k) >= max(self.cs.dPower_ThermalGen.loc[g, 'MinUpTime'], self.cs.dPower_ThermalGen.loc[g, 'MinDownTime']):
-                        model.cMinUpTime.add(sum(model.vStartup[g, rp, self.int_to_k(i)] for i in range(self.k_to_int(k) - model.pMinUpTime[g] + 1, self.k_to_int(k))) <= model.vUC[g, rp, k])  # Minimum Up-Time
-                        model.cMinDownTime.add(sum(model.vShutdown[g, rp, self.int_to_k(i)] for i in range(self.k_to_int(k) - model.pMinDownTime[g] + 1, self.k_to_int(k))) <= 1 - model.vUC[g, rp, k])  # Minimum Down-Time
+                        model.cMinUpTime.add(sum(model.bStartup[g, rp, self.int_to_k(i)] for i in range(self.k_to_int(k) - model.pMinUpTime[g] + 1, self.k_to_int(k))) <= model.bUC[g, rp, k])  # Minimum Up-Time
+                        model.cMinDownTime.add(sum(model.bShutdown[g, rp, self.int_to_k(i)] for i in range(self.k_to_int(k) - model.pMinDownTime[g] + 1, self.k_to_int(k))) <= 1 - model.bUC[g, rp, k])  # Minimum Down-Time
 
         # Storage unit charging and discharging
         model.cStIntraRes = pyo.ConstraintList(doc='Intra-reserve constraint for storage units')
@@ -180,8 +180,8 @@ class LEGO:
                         model.cStIntraRes.add(model.vStIntraRes[g, rp, k] == model.vStIntraRes[g, rp, model.k.prevw(k)] - model.p[g, rp, k] / self.cs.dPower_Storage.loc[g, 'DisEffic'] + model.vCharge[g, rp, k] * self.cs.dPower_Storage.loc[g, 'ChEffic'])
 
         # Objective function
-        model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pInterVarCost[g] * sum(model.vUC[g, :, :]) +  # Fixed cost of thermal generators
-                                                                                                                       model.pStartupCost[g] * sum(model.vStartup[g, :, :]) +  # Startup cost of thermal generators
+        model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pInterVarCost[g] * sum(model.bUC[g, :, :]) +  # Fixed cost of thermal generators
+                                                                                                                       model.pStartupCost[g] * sum(model.bStartup[g, :, :]) +  # Startup cost of thermal generators
                                                                                                                        model.pSlopeVarCost[g] * sum(model.p[g, :, :]) for g in model.thermalGenerators) +  # Production cost of thermal generators
                                                                                                                    sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.vresGenerators) +
                                                                                                                    sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.rorGenerators) +
