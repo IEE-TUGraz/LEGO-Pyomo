@@ -37,6 +37,7 @@ class LEGO:
         model.vThermalOutput = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Power output of thermal generator g', bounds=(0, None))
         model.vCharge = pyo.Var(model.storageUnits, model.rp, model.k, doc='Charging of storage unit g', bounds=(0, None))
         model.vStIntraRes = pyo.Var(model.storageUnits, model.rp, model.k, doc='Intra-reserve of storage unit g', bounds=(0, None))
+        model.bCharge = pyo.Var(model.storageUnits, model.rp, model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
 
         model.p = pyo.Var(model.g, model.rp, model.k, doc='Power output of generator g', bounds=(0, None))
         for g in model.thermalGenerators:
@@ -171,6 +172,7 @@ class LEGO:
 
         # Storage unit charging and discharging
         model.cStIntraRes = pyo.ConstraintList(doc='Intra-reserve constraint for storage units')
+        model.cExclusiveChargeDischarge = pyo.ConstraintList(doc='Enforce exclusive charge or discharge for storage units')
         for g in model.storageUnits:
             for rp in model.rp:
                 for k in model.k:
@@ -178,6 +180,9 @@ class LEGO:
                         model.cStIntraRes.add(model.vStIntraRes[g, rp, k] == model.vStIntraRes[g, rp, model.k.prev(k)] - model.p[g, rp, k] / self.cs.dPower_Storage.loc[g, 'DisEffic'] + model.vCharge[g, rp, k] * self.cs.dPower_Storage.loc[g, 'ChEffic'])
                     elif self.rp_to_int(rp) > 1:
                         model.cStIntraRes.add(model.vStIntraRes[g, rp, k] == model.vStIntraRes[g, rp, model.k.prevw(k)] - model.p[g, rp, k] / self.cs.dPower_Storage.loc[g, 'DisEffic'] + model.vCharge[g, rp, k] * self.cs.dPower_Storage.loc[g, 'ChEffic'])
+
+                    model.cExclusiveChargeDischarge.add(model.vCharge[g, rp, k] <= model.bCharge[g, rp, k] * self.cs.dPower_Storage.loc[g, 'MaxProd'] * self.cs.dPower_Storage.loc[g, 'ExisUnits'])
+                    model.cExclusiveChargeDischarge.add(model.p[g, rp, k] <= (1 - model.bCharge[g, rp, k]) * self.cs.dPower_Storage.loc[g, 'MaxProd'] * self.cs.dPower_Storage.loc[g, 'ExisUnits'])
 
         # Objective function
         model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pInterVarCost[g] * sum(model.bUC[g, :, :]) +  # Fixed cost of thermal generators
