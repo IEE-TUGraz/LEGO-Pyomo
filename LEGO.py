@@ -1,12 +1,16 @@
+import typing
+
 import pandas as pd
 import pyomo.environ as pyo
 
+import LEGOUtilities
 from CaseStudy import CaseStudy
 
 
 class LEGO:
     def __init__(self, cs: CaseStudy):
         self.cs = cs
+        self.model: typing.Optional[pyo.Model] = None
 
     def build_model(self):
         model = pyo.ConcreteModel()
@@ -166,9 +170,9 @@ class LEGO:
 
                     # TODO: Check if implementation is correct
                     # Only enforce MinUpTime and MinDownTime after the minimum time has passed
-                    if self.k_to_int(k) >= max(self.cs.dPower_ThermalGen.loc[g, 'MinUpTime'], self.cs.dPower_ThermalGen.loc[g, 'MinDownTime']):
-                        model.cMinUpTime.add(sum(model.bStartup[g, rp, self.int_to_k(i)] for i in range(self.k_to_int(k) - model.pMinUpTime[g] + 1, self.k_to_int(k))) <= model.bUC[g, rp, k])  # Minimum Up-Time
-                        model.cMinDownTime.add(sum(model.bShutdown[g, rp, self.int_to_k(i)] for i in range(self.k_to_int(k) - model.pMinDownTime[g] + 1, self.k_to_int(k))) <= 1 - model.bUC[g, rp, k])  # Minimum Down-Time
+                    if LEGOUtilities.k_to_int(k) >= max(self.cs.dPower_ThermalGen.loc[g, 'MinUpTime'], self.cs.dPower_ThermalGen.loc[g, 'MinDownTime']):
+                        model.cMinUpTime.add(sum(model.bStartup[g, rp, LEGOUtilities.int_to_k(i)] for i in range(LEGOUtilities.k_to_int(k) - model.pMinUpTime[g] + 1, LEGOUtilities.k_to_int(k))) <= model.bUC[g, rp, k])  # Minimum Up-Time
+                        model.cMinDownTime.add(sum(model.bShutdown[g, rp, LEGOUtilities.int_to_k(i)] for i in range(LEGOUtilities.k_to_int(k) - model.pMinDownTime[g] + 1, LEGOUtilities.k_to_int(k))) <= 1 - model.bUC[g, rp, k])  # Minimum Down-Time
 
         # Storage unit charging and discharging
         model.cStIntraRes = pyo.ConstraintList(doc='Intra-reserve constraint for storage units')
@@ -176,11 +180,12 @@ class LEGO:
         for g in model.storageUnits:
             for rp in model.rp:
                 for k in model.k:
-                    if self.rp_to_int(rp) == 1 and self.k_to_int(k) != 1:  # Only cyclic if it has multiple representative periods (and skipping first timestep)
+                    if LEGOUtilities.rp_to_int(rp) == 1 and LEGOUtilities.k_to_int(k) != 1:  # Only cyclic if it has multiple representative periods (and skipping first timestep)
                         model.cStIntraRes.add(model.vStIntraRes[g, rp, k] == model.vStIntraRes[g, rp, model.k.prev(k)] - model.p[g, rp, k] / self.cs.dPower_Storage.loc[g, 'DisEffic'] + model.vCharge[g, rp, k] * self.cs.dPower_Storage.loc[g, 'ChEffic'])
-                    elif self.rp_to_int(rp) > 1:
+                    elif LEGOUtilities.rp_to_int(rp) > 1:
                         model.cStIntraRes.add(model.vStIntraRes[g, rp, k] == model.vStIntraRes[g, rp, model.k.prevw(k)] - model.p[g, rp, k] / self.cs.dPower_Storage.loc[g, 'DisEffic'] + model.vCharge[g, rp, k] * self.cs.dPower_Storage.loc[g, 'ChEffic'])
 
+                    # TODO: Check if we should rather do a +/- value and calculate charge/discharge ex-post
                     model.cExclusiveChargeDischarge.add(model.vCharge[g, rp, k] <= model.bCharge[g, rp, k] * self.cs.dPower_Storage.loc[g, 'MaxProd'] * self.cs.dPower_Storage.loc[g, 'ExisUnits'])
                     model.cExclusiveChargeDischarge.add(model.p[g, rp, k] <= (1 - model.bCharge[g, rp, k]) * self.cs.dPower_Storage.loc[g, 'MaxProd'] * self.cs.dPower_Storage.loc[g, 'ExisUnits'])
 
@@ -192,24 +197,5 @@ class LEGO:
                                                                                                                    sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.rorGenerators) +
                                                                                                                    sum(model.pOMVarCost[g] * sum(model.p[g, :, :]) for g in model.storageUnits) +
                                                                                                                    (sum(model.vSlack_DemandNotServed[:, :, :]) + sum(model.vSlack_OverProduction[:, :, :])) * model.pSlackPrice)
+        self.model = model
         return model
-
-    @staticmethod
-    # Turns "k0001" into 1, "k0002" into 2, etc.
-    def k_to_int(k: str):
-        return int(k[1:])
-
-    @staticmethod
-    # Turns 1 into "k0001", 2 into "k0002", etc.
-    def int_to_k(i: int, digits: int = 4):
-        return f"k{i:0{digits}d}"
-
-    @staticmethod
-    # Turns "rp01" into 1, "rp02" into 2, etc.
-    def rp_to_int(rp: str):
-        return int(rp[2:])
-
-    @staticmethod
-    # Turns 1 into "rp01", 2 into "rp02", etc.
-    def int_to_rp(i: int, digits: int = 2):
-        return f"rp{i:0{digits}d}"
