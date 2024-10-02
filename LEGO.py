@@ -199,3 +199,16 @@ class LEGO:
                                                                                                                    (sum(model.vSlack_DemandNotServed[:, :, :]) + sum(model.vSlack_OverProduction[:, :, :])) * model.pSlackPrice)
         self.model = model
         return model
+
+
+# Clone given model and fix specified variables to values from another model
+def build_from_clone_with_fixed_results(model_to_be_cloned: pyo.Model, model_with_fixed_results: pyo.Model, variables_to_fix: list[str]):
+    model_new = model_to_be_cloned.clone()
+
+    for var_name in variables_to_fix:
+        var = getattr(model_with_fixed_results, var_name)
+        new_var = getattr(model_new, var_name)
+        for index in var:
+            new_var[index].fix(pyo.value(var[index].value))
+
+    return model_new

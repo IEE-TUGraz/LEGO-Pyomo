@@ -7,10 +7,11 @@ from pyomo.opt import SolverFactory
 from pyomo.util.infeasible import log_infeasible_constraints
 from tabulate import tabulate
 
+import LEGOUtilities
 from CaseStudy import CaseStudy
-from LEGO import LEGO
-from tools.printer import pprint_var
+from LEGO import LEGO, build_from_clone_with_fixed_results
 from PyomoResult import model_to_sqlite
+from tools.printer import pprint_var
 
 ########################################################################################################################
 # Setup
@@ -92,21 +93,21 @@ caseStudies.append(("All SN", csAllSN))
 # Evaluation
 ########################################################################################################################
 
-resultslist = pd.DataFrame(columns=["Objective Value", "Model building time", "Solving time", "Slack variable sum of demand not served", "Slack variable sum of overproduction"])
+resultslist = pd.DataFrame(columns=["Objective Value ZOI", "Model building time [s]", "Solving time [s]", "Regret ZOI", "Regret ZOI [%]", "Objective Value Overall", "Regret Overall [%]"])
 modelList = {}
 
 for caseName, cs in caseStudies:
     print(f"\n\n{'=' * 60}\n{caseName}\n{'=' * 60}")
-    startModelBUilding = time.time()
+    startModelBuilding = time.time()
     model = LEGO(cs).build_model()
     endModelBuilding = time.time()
-    print(f"Building model for {caseName} took {time.time() - endModelBuilding:.2f} seconds")
+    print(f"Building model for {caseName} took {startModelBuilding - endModelBuilding:.2f} seconds")
 
     opt = SolverFactory("gurobi")
     startSolve = time.time()
     results = opt.solve(model)
     endSolve = time.time()
-    print(f"Solving model for {caseName} took {time.time() - endSolve:.2f} seconds")
+    print(f"Solving model for {caseName} took {startSolve - endSolve:.2f} seconds")
     results.write()
 
     match results.solver.termination_condition:
@@ -132,17 +133,27 @@ for caseName, cs in caseStudies:
     print("\nObjective Function Value\n" + '-' * 60)
     print("Objective value:", f"{pyo.value(model.objective):>8.2f}")
 
-    resultslist.loc[caseName] = {"Objective Value": pyo.value(model.objective),
-                                 "Model building time": endModelBuilding - startModelBUilding,
-                                 "Solving time": endSolve - startSolve,
-                                 "Slack variable sum of demand not served": sum(model.vSlack_DemandNotServed[rp, k, i].value if model.vSlack_DemandNotServed[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
-                                 "Slack variable sum of overproduction": sum(model.vSlack_OverProduction[rp, k, i].value if model.vSlack_OverProduction[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i)}
+    # Compare with DC-OPF
+    if caseName != "All DC-OPF":
+        comparisonModelDC = build_from_clone_with_fixed_results(modelList["All DC-OPF"], model, ["bUC"])
+        comparisonResults = opt.solve(comparisonModelDC)
+        comparison_value_zoi = LEGOUtilities.get_objective_zoi(comparisonModelDC)
+
+    objective_value_zoi = LEGOUtilities.get_objective_zoi(model)
+
+    resultslist.loc[caseName] = {"Objective Value ZOI": objective_value_zoi,
+                                 "Model building time [s]": endModelBuilding - startModelBuilding,
+                                 "Solving time [s]": endSolve - startSolve,
+                                 "Regret ZOI": comparison_value_zoi - objective_value_zoi if caseName != "All DC-OPF" else None,
+                                 "Regret ZOI [%]": objective_value_zoi / comparison_value_zoi * 100 - 100 if caseName != "All DC-OPF" else None,
+                                 "Objective Value Overall": pyo.value(model.objective),
+                                 "Regret Overall [%]": (pyo.value(comparisonModelDC.objective) - pyo.value(model.objective)) / pyo.value(comparisonModelDC.objective) * 100 - 100 if caseName != "All DC-OPF" else None}
 
     modelList.update({caseName: model})
     model_to_sqlite(model, f"results/{caseName}.sqlite")
 
 # Print results in pretty table
 print("\n\nResults")
-print(tabulate(resultslist, headers='keys', floatfmt=(".2f", ".2f", ".2f", ".2f", ".2f", ".2f"), colalign=("left", "right", "right", "right", "right", "right")))
+print(tabulate(resultslist, headers='keys', floatfmt=(".2f", ".2f", ".2f", ".2f", ".2f", ".0f", ".2f", ".0f"), colalign=("left", "right", "right", "right", "right", "right")))
 
 print("Done")
