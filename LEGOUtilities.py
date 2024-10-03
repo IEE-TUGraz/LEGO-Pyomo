@@ -1,9 +1,3 @@
-import pyomo.environ as pyo
-
-# Returns the objective value related to the zone of interest
-def get_objective_zoi(model: pyo.Model):
-    raise NotImplementedError()
-
 # Turns "k0001" into 1, "k0002" into 2, etc.
 def k_to_int(k: str):
     return int(k[1:])
@@ -22,5 +16,3 @@ def rp_to_int(rp: str):
 # Turns 1 into "rp01", 2 into "rp02", etc.
 def int_to_rp(i: int, digits: int = 2):
     return f"rp{i:0{digits}d}"
-
-

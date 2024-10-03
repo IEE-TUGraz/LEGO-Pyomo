@@ -16,7 +16,7 @@ class CaseStudy:
                  power_demand_file: str = "Power_Demand.xlsx", dPower_Demand: pd.DataFrame = None,
                  power_inflows_file: str = "Power_Inflows.xlsx", dPower_Inflows: pd.DataFrame = None,
                  power_vresprofiles_file: str = "Power_VRESProfiles.xlsx", dPower_VRESProfiles: pd.DataFrame = None,
-                 power_Storage: str = "Power_Storage.xlsx", dPower_Storage: pd.DataFrame = None):
+                 power_storage: str = "Power_Storage.xlsx", dPower_Storage: pd.DataFrame = None):
         self.example_folder = example_folder
         self.do_not_merge_single_node_buses = do_not_merge_single_node_buses
 
@@ -77,7 +77,7 @@ class CaseStudy:
         if dPower_Storage is not None:
             self.dPower_Storage = dPower_Storage
         else:
-            self.power_storage_file = power_Storage
+            self.power_storage_file = power_storage
             self.dPower_Storage = self.get_dPower_Storage()
 
         self.pMaxAngleDCOPF = self.dPower_Parameters.loc["pMaxAngleDCOPF"].iloc[0] * np.pi / 180  # Read and convert to radians
