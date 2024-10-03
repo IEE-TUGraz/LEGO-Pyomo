@@ -1,5 +1,4 @@
 import logging
-import time
 
 import pandas as pd
 import pyomo.environ as pyo
@@ -7,11 +6,10 @@ from pyomo.opt import SolverFactory
 from pyomo.util.infeasible import log_infeasible_constraints
 from tabulate import tabulate
 
-import LEGOUtilities
 from CaseStudy import CaseStudy
 from LEGO import LEGO, build_from_clone_with_fixed_results
 from PyomoResult import model_to_sqlite
-from tools.printer import pprint_var
+from tools.printer import pprint_var, Printer
 
 ########################################################################################################################
 # Setup
@@ -19,6 +17,7 @@ from tools.printer import pprint_var
 
 pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
+printer = Printer.getInstance()
 
 ########################################################################################################################
 # Data input from case study
@@ -30,7 +29,7 @@ cs = CaseStudy("data/example/", do_not_merge_single_node_buses=True)
 # Case study preparation
 ########################################################################################################################
 
-caseStudies = []
+legoModels = []
 
 ### All DC-OPF
 csAllDCOPF = cs.copy()
@@ -83,11 +82,11 @@ csAllSN = cs.copy()
 csAllSN.dPower_Network['Technical Representation'] = 'SN'
 csAllSN.merge_single_node_buses()
 
-caseStudies.append(("All DC-OPF", csAllDCOPF))
-caseStudies.append(("Mixed DC-OPF & TP", csMixed))
-caseStudies.append(("All TP", csAllTP))
-caseStudies.append(("Mixed TP & SN", csMixedTPSN))
-caseStudies.append(("All SN", csAllSN))
+legoModels.append(("All DC-OPF", LEGO(csAllDCOPF)))
+legoModels.append(("Mixed DC-OPF & TP", LEGO(csMixed)))
+legoModels.append(("All TP", LEGO(csAllTP)))
+legoModels.append(("Mixed TP & SN", LEGO(csMixedTPSN)))
+legoModels.append(("All SN", LEGO(csAllSN)))
 
 ########################################################################################################################
 # Evaluation
@@ -95,19 +94,16 @@ caseStudies.append(("All SN", csAllSN))
 
 resultslist = pd.DataFrame(columns=["Objective Value ZOI", "Model building time [s]", "Solving time [s]", "Regret ZOI", "Regret ZOI [%]", "Objective Value Overall", "Regret Overall [%]"])
 modelList = {}
+optimizer = SolverFactory("gurobi")
 
-for caseName, cs in caseStudies:
+for caseName, lego in legoModels:
     print(f"\n\n{'=' * 60}\n{caseName}\n{'=' * 60}")
-    startModelBuilding = time.time()
-    model = LEGO(cs).build_model()
-    endModelBuilding = time.time()
-    print(f"Building model for {caseName} took {startModelBuilding - endModelBuilding:.2f} seconds")
 
-    opt = SolverFactory("gurobi")
-    startSolve = time.time()
-    results = opt.solve(model)
-    endSolve = time.time()
-    print(f"Solving model for {caseName} took {startSolve - endSolve:.2f} seconds")
+    model, timing = lego.build_model()
+    printer.information(f"Building model took {timing:.2f} seconds")
+
+    results, timing = lego.solve_model(optimizer)
+    print(f"Solving model took {timing:.2f} seconds")
     results.write()
 
     match results.solver.termination_condition:
@@ -129,7 +125,6 @@ for caseName, cs in caseStudies:
     print("\nSlack Variables\n" + '-' * 60)
     print("Slack variable sum of demand not served:", sum(model.vSlack_DemandNotServed[rp, k, i].value if model.vSlack_DemandNotServed[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i))
     print("Slack variable sum of overproduction:", sum(model.vSlack_OverProduction[rp, k, i].value if model.vSlack_OverProduction[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i))
-
     print("\nObjective Function Value\n" + '-' * 60)
     print("Objective value:", f"{pyo.value(model.objective):>8.2f}")
 
@@ -149,8 +144,8 @@ for caseName, cs in caseStudies:
                                  "Objective Value Overall": pyo.value(model.objective),
                                  "Regret Overall [%]": (pyo.value(comparisonModelDC.objective) - pyo.value(model.objective)) / pyo.value(comparisonModelDC.objective) * 100 - 100 if caseName != "All DC-OPF" else None}
 
-    modelList.update({caseName: model})
-    model_to_sqlite(model, f"results/{caseName}.sqlite")
+    modelList.update({caseName: lego.model})
+    model_to_sqlite(lego.model, f"results/{caseName}.sqlite")
 
 # Print results in pretty table
 print("\n\nResults")

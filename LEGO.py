@@ -1,18 +1,26 @@
+import time
 import typing
 
 import pandas as pd
 import pyomo.environ as pyo
+import pyomo.opt.results.results_
 
 import LEGOUtilities
 from CaseStudy import CaseStudy
 
 
 class LEGO:
-    def __init__(self, cs: CaseStudy):
-        self.cs = cs
-        self.model: typing.Optional[pyo.Model] = None
+    def __init__(self, cs: CaseStudy = None, model: pyo.Model = None, results=None):
+        self.cs: CaseStudy = cs
+        self.model: typing.Optional[pyo.Model] = model
+        self.results: typing.Optional[pyomo.opt.results.results_.SolverResults] = results
+        self.timings = {"model_building": -1.0, "model_solving": -1.0}
 
-    def build_model(self):
+    def build_model(self, already_existing_ok=False) -> (pyo.Model, float):
+        if not already_existing_ok and self.model is not None:
+            raise RuntimeError("Model already exists, please set already_existing_ok to True if that's intentional")
+
+        start_time = time.time()
         model = pyo.ConcreteModel()
 
         # Sets
@@ -198,17 +206,35 @@ class LEGO:
                                                                                                                    sum(model.pOMVarCost[g] * sum(model.p[g, :, :]) for g in model.storageUnits) +
                                                                                                                    (sum(model.vSlack_DemandNotServed[:, :, :]) + sum(model.vSlack_OverProduction[:, :, :])) * model.pSlackPrice)
         self.model = model
-        return model
+        stop_time = time.time()
+        self.timings["model_building"] = stop_time - start_time
+        self.timings["model_solving"] = -1.0
+        self.results = None
 
+        return self.model, self.timings["model_building"]
+
+    def solve_model(self, optimizer, already_solved_ok=False) -> {pyomo.opt.results.results_.SolverResults, float}:
+        if not already_solved_ok and self.results is not None:
+            raise RuntimeError("Model already solved, please set already_solved_ok to True if that's intentional")
+
+        start_time = time.time()
+        results = optimizer.solve(self.model)
+        stop_time = time.time()
+
+        self.timings["model_solving"] = stop_time - start_time
+        self.results = results
+
+        return results, self.timings["model_solving"]
 
 # Clone given model and fix specified variables to values from another model
-def build_from_clone_with_fixed_results(model_to_be_cloned: pyo.Model, model_with_fixed_results: pyo.Model, variables_to_fix: list[str]):
+def build_from_clone_with_fixed_results(model_to_be_cloned: pyo.Model, model_with_fixed_results: pyo.Model, variables_to_fix: list[str]) -> LEGO:
     model_new = model_to_be_cloned.clone()
 
+    # Fix variables to values from model_with_fixed_results
     for var_name in variables_to_fix:
         var = getattr(model_with_fixed_results, var_name)
         new_var = getattr(model_new, var_name)
         for index in var:
             new_var[index].fix(pyo.value(var[index].value))
 
-    return model_new
+    return LEGO(model=model_new)
