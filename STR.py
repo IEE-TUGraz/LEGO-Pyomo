@@ -129,20 +129,33 @@ for caseName, lego in legoModels:
     print("Objective value:", f"{pyo.value(model.objective):>8.2f}")
 
     # Compare with DC-OPF
-    if caseName != "All DC-OPF":
-        comparisonModelDC = build_from_clone_with_fixed_results(modelList["All DC-OPF"], model, ["bUC"])
-        comparisonResults = opt.solve(comparisonModelDC)
-        comparison_value_zoi = LEGOUtilities.get_objective_zoi(comparisonModelDC)
+    if caseName == "All DC-OPF":
+        resultslist.loc[caseName] = {"Objective Value ZOI": lego.get_objective_value(True),
+                                     "Model building time [s]": lego.timings["model_building"],
+                                     "Solving time [s]": lego.timings["model_solving"],
+                                     "Regret ZOI": None,
+                                     "Regret ZOI [%]": None,
+                                     "Objective Value Overall": lego.get_objective_value(False),
+                                     "Regret Overall [%]": None,
+                                     }
+    else:
+        # Re-calculate DC-OPF model with fixed Unit Commitment
+        comparisonModelDC = build_from_clone_with_fixed_results(modelList["All DC-OPF"], lego.model, ["bUC"])
+        comparisonResults, _ = comparisonModelDC.solve_model(optimizer)
+        comparison_objective_value_overall = comparisonModelDC.get_objective_value(False)
+        comparison_objective_value_zoi = comparisonModelDC.get_objective_value(True)
 
-    objective_value_zoi = LEGOUtilities.get_objective_zoi(model)
+        objective_value_overall = lego.get_objective_value(False)
+        objective_value_zoi = lego.get_objective_value(True)
 
-    resultslist.loc[caseName] = {"Objective Value ZOI": objective_value_zoi,
-                                 "Model building time [s]": endModelBuilding - startModelBuilding,
-                                 "Solving time [s]": endSolve - startSolve,
-                                 "Regret ZOI": comparison_value_zoi - objective_value_zoi if caseName != "All DC-OPF" else None,
-                                 "Regret ZOI [%]": objective_value_zoi / comparison_value_zoi * 100 - 100 if caseName != "All DC-OPF" else None,
-                                 "Objective Value Overall": pyo.value(model.objective),
-                                 "Regret Overall [%]": (pyo.value(comparisonModelDC.objective) - pyo.value(model.objective)) / pyo.value(comparisonModelDC.objective) * 100 - 100 if caseName != "All DC-OPF" else None}
+        resultslist.loc[caseName] = {"Objective Value ZOI": objective_value_zoi,
+                                     "Model building time [s]": lego.timings["model_building"],
+                                     "Solving time [s]": lego.timings["model_solving"],
+                                     "Regret ZOI": objective_value_zoi - comparison_objective_value_zoi,
+                                     "Regret ZOI [%]": (objective_value_zoi - comparison_objective_value_zoi) / comparison_objective_value_zoi * 100 - 100,
+                                     "Objective Value Overall": objective_value_overall,
+                                     "Regret Overall [%]": (objective_value_overall - comparison_objective_value_overall) / comparison_objective_value_overall * 100 - 100,
+                                     }
 
     modelList.update({caseName: lego.model})
     model_to_sqlite(lego.model, f"results/{caseName}.sqlite")

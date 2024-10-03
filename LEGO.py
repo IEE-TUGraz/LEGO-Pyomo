@@ -7,6 +7,9 @@ import pyomo.opt.results.results_
 
 import LEGOUtilities
 from CaseStudy import CaseStudy
+from tools.printer import Printer
+
+printer = Printer.getInstance()
 
 
 class LEGO:
@@ -198,13 +201,8 @@ class LEGO:
                     model.cExclusiveChargeDischarge.add(model.p[g, rp, k] <= (1 - model.bCharge[g, rp, k]) * self.cs.dPower_Storage.loc[g, 'MaxProd'] * self.cs.dPower_Storage.loc[g, 'ExisUnits'])
 
         # Objective function
-        model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pInterVarCost[g] * sum(model.bUC[g, :, :]) +  # Fixed cost of thermal generators
-                                                                                                                       model.pStartupCost[g] * sum(model.bStartup[g, :, :]) +  # Startup cost of thermal generators
-                                                                                                                       model.pSlopeVarCost[g] * sum(model.p[g, :, :]) for g in model.thermalGenerators) +  # Production cost of thermal generators
-                                                                                                                   sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.vresGenerators) +
-                                                                                                                   sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.rorGenerators) +
-                                                                                                                   sum(model.pOMVarCost[g] * sum(model.p[g, :, :]) for g in model.storageUnits) +
-                                                                                                                   (sum(model.vSlack_DemandNotServed[:, :, :]) + sum(model.vSlack_OverProduction[:, :, :])) * model.pSlackPrice)
+        model.objective = get_objective(model)
+
         self.model = model
         stop_time = time.time()
         self.timings["model_building"] = stop_time - start_time
@@ -212,6 +210,10 @@ class LEGO:
         self.results = None
 
         return self.model, self.timings["model_building"]
+
+    # Returns the objective value of this model (either overall or within the zone of interest)
+    def get_objective_value(self, zoi: bool):
+        return get_objective_value(self.model, zoi)
 
     def solve_model(self, optimizer, already_solved_ok=False) -> {pyomo.opt.results.results_.SolverResults, float}:
         if not already_solved_ok and self.results is not None:
@@ -225,6 +227,45 @@ class LEGO:
         self.results = results
 
         return results, self.timings["model_solving"]
+
+
+def get_objective(model: pyo.Model) -> pyo.Objective:
+    result = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pInterVarCost[g] * sum(model.bUC[g, :, :]) +  # Fixed cost of thermal generators
+                                                                                                          model.pStartupCost[g] * sum(model.bStartup[g, :, :]) +  # Startup cost of thermal generators
+                                                                                                          model.pSlopeVarCost[g] * sum(model.p[g, :, :]) for g in model.thermalGenerators) +  # Production cost of thermal generators
+                                                                                                      sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.vresGenerators) +
+                                                                                                      sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.rorGenerators) +
+                                                                                                      sum(model.pOMVarCost[g] * sum(model.p[g, :, :]) for g in model.storageUnits) +
+                                                                                                      (sum(model.vSlack_DemandNotServed[:, :, :]) + sum(model.vSlack_OverProduction[:, :, :])) * model.pSlackPrice)
+
+    return result
+
+
+def get_objective_value(model: pyo.Model, zoi: bool):
+    # This is calculated in any case to make sure that the objective is calculated correctly - please ALWAYS update this AND the calculation below whenever something changes in the objective function
+    result_overall = (sum(pyo.value(model.pInterVarCost[g]) * sum(pyo.value(model.bUC[g, :, :])) +  # Fixed cost of thermal generators
+                          pyo.value(model.pStartupCost[g]) * sum(pyo.value(model.bStartup[g, :, :])) +  # Startup cost of thermal generators
+                          pyo.value(model.pSlopeVarCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in model.thermalGenerators) +  # Production cost of thermal generators
+                      sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in model.vresGenerators) +
+                      sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in model.rorGenerators) +
+                      sum(pyo.value(model.pOMVarCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in model.storageUnits) +
+                      (sum(pyo.value(model.vSlack_DemandNotServed[:, :, :])) + sum(pyo.value(model.vSlack_OverProduction[:, :, :]))) * pyo.value(model.pSlackPrice))
+
+    if result_overall != pyo.value(model.objective):
+        raise RuntimeError(f"Check calculation of objective value, something is off: {result_overall} != {pyo.value(model.objective)}")
+    if zoi:
+        return result_overall
+    else:
+        result_zoi = (sum(pyo.value(model.pInterVarCost[g]) * sum(pyo.value(model.bUC[g, :, :])) +  # Fixed cost of thermal generators
+                          pyo.value(model.pStartupCost[g]) * sum(pyo.value(model.bStartup[g, :, :])) +  # Startup cost of thermal generators
+                          pyo.value(model.pSlopeVarCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in (model.thermalGenerators & model.zoi_g)) +  # Production cost of thermal generators
+                      # sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in model.vresGenerators) +
+                      # sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in model.rorGenerators) +
+                      # sum(pyo.value(model.pOMVarCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in model.storageUnits) +
+                      sum(sum(pyo.value(model.vSlack_DemandNotServed[:, :, i])) + sum(pyo.value(model.vSlack_OverProduction[:, :, i])) for i in model.zoi_i) * pyo.value(model.pSlackPrice))
+
+        return result_zoi
+
 
 # Clone given model and fix specified variables to values from another model
 def build_from_clone_with_fixed_results(model_to_be_cloned: pyo.Model, model_with_fixed_results: pyo.Model, variables_to_fix: list[str]) -> LEGO:
