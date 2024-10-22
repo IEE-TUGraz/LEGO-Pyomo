@@ -268,9 +268,9 @@ def get_objective_value(model: pyo.Model, zoi: bool):
                       sum(pyo.value(model.pOMVarCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in model.storageUnits) +
                       (sum(pyo.value(model.vSlack_DemandNotServed[:, :, :])) + sum(pyo.value(model.vSlack_OverProduction[:, :, :]))) * pyo.value(model.pSlackPrice))
 
-    if result_overall != pyo.value(model.objective):
+    if (abs(result_overall - pyo.value(model.objective)) / pyo.value(model.objective)) > 1e-12:
         raise RuntimeError(f"Check calculation of objective value, something is off: {result_overall} != {pyo.value(model.objective)}")
-    if zoi:
+    if not zoi:
         return result_overall
     else:
         result_zoi = (sum(pyo.value(model.pInterVarCost[g]) * sum(pyo.value(model.bUC[g, :, :])) +  # Fixed cost of thermal generators
