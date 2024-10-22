@@ -228,6 +228,23 @@ class LEGO:
 
         return results, self.timings["model_solving"]
 
+    def get_number_of_variables(self, dont_multiply_by_indices=False) -> int:
+        if dont_multiply_by_indices:
+            # Only count the number of variables, not multiplied by the number of indices
+            return len(list(self.model.component_objects(pyo.Var, active=True)))
+        else:
+            # Iterate through variables and sum up each individual variable
+            return sum([len(x) for x in self.model.component_objects(pyo.Var, active=True)])
+        pass
+
+    def get_number_of_constraints(self, dont_multiply_by_indices=False) -> int:
+        if dont_multiply_by_indices:
+            # Only count the number of constraints, not multiplied by the number of indices
+            return len(list(self.model.component_objects(pyo.Constraint, active=True)))
+        else:
+            # Iterate through constraints and sum up each individual constraint
+            return sum([len(x) for x in self.model.component_objects(pyo.Constraint, active=True)])
+
 
 def get_objective(model: pyo.Model) -> pyo.Objective:
     result = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pInterVarCost[g] * sum(model.bUC[g, :, :]) +  # Fixed cost of thermal generators

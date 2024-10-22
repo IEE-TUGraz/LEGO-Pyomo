@@ -92,7 +92,7 @@ legoModels.append(("All SN", LEGO(csAllSN)))
 # Evaluation
 ########################################################################################################################
 
-resultslist = pd.DataFrame(columns=["Objective Value ZOI", "Model building time [s]", "Solving time [s]", "Regret ZOI", "Regret ZOI [%]", "Objective Value Overall", "Regret Overall [%]"])
+resultslist = pd.DataFrame(columns=["Objective Value ZOI", "Model building time [s]", "Solving time [s]", "Regret ZOI", "Regret ZOI [%]", "Objective Value Overall", "Regret Overall [%]", "# Variables", "# Constraints"])
 modelList = {}
 optimizer = SolverFactory("gurobi")
 
@@ -137,6 +137,8 @@ for caseName, lego in legoModels:
                                      "Regret ZOI [%]": None,
                                      "Objective Value Overall": lego.get_objective_value(False),
                                      "Regret Overall [%]": None,
+                                     "# Variables": lego.get_number_of_variables(),
+                                     "# Constraints": lego.get_number_of_constraints()
                                      }
     else:
         # Re-calculate DC-OPF model with fixed Unit Commitment
@@ -155,6 +157,8 @@ for caseName, lego in legoModels:
                                      "Regret ZOI [%]": (objective_value_zoi - comparison_objective_value_zoi) / comparison_objective_value_zoi * 100 - 100,
                                      "Objective Value Overall": objective_value_overall,
                                      "Regret Overall [%]": (objective_value_overall - comparison_objective_value_overall) / comparison_objective_value_overall * 100 - 100,
+                                     "# Variables": lego.get_number_of_variables(),
+                                     "# Constraints": lego.get_number_of_constraints()
                                      }
 
     modelList.update({caseName: lego.model})
