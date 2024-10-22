@@ -18,6 +18,7 @@ from tools.printer import pprint_var, Printer
 pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 printer = Printer.getInstance()
+print_variable_results = False
 
 ########################################################################################################################
 # Data input from case study
@@ -92,7 +93,7 @@ legoModels.append(("All SN", LEGO(csAllSN)))
 # Evaluation
 ########################################################################################################################
 
-resultslist = pd.DataFrame(columns=["Objective Value ZOI", "Model building time [s]", "Solving time [s]", "Regret ZOI", "Regret ZOI [%]", "Objective Value Overall", "Regret Overall [%]", "# Variables", "# Constraints"])
+resultslist = pd.DataFrame(columns=["Obj. value in original (ZOI)", "Model building time [s]", "Solving time [s]", "Regret to original (ZOI)", "Regret to original (ZOI) [%]", "Obj. value in original (Overall)", "Regret to original (Overall) [%]", "# Variables", "# Constraints"])
 modelList = {}
 optimizer = SolverFactory("gurobi")
 
@@ -116,10 +117,11 @@ for caseName, lego in legoModels:
         case _:
             print("Solver terminated with condition:", results.solver.termination_condition)
 
-    print("\nDisplaying Solution\n" + '-' * 60)
-    pprint_var(model.p, model.zoi_g)
-    pprint_var(model.t, model.zoi_i, index_positions=[0, 1])
-    pprint_var(model.delta, model.zoi_i)
+    if print_variable_results:
+        print("\nDisplaying Solution\n" + '-' * 60)
+        pprint_var(model.p, model.zoi_g)
+        pprint_var(model.t, model.zoi_i, index_positions=[0, 1])
+        pprint_var(model.delta, model.zoi_i)
 
     # Print sum of slack variables
     print("\nSlack Variables\n" + '-' * 60)
@@ -130,33 +132,36 @@ for caseName, lego in legoModels:
 
     # Compare with DC-OPF
     if caseName == "All DC-OPF":
-        resultslist.loc[caseName] = {"Objective Value ZOI": lego.get_objective_value(True),
+        resultslist.loc[caseName] = {"Obj. value in original (ZOI)": lego.get_objective_value(zoi=True),
                                      "Model building time [s]": lego.timings["model_building"],
                                      "Solving time [s]": lego.timings["model_solving"],
-                                     "Regret ZOI": None,
-                                     "Regret ZOI [%]": None,
-                                     "Objective Value Overall": lego.get_objective_value(False),
-                                     "Regret Overall [%]": None,
+                                     "Regret to original (ZOI)": None,
+                                     "Regret to original (ZOI) [%]": None,
+                                     "Obj. value in original (Overall)": lego.get_objective_value(zoi=False),
+                                     "Regret to original (Overall) [%]": None,
                                      "# Variables": lego.get_number_of_variables(),
                                      "# Constraints": lego.get_number_of_constraints()
                                      }
     else:
         # Re-calculate DC-OPF model with fixed Unit Commitment
-        comparisonModelDC = build_from_clone_with_fixed_results(modelList["All DC-OPF"], lego.model, ["bUC"])
+        comparisonModelDC = build_from_clone_with_fixed_results(model_to_be_cloned=modelList["All DC-OPF"], model_with_fixed_results=lego.model, variables_to_fix=["bUC"])
         comparisonResults, _ = comparisonModelDC.solve_model(optimizer)
-        comparison_objective_value_overall = comparisonModelDC.get_objective_value(False)
-        comparison_objective_value_zoi = comparisonModelDC.get_objective_value(True)
+        comparison_objective_value_overall = comparisonModelDC.get_objective_value(zoi=False)
+        comparison_objective_value_zoi = comparisonModelDC.get_objective_value(zoi=True)
 
         objective_value_overall = lego.get_objective_value(False)
         objective_value_zoi = lego.get_objective_value(True)
 
-        resultslist.loc[caseName] = {"Objective Value ZOI": objective_value_zoi,
+        original_objective_value_overall = LEGO.get_objective_value(LEGO(model=modelList["All DC-OPF"]), zoi=False)
+        original_objective_value_zoi = LEGO.get_objective_value(LEGO(model=modelList["All DC-OPF"]), zoi=True)
+
+        resultslist.loc[caseName] = {"Obj. value in original (ZOI)": comparison_objective_value_zoi,
                                      "Model building time [s]": lego.timings["model_building"],
                                      "Solving time [s]": lego.timings["model_solving"],
-                                     "Regret ZOI": objective_value_zoi - comparison_objective_value_zoi,
-                                     "Regret ZOI [%]": (objective_value_zoi - comparison_objective_value_zoi) / comparison_objective_value_zoi * 100 - 100,
-                                     "Objective Value Overall": objective_value_overall,
-                                     "Regret Overall [%]": (objective_value_overall - comparison_objective_value_overall) / comparison_objective_value_overall * 100 - 100,
+                                     "Regret to original (ZOI)": comparison_objective_value_zoi - original_objective_value_zoi,
+                                     "Regret to original (ZOI) [%]": (comparison_objective_value_zoi - original_objective_value_zoi) / original_objective_value_zoi * 100,
+                                     "Obj. value in original (Overall)": comparison_objective_value_overall,
+                                     "Regret to original (Overall) [%]": (comparison_objective_value_overall - original_objective_value_overall) / comparison_objective_value_overall * 100,
                                      "# Variables": lego.get_number_of_variables(),
                                      "# Constraints": lego.get_number_of_constraints()
                                      }
@@ -166,6 +171,6 @@ for caseName, lego in legoModels:
 
 # Print results in pretty table
 print("\n\nResults")
-print(tabulate(resultslist, headers='keys', floatfmt=(".2f", ".2f", ".2f", ".2f", ".2f", ".0f", ".2f", ".0f"), colalign=("left", "right", "right", "right", "right", "right")))
+print(tabulate(resultslist, headers='keys', floatfmt=(".2f", ".2f", ".2f", ".2f", ".2f", ".0f", ".2f", ".0f", ".0f", ".0f"), colalign=("left", "right", "right", "right", "right", "right", "right", "right")))
 
 print("Done")
