@@ -22,18 +22,22 @@ def int_to_rp(i: int, digits: int = 2):
     return f"rp{i:0{digits}d}"
 
 
+# Dictionary to store which functions have been executed for the given object
+execution_safety_dict = {}
+
+
 # Decorator to check that function has not been executed and add it to executionSafetyList
-def addExecutionLog(func):
-    @functools.wraps(func)  # Preserve the original function's name and docstring
+def addToExecutionLog(func):
+    @functools.wraps(func)  # Preserve the original function's name
     def wrapper(*args, **kwargs):
         # Check that function has not already been executed and add it to dictionary
-        execution_safety_list = args[0]._executionSafetyList
+        execution_safety_list = execution_safety_dict[id(args[0])] = [] if id(args[0]) not in execution_safety_dict else execution_safety_dict[id(args[0])]
+
         fullFuncName = func.__module__ + '.' + func.__name__
         if fullFuncName not in execution_safety_list:
-            execution_safety_list.append(fullFuncName)  # Set the function's key to True
-            print(f"Function {fullFuncName} has been executed, current execution safety: {execution_safety_list}")
+            execution_safety_list.append(fullFuncName)  # Add function to execution list
         else:
-            raise RuntimeError(f"Function {fullFuncName} has already been executed, current execution safety: {execution_safety_list}")
+            raise RuntimeError(f"Function {fullFuncName} has already been executed, current execution log: {execution_safety_list}")
 
         # Call the function
         func(*args, **kwargs)
@@ -46,9 +50,10 @@ def addExecutionLog(func):
 # required_functions: List of function names that need to have been executed before this function (without the file path)
 def checkExecutionLog(required_functions: list[typing.Callable]):
     def decorator(func):
+        @functools.wraps(func)  # Preserve the original function's name
         def wrapper(*args, **kwargs):
             # Check if all required functions have been executed
-            execution_safety_list = args[0]._executionSafetyList
+            execution_safety_list = execution_safety_dict[id(args[0])] = [] if id(args[0]) not in execution_safety_dict else execution_safety_dict[id(args[0])]
             fileName = func.__module__
             fullFuncName = fileName + '.' + func.__name__
             required_functions_adapted = [fileName + '.' + func_name.__name__ for func_name in required_functions]
@@ -67,10 +72,9 @@ def checkExecutionLog(required_functions: list[typing.Callable]):
                                    f"Full list of executed functions: \n"
                                    f"{execution_safety_list}")
             elif fullFuncName in execution_safety_list:
-                raise RuntimeError(f"Function {fullFuncName} has already been executed, current execution safety: {execution_safety_list}")
+                raise RuntimeError(f"Function {fullFuncName} has already been executed, current execution log: {execution_safety_list}")
             else:
-                execution_safety_list.append(fullFuncName)  # Set the function's key to True
-                print(f"Function {fullFuncName} has been executed, current execution safety: {execution_safety_list}")
+                execution_safety_list.append(fullFuncName)  # Add function to execution list
 
                 # Call the function
                 func(*args, **kwargs)

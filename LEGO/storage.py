@@ -3,7 +3,7 @@ import pyomo.environ as pyo
 from LEGO import LEGO, LEGOUtilities
 
 
-@LEGOUtilities.addExecutionLog
+@LEGOUtilities.addToExecutionLog
 def add_variable_definitions(lego: LEGO):
     # Sets
     storageUnits = lego.cs.dPower_Storage.index.tolist()
@@ -19,7 +19,7 @@ def add_variable_definitions(lego: LEGO):
     lego.model.pOMVarCost = pyo.Param(lego.model.storageUnits, initialize=lego.cs.dPower_Storage['pOMVarCostEUR'], doc='Variable O&M cost of storage unit g')
 
 
-@LEGOUtilities.addExecutionLog
+@LEGOUtilities.checkExecutionLog([add_variable_definitions])
 def add_variable_bounds(lego: LEGO):
     for g in lego.model.storageUnits:
         for rp in lego.model.rp:
