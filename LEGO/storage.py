@@ -4,7 +4,28 @@ import LEGOUtilities
 from LEGO import LEGO
 
 
-def add_module(lego: LEGO):
+def add_variable_definitions(lego: LEGO):
+    # Set for storage units as generators
+    storageUnits = lego.cs.dPower_Storage.index.tolist()
+    lego.model.storageUnits = pyo.Set(doc='Storage units', initialize=storageUnits)
+    lego.update_generators(storageUnits)
+
+    # Storage unit variables and limits
+    lego.model.vCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Charging of storage unit g', bounds=(0, None))
+    lego.model.vStIntraRes = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Intra-reserve of storage unit g', bounds=(0, None))
+    lego.model.bCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
+
+
+def add_variable_bounds(lego: LEGO):
+    for g in lego.model.storageUnits:
+        for rp in lego.model.rp:
+            for k in lego.model.k:
+                lego.model.p[g, rp, k].setub(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
+                lego.model.vCharge[g, rp, k].setub(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
+                lego.model.vStIntraRes[g, rp, k].setub(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'])
+
+
+def add_constraints(lego: LEGO):
     # Storage unit charging and discharging
     lego.model.cStIntraRes = pyo.ConstraintList(doc='Intra-reserve constraint for storage units')
     lego.model.cExclusiveChargeDischarge = pyo.ConstraintList(doc='Enforce exclusive charge or discharge for storage units')
@@ -19,4 +40,3 @@ def add_module(lego: LEGO):
                 # TODO: Check if we should rather do a +/- value and calculate charge/discharge ex-post
                 lego.model.cExclusiveChargeDischarge.add(lego.model.vCharge[g, rp, k] <= lego.model.bCharge[g, rp, k] * lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
                 lego.model.cExclusiveChargeDischarge.add(lego.model.p[g, rp, k] <= (1 - lego.model.bCharge[g, rp, k]) * lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
-    pass

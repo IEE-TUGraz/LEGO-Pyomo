@@ -26,6 +26,7 @@ class LEGO:
 
         start_time = time.time()
         model = pyo.ConcreteModel()
+        self.model = model
 
         # Sets
         model.i = pyo.Set(doc='Buses', initialize=self.cs.dPower_BusInfo.index.tolist())
@@ -33,10 +34,11 @@ class LEGO:
         model.thermalGenerators = pyo.Set(doc='Thermal Generators', initialize=self.cs.dPower_ThermalGen.index.tolist())
         model.rorGenerators = pyo.Set(doc='Run-of-river generators', initialize=self.cs.dPower_RoR.index.tolist())
         model.vresGenerators = pyo.Set(doc='Variable renewable energy sources', initialize=self.cs.dPower_VRES.index.tolist())
-        model.storageUnits = pyo.Set(doc='Storage units', initialize=self.cs.dPower_Storage.index.tolist())
-        model.g = pyo.Set(doc='Generators', initialize=model.thermalGenerators | model.rorGenerators | model.vresGenerators | model.storageUnits)
+        model.g = pyo.Set(doc='Generators', initialize=model.thermalGenerators | model.rorGenerators | model.vresGenerators)
         model.rp = pyo.Set(doc='Representative periods', initialize=self.cs.dPower_Demand.index.get_level_values('rp').unique().tolist(), ordered=True)
         model.k = pyo.Set(doc='Timestep within representative period', initialize=self.cs.dPower_Demand.index.get_level_values('k').unique().tolist(), ordered=True)
+
+        storage.add_variable_definitions(self)
 
         # Helper Sets for zone of interest
         model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=self.cs.dPower_BusInfo.loc[self.cs.dPower_BusInfo["ZoneOfInterest"] == "yes"].index.tolist(), within=model.i)
@@ -51,9 +53,6 @@ class LEGO:
         model.bStartup = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Start-up of thermal generator g', domain=pyo.Binary)
         model.bShutdown = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Shut-down of thermal generator g', domain=pyo.Binary)
         model.vThermalOutput = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Power output of thermal generator g', bounds=(0, None))
-        model.vCharge = pyo.Var(model.storageUnits, model.rp, model.k, doc='Charging of storage unit g', bounds=(0, None))
-        model.vStIntraRes = pyo.Var(model.storageUnits, model.rp, model.k, doc='Intra-reserve of storage unit g', bounds=(0, None))
-        model.bCharge = pyo.Var(model.storageUnits, model.rp, model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
 
         model.p = pyo.Var(model.g, model.rp, model.k, doc='Power output of generator g', bounds=(0, None))
         for g in model.thermalGenerators:
@@ -73,13 +72,6 @@ class LEGO:
                     capacity = capacity.values[0] if isinstance(capacity, pd.Series) else capacity
                     exisUnits = self.cs.dPower_VRES.loc[g, 'ExisUnits']
                     model.p[g, rp, k].setub(maxProd * capacity * exisUnits)
-
-        for g in model.storageUnits:
-            for rp in model.rp:
-                for k in model.k:
-                    model.p[g, rp, k].setub(self.cs.dPower_Storage.loc[g, 'MaxProd'] * self.cs.dPower_Storage.loc[g, 'ExisUnits'])
-                    model.vCharge[g, rp, k].setub(self.cs.dPower_Storage.loc[g, 'MaxProd'] * self.cs.dPower_Storage.loc[g, 'ExisUnits'])
-                    model.vStIntraRes[g, rp, k].setub(self.cs.dPower_Storage.loc[g, 'MaxProd'] * self.cs.dPower_Storage.loc[g, 'ExisUnits'] * self.cs.dPower_Storage.loc[g, 'Ene2PowRatio'])
 
         model.t = pyo.Var(model.e, model.rp, model.k, doc='Power flow from bus i to j', bounds=(None, None))
         for (i, j) in model.e:
@@ -186,13 +178,11 @@ class LEGO:
                         model.cMinUpTime.add(sum(model.bStartup[g, rp, LEGOUtilities.int_to_k(i)] for i in range(LEGOUtilities.k_to_int(k) - model.pMinUpTime[g] + 1, LEGOUtilities.k_to_int(k))) <= model.bUC[g, rp, k])  # Minimum Up-Time
                         model.cMinDownTime.add(sum(model.bShutdown[g, rp, LEGOUtilities.int_to_k(i)] for i in range(LEGOUtilities.k_to_int(k) - model.pMinDownTime[g] + 1, LEGOUtilities.k_to_int(k))) <= 1 - model.bUC[g, rp, k])  # Minimum Down-Time
 
-        self.model = model
-        storage.add_module(self)
+        storage.add_constraints(self)
 
         # Objective function
         model.objective = get_objective(model)
 
-        self.model = model
         stop_time = time.time()
         self.timings["model_building"] = stop_time - start_time
         self.timings["model_solving"] = -1.0
@@ -233,6 +223,15 @@ class LEGO:
         else:
             # Iterate through constraints and sum up each individual constraint
             return sum([len(x) for x in self.model.component_objects(pyo.Constraint, active=True)])
+
+    # Update set 'g' to include given generators
+    def update_generators(self, generators_to_be_added: list[str]):
+        # Update set of generators
+        if len(self.model.g) == 0:
+            self.model.g = pyo.Set(doc='Generators', initialize=generators_to_be_added)
+        else:
+            for g in generators_to_be_added:
+                self.model.g.add(g)
 
 
 def get_objective(model: pyo.Model) -> pyo.Objective:
