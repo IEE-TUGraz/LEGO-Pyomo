@@ -15,6 +15,9 @@ def add_variable_definitions(lego: LEGO):
     lego.model.vStIntraRes = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Intra-reserve of storage unit g', bounds=(0, None))
     lego.model.bCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
 
+    # Parameters
+    lego.model.pOMVarCost = pyo.Param(lego.model.storageUnits, initialize=lego.cs.dPower_Storage['pOMVarCostEUR'], doc='Variable O&M cost of storage unit g')
+
 
 @LEGOUtilities.addExecutionLog
 def add_variable_bounds(lego: LEGO):
@@ -26,7 +29,7 @@ def add_variable_bounds(lego: LEGO):
                 lego.model.vStIntraRes[g, rp, k].setub(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'])
 
 
-@LEGOUtilities.checkExecutionLog(["add_variable_definitions", "add_variable_bounds"])
+@LEGOUtilities.checkExecutionLog([add_variable_definitions, add_variable_bounds])
 def add_constraints(lego: LEGO):
     # Storage unit charging and discharging
     lego.model.cStIntraRes = pyo.ConstraintList(doc='Intra-reserve constraint for storage units')

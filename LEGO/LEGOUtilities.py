@@ -1,4 +1,5 @@
-import inspect
+import functools
+import typing
 
 
 # Turns "k0001" into 1, "k0002" into 2, etc.
@@ -23,10 +24,11 @@ def int_to_rp(i: int, digits: int = 2):
 
 # Decorator to check that function has not been executed and add it to executionSafetyList
 def addExecutionLog(func):
+    @functools.wraps(func)  # Preserve the original function's name and docstring
     def wrapper(*args, **kwargs):
         # Check that function has not already been executed and add it to dictionary
         execution_safety_list = args[0]._executionSafetyList
-        fullFuncName = inspect.getfile(func) + '-' + func.__name__
+        fullFuncName = func.__module__ + '.' + func.__name__
         if fullFuncName not in execution_safety_list:
             execution_safety_list.append(fullFuncName)  # Set the function's key to True
             print(f"Function {fullFuncName} has been executed, current execution safety: {execution_safety_list}")
@@ -42,14 +44,14 @@ def addExecutionLog(func):
 # Decorator to check that all required functions have been executed before executing the function
 # Also checks that the function has not already been executed
 # required_functions: List of function names that need to have been executed before this function (without the file path)
-def checkExecutionLog(required_functions: list[str]):
+def checkExecutionLog(required_functions: list[typing.Callable]):
     def decorator(func):
         def wrapper(*args, **kwargs):
             # Check if all required functions have been executed
             execution_safety_list = args[0]._executionSafetyList
-            fileName = inspect.getfile(func)
-            fullFuncName = fileName + '-' + func.__name__
-            required_functions_adapted = [fileName + '-' + func_name for func_name in required_functions]
+            fileName = func.__module__
+            fullFuncName = fileName + '.' + func.__name__
+            required_functions_adapted = [fileName + '.' + func_name.__name__ for func_name in required_functions]
 
             # Check if all required functions have been executed
             missing_functions = []

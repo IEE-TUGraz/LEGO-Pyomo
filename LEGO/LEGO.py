@@ -98,8 +98,6 @@ class LEGO:
         model.pMinUpTime = pyo.Param(model.thermalGenerators, initialize=self.cs.dPower_ThermalGen['MinUpTime'], doc='Minimum up time of thermal generator g')
         model.pMinDownTime = pyo.Param(model.thermalGenerators, initialize=self.cs.dPower_ThermalGen['MinDownTime'], doc='Minimum down time of thermal generator g')
 
-        model.pOMVarCost = pyo.Param(model.storageUnits, initialize=self.cs.dPower_Storage['pOMVarCostEUR'], doc='Variable O&M cost of storage unit g')
-
         model.pReactance = pyo.Param(model.e, initialize=self.cs.dPower_Network['X'], doc='Reactance of line e')
         model.pSlackPrice = pyo.Param(initialize=max(model.pProductionCost.values()) * 100, doc='Price of slack variable')
 
