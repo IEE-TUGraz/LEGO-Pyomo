@@ -2,12 +2,8 @@ import pyomo.environ as pyo
 
 from LEGO import LEGO, LEGOUtilities
 
-executionSafety = {
-    'storage_add_variable_definitions': False,
-    'storage_add_variable_bounds': False,
-}
 
-
+@LEGOUtilities.addExecutionLog
 def add_variable_definitions(lego: LEGO):
     # Sets
     storageUnits = lego.cs.dPower_Storage.index.tolist()
@@ -19,10 +15,8 @@ def add_variable_definitions(lego: LEGO):
     lego.model.vStIntraRes = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Intra-reserve of storage unit g', bounds=(0, None))
     lego.model.bCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
 
-    global executionSafety
-    executionSafety['storage_add_variable_definitions'] = True
 
-
+@LEGOUtilities.addExecutionLog
 def add_variable_bounds(lego: LEGO):
     for g in lego.model.storageUnits:
         for rp in lego.model.rp:
@@ -31,15 +25,9 @@ def add_variable_bounds(lego: LEGO):
                 lego.model.vCharge[g, rp, k].setub(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
                 lego.model.vStIntraRes[g, rp, k].setub(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'])
 
-    global executionSafety
-    executionSafety['storage_add_variable_bounds'] = True
 
-
+@LEGOUtilities.checkExecutionLog(["add_variable_definitions", "add_variable_bounds"])
 def add_constraints(lego: LEGO):
-    global executionSafety
-    if not all(executionSafety.values()):
-        raise RuntimeError(f'Variable definitions and bounds must be added before constraints, but got {executionSafety}')
-
     # Storage unit charging and discharging
     lego.model.cStIntraRes = pyo.ConstraintList(doc='Intra-reserve constraint for storage units')
     lego.model.cExclusiveChargeDischarge = pyo.ConstraintList(doc='Enforce exclusive charge or discharge for storage units')

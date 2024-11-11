@@ -19,6 +19,8 @@ class LEGO:
         self.results: typing.Optional[pyomo.opt.results.results_.SolverResults] = results
         self.timings = {"model_building": -1.0, "model_solving": -1.0}
 
+        self._executionSafetyList = []  # List to record all functions that have been called which add variables, constraints, etc. to the model
+
     def build_model(self, already_existing_ok=False) -> (pyo.Model, float):
         if not already_existing_ok and self.model is not None:
             raise RuntimeError("Model already exists, please set already_existing_ok to True if that's intentional")
