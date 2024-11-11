@@ -7,6 +7,7 @@ import pyomo.opt.results.results_
 
 import LEGOUtilities
 from CaseStudy import CaseStudy
+from LEGO import storage
 from tools.printer import Printer
 
 printer = Printer.getInstance()
@@ -185,20 +186,8 @@ class LEGO:
                         model.cMinUpTime.add(sum(model.bStartup[g, rp, LEGOUtilities.int_to_k(i)] for i in range(LEGOUtilities.k_to_int(k) - model.pMinUpTime[g] + 1, LEGOUtilities.k_to_int(k))) <= model.bUC[g, rp, k])  # Minimum Up-Time
                         model.cMinDownTime.add(sum(model.bShutdown[g, rp, LEGOUtilities.int_to_k(i)] for i in range(LEGOUtilities.k_to_int(k) - model.pMinDownTime[g] + 1, LEGOUtilities.k_to_int(k))) <= 1 - model.bUC[g, rp, k])  # Minimum Down-Time
 
-        # Storage unit charging and discharging
-        model.cStIntraRes = pyo.ConstraintList(doc='Intra-reserve constraint for storage units')
-        model.cExclusiveChargeDischarge = pyo.ConstraintList(doc='Enforce exclusive charge or discharge for storage units')
-        for g in model.storageUnits:
-            for rp in model.rp:
-                for k in model.k:
-                    if LEGOUtilities.rp_to_int(rp) == 1 and LEGOUtilities.k_to_int(k) != 1:  # Only cyclic if it has multiple representative periods (and skipping first timestep)
-                        model.cStIntraRes.add(model.vStIntraRes[g, rp, k] == model.vStIntraRes[g, rp, model.k.prev(k)] - model.p[g, rp, k] / self.cs.dPower_Storage.loc[g, 'DisEffic'] + model.vCharge[g, rp, k] * self.cs.dPower_Storage.loc[g, 'ChEffic'])
-                    elif LEGOUtilities.rp_to_int(rp) > 1:
-                        model.cStIntraRes.add(model.vStIntraRes[g, rp, k] == model.vStIntraRes[g, rp, model.k.prevw(k)] - model.p[g, rp, k] / self.cs.dPower_Storage.loc[g, 'DisEffic'] + model.vCharge[g, rp, k] * self.cs.dPower_Storage.loc[g, 'ChEffic'])
-
-                    # TODO: Check if we should rather do a +/- value and calculate charge/discharge ex-post
-                    model.cExclusiveChargeDischarge.add(model.vCharge[g, rp, k] <= model.bCharge[g, rp, k] * self.cs.dPower_Storage.loc[g, 'MaxProd'] * self.cs.dPower_Storage.loc[g, 'ExisUnits'])
-                    model.cExclusiveChargeDischarge.add(model.p[g, rp, k] <= (1 - model.bCharge[g, rp, k]) * self.cs.dPower_Storage.loc[g, 'MaxProd'] * self.cs.dPower_Storage.loc[g, 'ExisUnits'])
+        self.model = model
+        storage.add_module(self)
 
         # Objective function
         model.objective = get_objective(model)
