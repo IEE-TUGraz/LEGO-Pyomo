@@ -3,17 +3,25 @@ import pyomo.environ as pyo
 import LEGOUtilities
 from LEGO import LEGO
 
+executionSafety = {
+    'storage_add_variable_definitions': False,
+    'storage_add_variable_bounds': False,
+}
+
 
 def add_variable_definitions(lego: LEGO):
-    # Set for storage units as generators
+    # Sets
     storageUnits = lego.cs.dPower_Storage.index.tolist()
     lego.model.storageUnits = pyo.Set(doc='Storage units', initialize=storageUnits)
     lego.update_generators(storageUnits)
 
-    # Storage unit variables and limits
+    # Variables
     lego.model.vCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Charging of storage unit g', bounds=(0, None))
     lego.model.vStIntraRes = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Intra-reserve of storage unit g', bounds=(0, None))
     lego.model.bCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
+
+    global executionSafety
+    executionSafety['storage_add_variable_definitions'] = True
 
 
 def add_variable_bounds(lego: LEGO):
@@ -24,8 +32,15 @@ def add_variable_bounds(lego: LEGO):
                 lego.model.vCharge[g, rp, k].setub(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
                 lego.model.vStIntraRes[g, rp, k].setub(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'])
 
+    global executionSafety
+    executionSafety['storage_add_variable_bounds'] = True
+
 
 def add_constraints(lego: LEGO):
+    global executionSafety
+    if not all(executionSafety.values()):
+        raise RuntimeError(f'Variable definitions and bounds must be added before constraints, but got {executionSafety}')
+
     # Storage unit charging and discharging
     lego.model.cStIntraRes = pyo.ConstraintList(doc='Intra-reserve constraint for storage units')
     lego.model.cExclusiveChargeDischarge = pyo.ConstraintList(doc='Enforce exclusive charge or discharge for storage units')

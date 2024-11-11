@@ -128,6 +128,8 @@ class LEGO:
             i += 1
             model.delta[slack_node, :, :].fix(0)
 
+        storage.add_variable_bounds(self)
+
         # Constraint(s)
         model.cPower_Balance = pyo.ConstraintList(doc='Power balance constraint for each bus')
         for i in model.i:
