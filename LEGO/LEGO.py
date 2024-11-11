@@ -5,9 +5,8 @@ import pandas as pd
 import pyomo.environ as pyo
 import pyomo.opt.results.results_
 
-import LEGOUtilities
 from CaseStudy import CaseStudy
-from LEGO import storage
+from LEGO import storage, LEGOUtilities
 from tools.printer import Printer
 
 printer = Printer.getInstance()

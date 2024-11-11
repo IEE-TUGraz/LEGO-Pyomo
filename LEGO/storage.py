@@ -1,7 +1,6 @@
 import pyomo.environ as pyo
 
-import LEGOUtilities
-from LEGO import LEGO
+from LEGO import LEGO, LEGOUtilities
 
 executionSafety = {
     'storage_add_variable_definitions': False,
