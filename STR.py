@@ -7,7 +7,7 @@ from pyomo.util.infeasible import log_infeasible_constraints
 from tabulate import tabulate
 
 from CaseStudy import CaseStudy
-from LEGO import LEGO, build_from_clone_with_fixed_results
+from LEGO.LEGO import LEGO, build_from_clone_with_fixed_results
 from PyomoResult import model_to_sqlite
 from tools.printer import pprint_var, Printer
 
