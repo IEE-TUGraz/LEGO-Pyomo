@@ -53,15 +53,15 @@ class LEGO:
         model.bShutdown = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Shut-down of thermal generator g', domain=pyo.Binary)
         model.vThermalOutput = pyo.Var(model.thermalGenerators, model.rp, model.k, doc='Power output of thermal generator g', bounds=(0, None))
 
-        model.p = pyo.Var(model.g, model.rp, model.k, doc='Power output of generator g', bounds=(0, None))
+        model.vGenP = pyo.Var(model.g, model.rp, model.k, doc='Power output of generator g', bounds=(0, None))
         for g in model.thermalGenerators:
-            model.p[g, :, :].setub(self.cs.dPower_ThermalGen.loc[g, 'MaxProd'] * self.cs.dPower_ThermalGen.loc[g, 'ExisUnits'])
+            model.vGenP[g, :, :].setub(self.cs.dPower_ThermalGen.loc[g, 'MaxProd'] * self.cs.dPower_ThermalGen.loc[g, 'ExisUnits'])
             model.vThermalOutput[g, :, :].setub(self.cs.dPower_ThermalGen.loc[g, 'MaxProd'] * self.cs.dPower_ThermalGen.loc[g, 'ExisUnits'] - self.cs.dPower_ThermalGen.loc[g, 'MinProd'] * self.cs.dPower_ThermalGen.loc[g, 'ExisUnits'])
 
         for g in model.rorGenerators:
             for rp in model.rp:
                 for k in model.k:
-                    model.p[g, rp, k].setub(min(self.cs.dPower_RoR.loc[g, 'MaxProd'], self.cs.dPower_Inflows.loc[rp, g, k]['Inflow']))  # TODO: Check and adapt for storage
+                    model.vGenP[g, rp, k].setub(min(self.cs.dPower_RoR.loc[g, 'MaxProd'], self.cs.dPower_Inflows.loc[rp, g, k]['Inflow']))  # TODO: Check and adapt for storage
 
         for g in model.vresGenerators:
             for rp in model.rp:
@@ -70,7 +70,7 @@ class LEGO:
                     capacity = self.cs.dPower_VRESProfiles.loc[rp, self.cs.dPower_VRES.loc[g, 'i'], k, self.cs.dPower_VRES.loc[g, 'tec']]['Capacity']
                     capacity = capacity.values[0] if isinstance(capacity, pd.Series) else capacity
                     exisUnits = self.cs.dPower_VRES.loc[g, 'ExisUnits']
-                    model.p[g, rp, k].setub(maxProd * capacity * exisUnits)
+                    model.vGenP[g, rp, k].setub(maxProd * capacity * exisUnits)
 
         model.t = pyo.Var(model.e, model.rp, model.k, doc='Power flow from bus i to j', bounds=(None, None))
         for (i, j) in model.e:
@@ -133,7 +133,7 @@ class LEGO:
             for rp in model.rp:
                 for k in model.k:
                     model.cPower_Balance.add(
-                        sum(model.p[g, rp, k] for g in model.g if self.cs.hGenerators_to_Buses.loc[g]['i'] == i) -  # Production of generators at bus i
+                        sum(model.vGenP[g, rp, k] for g in model.g if self.cs.hGenerators_to_Buses.loc[g]['i'] == i) -  # Production of generators at bus i
                         sum(model.t[e, rp, k] for e in model.e if (e[0] == i)) +  # Power flow from bus i to bus j
                         sum(model.t[e, rp, k] for e in model.e if (e[1] == i)) ==  # Power flow from bus j to bus i
                         model.pDemand[rp, i, k] -  # Demand at bus i
@@ -165,7 +165,7 @@ class LEGO:
         for g in model.thermalGenerators:
             for rp in model.rp:
                 for k in model.k:
-                    model.cPowerOutput.add(model.p[g, rp, k] == self.cs.dPower_ThermalGen.loc[g, 'MinProd'] * model.bUC[g, rp, k] + model.vThermalOutput[g, rp, k])
+                    model.cPowerOutput.add(model.vGenP[g, rp, k] == self.cs.dPower_ThermalGen.loc[g, 'MinProd'] * model.bUC[g, rp, k] + model.vThermalOutput[g, rp, k])
                     model.cPHatProduction.add(model.vThermalOutput[g, rp, k] <= (self.cs.dPower_ThermalGen.loc[g, 'MaxProd'] - self.cs.dPower_ThermalGen.loc[g, 'MinProd']) * model.bUC[g, rp, k])
                     model.cStartupLogic.add(model.bUC[g, rp, k] - model.bUC[g, rp, model.k.prevw(k)] == model.bStartup[g, rp, k] - model.bShutdown[g, rp, k])
                     model.cRampUp.add(model.vThermalOutput[g, rp, k] - model.vThermalOutput[g, rp, model.k.prevw(k)] <= self.cs.dPower_ThermalGen.loc[g, 'RampUp'] * model.bUC[g, rp, k])
@@ -236,10 +236,10 @@ class LEGO:
 def get_objective(model: pyo.Model) -> pyo.Objective:
     result = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pInterVarCost[g] * sum(model.bUC[g, :, :]) +  # Fixed cost of thermal generators
                                                                                                           model.pStartupCost[g] * sum(model.bStartup[g, :, :]) +  # Startup cost of thermal generators
-                                                                                                          model.pSlopeVarCost[g] * sum(model.p[g, :, :]) for g in model.thermalGenerators) +  # Production cost of thermal generators
-                                                                                                      sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.vresGenerators) +
-                                                                                                      sum(model.pProductionCost[g] * sum(model.p[g, :, :]) for g in model.rorGenerators) +
-                                                                                                      sum(model.pOMVarCost[g] * sum(model.p[g, :, :]) for g in model.storageUnits) +
+                                                                                                          model.pSlopeVarCost[g] * sum(model.vGenP[g, :, :]) for g in model.thermalGenerators) +  # Production cost of thermal generators
+                                                                                                      sum(model.pProductionCost[g] * sum(model.vGenP[g, :, :]) for g in model.vresGenerators) +
+                                                                                                      sum(model.pProductionCost[g] * sum(model.vGenP[g, :, :]) for g in model.rorGenerators) +
+                                                                                                      sum(model.pOMVarCost[g] * sum(model.vGenP[g, :, :]) for g in model.storageUnits) +
                                                                                                       (sum(model.vSlack_DemandNotServed[:, :, :]) + sum(model.vSlack_OverProduction[:, :, :])) * model.pSlackPrice)
 
     return result
@@ -249,10 +249,10 @@ def get_objective_value(model: pyo.Model, zoi: bool):
     # This is calculated in any case to make sure that the objective is calculated correctly - please ALWAYS update this AND the calculation below whenever something changes in the objective function
     result_overall = (sum(pyo.value(model.pInterVarCost[g]) * sum(pyo.value(model.bUC[g, :, :])) +  # Fixed cost of thermal generators
                           pyo.value(model.pStartupCost[g]) * sum(pyo.value(model.bStartup[g, :, :])) +  # Startup cost of thermal generators
-                          pyo.value(model.pSlopeVarCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in model.thermalGenerators) +  # Production cost of thermal generators
-                      sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in model.vresGenerators) +
-                      sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in model.rorGenerators) +
-                      sum(pyo.value(model.pOMVarCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in model.storageUnits) +
+                          pyo.value(model.pSlopeVarCost[g]) * sum(pyo.value(model.vGenP[g, :, :])) for g in model.thermalGenerators) +  # Production cost of thermal generators
+                      sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.vGenP[g, :, :])) for g in model.vresGenerators) +
+                      sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.vGenP[g, :, :])) for g in model.rorGenerators) +
+                      sum(pyo.value(model.pOMVarCost[g]) * sum(pyo.value(model.vGenP[g, :, :])) for g in model.storageUnits) +
                       (sum(pyo.value(model.vSlack_DemandNotServed[:, :, :])) + sum(pyo.value(model.vSlack_OverProduction[:, :, :]))) * pyo.value(model.pSlackPrice))
 
     if (abs(result_overall - pyo.value(model.objective)) / pyo.value(model.objective)) > 1e-12:
@@ -262,10 +262,10 @@ def get_objective_value(model: pyo.Model, zoi: bool):
     else:
         result_zoi = (sum(pyo.value(model.pInterVarCost[g]) * sum(pyo.value(model.bUC[g, :, :])) +  # Fixed cost of thermal generators
                           pyo.value(model.pStartupCost[g]) * sum(pyo.value(model.bStartup[g, :, :])) +  # Startup cost of thermal generators
-                          pyo.value(model.pSlopeVarCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in (model.thermalGenerators & model.zoi_g)) +  # Production cost of thermal generators
-                      # sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in model.vresGenerators) +
-                      # sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in model.rorGenerators) +
-                      # sum(pyo.value(model.pOMVarCost[g]) * sum(pyo.value(model.p[g, :, :])) for g in model.storageUnits) +
+                          pyo.value(model.pSlopeVarCost[g]) * sum(pyo.value(model.vGenP[g, :, :])) for g in (model.thermalGenerators & model.zoi_g)) +  # Production cost of thermal generators
+                      #                                                                    0.0 for g in (model.thermalGenerators & model.zoi_g)) +  # Production cost of thermal generators -> Removed variable cost to test TODO: Discuss with Sonja & Diego
+                      # sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.vGenP[g, :, :])) for g in model.vresGenerators) +
+                      # sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.vGenP[g, :, :])) for g in model.rorGenerators) +
                       sum(sum(pyo.value(model.vSlack_DemandNotServed[:, :, i])) + sum(pyo.value(model.vSlack_OverProduction[:, :, i])) for i in model.zoi_i) * pyo.value(model.pSlackPrice))
 
         return result_zoi
