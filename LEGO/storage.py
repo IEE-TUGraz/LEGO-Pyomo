@@ -35,7 +35,7 @@ def add_variable_bounds(lego: LEGO):
 
     for p in lego.model.p:
         for g in lego.model.storageUnits:
-            if LEGOUtilities.p_to_int(p) % lego.model.pMovWindow == 1:
+            if LEGOUtilities.p_to_int(p) % lego.model.pMovWindow == 0:
                 lego.model.vStInterRes[p, g].setub(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'])
                 lego.model.vStInterRes[p, g].setlb(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'] * lego.cs.dPower_Storage.loc[g, 'MinReserve'])
 
@@ -69,9 +69,13 @@ def add_constraints(lego: LEGO):
     if len(lego.model.rp) > 1:
         for g in lego.model.storageUnits:
             for p, rp, k in lego.model.hindex:
-                if LEGOUtilities.p_to_int(p) % lego.model.pMovWindow == 1 and LEGOUtilities.p_to_int(p) >= lego.model.pMovWindow:  # TODO: Check why this is 1 and not 0
-                    lego.model.eStInterRes.add(0 == lego.model.vStInterRes[LEGOUtilities.int_to_p(LEGOUtilities.p_to_int(p) - lego.model.pMovWindow), g] +
-                                               (lego.cs.dPower_Storage.loc[g, 'IniReserve'] if LEGOUtilities.p_to_int(p) == lego.model.pMovWindow else 0) -
+                # If current p is a multiple of moving window, add constraint
+                if LEGOUtilities.p_to_int(p) % lego.model.pMovWindow == 0 and LEGOUtilities.p_to_int(p) >= lego.model.pMovWindow:
+                    relevant_hindeces = lego.model.hindex[LEGOUtilities.p_to_int(p) - lego.model.pMovWindow:LEGOUtilities.p_to_int(p)]
+                    hindex_count = relevant_hindeces.to_frame(index=False).groupby(['rp', 'k']).size()
+
+                    lego.model.eStInterRes.add(0 == lego.model.vStInterRes[LEGOUtilities.int_to_p(LEGOUtilities.p_to_int(p) - lego.model.pMovWindow + 1), g] +
+                                               (lego.cs.dPower_Storage.loc[g, 'IniReserve'] if LEGOUtilities.p_to_int(p) == lego.model.pMovWindow + 1 else 0) -
                                                lego.model.vStInterRes[p, g] +
-                                               sum(-lego.model.vGenP[g, rp2, k2] * lego.model.pWeight_k[k2] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] +
-                                                   lego.model.vCharge[g, rp2, k2] * lego.model.pWeight_k[k2] * lego.cs.dPower_Storage.loc[g, 'ChEffic'] for p2, rp2, k2 in lego.model.hindex if LEGOUtilities.p_to_int(p) - lego.model.pMovWindow < LEGOUtilities.rp_to_int(rp2) <= LEGOUtilities.p_to_int(p)))
+                                               sum(-lego.model.vGenP[g, rp, k] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] * hindex_count.loc[rp, k] +
+                                                   lego.model.vCharge[g, rp2, k2] * lego.model.pWeight_k[k2] * lego.cs.dPower_Storage.loc[g, 'ChEffic'] * hindex_count.loc[rp2, k2] for rp2, k2 in hindex_count.index if LEGOUtilities.p_to_int(p) - lego.model.pMovWindow < LEGOUtilities.p_to_int(p) <= LEGOUtilities.p_to_int(p)))
