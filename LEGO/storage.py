@@ -13,11 +13,12 @@ def add_variable_definitions(lego: LEGO):
     # Variables
     lego.model.vCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Charging of storage unit g', bounds=(0, None))
     lego.model.vStIntraRes = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Intra-reserve of storage unit g', bounds=(0, None))
-    lego.model.bCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
+    lego.model.bChargeDisCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
 
     # Parameters
     lego.model.pOMVarCost = pyo.Param(lego.model.storageUnits, initialize=lego.cs.dPower_Storage['pOMVarCostEUR'], doc='Variable O&M cost of storage unit g')
     lego.model.pWeight_k = pyo.Param(lego.model.k, initialize=lego.cs.dPower_WeightsK, doc='Weight of time step k')
+    lego.model.pEnableChDisPower = lego.cs.dPower_Parameters.loc['pEnableChDisPower', 'Value']  # Avoid simultaneous charging and discharging
 
 
 @LEGOUtilities.checkExecutionLog([add_variable_definitions])
@@ -49,5 +50,6 @@ def add_constraints(lego: LEGO):
                     lego.model.eStIntraRes.add(0 == lego.model.vStIntraRes[g, rp, lego.model.k.prevw(k)] - lego.model.vStIntraRes[g, rp, k] - lego.model.p[g, rp, k] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vCharge[g, rp, k] * lego.model.pWeight_k[k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
 
                 # TODO: Check if we should rather do a +/- value and calculate charge/discharge ex-post
-                lego.model.eExclusiveChargeDischarge.add(lego.model.vCharge[g, rp, k] <= lego.model.bCharge[g, rp, k] * lego.cs.dPower_Storage.loc[g, 'MaxCons'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
-                lego.model.eExclusiveChargeDischarge.add(lego.model.p[g, rp, k] <= (1 - lego.model.bCharge[g, rp, k]) * lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
+                if lego.model.pEnableChDisPower:
+                    lego.model.eExclusiveChargeDischarge.add(lego.model.vCharge[g, rp, k] <= lego.model.bChargeDisCharge[g, rp, k] * lego.cs.dPower_Storage.loc[g, 'MaxCons'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
+                    lego.model.eExclusiveChargeDischarge.add(lego.model.p[g, rp, k] <= (1 - lego.model.bChargeDisCharge[g, rp, k]) * lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])

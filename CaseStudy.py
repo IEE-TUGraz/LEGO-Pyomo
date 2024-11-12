@@ -108,7 +108,21 @@ class CaseStudy:
         dPower_Parameters = dPower_Parameters.drop(dPower_Parameters.columns[0], axis=1)
         dPower_Parameters = dPower_Parameters.dropna(how="all")
         dPower_Parameters = dPower_Parameters.set_index('General')
+
+        self.yesNo_to_bool(dPower_Parameters, ['pEnableChDisPower'])
         return dPower_Parameters
+
+    @staticmethod
+    def yesNo_to_bool(df: pd.DataFrame, columns_to_be_changed: list[str]):
+        for column in columns_to_be_changed:
+            match df.loc[column, "Value"]:
+                case "Yes":
+                    df.loc[column, "Value"] = 1
+                case "No":
+                    df.loc[column, "Value"] = 0
+                case _:
+                    raise ValueError(f"Value for {column} must be either 'Yes' or 'No'.")
+        return df
 
     def get_dPower_BusInfo(self):
         dPower_BusInfo = pd.read_excel(self.example_folder + self.power_businfo_file, skiprows=[0, 1, 3, 4, 5])
