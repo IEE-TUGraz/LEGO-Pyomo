@@ -171,6 +171,7 @@ class CaseStudy:
         dPower_Storage = self.read_generator_data(self.example_folder + self.power_storage_file)
         dPower_Storage['pOMVarCostEUR'] = dPower_Storage['OMVarCost'] * 1e-3
         dPower_Storage['IniReserve'] = dPower_Storage['IniReserve'].fillna(0)
+        dPower_Storage['MinReserve'] = dPower_Storage['MinReserve'].fillna(0)
         return dPower_Storage
 
     def get_dPower_Demand(self):
