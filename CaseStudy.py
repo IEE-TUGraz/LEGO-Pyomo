@@ -16,8 +16,9 @@ class CaseStudy:
                  power_demand_file: str = "Power_Demand.xlsx", dPower_Demand: pd.DataFrame = None,
                  power_inflows_file: str = "Power_Inflows.xlsx", dPower_Inflows: pd.DataFrame = None,
                  power_vresprofiles_file: str = "Power_VRESProfiles.xlsx", dPower_VRESProfiles: pd.DataFrame = None,
-                 power_storage: str = "Power_Storage.xlsx", dPower_Storage: pd.DataFrame = None,
-                 power_weightsk: str = "Power_WeightsK.xlsx", dPower_WeightsK: pd.DataFrame = None):
+                 power_storage_file: str = "Power_Storage.xlsx", dPower_Storage: pd.DataFrame = None,
+                 power_weightsk_file: str = "Power_WeightsK.xlsx", dPower_WeightsK: pd.DataFrame = None,
+                 power_hindex_file: str = "Power_Hindex.xlsx", dPower_Hindex: pd.DataFrame = None):
         self.example_folder = example_folder
         self.do_not_merge_single_node_buses = do_not_merge_single_node_buses
 
@@ -78,14 +79,20 @@ class CaseStudy:
         if dPower_Storage is not None:
             self.dPower_Storage = dPower_Storage
         else:
-            self.power_storage_file = power_storage
+            self.power_storage_file = power_storage_file
             self.dPower_Storage = self.get_dPower_Storage()
 
         if dPower_WeightsK is not None:
             self.dPower_WeightsK = dPower_WeightsK
         else:
-            self.power_weightsk_file = power_weightsk
+            self.power_weightsk_file = power_weightsk_file
             self.dPower_WeightsK = self.get_dPower_WeightsK()
+
+        if dPower_Hindex is not None:
+            self.dPower_Hindex = dPower_Hindex
+        else:
+            self.power_hindex_file = power_hindex_file
+            self.dPower_Hindex = self.get_dPower_Hindex()
 
         self.pMaxAngleDCOPF = self.dPower_Parameters.loc["pMaxAngleDCOPF"].iloc[0] * np.pi / 180  # Read and convert to radians
         self.pSBase = self.dPower_Parameters.loc["pSBase"].iloc[0]
@@ -204,6 +211,13 @@ class CaseStudy:
         dPower_WeightsK = dPower_WeightsK.rename(columns={dPower_WeightsK.columns[0]: "k", dPower_WeightsK.columns[1]: "Weight"})
         dPower_WeightsK = dPower_WeightsK.set_index('k')
         return dPower_WeightsK
+
+    def get_dPower_Hindex(self):
+        dPower_Hindex = pd.read_excel(self.example_folder + self.power_hindex_file, skiprows=[0, 1, 2, 3, 4])
+        dPower_Hindex = dPower_Hindex.drop(dPower_Hindex.columns[0], axis=1)
+        dPower_Hindex = dPower_Hindex.rename(columns={dPower_Hindex.columns[0]: "p", dPower_Hindex.columns[1]: "rp", dPower_Hindex.columns[2]: "k"})
+        dPower_Hindex = dPower_Hindex.set_index(['p', 'rp', 'k'])
+        return dPower_Hindex
 
     def update_hGenerators_to_Buses(self):
         return pd.concat([self.dPower_ThermalGen[['i']], self.dPower_RoR[['i']], self.dPower_VRES[['i']], self.dPower_Storage[['i']]])

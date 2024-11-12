@@ -34,8 +34,11 @@ class LEGO:
         model.rorGenerators = pyo.Set(doc='Run-of-river generators', initialize=self.cs.dPower_RoR.index.tolist())
         model.vresGenerators = pyo.Set(doc='Variable renewable energy sources', initialize=self.cs.dPower_VRES.index.tolist())
         model.g = pyo.Set(doc='Generators', initialize=model.thermalGenerators | model.rorGenerators | model.vresGenerators)
+
+        model.p = pyo.Set(doc='Periods', initialize=self.cs.dPower_Hindex.index.get_level_values('p').unique().tolist(), ordered=True)
         model.rp = pyo.Set(doc='Representative periods', initialize=self.cs.dPower_Demand.index.get_level_values('rp').unique().tolist(), ordered=True)
         model.k = pyo.Set(doc='Timestep within representative period', initialize=self.cs.dPower_Demand.index.get_level_values('k').unique().tolist(), ordered=True)
+        # TODO? model.hindex = pyo.Set(model.p, model.rp, model.k, doc='Relationship between periods, representative periods and timesteps', initialize=self.cs.dPower_Hindex.index.tolist(), ordered=True)
 
         storage.add_variable_definitions(self)
 
