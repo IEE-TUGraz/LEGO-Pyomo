@@ -40,8 +40,11 @@ def add_constraints(lego: LEGO):
     for g in lego.model.storageUnits:
         for rp in lego.model.rp:
             for k in lego.model.k:
-                if len(lego.model.rp) == 1 and LEGOUtilities.k_to_int(k) != 1:  # Only cyclic if it has multiple representative periods (and skipping first timestep)
-                    lego.model.eStIntraRes.add(0 == lego.model.vStIntraRes[g, rp, lego.model.k.prev(k)] - lego.model.vStIntraRes[g, rp, k] - lego.model.p[g, rp, k] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vCharge[g, rp, k] * lego.model.pWeight_k[k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
+                if len(lego.model.rp) == 1:  # Only cyclic if it has multiple representative periods
+                    if LEGOUtilities.k_to_int(k) == 1:  # Adding IniReserve if it is the first time step (instead of 'prev' value)
+                        lego.model.eStIntraRes.add(0 == lego.cs.dPower_Storage.loc[g, 'IniReserve'] - lego.model.vStIntraRes[g, rp, k] - lego.model.p[g, rp, k] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vCharge[g, rp, k] * lego.model.pWeight_k[k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
+                    else:
+                        lego.model.eStIntraRes.add(0 == lego.model.vStIntraRes[g, rp, lego.model.k.prev(k)] - lego.model.vStIntraRes[g, rp, k] - lego.model.p[g, rp, k] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vCharge[g, rp, k] * lego.model.pWeight_k[k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
                 elif len(lego.model.rp) > 1:
                     lego.model.eStIntraRes.add(0 == lego.model.vStIntraRes[g, rp, lego.model.k.prevw(k)] - lego.model.vStIntraRes[g, rp, k] - lego.model.p[g, rp, k] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vCharge[g, rp, k] * lego.model.pWeight_k[k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
 
