@@ -17,6 +17,7 @@ def add_variable_definitions(lego: LEGO):
 
     # Parameters
     lego.model.pOMVarCost = pyo.Param(lego.model.storageUnits, initialize=lego.cs.dPower_Storage['pOMVarCostEUR'], doc='Variable O&M cost of storage unit g')
+    lego.model.pWeight_k = pyo.Param(lego.model.k, initialize=lego.cs.dPower_WeightsK, doc='Weight of time step k')
 
 
 @LEGOUtilities.checkExecutionLog([add_variable_definitions])
@@ -34,16 +35,16 @@ def add_constraints(lego: LEGO):
     # TODO: Check if we should add Hydro here as well
 
     # Storage unit charging and discharging
-    lego.model.cStIntraRes = pyo.ConstraintList(doc='Intra-reserve constraint for storage units')
-    lego.model.cExclusiveChargeDischarge = pyo.ConstraintList(doc='Enforce exclusive charge or discharge for storage units')
+    lego.model.eStIntraRes = pyo.ConstraintList(doc='Intra-reserve constraint for storage units')
+    lego.model.eExclusiveChargeDischarge = pyo.ConstraintList(doc='Enforce exclusive charge or discharge for storage units')
     for g in lego.model.storageUnits:
         for rp in lego.model.rp:
             for k in lego.model.k:
                 if len(lego.model.rp) == 1 and LEGOUtilities.k_to_int(k) != 1:  # Only cyclic if it has multiple representative periods (and skipping first timestep)
-                    lego.model.cStIntraRes.add(lego.model.vStIntraRes[g, rp, k] == lego.model.vStIntraRes[g, rp, lego.model.k.prev(k)] - lego.model.p[g, rp, k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vCharge[g, rp, k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
+                    lego.model.eStIntraRes.add(0 == lego.model.vStIntraRes[g, rp, lego.model.k.prev(k)] - lego.model.vStIntraRes[g, rp, k] - lego.model.p[g, rp, k] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vCharge[g, rp, k] * lego.model.pWeight_k[k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
                 elif len(lego.model.rp) > 1:
-                    lego.model.cStIntraRes.add(lego.model.vStIntraRes[g, rp, k] == lego.model.vStIntraRes[g, rp, lego.model.k.prevw(k)] - lego.model.p[g, rp, k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vCharge[g, rp, k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
+                    lego.model.eStIntraRes.add(0 == lego.model.vStIntraRes[g, rp, lego.model.k.prevw(k)] - lego.model.vStIntraRes[g, rp, k] - lego.model.p[g, rp, k] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vCharge[g, rp, k] * lego.model.pWeight_k[k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
 
                 # TODO: Check if we should rather do a +/- value and calculate charge/discharge ex-post
-                lego.model.cExclusiveChargeDischarge.add(lego.model.vCharge[g, rp, k] <= lego.model.bCharge[g, rp, k] * lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
-                lego.model.cExclusiveChargeDischarge.add(lego.model.p[g, rp, k] <= (1 - lego.model.bCharge[g, rp, k]) * lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
+                lego.model.eExclusiveChargeDischarge.add(lego.model.vCharge[g, rp, k] <= lego.model.bCharge[g, rp, k] * lego.cs.dPower_Storage.loc[g, 'MaxCons'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
+                lego.model.eExclusiveChargeDischarge.add(lego.model.p[g, rp, k] <= (1 - lego.model.bCharge[g, rp, k]) * lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
