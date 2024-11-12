@@ -7,6 +7,7 @@ import pandas as pd
 class CaseStudy:
 
     def __init__(self, example_folder: str, do_not_merge_single_node_buses: bool = False,
+                 global_parameters_file: str = "Global_Parameters.xlsx", dGlobal_Parameters: pd.DataFrame = None,
                  power_parameters_file: str = "Power_Parameters.xlsx", dPower_Parameters: pd.DataFrame = None,
                  power_businfo_file: str = "Power_BusInfo.xlsx", dPower_BusInfo: pd.DataFrame = None,
                  power_network_file: str = "Power_Network.xlsx", dPower_Network: pd.DataFrame = None,
@@ -21,6 +22,12 @@ class CaseStudy:
                  power_hindex_file: str = "Power_Hindex.xlsx", dPower_Hindex: pd.DataFrame = None):
         self.example_folder = example_folder
         self.do_not_merge_single_node_buses = do_not_merge_single_node_buses
+
+        if dGlobal_Parameters is not None:
+            self.dGlobal_Parameters = dGlobal_Parameters
+        else:
+            self.global_parameters_file = global_parameters_file
+            self.dGlobal_Parameters = self.get_dGlobal_Parameters()
 
         if dPower_Parameters is not None:
             self.dPower_Parameters = dPower_Parameters
@@ -109,6 +116,13 @@ class CaseStudy:
                          dPower_Network=self.dPower_Network.copy(), dPower_ThermalGen=self.dPower_ThermalGen.copy(),
                          dPower_RoR=self.dPower_RoR.copy(), dPower_VRES=self.dPower_VRES.copy(), dPower_Demand=self.dPower_Demand.copy(),
                          dPower_Inflows=self.dPower_Inflows.copy(), dPower_VRESProfiles=self.dPower_VRESProfiles.copy())
+
+    def get_dGlobal_Parameters(self):
+        dGlobal_Parameters = pd.read_excel(self.example_folder + self.global_parameters_file, skiprows=[0, 1])
+        dGlobal_Parameters = dGlobal_Parameters.drop(dGlobal_Parameters.columns[0], axis=1)
+        dGlobal_Parameters = dGlobal_Parameters.set_index('Sectors')
+
+        return dGlobal_Parameters
 
     def get_dPower_Parameters(self):
         dPower_Parameters = pd.read_excel(self.example_folder + self.power_parameters_file, skiprows=[0, 1])
