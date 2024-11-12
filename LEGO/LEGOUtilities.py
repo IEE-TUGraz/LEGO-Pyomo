@@ -22,6 +22,16 @@ def int_to_rp(i: int, digits: int = 2):
     return f"rp{i:0{digits}d}"
 
 
+# Turns "h0001" into 1, "h0002" into 2, etc.
+def p_to_int(p: str):
+    return int(p[1:])
+
+
+# Turns 1 into "h0001", 2 into "h0002", etc.
+def int_to_p(i: int, digits: int = 4):
+    return f"h{i:0{digits}d}"
+
+
 # Dictionary to store which functions have been executed for the given object
 execution_safety_dict = {}
 

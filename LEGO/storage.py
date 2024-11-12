@@ -13,6 +13,7 @@ def add_variable_definitions(lego: LEGO):
     # Variables
     lego.model.vCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Charging of storage unit g', bounds=(0, None))
     lego.model.vStIntraRes = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Intra-reserve of storage unit g', bounds=(None, None))
+    lego.model.vStInterRes = pyo.Var(lego.model.p, lego.model.storageUnits, doc='Inter-reserve of storage unit g', bounds=(None, None))
     lego.model.bChargeDisCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
 
     # Parameters
@@ -32,14 +33,23 @@ def add_variable_bounds(lego: LEGO):
                 lego.model.vStIntraRes[g, rp, k].setub(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'])
                 lego.model.vStIntraRes[g, rp, k].setlb(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'] * lego.cs.dPower_Storage.loc[g, 'MinReserve'])
 
+    for p in lego.model.p:
+        for g in lego.model.storageUnits:
+            if LEGOUtilities.p_to_int(p) % lego.model.pMovWindow == 1:
+                lego.model.vStInterRes[p, g].setub(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'])
+                lego.model.vStInterRes[p, g].setlb(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'] * lego.cs.dPower_Storage.loc[g, 'MinReserve'])
+
 
 @LEGOUtilities.checkExecutionLog([add_variable_definitions, add_variable_bounds])
 def add_constraints(lego: LEGO):
     # TODO: Check if we should add Hydro here as well
 
-    # Storage unit charging and discharging
-    lego.model.eStIntraRes = pyo.ConstraintList(doc='Intra-reserve constraint for storage units')
+    # Constraint definitions
+    lego.model.eStIntraRes = pyo.ConstraintList(doc='Intra-day reserve constraint for storage units')
+    lego.model.eStInterRes = pyo.ConstraintList(doc='Inter-day reserve constraint for storage units')
     lego.model.eExclusiveChargeDischarge = pyo.ConstraintList(doc='Enforce exclusive charge or discharge for storage units')
+
+    # Constraint implementations
     for g in lego.model.storageUnits:
         for rp in lego.model.rp:
             for k in lego.model.k:
@@ -55,3 +65,13 @@ def add_constraints(lego: LEGO):
                 if lego.model.pEnableChDisPower:
                     lego.model.eExclusiveChargeDischarge.add(lego.model.vCharge[g, rp, k] <= lego.model.bChargeDisCharge[g, rp, k] * lego.cs.dPower_Storage.loc[g, 'MaxCons'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
                     lego.model.eExclusiveChargeDischarge.add(lego.model.vGenP[g, rp, k] <= (1 - lego.model.bChargeDisCharge[g, rp, k]) * lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
+
+    if len(lego.model.rp) > 1:
+        for g in lego.model.storageUnits:
+            for p, rp, k in lego.model.hindex:
+                if LEGOUtilities.p_to_int(p) % lego.model.pMovWindow == 1 and LEGOUtilities.p_to_int(p) >= lego.model.pMovWindow:  # TODO: Check why this is 1 and not 0
+                    lego.model.eStInterRes.add(0 == lego.model.vStInterRes[LEGOUtilities.int_to_p(LEGOUtilities.p_to_int(p) - lego.model.pMovWindow), g] +
+                                               (lego.cs.dPower_Storage.loc[g, 'IniReserve'] if LEGOUtilities.p_to_int(p) == lego.model.pMovWindow else 0) -
+                                               lego.model.vStInterRes[p, g] +
+                                               sum(-lego.model.vGenP[g, rp2, k2] * lego.model.pWeight_k[k2] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] +
+                                                   lego.model.vCharge[g, rp2, k2] * lego.model.pWeight_k[k2] * lego.cs.dPower_Storage.loc[g, 'ChEffic'] for p2, rp2, k2 in lego.model.hindex if LEGOUtilities.p_to_int(p) - lego.model.pMovWindow < LEGOUtilities.rp_to_int(rp2) <= LEGOUtilities.p_to_int(p)))
