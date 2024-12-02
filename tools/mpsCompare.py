@@ -83,10 +83,16 @@ def normalize_constraints(model):
 
 
 # Sort constraints by number of coefficients
-def sort_constraints_by_length(constraints: typing.Dict[str, OrderedDict[str, str]]) -> OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]]:
+def sort_constraints_by_length(constraints: typing.Dict[str, OrderedDict[str, str]], coefficients_to_skip: list[str] = None) -> OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]]:
     constraint_dicts: OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]] = OrderedDict()
 
+    if coefficients_to_skip is None:
+        coefficients_to_skip = []
+
     for constraint_name, constraint in constraints.items():
+        for coefficient_name in coefficients_to_skip:
+            constraint.pop(coefficient_name, None)  # Remove coefficient if it is in the skip list
+
         if len(constraint) not in constraint_dicts:
             constraint_dicts[len(constraint)] = OrderedDict()  # Initialize dictionary
 
@@ -99,28 +105,24 @@ def sort_constraints_by_length(constraints: typing.Dict[str, OrderedDict[str, st
 
 # Compare two lists of constraints where coefficients are already normalized (i.e. sorted by name and all factors are divided by the constant)
 def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], constraints2: typing.Dict[str, OrderedDict[str, str]]):
-    # Sort constraints by number of coefficients
-    constraint_dicts1 = sort_constraints_by_length(constraints1)
-    constraint_dicts2 = sort_constraints_by_length(constraints2)
+    coefficients_to_skip_from1 = ["name"]
+    coefficients_to_skip_from2 = ["name",
+                                  "v2ndResDW", "vGenP1"]
 
-    coefficient_skip_list = ["name"]
+    # Sort constraints by number of coefficients
+    constraint_dicts1 = sort_constraints_by_length(constraints1, coefficients_to_skip_from1)
+    constraint_dicts2 = sort_constraints_by_length(constraints2, coefficients_to_skip_from2)
 
     # Loop through all constraints in first list and for each through all constraints in the second list
     for length, constraint_dict1 in constraint_dicts1.items():
         if length not in constraint_dicts2:
             print(f"No constraints of length {length} in second model, skipping comparison for {len(constraint_dict1)} constraints")
             continue
-        for constraint_name1, _constraint1 in constraint_dict1.items():
-            constraint1 = _constraint1.copy()
-            for skipped_name in coefficient_skip_list:
-                constraint1.pop(skipped_name)  # Some entries don't need to be the same
 
+        for constraint_name1, constraint1 in constraint_dict1.items():
             status = "Potential match"
-            for constraint_name2, _constraint2 in constraint_dicts2[length].items():
+            for constraint_name2, constraint2 in constraint_dicts2[length].items():
                 status = "Potential match"
-                constraint2 = _constraint2.copy()
-                for skipped_name in coefficient_skip_list:
-                    constraint2.pop(skipped_name)  # Some entries don't need to be the same
 
                 for coefficient_name1, coefficient_value1 in constraint1.items():
                     if coefficient_name1 not in constraint2:
