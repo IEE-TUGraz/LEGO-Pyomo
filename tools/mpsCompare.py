@@ -104,7 +104,7 @@ def sort_constraints_by_length(constraints: typing.Dict[str, OrderedDict[str, st
 
 
 # Compare two lists of constraints where coefficients are already normalized (i.e. sorted by name and all factors are divided by the constant)
-def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], constraints2: typing.Dict[str, OrderedDict[str, str]]):
+def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], constraints2: typing.Dict[str, OrderedDict[str, str]], precision: float = 1e-12):
     coefficients_to_skip_from1 = ["name"]
     coefficients_to_skip_from2 = ["name",
                                   "v2ndResDW", "vGenP1"]
@@ -128,19 +128,30 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
                     if coefficient_name1 not in constraint2:
                         status = "Coefficient name mismatch"
                         break
-                    elif coefficient_value1 != constraint2[coefficient_name1]:
-                        status = "Coefficient values differ"
+
+                    if ((isinstance(coefficient_value1, int) or isinstance(coefficient_value1, float)) and
+                            (isinstance(constraint2[coefficient_name1], int) or isinstance(constraint2[coefficient_name1], float))):  # If both values are numeric
+                        coefficient_value1 = abs(float(coefficient_value1))
+                        coefficient_value2 = abs(float(constraint2[coefficient_name1]))
+                        if coefficient_value1 == 0:
+                            if coefficient_value2 > precision:  # If coefficient_value1 == 0, check if coefficient_value2 is sufficiently small
+                                status = "Coefficient values differ"
+                        elif abs((coefficient_value1 - coefficient_value2) / coefficient_value1) > precision:
+                            status = "Coefficient values differ"
+                    else:  # If one or both values are not numeric, check equality
+                        if coefficient_value1 != constraint2[coefficient_name1]:
+                            status = "Coefficient values differ"
 
                 match status:
                     case "Potential match":
                         status = "Perfect match"
-                        print("Found perfect match")
+                        print(f"Found perfect match for {constraint_name1}: {constraint1}")
                         constraint_dicts2[length].pop(constraint_name2)
                         break
                     case "Coefficient values differ":
-                        print("Found partial match (factors differ)")
-                        print(f"Constraint 1: {constraint1}")
-                        print(f"Constraint 2: {constraint2}")
+                        print(f"Found partial match (factors differ by more than {precision * 100}%):")
+                        print(f"{constraint_name1}: {constraint1}")
+                        print(f"{constraint_name2}: {constraint2}")
                         constraint_dicts2[length].pop(constraint_name2)
                         break
                     case "Coefficient name mismatch":
