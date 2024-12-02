@@ -4,23 +4,12 @@ from collections import OrderedDict
 
 from pulp import LpProblem
 
-# Regular expression to find all occurrences of '[0-9]_' in a string
-regex_replace = re.compile(r"(\d)(_)")
-
 
 def remove_underscore(string: str) -> str:
+    # Regular expression to find all occurrences of '[0-9]_' in a string
+    regex_replace = re.compile(r"(\d)(_)")
+
     return regex_replace.sub(r"\1,", string)
-
-
-def normalize_constraint(constraint: str) -> str:
-    without_underscore = remove_underscore(constraint)
-    without_whitespace = without_underscore.replace(" ", "")
-    plus_before_each_minus = without_whitespace.replace("-", "+-")
-    split_list = plus_before_each_minus.split("+")
-    split_list.sort()
-    merged_list = "+".join(split_list)
-    remove_plus_before_each_minus = merged_list.replace("+-", "-")
-    return remove_plus_before_each_minus
 
 
 # Normalize constraints by
@@ -42,10 +31,21 @@ def normalize_constraints(model):
             if original_names[coefficient['name']] in result_constraint_dict:
                 raise ValueError(f"Coefficient {original_names[coefficient['name']]} found twice in constraint {name}.\n"
                                  f"Full constraint: {constraint}")
-            if constant != 0:
-                result_constraint_dict[original_names[coefficient['name']]] = coefficient['value'] / constant
+
+            indices_groups = re.findall(r"(\w*)\[([^]]*)", original_names[coefficient['name']])[0]
+            if len(indices_groups) > 2:
+                raise ValueError(f"More than one index group found in {original_names[coefficient['name']]}")
+            if len(indices_groups) == 1:  # No indices found
+                indices = ""
             else:
-                result_constraint_dict[original_names[coefficient['name']]] = coefficient['value']
+                indices = ",".join(sorted([i.strip() for i in indices_groups[1].split(",")]))  # Sort indices alphabetically
+
+            sorted_coefficient = f"{indices_groups[0]}[{indices}]"
+
+            if constant != 0:
+                result_constraint_dict[sorted_coefficient] = coefficient['value'] / constant
+            else:
+                result_constraint_dict[sorted_coefficient] = coefficient['value']
 
         # Create result dictionary
         orderedDict = OrderedDict()
@@ -81,6 +81,7 @@ def normalize_constraints(model):
 
     return constraints
 
+
 # Sort constraints by number of coefficients
 def sort_constraints_by_length(constraints: typing.Dict[str, OrderedDict[str, str]]) -> OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]]:
     constraint_dicts: OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]] = OrderedDict()
@@ -94,7 +95,6 @@ def sort_constraints_by_length(constraints: typing.Dict[str, OrderedDict[str, st
 
         constraint_dicts[len(constraint)][constraint_name] = constraint  # Add constraint to dictionary
     return OrderedDict(sorted(constraint_dicts.items()))
-
 
 
 # Compare two lists of constraints where coefficients are already normalized (i.e. sorted by name and all factors are divided by the constant)
@@ -149,9 +149,6 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
             if status != "Perfect match" and status != "Coefficient values differ":
                 print(f"No match found for constraint {constraint_name1}: {constraint1}")
     return None
-
-
-
 
 
 def compare_mps(file1, file2, check_vars=True, check_constraints=True):
