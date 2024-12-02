@@ -83,15 +83,27 @@ def normalize_constraints(model):
 
 
 # Sort constraints by number of coefficients
-def sort_constraints_by_length(constraints: typing.Dict[str, OrderedDict[str, str]], coefficients_to_skip: list[str] = None) -> OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]]:
+def sort_constraints_by_length(constraints: typing.Dict[str, OrderedDict[str, str]], constraints_to_skip_with_wildcard: list[str] = None, coefficients_to_skip: list[str] = None) -> OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]]:
     constraint_dicts: OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]] = OrderedDict()
 
+    if constraints_to_skip_with_wildcard is None:
+        constraints_to_skip_with_wildcard = []
     if coefficients_to_skip is None:
         coefficients_to_skip = []
 
     for constraint_name, constraint in constraints.items():
+        # Skip constraint if it contains any of the strings in constraints_to_skip_with_wildcard
+        skip_constraint = False
+        for c in constraints_to_skip_with_wildcard:
+            if c in constraint_name:
+                skip_constraint = True
+                break
+        if skip_constraint:
+            continue
+
+        # Remove coefficients from the skip list
         for coefficient_name in coefficients_to_skip:
-            constraint.pop(coefficient_name, None)  # Remove coefficient if it is in the skip list
+            constraint.pop(coefficient_name, None)
 
         if len(constraint) not in constraint_dicts:
             constraint_dicts[len(constraint)] = OrderedDict()  # Initialize dictionary
@@ -104,14 +116,18 @@ def sort_constraints_by_length(constraints: typing.Dict[str, OrderedDict[str, st
 
 
 # Compare two lists of constraints where coefficients are already normalized (i.e. sorted by name and all factors are divided by the constant)
-def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], constraints2: typing.Dict[str, OrderedDict[str, str]], precision: float = 1e-12):
-    coefficients_to_skip_from1 = ["name"]
-    coefficients_to_skip_from2 = ["name",
-                                  "v2ndResDW", "vGenP1"]
+def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], constraints2: typing.Dict[str, OrderedDict[str, str]], precision: float = 1e-12,
+                        constraints_to_skip_from1: list[str] = None, coefficients_to_skip_from1: list[str] = None,
+                        constraints_to_skip_from2: list[str] = None, coefficients_to_skip_from2: list[str] = None) -> bool:
+    # Initialize lists if none are given
+    constraints_to_skip_from1 = [] if constraints_to_skip_from1 is None else constraints_to_skip_from1
+    constraints_to_skip_from2 = [] if constraints_to_skip_from2 is None else constraints_to_skip_from2
+    coefficients_to_skip_from1 = [] if coefficients_to_skip_from1 is None else coefficients_to_skip_from1
+    coefficients_to_skip_from2 = [] if coefficients_to_skip_from2 is None else coefficients_to_skip_from2
 
     # Sort constraints by number of coefficients
-    constraint_dicts1 = sort_constraints_by_length(constraints1, coefficients_to_skip_from1)
-    constraint_dicts2 = sort_constraints_by_length(constraints2, coefficients_to_skip_from2)
+    constraint_dicts1 = sort_constraints_by_length(constraints1, constraints_to_skip_from1, coefficients_to_skip_from1)
+    constraint_dicts2 = sort_constraints_by_length(constraints2, constraints_to_skip_from2, coefficients_to_skip_from2)
 
     # Loop through all constraints in first list and for each through all constraints in the second list
     for length, constraint_dict1 in constraint_dicts1.items():
@@ -161,10 +177,11 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
 
             if status != "Perfect match" and status != "Coefficient values differ":
                 print(f"No match found for constraint {constraint_name1}: {constraint1}")
-    return None
+    return False
 
 
-def compare_mps(file1, file2, check_vars=True, check_constraints=True):
+def compare_mps(file1, file2, check_vars=True, check_constraints=True,
+                constraints_to_skip_from1=None, coefficients_to_skip_from1=None, constraints_to_skip_from2=None, coefficients_to_skip_from2=None):
     # Load MPS files
     model1 = LpProblem.fromMPS(file1)
     model2 = LpProblem.fromMPS(file2)
@@ -196,7 +213,9 @@ def compare_mps(file1, file2, check_vars=True, check_constraints=True):
         constraints2 = normalize_constraints(model2)
 
         # Check if constraints are the same
-        constraint_check_result = compare_constraints(constraints1, constraints2)
+        constraint_check_result = compare_constraints(constraints1, constraints2,
+                                                      constraints_to_skip_from1=constraints_to_skip_from1, coefficients_to_skip_from1=coefficients_to_skip_from1,
+                                                      constraints_to_skip_from2=constraints_to_skip_from2, coefficients_to_skip_from2=coefficients_to_skip_from2)
 
     # Objectives
     obj1 = model1[1].objective

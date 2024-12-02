@@ -63,7 +63,7 @@ def add_constraints(lego: LEGO):
 
                 # TODO: Check if we should rather do a +/- value and calculate charge/discharge ex-post
                 if lego.model.pEnableChDisPower:
-                    lego.model.eExclusiveChargeDischarge.add(lego.model.vCharge[g, rp, k] <= lego.model.bChargeDisCharge[g, rp, k] * lego.cs.dPower_Storage.loc[g, 'MaxCons'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
+                    lego.model.eExclusiveChargeDischarge.add(lego.model.vConsump[g, rp, k] <= lego.model.bChargeDisCharge[g, rp, k] * lego.cs.dPower_Storage.loc[g, 'MaxCons'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
                     lego.model.eExclusiveChargeDischarge.add(lego.model.vGenP[g, rp, k] <= (1 - lego.model.bChargeDisCharge[g, rp, k]) * lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
 
     if len(lego.model.rp) > 1:

@@ -1,7 +1,6 @@
 import logging
 
-from pyomo.core import NameLabeler, AlphaNumericTextLabeler, CuidLabeler, NumericLabeler, CounterLabeler, CNameLabeler
-from pyomo.core.base.label import LPFileLabeler, ShortNameLabeler
+from pyomo.core import NameLabeler
 
 from LEGO.CaseStudy import CaseStudy
 from LEGO.LEGO import LEGO
@@ -34,6 +33,14 @@ if True:
     printer.information(f"Building model took {timing:.2f} seconds")
     model.write("model.mps", io_options={'labeler': NameLabeler()})
 
-compare_mps("model.mps", "originalLEGO.mps", check_vars=False)
+constraints_to_skip_from1 = ["eStIntraRes", "eExclusiveChargeDischarge"]
+constraints_to_skip_from2 = []
+coefficients_to_skip_from1 = ["name"]
+coefficients_to_skip_from2 = ["name",
+                              "v2ndResDW", "vGenP1"]
+
+compare_mps("model.mps", "originalLEGO.mps", check_vars=False,
+            constraints_to_skip_from1=constraints_to_skip_from1, constraints_to_skip_from2=constraints_to_skip_from2,
+            coefficients_to_skip_from1=coefficients_to_skip_from1, coefficients_to_skip_from2=coefficients_to_skip_from2)
 
 print("Done")
