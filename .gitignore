@@ -9,3 +9,8 @@ __pycache__/
 
 # Development environment files
 .idea/
+
+# GAMS-output files (for comparison)
+*.lst
+*.lxi
+LEGO*.log*
