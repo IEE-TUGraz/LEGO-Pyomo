@@ -119,6 +119,10 @@ class CaseStudy:
         dGlobal_Parameters = dGlobal_Parameters.drop(dGlobal_Parameters.columns[0], axis=1)
         dGlobal_Parameters = dGlobal_Parameters.set_index('Sectors')
 
+        # Transform to make it easier to access values
+        dGlobal_Parameters = dGlobal_Parameters.drop(dGlobal_Parameters.columns[1:], axis=1)  # Drop all columns but "Value" (rest is just for information in the Excel)
+        dGlobal_Parameters = dict({(parameter_name, parameter_value["Value"]) for parameter_name, parameter_value in dGlobal_Parameters.iterrows()})  # Transform into dictionary
+
         return dGlobal_Parameters
 
     def get_dPower_Parameters(self):
@@ -130,7 +134,7 @@ class CaseStudy:
         self.yesNo_to_bool(dPower_Parameters, ['pEnableChDisPower'])
 
         # Transform to make it easier to access values
-        dPower_Parameters = dPower_Parameters.drop(dPower_Parameters.columns[1:], axis=1)  # Drop all columns but "Value" (Rest is just for information in the Excel)
+        dPower_Parameters = dPower_Parameters.drop(dPower_Parameters.columns[1:], axis=1)  # Drop all columns but "Value" (rest is just for information in the Excel)
         dPower_Parameters = dict({(parameter_name, parameter_value["Value"]) for parameter_name, parameter_value in dPower_Parameters.iterrows()})  # Transform into dictionary
 
         # Value adjustments

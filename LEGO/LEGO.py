@@ -89,7 +89,7 @@ class LEGO:
 
         # Parameters
         model.pDemand = pyo.Param(model.rp, model.i, model.k, initialize=self.cs.dPower_Demand['Demand'], doc='Demand at bus i in representative period rp and timestep k')
-        model.pMovWindow = self.cs.dGlobal_Parameters.loc['pMovWindow', 'Value']
+        model.pMovWindow = self.cs.dGlobal_Parameters['pMovWindow']
 
         # Helper for FuelCost that has dPower_ThermalGen['FuelCost'] for ThermalGen, and 0 for all gs in ror and vres
         hFuelCost = pd.concat([self.cs.dPower_ThermalGen['FuelCost'].copy(), pd.Series(0, index=model.rorGenerators), pd.Series(0, index=model.vresGenerators)])
