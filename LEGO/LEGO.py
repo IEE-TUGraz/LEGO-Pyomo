@@ -5,8 +5,8 @@ import pandas as pd
 import pyomo.environ as pyo
 import pyomo.opt.results.results_
 
-from LEGO.CaseStudy import CaseStudy
 from LEGO import storage, LEGOUtilities
+from LEGO.CaseStudy import CaseStudy
 from tools.printer import Printer
 
 printer = Printer.getInstance()
@@ -47,7 +47,7 @@ class LEGO:
         model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=self.cs.hGenerators_to_Buses.loc[self.cs.hGenerators_to_Buses["i"].isin(model.zoi_i)].index.tolist(), within=model.g)
 
         # Variables
-        model.delta = pyo.Var(model.i, model.rp, model.k, doc='Angle of bus i', bounds=(-self.cs.pMaxAngleDCOPF, self.cs.pMaxAngleDCOPF))  # TODO: Discuss impact on runtime etc.(based on discussion with Prof. Renner)
+        model.delta = pyo.Var(model.i, model.rp, model.k, doc='Angle of bus i', bounds=(-self.cs.dPower_Parameters["pMaxAngleDCOPF"], self.cs.dPower_Parameters["pMaxAngleDCOPF"]))  # TODO: Discuss impact on runtime etc.(based on discussion with Prof. Renner)
         model.vSlack_DemandNotServed = pyo.Var(model.rp, model.k, model.i, doc='Slack variable demand not served', bounds=(0, None))
         model.vSlack_OverProduction = pyo.Var(model.rp, model.k, model.i, doc='Slack variable overproduction', bounds=(0, None))
 
@@ -150,7 +150,7 @@ class LEGO:
                 case "DC-OPF":
                     for rp in model.rp:
                         for k in model.k:
-                            model.cReactance.add(model.t[(i, j), rp, k] == (model.delta[i, rp, k] - model.delta[j, rp, k]) * self.cs.pSBase / model.pReactance[(i, j)])
+                            model.cReactance.add(model.t[(i, j), rp, k] == (model.delta[i, rp, k] - model.delta[j, rp, k]) * self.cs.dPower_Parameters["pSBase"] / model.pReactance[(i, j)])
                 case "TP" | "SN":
                     continue
                 case _:

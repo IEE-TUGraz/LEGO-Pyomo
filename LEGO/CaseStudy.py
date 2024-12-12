@@ -101,9 +101,6 @@ class CaseStudy:
             self.power_hindex_file = power_hindex_file
             self.dPower_Hindex = self.get_dPower_Hindex()
 
-        self.pMaxAngleDCOPF = self.dPower_Parameters.loc["pMaxAngleDCOPF"].iloc[0] * np.pi / 180  # Read and convert to radians
-        self.pSBase = self.dPower_Parameters.loc["pSBase"].iloc[0]
-
         # Dataframe that shows connections between g and i, only concatenating g and i from the dataframes
         self.hGenerators_to_Buses = self.update_hGenerators_to_Buses()
 
@@ -131,6 +128,14 @@ class CaseStudy:
         dPower_Parameters = dPower_Parameters.set_index('General')
 
         self.yesNo_to_bool(dPower_Parameters, ['pEnableChDisPower'])
+
+        # Transform to make it easier to access values
+        dPower_Parameters = dPower_Parameters.drop(dPower_Parameters.columns[1:], axis=1)  # Drop all columns but "Value" (Rest is just for information in the Excel)
+        dPower_Parameters = dict({(parameter_name, parameter_value["Value"]) for parameter_name, parameter_value in dPower_Parameters.iterrows()})  # Transform into dictionary
+
+        # Value adjustments
+        dPower_Parameters["pMaxAngleDCOPF"] = dPower_Parameters["pMaxAngleDCOPF"] * np.pi / 180  # Convert angle from degrees to radians
+
         return dPower_Parameters
 
     @staticmethod
