@@ -583,7 +583,7 @@ $onEmbeddedCode Connect:
     symbols: all
 
 $offEmbeddedCode
-abort$[execerror <> 0] 'Error reading Global_Parameters.xlsx';
+$if not errorFree $abort 'Error reading Global_Parameters.xlsx';
 
 * Evaluating and logging global parameters
 $log Global parameters:
@@ -808,7 +808,7 @@ $onEmbeddedCode Connect:
                     
 
 $offEmbeddedCode
-abort$[execerror <> 0] 'Error reading Power_Parameters.xlsx';
+$if not errorFree $abort 'Error reading Power_Parameters.xlsx';
 
 * Evaluating and logging power parameters
 $log Power parameters:
@@ -835,7 +835,7 @@ $onEmbeddedCode Connect:
     symbols: all
 
 $offEmbeddedCode
-abort$[execerror <> 0] 'Error reading Global_Parameters.xlsx';
+$if not errorFree $abort 'Error reading Power_Zones.xlsx';
 $offFold
 
 $onFold // Read Power_Demand ---------------------------------------------------
@@ -895,7 +895,7 @@ $onEmbeddedCode Connect:
     symbols: all
 
 $offEmbeddedCode
-abort$[execerror <> 0] 'Error reading Global_Parameters.xlsx';
+$if not errorFree $abort 'Error reading Global_Tec.xlsx';
 $offFold
 
 $onFold // Read Power_ThermalGen -----------------------------------------------
@@ -1073,7 +1073,7 @@ $onEmbeddedCode Connect:
     symbols: all
 
 $offEmbeddedCode
-abort$[execerror <> 0] 'Error reading Power_Inflows.xlsx';
+$if not errorFree $abort 'Error reading Power_Inflows.xlsx';
 $offFold
 
 $onFold // Read Power_VRES -----------------------------------------------------
@@ -1146,7 +1146,7 @@ $onEmbeddedCode Connect:
     symbols: all
 
 $offEmbeddedCode
-abort$[execerror <> 0] 'Error reading Power_VRESProfiles.xlsx';
+$if not errorFree $abort 'Error reading Power_VRESProfiles.xlsx';
 $offFold
 
 $onFold // Read Power_FACTS ----------------------------------------------------
@@ -1218,7 +1218,7 @@ $onEmbeddedCode Connect:
     symbols: all
 
 $offEmbeddedCode
-abort$[execerror <> 0] 'Error reading Power_WeightsRP.xlsx';
+$if not errorFree $abort 'Error reading Power_WeightsRP.xlsx';
 $offFold
 
 $onFold // Read Power_WeightsK -------------------------------------------------
@@ -1238,7 +1238,7 @@ $onEmbeddedCode Connect:
     symbols: all
 
 $offEmbeddedCode
-abort$[execerror <> 0] 'Error reading Power_WeightsK.xlsx';
+$if not errorFree $abort 'Error reading Power_WeightsK.xlsx';
 $offFold
 
 $onFold // Read Power_Hindex ---------------------------------------------------
@@ -1259,7 +1259,7 @@ $onEmbeddedCode Connect:
     symbols: all
 
 $offEmbeddedCode
-abort$[execerror <> 0] 'Error reading Power_Hindex.xlsx';
+$if not errorFree $abort 'Error reading Power_Hindex.xlsx';
 $offFold
 
 $onFold // Read Power_Network --------------------------------------------------
@@ -1370,7 +1370,7 @@ $onEmbeddedCode Connect:
     symbols: all
 
 $offEmbeddedCode
-abort$[execerror <> 0] 'Error reading Power_ImpExp.xlsx';
+$if not errorFree $abort 'Error reading Power_ImpExp.xlsx';
 $offFold
 
 $onFold // Read Power_DSM ------------------------------------------------------
@@ -1406,7 +1406,7 @@ $onEmbeddedCode Connect:
     symbols: all
 
 $offEmbeddedCode
-abort$[execerror <> 0] 'Error reading Power_DSM.xlsx';
+$if not errorFree $abort 'Error reading Power_DSM.xlsx';
 $offFold
 
 $onFold // Read Power_NTC ------------------------------------------------------
@@ -1428,7 +1428,7 @@ $onEmbeddedCode Connect:
         symbols: all
     
 $offEmbeddedCode
-abort$[execerror <> 0] 'Error reading Power_NTC.xlsx';
+$if not errorFree $abort 'Error reading Power_NTC.xlsx';
 $endIf.ZonalPricing
 $offFold
 
@@ -1480,7 +1480,7 @@ $onEmbeddedCode Connect:
     symbols: all
 
 $offEmbeddedCode
-abort$[execerror <> 0] 'Error in python Code to join helper Sets';
+$if not errorFree $abort 'Error in python Code to join helper Sets';
 $offFold
 
 $endIf.ExcelsPower
@@ -1510,7 +1510,7 @@ $onEmbeddedCode Connect:
     symbols: all
 
 $offEmbeddedCode
-abort$[execerror <> 0] 'Error reading Gas_Parameters.xlsx';
+$if not errorFree $abort 'Error reading Gas_Parameters.xlsx';
 $offFold
 
 $onFold // Read Gas_H2_Demand --------------------------------------------------
@@ -1530,7 +1530,7 @@ $onEmbeddedCode Connect:
     symbols: all
 
 $offEmbeddedCode
-abort$[execerror <> 0] 'Error reading Gas_H2_Demand.xlsx';
+$if not errorFree $abort 'Error reading Gas_H2_Demand.xlsx';
 $offFold
 
 $onFold // Read Gas_H2_GenUnits ------------------------------------------------
