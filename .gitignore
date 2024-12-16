@@ -12,9 +12,9 @@ __pycache__/
 
 # GAMS-output files (for comparison)
 *.lst
-*.lxi
 LEGO*.log*
-
-# Model files and solver options
-*.mps
 *.opt
+*.log
+
+# Model files
+*.mps
