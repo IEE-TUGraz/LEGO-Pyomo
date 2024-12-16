@@ -882,9 +882,9 @@ $offEmbeddedCode
 $if not errorFree $abort 'Error reading Power_Demand.xlsx';
 $offFold
 
-$onFold // Read Global_Tec -----------------------------------------------------
+$onFold // Read Power_Tec -----------------------------------------------------
 
-$log Reading Global_Tec.xlsx
+$log Reading Power_Tec.xlsx
 $onEmbeddedCode Connect:
         
 - ExcelReader:
@@ -900,7 +900,7 @@ $onEmbeddedCode Connect:
     symbols: all
 
 $offEmbeddedCode
-$if not errorFree $abort 'Error reading Global_Tec.xlsx';
+$if not errorFree $abort 'Error reading Power_Tec.xlsx';
 $offFold
 
 $onFold // Read Power_ThermalGen -----------------------------------------------
@@ -1293,8 +1293,8 @@ $onEmbeddedCode Connect:
         # Drop rows where "Excl."-Column is filled, only keep empty ones
         df = df[pd.isna(df['Excl.'])]
         
-        # Drop all columns starting from "LineID" (and all to the right of it)
-        df = df.drop(columns=df.columns[df.columns.get_loc("LineID"):], axis=1)
+        # Drop all columns starting from "Technical Representation" (and all to the right of it)
+        df = df.drop(columns=df.columns[df.columns.get_loc("Technical Representation"):], axis=1)
         
         # Replace empty cells with 0
         df = df.fillna(0)
@@ -1337,8 +1337,8 @@ $onEmbeddedCode Connect:
         # Drop rows where "Excl."-Column is filled, only keep empty ones
         df = df[pd.isna(df['Excl.'])]
         
-        # Drop all columns starting from "YearCom" (and all to the right of it)
-        df = df.drop(columns=df.columns[df.columns.get_loc("YearCom"):], axis=1)
+        # Drop all columns starting from "ZoneOfInterest" (and all to the right of it)
+        df = df.drop(columns=df.columns[df.columns.get_loc("ZoneOfInterest"):], axis=1)
         
         # Replace empty cells with 0
         df = df.fillna(0)
@@ -2754,7 +2754,7 @@ put      GOPT / 'IIS 1'    / 'rins 1000' / 'nodefilestart 0.5' ;
 putclose GOPT
 ;
 file     COPT / cplex.opt  /                   ;
-put      COPT / 'IIS yes'  / 'rinsheur 1000' / 'writemps originalLEGO.mps' ;
+put      COPT / 'IIS yes'  / 'rinsheur 1000' / 'writemps LEGO-GAMS.mps' ;
 putclose COPT
 ;
 
