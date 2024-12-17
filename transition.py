@@ -34,6 +34,7 @@ if True:
 
         # Create subprocess to execute LEGO model
         # Executing with argument string instead of list since GAMS has problems with double-quotes
+        printer.information(f"Starting LEGO-GAMS with scenario folder \"{scenario_folder}\"")
         lego_process = subprocess.Popen(f"cd LEGO-GAMS && {gams_path} {lego_path} --scenarioFolder=\"../{scenario_folder}\"",
                                         stdout=GAMSConsoleLogFile, stderr=subprocess.STDOUT, shell=True)
         try:
@@ -53,6 +54,8 @@ if True:
     if return_value != 0:
         printer.error(f"Return value of process is {return_value} - please check log files")
         exit(-1)
+    else:
+        printer.information(f"LEGO-GAMS finished successfully")
 
 ########################################################################################################################
 # Data input from case study
@@ -72,14 +75,17 @@ if True:
     printer.information(f"Building model took {timing:.2f} seconds")
     model.write("model.mps", io_options={'labeler': NameLabeler()})
 
+constraints_to_enforce_from1 = ["eStInterRes"]
 constraints_to_skip_from1 = ["eStIntraRes", "eExclusiveChargeDischarge"]
-constraints_to_skip_from2 = []
 coefficients_to_skip_from1 = ["name"]
+
+constraints_to_enforce_from2 = ["eStInterRes"]  # ["eStIntraRes"]
+constraints_to_skip_from2 = []
 coefficients_to_skip_from2 = ["name",
                               "v2ndResDW", "vGenP1"]
 
 compare_mps("model.mps", "LEGO-GAMS/LEGO-GAMS.mps", check_vars=False, print_additional_information=False,
-            constraints_to_skip_from1=constraints_to_skip_from1, constraints_to_skip_from2=constraints_to_skip_from2,
-            coefficients_to_skip_from1=coefficients_to_skip_from1, coefficients_to_skip_from2=coefficients_to_skip_from2)
+            constraints_to_enforce_from1=constraints_to_enforce_from1, constraints_to_skip_from1=constraints_to_skip_from1, constraints_to_skip_from2=constraints_to_skip_from2,
+            constraints_to_enforce_from2=constraints_to_enforce_from2, coefficients_to_skip_from1=coefficients_to_skip_from1, coefficients_to_skip_from2=coefficients_to_skip_from2)
 
 print("Done")

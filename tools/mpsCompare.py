@@ -4,6 +4,11 @@ from collections import OrderedDict
 
 from pulp import LpProblem
 
+from tools.printer import Printer
+
+printer = Printer.getInstance()
+printer.set_width(180)
+
 
 def remove_underscore(string: str) -> str:
     # Regular expression to find all occurrences of '[0-9]_' in a string
@@ -83,13 +88,19 @@ def normalize_constraints(model):
 
 
 # Sort constraints by number of coefficients
-def sort_constraints_by_length(constraints: typing.Dict[str, OrderedDict[str, str]], constraints_to_skip_with_wildcard: list[str] = None, coefficients_to_skip: list[str] = None) -> OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]]:
+def sort_constraints_by_length(constraints: typing.Dict[str, OrderedDict[str, str]], constraints_to_enforce_with_wildcard: list[str] = None, constraints_to_skip_with_wildcard: list[str] = None, coefficients_to_skip: list[str] = None) -> OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]]:
     constraint_dicts: OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]] = OrderedDict()
 
+    if constraints_to_enforce_with_wildcard is None:
+        constraints_to_enforce_with_wildcard = []
     if constraints_to_skip_with_wildcard is None:
         constraints_to_skip_with_wildcard = []
     if coefficients_to_skip is None:
         coefficients_to_skip = []
+
+    if constraints_to_enforce_with_wildcard and constraints_to_skip_with_wildcard:
+        printer.warning(f"Ignoring constraints_to_skip_with_wildcard because constraints_to_enforce_with_wildcard is set")
+        constraints_to_skip_with_wildcard = []
 
     for constraint_name, constraint in constraints.items():
         # Skip constraint if it contains any of the strings in constraints_to_skip_with_wildcard
@@ -100,6 +111,16 @@ def sort_constraints_by_length(constraints: typing.Dict[str, OrderedDict[str, st
                 break
         if skip_constraint:
             continue
+
+        # Only continue with constraints from constraints_to_enforce_with_wildcard (if it is set)
+        if constraints_to_enforce_with_wildcard:
+            found_constraint = False
+            for c in constraints_to_enforce_with_wildcard:
+                if c in constraint_name:
+                    found_constraint = True
+                    break
+            if not found_constraint:
+                continue
 
         # Remove coefficients from the skip list
         for coefficient_name in coefficients_to_skip:
@@ -117,17 +138,22 @@ def sort_constraints_by_length(constraints: typing.Dict[str, OrderedDict[str, st
 
 # Compare two lists of constraints where coefficients are already normalized (i.e. sorted by name and all factors are divided by the constant)
 def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], constraints2: typing.Dict[str, OrderedDict[str, str]], precision: float = 1e-12,
-                        constraints_to_skip_from1: list[str] = None, coefficients_to_skip_from1: list[str] = None,
-                        constraints_to_skip_from2: list[str] = None, coefficients_to_skip_from2: list[str] = None) -> bool:
+                        constraints_to_enforce_from1: list[str] = None, constraints_to_skip_from1: list[str] = None, coefficients_to_skip_from1: list[str] = None,
+                        constraints_to_enforce_from2: list[str] = None, constraints_to_skip_from2: list[str] = None, coefficients_to_skip_from2: list[str] = None,
+                        print_additional_information=False) -> bool:
     # Initialize lists if none are given
+    constraints_to_enforce_from1 = [] if constraints_to_enforce_from1 is None else constraints_to_enforce_from1
+    constraints_to_enforce_from2 = [] if constraints_to_enforce_from2 is None else constraints_to_enforce_from2
     constraints_to_skip_from1 = [] if constraints_to_skip_from1 is None else constraints_to_skip_from1
     constraints_to_skip_from2 = [] if constraints_to_skip_from2 is None else constraints_to_skip_from2
     coefficients_to_skip_from1 = [] if coefficients_to_skip_from1 is None else coefficients_to_skip_from1
     coefficients_to_skip_from2 = [] if coefficients_to_skip_from2 is None else coefficients_to_skip_from2
 
     # Sort constraints by number of coefficients
-    constraint_dicts1 = sort_constraints_by_length(constraints1, constraints_to_skip_from1, coefficients_to_skip_from1)
-    constraint_dicts2 = sort_constraints_by_length(constraints2, constraints_to_skip_from2, coefficients_to_skip_from2)
+    constraint_dicts1 = sort_constraints_by_length(constraints1, constraints_to_enforce_from1, constraints_to_skip_from1, coefficients_to_skip_from1)
+    constraint_dicts2 = sort_constraints_by_length(constraints2, constraints_to_enforce_from2, constraints_to_skip_from2, coefficients_to_skip_from2)
+
+    counter_perfectly_matched_constraints = 0
 
     # Loop through all constraints in first list and for each through all constraints in the second list
     for length, constraint_dict1 in constraint_dicts1.items():
@@ -161,13 +187,18 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
                 match status:
                     case "Potential match":
                         status = "Perfect match"
-                        print(f"Found perfect match for {constraint_name1}: {constraint1}")
+                        counter_perfectly_matched_constraints += 1
+                        if print_additional_information:
+                            printer.information(f"Perfect match found for constraint {constraint_name1}: {constraint1}")
                         constraint_dicts2[length].pop(constraint_name2)
                         break
                     case "Coefficient values differ":
-                        print(f"Found partial match (factors differ by more than {precision * 100}%):")
-                        print(f"{constraint_name1}: {constraint1}")
-                        print(f"{constraint_name2}: {constraint2}")
+                        if counter_perfectly_matched_constraints > 0:
+                            printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
+                            counter_perfectly_matched_constraints = 0
+                        printer.information(f"Found partial match (factors differ by more than {precision * 100}%):")
+                        printer.information(f"{constraint_name1}: {constraint1}")
+                        printer.information(f"{constraint_name2}: {constraint2}")
                         constraint_dicts2[length].pop(constraint_name2)
                         break
                     case "Coefficient name mismatch":
@@ -176,12 +207,24 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
                         raise ValueError("Unknown status")
 
             if status != "Perfect match" and status != "Coefficient values differ":
-                print(f"No match found for constraint {constraint_name1}: {constraint1}")
+                if counter_perfectly_matched_constraints > 0:
+                    printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
+                    counter_perfectly_matched_constraints = 0
+                printer.error(f"No match found for constraint {constraint_name1}: {constraint1}", hard_wrap_chars="[...]")
+    if counter_perfectly_matched_constraints > 0:
+        printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
+
+    if constraints_to_enforce_from2 is not None:
+        for enforced_constraint_name in constraints_to_enforce_from2:
+            for constraint_name, constraint in constraints2.items():
+                if enforced_constraint_name in constraint_name:
+                    printer.error(f"Missing enforced constraint {constraint_name}: {constraint}", hard_wrap_chars="[...]")
     return False
 
 
-def compare_mps(file1, file2, check_vars=True, check_constraints=True,
-                constraints_to_skip_from1=None, coefficients_to_skip_from1=None, constraints_to_skip_from2=None, coefficients_to_skip_from2=None):
+def compare_mps(file1, file2, check_vars=True, check_constraints=True, print_additional_information=False,
+                constraints_to_enforce_from1=None, constraints_to_skip_from1=None, coefficients_to_skip_from1=None,
+                constraints_to_enforce_from2=None, constraints_to_skip_from2=None, coefficients_to_skip_from2=None):
     # Load MPS files
     model1 = LpProblem.fromMPS(file1)
     model2 = LpProblem.fromMPS(file2)
@@ -202,10 +245,10 @@ def compare_mps(file1, file2, check_vars=True, check_constraints=True,
                         found = True
                         break
                     else:
-                        print("Variable bounds differ:", v, v2)
+                        printer.error("Variable bounds differ:", v, v2)
                         break
             if not found:
-                print("Variable not found in model2:", v)
+                printer.error("Variable not found in model2:", v)
 
     # Constraints
     if check_constraints:
@@ -214,8 +257,9 @@ def compare_mps(file1, file2, check_vars=True, check_constraints=True,
 
         # Check if constraints are the same
         constraint_check_result = compare_constraints(constraints1, constraints2,
-                                                      constraints_to_skip_from1=constraints_to_skip_from1, coefficients_to_skip_from1=coefficients_to_skip_from1,
-                                                      constraints_to_skip_from2=constraints_to_skip_from2, coefficients_to_skip_from2=coefficients_to_skip_from2)
+                                                      constraints_to_enforce_from1=constraints_to_enforce_from1, constraints_to_skip_from1=constraints_to_skip_from1, coefficients_to_skip_from1=coefficients_to_skip_from1,
+                                                      constraints_to_enforce_from2=constraints_to_enforce_from2, constraints_to_skip_from2=constraints_to_skip_from2, coefficients_to_skip_from2=coefficients_to_skip_from2,
+                                                      print_additional_information=print_additional_information)
 
     # Objectives
     obj1 = model1[1].objective
