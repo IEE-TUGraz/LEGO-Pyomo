@@ -70,12 +70,12 @@ def add_constraints(lego: LEGO):
         for g in lego.model.storageUnits:
             for p, rp, k in lego.model.hindex:
                 # If current p is a multiple of moving window, add constraint
-                if LEGOUtilities.p_to_int(p) % lego.model.pMovWindow == 0 and LEGOUtilities.p_to_int(p) >= lego.model.pMovWindow:
+                if LEGOUtilities.p_to_int(p) % lego.model.pMovWindow == 0 and LEGOUtilities.p_to_int(p) > lego.model.pMovWindow:
                     relevant_hindeces = lego.model.hindex[LEGOUtilities.p_to_int(p) - lego.model.pMovWindow:LEGOUtilities.p_to_int(p)]
                     hindex_count = relevant_hindeces.to_frame(index=False).groupby(['rp', 'k']).size()
 
-                    lego.model.eStInterRes.add(0 == lego.model.vStInterRes[LEGOUtilities.int_to_p(LEGOUtilities.p_to_int(p) - lego.model.pMovWindow + 1), g] +
-                                               (lego.cs.dPower_Storage.loc[g, 'IniReserve'] if LEGOUtilities.p_to_int(p) == lego.model.pMovWindow + 1 else 0) -
+                    lego.model.eStInterRes.add(0 == lego.model.vStInterRes[LEGOUtilities.int_to_p(LEGOUtilities.p_to_int(p) - lego.model.pMovWindow), g] +
+                                               (lego.cs.dPower_Storage.loc[g, 'IniReserve'] if LEGOUtilities.p_to_int(p) == lego.model.pMovWindow else 0) -
                                                lego.model.vStInterRes[p, g] +
-                                               sum(-lego.model.vGenP[g, rp, k] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] * hindex_count.loc[rp, k] +
+                                               sum(-lego.model.vGenP[g, rp2, k2] * lego.model.pWeight_k[k2] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] * hindex_count.loc[rp2, k2] +
                                                    lego.model.vConsump[g, rp2, k2] * lego.model.pWeight_k[k2] * lego.cs.dPower_Storage.loc[g, 'ChEffic'] * hindex_count.loc[rp2, k2] for rp2, k2 in hindex_count.index if LEGOUtilities.p_to_int(p) - lego.model.pMovWindow < LEGOUtilities.p_to_int(p) <= LEGOUtilities.p_to_int(p)))
