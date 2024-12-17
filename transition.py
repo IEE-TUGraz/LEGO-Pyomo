@@ -1,4 +1,5 @@
 import logging
+import time
 
 from pyomo.core import NameLabeler
 
@@ -35,10 +36,12 @@ if True:
         # Create subprocess to execute LEGO model
         # Executing with argument string instead of list since GAMS has problems with double-quotes
         printer.information(f"Starting LEGO-GAMS with scenario folder \"{scenario_folder}\"")
+        start_time = time.time()
         lego_process = subprocess.Popen(f"cd LEGO-GAMS && {gams_path} {lego_path} --scenarioFolder=\"../{scenario_folder}\"",
                                         stdout=GAMSConsoleLogFile, stderr=subprocess.STDOUT, shell=True)
         try:
             return_value = lego_process.wait(max_runtime_in_seconds)
+            stop_time = time.time()
 
         except subprocess.TimeoutExpired:  # If it exceeds max_runtime_in_seconds, kill it incl. all child processes
             child_processes = psutil.Process(lego_process.pid).children(recursive=True)
@@ -55,7 +58,8 @@ if True:
         printer.error(f"Return value of process is {return_value} - please check log files")
         exit(-1)
     else:
-        printer.information(f"LEGO-GAMS finished successfully")
+        timing = stop_time - start_time
+        printer.information(f"Executing GAMS took {timing:.2f} seconds")
 
 ########################################################################################################################
 # Data input from case study

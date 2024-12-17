@@ -67,11 +67,12 @@ def add_constraints(lego: LEGO):
 
     def eStInterRes_rule(model, p, storage_unit):
         # If current p is a multiple of moving window, add constraint
-        if LEGOUtilities.p_to_int(p) % model.pMovWindow == 0 and LEGOUtilities.p_to_int(p) > model.pMovWindow:
+        if LEGOUtilities.p_to_int(p) % model.pMovWindow == 0:
             relevant_hindeces = model.hindex[LEGOUtilities.p_to_int(p) - model.pMovWindow:LEGOUtilities.p_to_int(p)]
             hindex_count = relevant_hindeces.to_frame(index=False).groupby(['rp', 'k']).size()
 
-            return (0 == model.vStInterRes[LEGOUtilities.int_to_p(LEGOUtilities.p_to_int(p) - model.pMovWindow), storage_unit] +
+            return (0 ==
+                    (model.vStInterRes[LEGOUtilities.int_to_p(LEGOUtilities.p_to_int(p) - model.pMovWindow), storage_unit] if LEGOUtilities.p_to_int(p) - model.pMovWindow > 0 else 0) +  # TODO Check with Diego/Sonja: p=h0001 is skipped (because h0000 is skipped)
                     (lego.cs.dPower_Storage.loc[storage_unit, 'IniReserve'] if LEGOUtilities.p_to_int(p) == model.pMovWindow else 0) -
                     model.vStInterRes[p, storage_unit] +
                     sum(-model.vGenP[storage_unit, rp2, k2] * model.pWeight_k[k2] / lego.cs.dPower_Storage.loc[storage_unit, 'DisEffic'] * hindex_count.loc[rp2, k2] +

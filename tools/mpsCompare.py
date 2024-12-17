@@ -30,6 +30,10 @@ def normalize_constraints(model):
         original_constraint_dict = constraint.toDict()
         result_constraint_dict = {}
 
+        # Try to fix name of constraints for pyomo mps-export
+        if "c_e_" in name:
+            name = (name.replace("c_e_", "")[:-2] + ")").replace("_", "(")
+
         # Replace name & normalize factors by constant
         constant = original_constraint_dict['constant']
         for coefficient in original_constraint_dict['coefficients']:
@@ -197,8 +201,8 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
                             printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
                             counter_perfectly_matched_constraints = 0
                         printer.information(f"Found partial match (factors differ by more than {precision * 100}%):")
-                        printer.information(f"{constraint_name1}: {constraint1}")
-                        printer.information(f"{constraint_name2}: {constraint2}")
+                        printer.information(f"{constraint_name1}: {constraint1}", hard_wrap_chars="[...]")
+                        printer.information(f"{constraint_name2}: {constraint2}", hard_wrap_chars="[...]")
                         constraint_dicts2[length].pop(constraint_name2)
                         break
                     case "Coefficient name mismatch":
@@ -210,16 +214,16 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
                 if counter_perfectly_matched_constraints > 0:
                     printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
                     counter_perfectly_matched_constraints = 0
-                printer.error(f"No match found for constraint {constraint_name1}: {constraint1}", hard_wrap_chars="[...]")
+                printer.error(f"No match found for constraint {constraint_name1}: {constraint1}", hard_wrap_chars=f"[... {len(constraint1)} total]")
     if counter_perfectly_matched_constraints > 0:
         printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
 
     if constraints_to_enforce_from2 is not None:
         for enforced_constraint_name in constraints_to_enforce_from2:
             for length, constraint_dict2 in constraint_dicts2.items():
-                for constraint_name, constraint in constraint_dict2.items():
-                    if enforced_constraint_name in constraint_name:
-                        printer.error(f"Missing enforced constraint {constraint_name}: {constraint}", hard_wrap_chars="[...]")
+                for constraint_name2, constraint2 in constraint_dict2.items():
+                    if enforced_constraint_name in constraint_name2:
+                        printer.error(f"Missing enforced constraint {constraint_name2}: {constraint2}", hard_wrap_chars=f"[... {len(constraint2)} total]")
     return False
 
 
