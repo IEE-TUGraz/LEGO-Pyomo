@@ -216,9 +216,10 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
 
     if constraints_to_enforce_from2 is not None:
         for enforced_constraint_name in constraints_to_enforce_from2:
-            for constraint_name, constraint in constraints2.items():
-                if enforced_constraint_name in constraint_name:
-                    printer.error(f"Missing enforced constraint {constraint_name}: {constraint}", hard_wrap_chars="[...]")
+            for length, constraint_dict2 in constraint_dicts2.items():
+                for constraint_name, constraint in constraint_dict2.items():
+                    if enforced_constraint_name in constraint_name:
+                        printer.error(f"Missing enforced constraint {constraint_name}: {constraint}", hard_wrap_chars="[...]")
     return False
 
 
