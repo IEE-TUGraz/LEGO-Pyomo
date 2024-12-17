@@ -18,28 +18,42 @@ class Printer:
         Printer.__instance = self
         self.console = console
 
+    def set_width(self, width):
+        self.console.width = width
+        return None
+
     # Definition of standard output for errors
-    def error(self, text: str, prefix="Error: "):
+    def error(self, text: str, prefix="Error: ", hard_wrap_chars: str = None):
+        if hard_wrap_chars is not None:
+            text = text[:self.console.width - len(prefix) - len(hard_wrap_chars)] + hard_wrap_chars
         self.console.print(f"[red]{prefix}{text}[/red]")
         return None
 
     # Definition of standard output for warnings
-    def warning(self, text: str, prefix="Warning: "):
+    def warning(self, text: str, prefix="Warning: ", hard_wrap_chars: str = None):
+        if hard_wrap_chars is not None:
+            text = text[:self.console.width - len(prefix) - len(hard_wrap_chars)] + hard_wrap_chars
         self.console.print(f"[yellow]{prefix}{text}[/yellow]")
         return None
 
     # Definition of standard output for notes
-    def note(self, text: str, prefix="Note: "):
+    def note(self, text: str, prefix="Note: ", hard_wrap_chars: str = None):
+        if hard_wrap_chars is not None:
+            text = text[:self.console.width - len(prefix) - len(hard_wrap_chars)] + hard_wrap_chars
         self.console.print(f"[yellow]{prefix}{text}[/yellow]")
         return None
 
     # Definition of standard output for success
-    def success(self, text="", prefix=""):
+    def success(self, text="", prefix="", hard_wrap_chars: str = None):
+        if hard_wrap_chars is not None:
+            text = text[:self.console.width - len(prefix) - len(hard_wrap_chars)] + hard_wrap_chars
         self.console.print(f"[green]{prefix}{text}[/green]")
         return None
 
     # Definition of standard output for information
-    def information(self, text: str, prefix=""):
+    def information(self, text: str, prefix="", hard_wrap_chars: str = None):
+        if hard_wrap_chars is not None:
+            text = text[:self.console.width - len(prefix) - len(hard_wrap_chars)] + hard_wrap_chars
         self.console.print(f"{prefix}{text}")
         return None
 
