@@ -46,7 +46,6 @@ def add_constraints(lego: LEGO):
 
     # Constraint definitions
     lego.model.eStIntraRes = pyo.ConstraintList(doc='Intra-day reserve constraint for storage units')
-    lego.model.eStInterRes = pyo.ConstraintList(doc='Inter-day reserve constraint for storage units')
     lego.model.eExclusiveChargeDischarge = pyo.ConstraintList(doc='Enforce exclusive charge or discharge for storage units')
 
     # Constraint implementations
@@ -66,16 +65,20 @@ def add_constraints(lego: LEGO):
                     lego.model.eExclusiveChargeDischarge.add(lego.model.vConsump[g, rp, k] <= lego.model.bChargeDisCharge[g, rp, k] * lego.cs.dPower_Storage.loc[g, 'MaxCons'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
                     lego.model.eExclusiveChargeDischarge.add(lego.model.vGenP[g, rp, k] <= (1 - lego.model.bChargeDisCharge[g, rp, k]) * lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'])
 
-    if len(lego.model.rp) > 1:
-        for g in lego.model.storageUnits:
-            for p, rp, k in lego.model.hindex:
-                # If current p is a multiple of moving window, add constraint
-                if LEGOUtilities.p_to_int(p) % lego.model.pMovWindow == 0 and LEGOUtilities.p_to_int(p) > lego.model.pMovWindow:
-                    relevant_hindeces = lego.model.hindex[LEGOUtilities.p_to_int(p) - lego.model.pMovWindow:LEGOUtilities.p_to_int(p)]
-                    hindex_count = relevant_hindeces.to_frame(index=False).groupby(['rp', 'k']).size()
+    def eStInterRes_rule(model, p, storage_unit):
+        # If current p is a multiple of moving window, add constraint
+        if LEGOUtilities.p_to_int(p) % model.pMovWindow == 0 and LEGOUtilities.p_to_int(p) > model.pMovWindow:
+            relevant_hindeces = model.hindex[LEGOUtilities.p_to_int(p) - model.pMovWindow:LEGOUtilities.p_to_int(p)]
+            hindex_count = relevant_hindeces.to_frame(index=False).groupby(['rp', 'k']).size()
 
-                    lego.model.eStInterRes.add(0 == lego.model.vStInterRes[LEGOUtilities.int_to_p(LEGOUtilities.p_to_int(p) - lego.model.pMovWindow), g] +
-                                               (lego.cs.dPower_Storage.loc[g, 'IniReserve'] if LEGOUtilities.p_to_int(p) == lego.model.pMovWindow else 0) -
-                                               lego.model.vStInterRes[p, g] +
-                                               sum(-lego.model.vGenP[g, rp2, k2] * lego.model.pWeight_k[k2] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] * hindex_count.loc[rp2, k2] +
-                                                   lego.model.vConsump[g, rp2, k2] * lego.model.pWeight_k[k2] * lego.cs.dPower_Storage.loc[g, 'ChEffic'] * hindex_count.loc[rp2, k2] for rp2, k2 in hindex_count.index if LEGOUtilities.p_to_int(p) - lego.model.pMovWindow < LEGOUtilities.p_to_int(p) <= LEGOUtilities.p_to_int(p)))
+            return (0 == model.vStInterRes[LEGOUtilities.int_to_p(LEGOUtilities.p_to_int(p) - model.pMovWindow), storage_unit] +
+                    (lego.cs.dPower_Storage.loc[storage_unit, 'IniReserve'] if LEGOUtilities.p_to_int(p) == model.pMovWindow else 0) -
+                    model.vStInterRes[p, storage_unit] +
+                    sum(-model.vGenP[storage_unit, rp2, k2] * model.pWeight_k[k2] / lego.cs.dPower_Storage.loc[storage_unit, 'DisEffic'] * hindex_count.loc[rp2, k2] +
+                        model.vConsump[storage_unit, rp2, k2] * model.pWeight_k[k2] * lego.cs.dPower_Storage.loc[storage_unit, 'ChEffic'] * hindex_count.loc[rp2, k2] for rp2, k2 in hindex_count.index if LEGOUtilities.p_to_int(p) - model.pMovWindow < LEGOUtilities.p_to_int(p) <= LEGOUtilities.p_to_int(p)))
+
+        else:  # Skip otherwise
+            return pyo.Constraint.Skip
+
+    if len(lego.model.rp) > 1:
+        lego.model.eStInterRes = pyo.Constraint(lego.model.p, lego.model.storageUnits, doc='Inter-day reserve constraint for storage units', rule=eStInterRes_rule)
