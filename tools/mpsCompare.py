@@ -159,6 +159,8 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
             for constraint_name2, constraint2 in constraint_dicts2[length].items():
                 status = "Potential match"
 
+                partial_match_coefficients1 = {}
+                partial_match_coefficients2 = {}
                 for coefficient_name1, coefficient_value1 in constraint1.items():
                     if coefficient_name1 not in constraint2:
                         status = "Coefficient name mismatch"
@@ -169,13 +171,19 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
                         coefficient_value1 = abs(float(coefficient_value1))
                         coefficient_value2 = abs(float(constraint2[coefficient_name1]))
                         if coefficient_value1 == 0:
-                            if coefficient_value2 > precision:  # If coefficient_value1 == 0, check if coefficient_value2 is sufficiently small
+                            if abs(coefficient_value2) > precision:  # If coefficient_value1 == 0, check if coefficient_value2 is sufficiently small
                                 status = "Coefficient values differ"
+                                partial_match_coefficients1[coefficient_name1] = coefficient_value1
+                                partial_match_coefficients2[coefficient_name1] = coefficient_value2
                         elif abs((coefficient_value1 - coefficient_value2) / coefficient_value1) > precision:
                             status = "Coefficient values differ"
+                            partial_match_coefficients1[coefficient_name1] = coefficient_value1
+                            partial_match_coefficients2[coefficient_name1] = coefficient_value2
                     else:  # If one or both values are not numeric, check equality
                         if coefficient_value1 != constraint2[coefficient_name1]:
                             status = "Coefficient values differ"
+                            partial_match_coefficients1[coefficient_name1] = coefficient_value1
+                            partial_match_coefficients2[coefficient_name1] = constraint2[coefficient_name1]
 
                 match status:
                     case "Potential match":
@@ -190,8 +198,8 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
                             printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
                             counter_perfectly_matched_constraints = 0
                         printer.information(f"Found partial match (factors differ by more than {precision * 100}%):")
-                        printer.information(f"{constraint_name1}: {constraint1}", hard_wrap_chars="[...]")
-                        printer.information(f"{constraint_name2}: {constraint2}", hard_wrap_chars="[...]")
+                        printer.information(f"{constraint_name1}: {partial_match_coefficients1}", hard_wrap_chars="[...]")
+                        printer.information(f"{constraint_name2}: {partial_match_coefficients2}", hard_wrap_chars="[...]")
                         constraint_dicts2[length].pop(constraint_name2)
                         break
                     case "Coefficient name mismatch":
