@@ -776,15 +776,20 @@ $onEmbeddedCode Connect:
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
+              
+            # - name: pFixStInterResToIniReserve               # NOT IMPLEMENTED
+            #   range: Power Parameters!C107
+            #   rowDimension: 0
+            #   columnDimension: 0
     
             - name: pEnableMinProdRESTech
-              range: Power Parameters!C108
+              range: Power Parameters!C111
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
               
             - name: pEnableMaxGas
-              range: Power Parameters!C111
+              range: Power Parameters!C114
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
