@@ -38,6 +38,11 @@ def add_variable_bounds(lego: LEGO):
             if LEGOUtilities.p_to_int(p) % lego.model.pMovWindow == 0:
                 lego.model.vStInterRes[p, g].setub(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'])
                 lego.model.vStInterRes[p, g].setlb(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'] * lego.cs.dPower_Storage.loc[g, 'MinReserve'])
+            if LEGOUtilities.p_to_int(p) == len(lego.model.p):
+                if lego.cs.dPower_Parameters['pFixStInterResToIniReserve']:
+                    lego.model.vStInterRes[p, g].fix(lego.cs.dPower_Storage.loc[g, 'IniReserve'])  # TODO Check with Diego/Sonja: Should we keep this?
+                else:
+                    lego.model.vStInterRes[p, g].setlb(lego.cs.dPower_Storage.loc[g, 'IniReserve'])
 
 
 @LEGOUtilities.checkExecutionLog([add_variable_definitions, add_variable_bounds])
@@ -72,11 +77,11 @@ def add_constraints(lego: LEGO):
             hindex_count = relevant_hindeces.to_frame(index=False).groupby(['rp', 'k']).size()
 
             return (0 ==
-                    (model.vStInterRes[LEGOUtilities.int_to_p(LEGOUtilities.p_to_int(p) - model.pMovWindow), storage_unit] if LEGOUtilities.p_to_int(p) - model.pMovWindow > 0 else 0) +  # TODO Check with Diego/Sonja: p=h0001 is skipped (because h0000 is skipped)
-                    (lego.cs.dPower_Storage.loc[storage_unit, 'IniReserve'] if LEGOUtilities.p_to_int(p) == model.pMovWindow else 0) -
-                    model.vStInterRes[p, storage_unit] +
-                    sum(-model.vGenP[storage_unit, rp2, k2] * model.pWeight_k[k2] / lego.cs.dPower_Storage.loc[storage_unit, 'DisEffic'] * hindex_count.loc[rp2, k2] +
-                        model.vConsump[storage_unit, rp2, k2] * model.pWeight_k[k2] * lego.cs.dPower_Storage.loc[storage_unit, 'ChEffic'] * hindex_count.loc[rp2, k2] for rp2, k2 in hindex_count.index if LEGOUtilities.p_to_int(p) - model.pMovWindow < LEGOUtilities.p_to_int(p) <= LEGOUtilities.p_to_int(p)))
+                    (model.vStInterRes[LEGOUtilities.int_to_p(LEGOUtilities.p_to_int(p) - model.pMovWindow), storage_unit] if LEGOUtilities.p_to_int(p) - model.pMovWindow > 0 else 0)
+                    + (lego.cs.dPower_Storage.loc[storage_unit, 'IniReserve'] if LEGOUtilities.p_to_int(p) == model.pMovWindow else 0)
+                    - model.vStInterRes[p, storage_unit]
+                    + sum(- model.vGenP[storage_unit, rp2, k2] * model.pWeight_k[k2] / lego.cs.dPower_Storage.loc[storage_unit, 'DisEffic'] * hindex_count.loc[rp2, k2]
+                          + model.vConsump[storage_unit, rp2, k2] * model.pWeight_k[k2] * lego.cs.dPower_Storage.loc[storage_unit, 'ChEffic'] * hindex_count.loc[rp2, k2] for rp2, k2 in hindex_count.index))
 
         else:  # Skip otherwise
             return pyo.Constraint.Skip
