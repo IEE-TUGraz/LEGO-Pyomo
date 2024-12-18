@@ -76,20 +76,21 @@ if True:
     #####################################################################################################################
 
     model, timing = lego.build_model()
-    printer.information(f"Building model took {timing:.2f} seconds")
+    printer.information(f"Building LEGO model took {timing:.2f} seconds")
     model.write("model.mps", io_options={'labeler': NameLabeler()})
 
-constraints_to_enforce_from1 = ["eStInterRes"]
-constraints_to_skip_from1 = ["eStIntraRes", "eExclusiveChargeDischarge"]
+constraints_to_skip_from1 = None  # ["eStIntraRes", "eExclusiveChargeDischarge"]
+constraints_to_keep_from1 = ["eStInterRes", "eStIntraRes"]
 coefficients_to_skip_from1 = ["name"]
 
-constraints_to_enforce_from2 = ["eStInterRes"]  # ["eStIntraRes"]
 constraints_to_skip_from2 = []
+constraints_to_keep_from2 = ["eStInterRes", "eStIntraRes"]
 coefficients_to_skip_from2 = ["name",
                               "v2ndResDW", "vGenP1"]
+constraints_to_enforce_from2 = ["eStInterRes", "eStIntraRes"]
 
 compare_mps("model.mps", "LEGO-GAMS/LEGO-GAMS.mps", check_vars=False, print_additional_information=False,
-            constraints_to_enforce_from1=constraints_to_enforce_from1, constraints_to_skip_from1=constraints_to_skip_from1, constraints_to_skip_from2=constraints_to_skip_from2,
-            constraints_to_enforce_from2=constraints_to_enforce_from2, coefficients_to_skip_from1=coefficients_to_skip_from1, coefficients_to_skip_from2=coefficients_to_skip_from2)
+            constraints_to_skip_from1=constraints_to_skip_from1, constraints_to_keep_from1=constraints_to_keep_from1, coefficients_to_skip_from1=coefficients_to_skip_from1,
+            constraints_to_skip_from2=constraints_to_skip_from2, constraints_to_keep_from2=constraints_to_keep_from2, coefficients_to_skip_from2=coefficients_to_skip_from2, constraints_to_enforce_from2=constraints_to_enforce_from2)
 
 print("Done")

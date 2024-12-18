@@ -91,39 +91,36 @@ def normalize_constraints(model):
     return constraints
 
 
-# Sort constraints by number of coefficients
-def sort_constraints_by_length(constraints: typing.Dict[str, OrderedDict[str, str]], constraints_to_enforce_with_wildcard: list[str] = None, constraints_to_skip_with_wildcard: list[str] = None, coefficients_to_skip: list[str] = None) -> OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]]:
+# Filter constraints and sort by number of coefficients
+def filter_and_sort_constraints(constraints: typing.Dict[str, OrderedDict[str, str]], constraints_to_skip: list[str] = None, constraints_to_keep: list[str] = None, coefficients_to_skip: list[str] = None) -> OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]]:
+    # Sanity check
+    if constraints_to_skip and constraints_to_keep:
+        raise ValueError("constraints_to_skip and constraints_to_keep cannot be set at the same time")
+
+    constraints_to_skip = [] if constraints_to_skip is None else constraints_to_skip
+    constraints_to_keep = [] if constraints_to_keep is None else constraints_to_keep
+    coefficients_to_skip = [] if coefficients_to_skip is None else coefficients_to_skip
+
     constraint_dicts: OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]] = OrderedDict()
 
-    if constraints_to_enforce_with_wildcard is None:
-        constraints_to_enforce_with_wildcard = []
-    if constraints_to_skip_with_wildcard is None:
-        constraints_to_skip_with_wildcard = []
-    if coefficients_to_skip is None:
-        coefficients_to_skip = []
-
-    if constraints_to_enforce_with_wildcard and constraints_to_skip_with_wildcard:
-        printer.warning(f"Ignoring constraints_to_skip_with_wildcard because constraints_to_enforce_with_wildcard is set")
-        constraints_to_skip_with_wildcard = []
-
     for constraint_name, constraint in constraints.items():
-        # Skip constraint if it contains any of the strings in constraints_to_skip_with_wildcard
+        # Skip constraint if it contains any of the strings in constraints_to_skip
         skip_constraint = False
-        for c in constraints_to_skip_with_wildcard:
+        for c in constraints_to_skip:
             if c in constraint_name:
                 skip_constraint = True
                 break
         if skip_constraint:
             continue
 
-        # Only continue with constraints from constraints_to_enforce_with_wildcard (if it is set)
-        if constraints_to_enforce_with_wildcard:
-            found_constraint = False
-            for c in constraints_to_enforce_with_wildcard:
+        # Only continue with constraints from constraints_to_keep (if it is set)
+        if constraints_to_keep:
+            keep_constraint = False
+            for c in constraints_to_keep:
                 if c in constraint_name:
-                    found_constraint = True
+                    keep_constraint = True
                     break
-            if not found_constraint:
+            if not keep_constraint:
                 continue
 
         # Remove coefficients from the skip list
@@ -142,24 +139,32 @@ def sort_constraints_by_length(constraints: typing.Dict[str, OrderedDict[str, st
 
 # Compare two lists of constraints where coefficients are already normalized (i.e. sorted by name and all factors are divided by the constant)
 def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], constraints2: typing.Dict[str, OrderedDict[str, str]], precision: float = 1e-12,
-                        constraints_to_enforce_from1: list[str] = None, constraints_to_skip_from1: list[str] = None, coefficients_to_skip_from1: list[str] = None,
-                        constraints_to_enforce_from2: list[str] = None, constraints_to_skip_from2: list[str] = None, coefficients_to_skip_from2: list[str] = None,
+                        constraints_to_skip_from1: list[str] = None, constraints_to_keep_from1: list[str] = None, coefficients_to_skip_from1: list[str] = None,
+                        constraints_to_skip_from2: list[str] = None, constraints_to_keep_from2: list[str] = None, coefficients_to_skip_from2: list[str] = None, constraints_to_enforce_from2: list[str] = None,
                         print_additional_information=False) -> bool:
-    # Initialize lists if none are given
-    constraints_to_enforce_from1 = [] if constraints_to_enforce_from1 is None else constraints_to_enforce_from1
-    constraints_to_enforce_from2 = [] if constraints_to_enforce_from2 is None else constraints_to_enforce_from2
-    constraints_to_skip_from1 = [] if constraints_to_skip_from1 is None else constraints_to_skip_from1
-    constraints_to_skip_from2 = [] if constraints_to_skip_from2 is None else constraints_to_skip_from2
-    coefficients_to_skip_from1 = [] if coefficients_to_skip_from1 is None else coefficients_to_skip_from1
-    coefficients_to_skip_from2 = [] if coefficients_to_skip_from2 is None else coefficients_to_skip_from2
+    # Sanity checks
+    # If skip and keep are set, raise error
+    if constraints_to_skip_from1 and constraints_to_keep_from1:
+        raise ValueError("constraints_to_skip_from1 and constraints_to_keep_from1 cannot be set at the same time")
+    if constraints_to_skip_from2 and constraints_to_keep_from2:
+        raise ValueError("constraints_to_skip_from2 and constraints_to_keep_from2 cannot be set at the same time")
+
+    # If any of enforce is in skip, raise error
+    if constraints_to_skip_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)):
+        raise ValueError(f"constraints_to_skip_from2 contains elements of constraints_to_enforce_from2: {set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)}")
+
+    # If any of enforce is not in keep, raise error
+    if constraints_to_keep_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).intersection(constraints_to_keep_from2)):
+        raise ValueError(f"constraints_to_keep_from2 is missing elements of constraints_to_enforce_from2: {set(constraints_to_keep_from2).difference(constraints_to_enforce_from2)}")
+
+    # If keep1 has more elements than enforce, print warning that only enforce will be checked
 
     # Sort constraints by number of coefficients
-    constraint_dicts1 = sort_constraints_by_length(constraints1, constraints_to_enforce_from1, constraints_to_skip_from1, coefficients_to_skip_from1)
-    constraint_dicts2 = sort_constraints_by_length(constraints2, constraints_to_enforce_from2, constraints_to_skip_from2, coefficients_to_skip_from2)
-
-    counter_perfectly_matched_constraints = 0
+    constraint_dicts1 = filter_and_sort_constraints(constraints=constraints1, constraints_to_skip=constraints_to_skip_from1, constraints_to_keep=constraints_to_keep_from1, coefficients_to_skip=coefficients_to_skip_from1)
+    constraint_dicts2 = filter_and_sort_constraints(constraints=constraints2, constraints_to_skip=constraints_to_skip_from2, constraints_to_keep=constraints_to_keep_from2, coefficients_to_skip=coefficients_to_skip_from2)
 
     # Loop through all constraints in first list and for each through all constraints in the second list
+    counter_perfectly_matched_constraints = 0
     for length, constraint_dict1 in constraint_dicts1.items():
         if length not in constraint_dicts2:
             print(f"No constraints of length {length} in second model, skipping comparison for {len(constraint_dict1)} constraints")
@@ -228,8 +233,8 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
 
 
 def compare_mps(file1, file2, check_vars=True, check_constraints=True, print_additional_information=False,
-                constraints_to_enforce_from1=None, constraints_to_skip_from1=None, coefficients_to_skip_from1=None,
-                constraints_to_enforce_from2=None, constraints_to_skip_from2=None, coefficients_to_skip_from2=None):
+                constraints_to_skip_from1=None, constraints_to_keep_from1=None, coefficients_to_skip_from1=None,
+                constraints_to_skip_from2=None, constraints_to_keep_from2=None, coefficients_to_skip_from2=None, constraints_to_enforce_from2=None):
     # Load MPS files
     model1 = LpProblem.fromMPS(file1)
     model2 = LpProblem.fromMPS(file2)
@@ -262,8 +267,8 @@ def compare_mps(file1, file2, check_vars=True, check_constraints=True, print_add
 
         # Check if constraints are the same
         constraint_check_result = compare_constraints(constraints1, constraints2,
-                                                      constraints_to_enforce_from1=constraints_to_enforce_from1, constraints_to_skip_from1=constraints_to_skip_from1, coefficients_to_skip_from1=coefficients_to_skip_from1,
-                                                      constraints_to_enforce_from2=constraints_to_enforce_from2, constraints_to_skip_from2=constraints_to_skip_from2, coefficients_to_skip_from2=coefficients_to_skip_from2,
+                                                      constraints_to_skip_from1=constraints_to_skip_from1, constraints_to_keep_from1=constraints_to_keep_from1, coefficients_to_skip_from1=coefficients_to_skip_from1,
+                                                      constraints_to_skip_from2=constraints_to_skip_from2, constraints_to_keep_from2=constraints_to_keep_from2, coefficients_to_skip_from2=coefficients_to_skip_from2, constraints_to_enforce_from2=constraints_to_enforce_from2,
                                                       print_additional_information=print_additional_information)
 
     # Objectives
