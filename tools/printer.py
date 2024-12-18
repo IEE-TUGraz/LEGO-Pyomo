@@ -22,38 +22,39 @@ class Printer:
         self.console.width = width
         return None
 
+    # Handle hard_wrap_chars
+    def handle_hard_wrap_chars(self, text: str, prefix: str, hard_wrap_chars: str) -> str:
+        if hard_wrap_chars is not None and len(text) + len(prefix) > self.console.width:
+            text = text[:self.console.width - len(prefix) - len(hard_wrap_chars)] + hard_wrap_chars
+        return text
+
     # Definition of standard output for errors
     def error(self, text: str, prefix="Error: ", hard_wrap_chars: str = None):
-        if hard_wrap_chars is not None:
-            text = text[:self.console.width - len(prefix) - len(hard_wrap_chars)] + hard_wrap_chars
+        text = self.handle_hard_wrap_chars(text, prefix, hard_wrap_chars)
         self.console.print(f"[red]{prefix}{text}[/red]")
         return None
 
     # Definition of standard output for warnings
     def warning(self, text: str, prefix="Warning: ", hard_wrap_chars: str = None):
-        if hard_wrap_chars is not None:
-            text = text[:self.console.width - len(prefix) - len(hard_wrap_chars)] + hard_wrap_chars
+        text = self.handle_hard_wrap_chars(text, prefix, hard_wrap_chars)
         self.console.print(f"[yellow]{prefix}{text}[/yellow]")
         return None
 
     # Definition of standard output for notes
     def note(self, text: str, prefix="Note: ", hard_wrap_chars: str = None):
-        if hard_wrap_chars is not None:
-            text = text[:self.console.width - len(prefix) - len(hard_wrap_chars)] + hard_wrap_chars
+        text = self.handle_hard_wrap_chars(text, prefix, hard_wrap_chars)
         self.console.print(f"[yellow]{prefix}{text}[/yellow]")
         return None
 
     # Definition of standard output for success
     def success(self, text="", prefix="", hard_wrap_chars: str = None):
-        if hard_wrap_chars is not None:
-            text = text[:self.console.width - len(prefix) - len(hard_wrap_chars)] + hard_wrap_chars
+        text = self.handle_hard_wrap_chars(text, prefix, hard_wrap_chars)
         self.console.print(f"[green]{prefix}{text}[/green]")
         return None
 
     # Definition of standard output for information
     def information(self, text: str, prefix="", hard_wrap_chars: str = None):
-        if hard_wrap_chars is not None:
-            text = text[:self.console.width - len(prefix) - len(hard_wrap_chars)] + hard_wrap_chars
+        text = self.handle_hard_wrap_chars(text, prefix, hard_wrap_chars)
         self.console.print(f"{prefix}{text}")
         return None
 
