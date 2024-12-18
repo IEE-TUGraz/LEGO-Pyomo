@@ -21,12 +21,41 @@ def remove_underscore(string: str) -> str:
 # 1. Replacing all names with actual names in the model
 # 2. Sorting the constraint by name
 # 3. Normalizing all factors based on the constant
-def normalize_constraints(model):
+def normalize_constraints(model, constraints_to_skip: list[str] = None, constraints_to_keep: list[str] = None, coefficients_to_skip: list[str] = None):
     original_names = {str(b): a.replace("(", "[").replace(")", "]") for a, b in model[0].items()}
     constraints = {}
 
+    # Sanity checks
+    # If skip and keep are set, raise error
+    if constraints_to_skip and constraints_to_keep:
+        raise ValueError("constraints_to_skip and constraints_to_keep cannot be set at the same time")
+
+    constraints_to_skip = [] if constraints_to_skip is None else constraints_to_skip
+    constraints_to_keep = [] if constraints_to_keep is None else constraints_to_keep
+    coefficients_to_skip = [] if coefficients_to_skip is None else coefficients_to_skip
+
     # Loop through all constraints
     for name, constraint in model[1].constraints.items():
+
+        # Skip constraint if it contains any of the strings in constraints_to_skip
+        skip_constraint = False
+        for c in constraints_to_skip:
+            if c in name:
+                skip_constraint = True
+                break
+        if skip_constraint:
+            continue
+
+        # Only continue with constraints from constraints_to_keep (if it is set)
+        if constraints_to_keep:
+            keep_constraint = False
+            for c in constraints_to_keep:
+                if c in name:
+                    keep_constraint = True
+                    break
+            if not keep_constraint:
+                continue
+
         original_constraint_dict = constraint.toDict()
         result_constraint_dict = {}
 
@@ -86,47 +115,20 @@ def normalize_constraints(model):
         # Add sorted coefficients to the dictionary
         orderedDict.update(sorted(result_constraint_dict.items()))
 
+        # Remove coefficients from the skip list
+        for coefficient_name in coefficients_to_skip:
+            orderedDict.pop(coefficient_name, None)
+
         constraints[name] = orderedDict
 
     return constraints
 
 
-# Filter constraints and sort by number of coefficients
-def filter_and_sort_constraints(constraints: typing.Dict[str, OrderedDict[str, str]], constraints_to_skip: list[str] = None, constraints_to_keep: list[str] = None, coefficients_to_skip: list[str] = None) -> OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]]:
-    # Sanity check
-    if constraints_to_skip and constraints_to_keep:
-        raise ValueError("constraints_to_skip and constraints_to_keep cannot be set at the same time")
-
-    constraints_to_skip = [] if constraints_to_skip is None else constraints_to_skip
-    constraints_to_keep = [] if constraints_to_keep is None else constraints_to_keep
-    coefficients_to_skip = [] if coefficients_to_skip is None else coefficients_to_skip
-
+# Sort constraints by number of coefficients
+def sort_constraints(constraints: typing.Dict[str, OrderedDict[str, str]]) -> OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]]:
     constraint_dicts: OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]] = OrderedDict()
 
     for constraint_name, constraint in constraints.items():
-        # Skip constraint if it contains any of the strings in constraints_to_skip
-        skip_constraint = False
-        for c in constraints_to_skip:
-            if c in constraint_name:
-                skip_constraint = True
-                break
-        if skip_constraint:
-            continue
-
-        # Only continue with constraints from constraints_to_keep (if it is set)
-        if constraints_to_keep:
-            keep_constraint = False
-            for c in constraints_to_keep:
-                if c in constraint_name:
-                    keep_constraint = True
-                    break
-            if not keep_constraint:
-                continue
-
-        # Remove coefficients from the skip list
-        for coefficient_name in coefficients_to_skip:
-            constraint.pop(coefficient_name, None)
-
         if len(constraint) not in constraint_dicts:
             constraint_dicts[len(constraint)] = OrderedDict()  # Initialize dictionary
 
@@ -139,29 +141,11 @@ def filter_and_sort_constraints(constraints: typing.Dict[str, OrderedDict[str, s
 
 # Compare two lists of constraints where coefficients are already normalized (i.e. sorted by name and all factors are divided by the constant)
 def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], constraints2: typing.Dict[str, OrderedDict[str, str]], precision: float = 1e-12,
-                        constraints_to_skip_from1: list[str] = None, constraints_to_keep_from1: list[str] = None, coefficients_to_skip_from1: list[str] = None,
-                        constraints_to_skip_from2: list[str] = None, constraints_to_keep_from2: list[str] = None, coefficients_to_skip_from2: list[str] = None, constraints_to_enforce_from2: list[str] = None,
+                        constraints_to_enforce_from2: list[str] = None,
                         print_additional_information=False) -> bool:
-    # Sanity checks
-    # If skip and keep are set, raise error
-    if constraints_to_skip_from1 and constraints_to_keep_from1:
-        raise ValueError("constraints_to_skip_from1 and constraints_to_keep_from1 cannot be set at the same time")
-    if constraints_to_skip_from2 and constraints_to_keep_from2:
-        raise ValueError("constraints_to_skip_from2 and constraints_to_keep_from2 cannot be set at the same time")
-
-    # If any of enforce is in skip, raise error
-    if constraints_to_skip_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)):
-        raise ValueError(f"constraints_to_skip_from2 contains elements of constraints_to_enforce_from2: {set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)}")
-
-    # If any of enforce is not in keep, raise error
-    if constraints_to_keep_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).intersection(constraints_to_keep_from2)):
-        raise ValueError(f"constraints_to_keep_from2 is missing elements of constraints_to_enforce_from2: {set(constraints_to_keep_from2).difference(constraints_to_enforce_from2)}")
-
-    # If keep1 has more elements than enforce, print warning that only enforce will be checked
-
     # Sort constraints by number of coefficients
-    constraint_dicts1 = filter_and_sort_constraints(constraints=constraints1, constraints_to_skip=constraints_to_skip_from1, constraints_to_keep=constraints_to_keep_from1, coefficients_to_skip=coefficients_to_skip_from1)
-    constraint_dicts2 = filter_and_sort_constraints(constraints=constraints2, constraints_to_skip=constraints_to_skip_from2, constraints_to_keep=constraints_to_keep_from2, coefficients_to_skip=coefficients_to_skip_from2)
+    constraint_dicts1 = sort_constraints(constraints=constraints1)
+    constraint_dicts2 = sort_constraints(constraints=constraints2)
 
     # Loop through all constraints in first list and for each through all constraints in the second list
     counter_perfectly_matched_constraints = 0
@@ -262,14 +246,19 @@ def compare_mps(file1, file2, check_vars=True, check_constraints=True, print_add
 
     # Constraints
     if check_constraints:
-        constraints1 = normalize_constraints(model1)
-        constraints2 = normalize_constraints(model2)
+        # If any of enforce is in skip, raise error
+        if constraints_to_skip_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)):
+            raise ValueError(f"constraints_to_skip_from2 contains elements of constraints_to_enforce_from2: {set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)}")
+
+        # If any of enforce is not in keep, raise error
+        if constraints_to_keep_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).intersection(constraints_to_keep_from2)):
+            raise ValueError(f"constraints_to_keep_from2 is missing elements of constraints_to_enforce_from2: {set(constraints_to_keep_from2).difference(constraints_to_enforce_from2)}")
+
+        constraints1 = normalize_constraints(model1, constraints_to_skip=constraints_to_skip_from1, constraints_to_keep=constraints_to_keep_from1, coefficients_to_skip=coefficients_to_skip_from1)
+        constraints2 = normalize_constraints(model2, constraints_to_skip=constraints_to_skip_from2, constraints_to_keep=constraints_to_keep_from2, coefficients_to_skip=coefficients_to_skip_from2)
 
         # Check if constraints are the same
-        constraint_check_result = compare_constraints(constraints1, constraints2,
-                                                      constraints_to_skip_from1=constraints_to_skip_from1, constraints_to_keep_from1=constraints_to_keep_from1, coefficients_to_skip_from1=coefficients_to_skip_from1,
-                                                      constraints_to_skip_from2=constraints_to_skip_from2, constraints_to_keep_from2=constraints_to_keep_from2, coefficients_to_skip_from2=coefficients_to_skip_from2, constraints_to_enforce_from2=constraints_to_enforce_from2,
-                                                      print_additional_information=print_additional_information)
+        constraint_check_result = compare_constraints(constraints1, constraints2, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
 
     # Objectives
     obj1 = model1[1].objective
