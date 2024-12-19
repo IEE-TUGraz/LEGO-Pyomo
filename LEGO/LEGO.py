@@ -34,6 +34,7 @@ class LEGO:
         model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=self.cs.dPower_BusInfo.loc[self.cs.dPower_BusInfo["ZoneOfInterest"] == "yes"].index.tolist(), within=self.model.i)
         model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=self.cs.hGenerators_to_Buses.loc[self.cs.hGenerators_to_Buses["i"].isin(self.model.zoi_i)].index.tolist(), within=self.model.g)
 
+        # Add constraints
         power.add_constraints(self)
         storage.add_constraints(self)
 

@@ -62,6 +62,8 @@ def normalize_constraints(model, constraints_to_skip: list[str] = None, constrai
         # Try to fix name of constraints for pyomo mps-export
         if "c_e_" in name:
             name = (name.replace("c_e_", "")[:-2] + ")").replace("_", "(")
+        if "c_l_" in name:
+            name = (name.replace("c_l_", "")[:-2] + ")").replace("_", "(")
 
         # Replace name & normalize factors by constant
         constant = original_constraint_dict['constant']
