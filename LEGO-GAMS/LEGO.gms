@@ -1980,8 +1980,8 @@ $ifThenE.H2 (%pEnableH2%=1)
 $endIf.H2
 ;
 
-e2ReserveUp(rpk(rp,k))$[p2ndResUp].. sum[t, v2ndResUP(rp,k,t)] + sum[s, v2ndResUP(rp,k,s)] =g= p2ndResUp * sum[i, pDemandP(rp,k,i)] ;
-e2ReserveDw(rpk(rp,k))$[p2ndResDw].. sum[t, v2ndResDW(rp,k,t)] + sum[s, v2ndResDW(rp,k,s)] =g= p2ndResDw * sum[i, pDemandP(rp,k,i)] ;
+e2ReserveUp(rpk(rp,k))$[p2ndResUp].. sum[t, v2ndResUP(rp,k,t) * max(pExisUnits(t), tThermalGen(t,'EnableInvest'))] + sum[s, v2ndResUP(rp,k,s)] =g= p2ndResUp * sum[i, pDemandP(rp,k,i)] ;
+e2ReserveDw(rpk(rp,k))$[p2ndResDw].. sum[t, v2ndResDW(rp,k,t) * max(pExisUnits(t), tThermalGen(t,'EnableInvest'))] + sum[s, v2ndResDW(rp,k,s)] =g= p2ndResDw * sum[i, pDemandP(rp,k,i)] ;
 
 eLLL_Line1       (rpk(rp,k),le(i,j,c))$[pEnableMaxLineLoad].. vLineP(rp,k,i,j,c) =l=  pPmax(i,j,c)       * pMaxLineLoad + vSlack(rp,k,i,j,c) * pPmax(i,j,c);
 eLLL_Line2       (rpk(rp,k),le(i,j,c))$[pEnableMaxLineLoad].. vLineP(rp,k,i,j,c) =g= -pPmax(i,j,c)       * pMaxLineLoad - vSlack(rp,k,i,j,c) * pPmax(i,j,c);

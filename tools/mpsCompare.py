@@ -61,9 +61,11 @@ def normalize_constraints(model, constraints_to_skip: list[str] = None, constrai
 
         # Try to fix name of constraints for pyomo mps-export
         if "c_e_" in name:
-            name = (name.replace("c_e_", "")[:-2] + ")").replace("_", "(")
+            name = (name.replace("c_e_", "")[:-2] + ")")
         if "c_l_" in name:
-            name = (name.replace("c_l_", "")[:-2] + ")").replace("_", "(")
+            name = (name.replace("c_l_", "")[:-2] + ")")
+
+        name = "(".join(name.rsplit("_", 1))
 
         # Replace name & normalize factors by constant
         constant = original_constraint_dict['constant']
@@ -153,7 +155,7 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
     counter_perfectly_matched_constraints = 0
     for length, constraint_dict1 in constraint_dicts1.items():
         if length not in constraint_dicts2:
-            print(f"No constraints of length {length} in second model, skipping comparison for {len(constraint_dict1)} constraints")
+            printer.information(f"No constraints of length {length} in second model, skipping comparison for {len(constraint_dict1)} constraints, e.g. {list(constraint_dict1.keys())[0]}", hard_wrap_chars="[...]")
             continue
 
         for constraint_name1, constraint1 in constraint_dict1.items():
@@ -200,8 +202,8 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
                             printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
                             counter_perfectly_matched_constraints = 0
                         printer.information(f"Found partial match (factors differ by more than {precision * 100}%):")
-                        printer.information(f"{constraint_name1}: {partial_match_coefficients1}", hard_wrap_chars="[...]")
-                        printer.information(f"{constraint_name2}: {partial_match_coefficients2}", hard_wrap_chars="[...]")
+                        printer.information(f"model1 {constraint_name1}: {partial_match_coefficients1}", hard_wrap_chars="[...]")
+                        printer.information(f"model2 {constraint_name2}: {partial_match_coefficients2}", hard_wrap_chars="[...]")
                         constraint_dicts2[length].pop(constraint_name2)
                         break
                     case "Coefficient name mismatch":

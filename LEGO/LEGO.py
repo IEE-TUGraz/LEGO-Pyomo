@@ -5,7 +5,7 @@ import pyomo.environ as pyo
 import pyomo.opt.results.results_
 
 from LEGO.CaseStudy import CaseStudy
-from LEGO.modules import storage, power
+from LEGO.modules import storage, power, secondReserve
 from tools.printer import Printer
 
 printer = Printer.getInstance()
@@ -29,6 +29,7 @@ class LEGO:
         # Element definitions
         power.add_element_definitions_and_bounds(self)
         storage.add_element_definitions_and_bounds(self)
+        secondReserve.add_element_definitions_and_bounds(self)
 
         # Helper Sets for zone of interest
         model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=self.cs.dPower_BusInfo.loc[self.cs.dPower_BusInfo["ZoneOfInterest"] == "yes"].index.tolist(), within=self.model.i)
@@ -37,6 +38,7 @@ class LEGO:
         # Add constraints
         power.add_constraints(self)
         storage.add_constraints(self)
+        secondReserve.add_constraints(self)
 
         # Objective function
         model.objective = get_objective(model)
