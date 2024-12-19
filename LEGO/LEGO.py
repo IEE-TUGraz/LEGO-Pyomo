@@ -28,8 +28,7 @@ class LEGO:
 
         # Element definitions
         power.add_element_definitions_and_bounds(self)
-        storage.add_variable_definitions(self)
-        storage.add_variable_bounds(self)
+        storage.add_element_definitions_and_bounds(self)
 
         # Helper Sets for zone of interest
         model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=self.cs.dPower_BusInfo.loc[self.cs.dPower_BusInfo["ZoneOfInterest"] == "yes"].index.tolist(), within=self.model.i)

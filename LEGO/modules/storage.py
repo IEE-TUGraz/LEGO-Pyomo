@@ -4,26 +4,18 @@ from LEGO import LEGO, LEGOUtilities
 
 
 @LEGOUtilities.addToExecutionLog
-def add_variable_definitions(lego: LEGO):
+def add_element_definitions_and_bounds(lego: LEGO):
     # Sets
     storageUnits = lego.cs.dPower_Storage.index.tolist()
     lego.model.storageUnits = pyo.Set(doc='Storage units', initialize=storageUnits)
     lego.update_generators(storageUnits)
 
     # Variables
+    lego.model.bChargeDisCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
+
     lego.model.vConsump = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Charging of storage unit g', bounds=(0, None))
     lego.model.vStIntraRes = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Intra-reserve of storage unit g', bounds=(None, None))
     lego.model.vStInterRes = pyo.Var(lego.model.p, lego.model.storageUnits, doc='Inter-reserve of storage unit g', bounds=(None, None))
-    lego.model.bChargeDisCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
-
-    # Parameters
-    lego.model.pOMVarCost = pyo.Param(lego.model.storageUnits, initialize=lego.cs.dPower_Storage['pOMVarCostEUR'], doc='Variable O&M cost of storage unit g')
-    lego.model.pWeight_k = pyo.Param(lego.model.k, initialize=lego.cs.dPower_WeightsK, doc='Weight of time step k')
-    lego.model.pEnableChDisPower = lego.cs.dPower_Parameters['pEnableChDisPower']  # Avoid simultaneous charging and discharging
-
-
-@LEGOUtilities.checkExecutionLog([add_variable_definitions])
-def add_variable_bounds(lego: LEGO):
     for g in lego.model.storageUnits:
         for rp in lego.model.rp:
             for k in lego.model.k:
@@ -40,12 +32,17 @@ def add_variable_bounds(lego: LEGO):
                 lego.model.vStInterRes[p, g].setlb(lego.cs.dPower_Storage.loc[g, 'MaxProd'] * lego.cs.dPower_Storage.loc[g, 'ExisUnits'] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'] * lego.cs.dPower_Storage.loc[g, 'MinReserve'])
             if LEGOUtilities.p_to_int(p) == len(lego.model.p):
                 if lego.cs.dPower_Parameters['pFixStInterResToIniReserve']:
-                    lego.model.vStInterRes[p, g].fix(lego.cs.dPower_Storage.loc[g, 'IniReserve'])  # TODO Check with Diego/Sonja: Should we keep this?
+                    lego.model.vStInterRes[p, g].fix(lego.cs.dPower_Storage.loc[g, 'IniReserve'])
                 else:
                     lego.model.vStInterRes[p, g].setlb(lego.cs.dPower_Storage.loc[g, 'IniReserve'])
 
+    # Parameters
+    lego.model.pOMVarCost = pyo.Param(lego.model.storageUnits, initialize=lego.cs.dPower_Storage['pOMVarCostEUR'], doc='Variable O&M cost of storage unit g')
+    lego.model.pWeight_k = pyo.Param(lego.model.k, initialize=lego.cs.dPower_WeightsK, doc='Weight of time step k')
+    lego.model.pEnableChDisPower = lego.cs.dPower_Parameters['pEnableChDisPower']  # Avoid simultaneous charging and discharging
 
-@LEGOUtilities.checkExecutionLog([add_variable_definitions, add_variable_bounds])
+
+@LEGOUtilities.checkExecutionLog([add_element_definitions_and_bounds])
 def add_constraints(lego: LEGO):
     # TODO: Check if we should add Hydro here as well
 
