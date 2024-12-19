@@ -91,6 +91,32 @@ class LEGO:
             for g in generators_to_be_added:
                 self.model.g.add(g)
 
+    # Add values to (unmutable!) parameter by replacing it
+    # Required when updating a parameter with new data (e.g., adding pMaxProd for thermal units and VRES from different data sources
+    # Can also handle creating a parameter for the first time
+    def addToParameter(self, parameter_name: str, values: iter, doc: str = None, indices: list[object] = None, overwrite=False):
+        if not hasattr(self.model, parameter_name):  # Check if parameter exists
+            if not doc:
+                raise RuntimeError(f"Parameter {parameter_name} does not exist in model, but no doc string was provided")
+            elif not indices:
+                raise RuntimeError(f"Parameter {parameter_name} does not exist in model, but no indices were provided")
+            else:
+                self.model.add_component(parameter_name, pyo.Param(*indices, initialize=values, doc=doc, domain=pyo.Reals))  # Add set which is not present yet
+        else:
+            current_values = self.model.component(parameter_name).extract_values()  # Get current values
+            if not doc:
+                doc = self.model.component(parameter_name).doc
+            if not indices:
+                indices = [self.model.component(parameter_name).index_set()]
+            if not overwrite:  # Check if any value would be overwritten
+                for k, v in values.items():
+                    if k in current_values.keys():
+                        raise RuntimeError(f"Value for {k} already exists in parameter {parameter_name}, but overwrite=False")
+
+            self.model.del_component(parameter_name)  # Delete parameter
+            current_values.update(values)  # Update values with new values
+            self.model.add_component(parameter_name, pyo.Param(*indices, initialize=current_values, doc=doc, domain=pyo.Reals))  # Add parameter as new parameter
+
 
 def get_objective(model: pyo.Model) -> pyo.Objective:
     result = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pInterVarCost[g] * sum(model.bUC[g, :, :]) +  # Fixed cost of thermal generators

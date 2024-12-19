@@ -19,6 +19,35 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.k = pyo.Set(doc='Timestep within representative period', initialize=lego.cs.dPower_Demand.index.get_level_values('k').unique().tolist(), ordered=True)
     lego.model.hindex = lego.cs.dPower_Hindex.index
 
+    # Parameters
+    lego.model.pDemandP = pyo.Param(lego.model.rp, lego.model.i, lego.model.k, initialize=lego.cs.dPower_Demand['Demand'], doc='Demand at bus i in representative period rp and timestep k')
+    lego.model.pMovWindow = lego.cs.dGlobal_Parameters['pMovWindow']
+
+    # Helper for FuelCost that has dPower_ThermalGen['FuelCost'] for ThermalGen, and 0 for all gs in ror and vres
+    hFuelCost = pd.concat([lego.cs.dPower_ThermalGen['FuelCost'].copy(), pd.Series(0, index=lego.model.rorGenerators), pd.Series(0, index=lego.model.vresGenerators)])
+    lego.model.pProductionCost = pyo.Param(lego.model.g, initialize=hFuelCost, doc='Production cost of generator g')
+    lego.model.pInterVarCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['pInterVarCostEUR'], doc='Inter-variable cost of thermal generator g')
+    lego.model.pSlopeVarCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['pSlopeVarCostEUR'], doc='Slope of variable cost of thermal generator g')
+    lego.model.pStartupCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['pStartupCostEUR'], doc='Startup cost of thermal generator g')
+    lego.model.pMinUpTime = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['MinUpTime'], doc='Minimum up time of thermal generator g')
+    lego.model.pMinDownTime = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['MinDownTime'], doc='Minimum down time of thermal generator g')
+
+    lego.model.pReactance = pyo.Param(lego.model.e, initialize=lego.cs.dPower_Network['X'], doc='Reactance of line e')
+    #                                                                                                                                counter TODO: Discuss with Sonja & Diego
+    lego.model.pSlackPrice = pyo.Param(lego.model.i, initialize=pd.DataFrame([(i, max(lego.model.pProductionCost.values()) * 100 + (0 * max(lego.model.pProductionCost.values()) / 10)) for counter, i in enumerate(lego.model.i)], columns=["i", "values"]).set_index("i"), doc='Price of slack variable')
+
+    lego.addToParameter("pMaxProd", lego.cs.dPower_ThermalGen['MaxProd'], indices=[lego.model.g], doc='Maximum production of generator g')
+    lego.addToParameter("pMaxProd", lego.cs.dPower_RoR['MaxProd'])
+    lego.addToParameter("pMaxProd", lego.cs.dPower_VRES['MaxProd'])
+
+    lego.addToParameter("pMinProd", lego.cs.dPower_ThermalGen['MinProd'], indices=[lego.model.g], doc='Minimum production of generator g')
+    lego.addToParameter("pMinProd", lego.cs.dPower_RoR['MinProd'])
+    lego.addToParameter("pMinProd", lego.cs.dPower_VRES['MinProd'])
+
+    lego.addToParameter("pExisUnits", lego.cs.dPower_ThermalGen['ExisUnits'], indices=[lego.model.g], doc='Existing units of generator g')
+    lego.addToParameter("pExisUnits", lego.cs.dPower_RoR['ExisUnits'])
+    lego.addToParameter("pExisUnits", lego.cs.dPower_VRES['ExisUnits'])
+
     # Variables
     lego.model.delta = pyo.Var(lego.model.i, lego.model.rp, lego.model.k, doc='Angle of bus i', bounds=(-lego.cs.dPower_Parameters["pMaxAngleDCOPF"], lego.cs.dPower_Parameters["pMaxAngleDCOPF"]))  # TODO: Discuss impact on runtime etc.(based on discussion with Prof. Renner)
     # For each DC-OPF "island", set node with highest demand as slack node
@@ -57,16 +86,16 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.vGenP = pyo.Var(lego.model.g, lego.model.rp, lego.model.k, doc='Power output of generator g', bounds=(0, None))
     lego.model.vThermalOutput = pyo.Var(lego.model.thermalGenerators, lego.model.rp, lego.model.k, doc='Power output of thermal generator g', bounds=(0, None))
     for g in lego.model.thermalGenerators:
-        lego.model.vGenP[g, :, :].setub(lego.cs.dPower_ThermalGen.loc[g, 'MaxProd'] * lego.cs.dPower_ThermalGen.loc[g, 'ExisUnits'])
-        lego.model.vThermalOutput[g, :, :].setub(lego.cs.dPower_ThermalGen.loc[g, 'MaxProd'] * lego.cs.dPower_ThermalGen.loc[g, 'ExisUnits'] - lego.cs.dPower_ThermalGen.loc[g, 'MinProd'] * lego.cs.dPower_ThermalGen.loc[g, 'ExisUnits'])
+        lego.model.vGenP[g, :, :].setub(lego.model.pMaxProd[g] * lego.cs.dPower_ThermalGen.loc[g, 'ExisUnits'])
+        lego.model.vThermalOutput[g, :, :].setub(lego.model.pMaxProd[g] * lego.cs.dPower_ThermalGen.loc[g, 'ExisUnits'] - lego.model.pMinProd[g] * lego.cs.dPower_ThermalGen.loc[g, 'ExisUnits'])
     for g in lego.model.rorGenerators:
         for rp in lego.model.rp:
             for k in lego.model.k:
-                lego.model.vGenP[g, rp, k].setub(min(lego.cs.dPower_RoR.loc[g, 'MaxProd'], lego.cs.dPower_Inflows.loc[rp, g, k]['Inflow']))  # TODO: Check and adapt for storage
+                lego.model.vGenP[g, rp, k].setub(min(lego.model.pMaxProd[g], lego.cs.dPower_Inflows.loc[rp, g, k]['Inflow']))  # TODO: Check and adapt for storage
     for g in lego.model.vresGenerators:
         for rp in lego.model.rp:
             for k in lego.model.k:
-                maxProd = lego.cs.dPower_VRES.loc[g, 'MaxProd']
+                maxProd = lego.model.pMaxProd[g]
                 capacity = lego.cs.dPower_VRESProfiles.loc[rp, lego.cs.dPower_VRES.loc[g, 'i'], k, lego.cs.dPower_VRES.loc[g, 'tec']]['Capacity']
                 capacity = capacity.values[0] if isinstance(capacity, pd.Series) else capacity
                 exisUnits = lego.cs.dPower_VRES.loc[g, 'ExisUnits']
@@ -84,23 +113,6 @@ def add_element_definitions_and_bounds(lego: LEGO):
                 raise ValueError(f"Technical representation '{lego.cs.dPower_Network.loc[i, j]["Technical Representation"]}' "
                                  f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
 
-    # Parameters
-    lego.model.pDemand = pyo.Param(lego.model.rp, lego.model.i, lego.model.k, initialize=lego.cs.dPower_Demand['Demand'], doc='Demand at bus i in representative period rp and timestep k')
-    lego.model.pMovWindow = lego.cs.dGlobal_Parameters['pMovWindow']
-
-    # Helper for FuelCost that has dPower_ThermalGen['FuelCost'] for ThermalGen, and 0 for all gs in ror and vres
-    hFuelCost = pd.concat([lego.cs.dPower_ThermalGen['FuelCost'].copy(), pd.Series(0, index=lego.model.rorGenerators), pd.Series(0, index=lego.model.vresGenerators)])
-    lego.model.pProductionCost = pyo.Param(lego.model.g, initialize=hFuelCost, doc='Production cost of generator g')
-    lego.model.pInterVarCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['pInterVarCostEUR'], doc='Inter-variable cost of thermal generator g')
-    lego.model.pSlopeVarCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['pSlopeVarCostEUR'], doc='Slope of variable cost of thermal generator g')
-    lego.model.pStartupCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['pStartupCostEUR'], doc='Startup cost of thermal generator g')
-    lego.model.pMinUpTime = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['MinUpTime'], doc='Minimum up time of thermal generator g')
-    lego.model.pMinDownTime = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['MinDownTime'], doc='Minimum down time of thermal generator g')
-
-    lego.model.pReactance = pyo.Param(lego.model.e, initialize=lego.cs.dPower_Network['X'], doc='Reactance of line e')
-    #                                                                                                                                counter TODO: Discuss with Sonja & Diego
-    lego.model.pSlackPrice = pyo.Param(lego.model.i, initialize=pd.DataFrame([(i, max(lego.model.pProductionCost.values()) * 100 + (0 * max(lego.model.pProductionCost.values()) / 10)) for counter, i in enumerate(lego.model.i)], columns=["i", "values"]).set_index("i"), doc='Price of slack variable')
-
 
 @LEGOUtilities.checkExecutionLog([add_element_definitions_and_bounds])
 def add_constraints(lego: LEGO):
@@ -108,7 +120,7 @@ def add_constraints(lego: LEGO):
         return (sum(model.vGenP[g, rp, k] for g in model.g if lego.cs.hGenerators_to_Buses.loc[g]['i'] == i) -  # Production of generators at bus i
                 sum(model.t[e, rp, k] for e in model.e if (e[0] == i)) +  # Power flow from bus i to bus j
                 sum(model.t[e, rp, k] for e in model.e if (e[1] == i)) ==  # Power flow from bus j to bus i
-                model.pDemand[rp, i, k] -  # Demand at bus i
+                model.pDemandP[rp, i, k] -  # Demand at bus i
                 model.vSlack_DemandNotServed[rp, k, i] +  # Slack variable for demand not served
                 model.vSlack_OverProduction[rp, k, i])  # Slack variable for overproduction
 
