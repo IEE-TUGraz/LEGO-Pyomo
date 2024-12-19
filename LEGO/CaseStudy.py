@@ -195,13 +195,17 @@ class CaseStudy:
         return self.read_generator_data(self.example_folder + self.power_ror_file)
 
     def get_dPower_VRES(self):
-        return self.read_generator_data(self.example_folder + self.power_vres_file)
+        dPower_VRES = self.read_generator_data(self.example_folder + self.power_vres_file)
+        if "MinProd" not in dPower_VRES.columns:
+            dPower_VRES['MinProd'] = 0
+        return dPower_VRES
 
     def get_dPower_Storage(self):
         dPower_Storage = self.read_generator_data(self.example_folder + self.power_storage_file)
         dPower_Storage['pOMVarCostEUR'] = dPower_Storage['OMVarCost'] * 1e-3
         dPower_Storage['IniReserve'] = dPower_Storage['IniReserve'].fillna(0)
         dPower_Storage['MinReserve'] = dPower_Storage['MinReserve'].fillna(0)
+        dPower_Storage['MinProd'] = dPower_Storage["MinProd"].fillna(0)
         return dPower_Storage
 
     def get_dPower_Demand(self):
