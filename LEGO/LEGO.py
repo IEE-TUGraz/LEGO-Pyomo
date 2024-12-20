@@ -84,14 +84,13 @@ class LEGO:
             # Iterate through constraints and sum up each individual constraint
             return sum([len(x) for x in self.model.component_objects(pyo.Constraint, active=True)])
 
-    # Update set 'g' to include given generators
-    def update_generators(self, generators_to_be_added: list[str]):
-        # Update set of generators
-        if len(self.model.g) == 0:
-            self.model.g = pyo.Set(doc='Generators', initialize=generators_to_be_added)
+    # Add elements to set
+    def addToSet(self, set_name: str, values: iter):
+        if not hasattr(self.model, set_name):
+            raise RuntimeError(f"Set {set_name} does not exist in model, please add it first")
         else:
-            for g in generators_to_be_added:
-                self.model.g.add(g)
+            for i in values:
+                self.model.component(set_name).add(i)
 
     # Add values to (unmutable!) parameter by replacing it
     # Required when updating a parameter with new data (e.g., adding pMaxProd for thermal units and VRES from different data sources

@@ -8,7 +8,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     # Sets
     storageUnits = lego.cs.dPower_Storage.index.tolist()
     lego.model.storageUnits = pyo.Set(doc='Storage units', initialize=storageUnits)
-    lego.update_generators(storageUnits)
+    lego.addToSet("g", storageUnits)
 
     # Parameters
     lego.model.pOMVarCost = pyo.Param(lego.model.storageUnits, initialize=lego.cs.dPower_Storage['pOMVarCostEUR'], doc='Variable O&M cost of storage unit g')

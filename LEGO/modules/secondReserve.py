@@ -6,12 +6,11 @@ from LEGO import LEGO, LEGOUtilities
 @LEGOUtilities.addToExecutionLog
 def add_element_definitions_and_bounds(lego: LEGO):
     # Sets
-    secondReserveGenerators = set()
+    lego.model.secondReserveGenerators = pyo.Set(doc="Second reserve providing generators", within=lego.model.g)
     if hasattr(lego.model, "thermalGenerators"):
-        secondReserveGenerators.update(lego.model.thermalGenerators)
+        lego.addToSet("secondReserveGenerators", lego.model.thermalGenerators)
     if hasattr(lego.model, "storageUnits"):
-        secondReserveGenerators.update(lego.model.storageUnits)
-    lego.model.secondReserveGenerators = pyo.Set(initialize=secondReserveGenerators, doc="Second reserve providing generators")
+        lego.addToSet("secondReserveGenerators", lego.model.storageUnits)
 
     # Variables
     lego.model.v2ndResUP = pyo.Var(lego.model.rp, lego.model.k, lego.model.secondReserveGenerators, doc="2nd reserve up allocation [GW]", bounds=(0, None))
