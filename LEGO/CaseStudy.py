@@ -19,7 +19,8 @@ class CaseStudy:
                  power_vresprofiles_file: str = "Power_VRESProfiles.xlsx", dPower_VRESProfiles: pd.DataFrame = None,
                  power_storage_file: str = "Power_Storage.xlsx", dPower_Storage: pd.DataFrame = None,
                  power_weightsk_file: str = "Power_WeightsK.xlsx", dPower_WeightsK: pd.DataFrame = None,
-                 power_hindex_file: str = "Power_Hindex.xlsx", dPower_Hindex: pd.DataFrame = None):
+                 power_hindex_file: str = "Power_Hindex.xlsx", dPower_Hindex: pd.DataFrame = None,
+                 power_impexp_file: str = "Power_ImpExp.xlsx", dPower_ImpExp: pd.DataFrame = None):
         self.example_folder = example_folder
         self.do_not_merge_single_node_buses = do_not_merge_single_node_buses
 
@@ -100,6 +101,12 @@ class CaseStudy:
         else:
             self.power_hindex_file = power_hindex_file
             self.dPower_Hindex = self.get_dPower_Hindex()
+
+        if dPower_ImpExp is not None:
+            self.dPower_ImpExp = dPower_ImpExp
+        else:
+            self.power_impexp_file = power_impexp_file
+            self.dPower_ImpExp = self.get_dPower_ImpExp()
 
         # Dataframe that shows connections between g and i, only concatenating g and i from the dataframes
         self.hGenerators_to_Buses = self.update_hGenerators_to_Buses()
@@ -246,6 +253,34 @@ class CaseStudy:
         dPower_Hindex = dPower_Hindex.rename(columns={dPower_Hindex.columns[0]: "p", dPower_Hindex.columns[1]: "rp", dPower_Hindex.columns[2]: "k"})
         dPower_Hindex = dPower_Hindex.set_index(['p', 'rp', 'k'])
         return dPower_Hindex
+
+    def get_dPower_ImpExp(self):
+        with warnings.catch_warnings(action="ignore", category=UserWarning):  # Otherwise there is a warning regarding data validation in the Excel-File (see https://stackoverflow.com/questions/53965596/python-3-openpyxl-userwarning-data-validation-extension-not-supported)
+            dPower_ImpExp = pd.read_excel(self.example_folder + self.power_impexp_file, skiprows=[0, 1, 3, 4, 5], sheet_name='Power ImpExp')
+        dPower_ImpExp = dPower_ImpExp.drop(dPower_ImpExp.columns[0], axis=1)
+        dPower_ImpExp = dPower_ImpExp.rename(columns={dPower_ImpExp.columns[0]: "i", dPower_ImpExp.columns[1]: "rp", dPower_ImpExp.columns[2]: "Type"})
+        dPower_ImpExp = dPower_ImpExp.melt(id_vars=['i', 'rp', 'Type'], var_name='k', value_name='Value')
+        dPower_ImpExp = dPower_ImpExp.set_index(['i', 'rp', 'Type', 'k'])
+
+        # Validate that each multiindex is only present once
+        if not dPower_ImpExp.index.is_unique:
+            raise ValueError(f"Indices for Imp-/Export values must be unique (i.e., no two entries for the same i, rp, Type and k). Please check these indices: {dPower_ImpExp.index[dPower_ImpExp.index.duplicated(keep=False)]}")
+
+        # Validate that each index for i, rp and k only has either ImportFix or ImportMax as Type specified
+        indices_importMax = dPower_ImpExp[dPower_ImpExp.index.isin(['ImportMax'], level=2)].index
+        indices_importFix = dPower_ImpExp[dPower_ImpExp.index.isin(['ImportFix'], level=2)].index
+        for i, rp, Type, k in indices_importMax:
+            if sum(indices_importFix.isin([(i, rp, 'ImportFix', k)])) > 0:
+                raise ValueError(f"ImportFix and ImportMax cannot be specified for the same i, rp, k. Please check these indices: {(i, rp, k)}")
+
+        # Same validation for ExportFix and ExportMax
+        indices_exportMax = dPower_ImpExp[dPower_ImpExp.index.isin(['ExportMax'], level=2)].index
+        indices_exportFix = dPower_ImpExp[dPower_ImpExp.index.isin(['ExportFix'], level=2)].index
+        for i, rp, Type, k in indices_exportMax:
+            if sum(indices_exportFix.isin([(i, rp, 'ExportFix', k)])) > 0:
+                raise ValueError("ExportFix and ExportMax cannot be specified for the same i, rp, k. Please check these indices: {(i, rp, k)}")
+
+        return dPower_ImpExp
 
     def update_hGenerators_to_Buses(self):
         return pd.concat([self.dPower_ThermalGen[['i']], self.dPower_RoR[['i']], self.dPower_VRES[['i']], self.dPower_Storage[['i']]])
