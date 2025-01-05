@@ -42,9 +42,6 @@ class LEGO:
         secondReserve.add_constraints(self)
         importExport.add_constraints(self)
 
-        # Objective function
-        model.objective = get_objective(model)
-
         stop_time = time.time()
         self.timings["model_building"] = stop_time - start_time
         self.timings["model_solving"] = -1.0
@@ -119,18 +116,6 @@ class LEGO:
             self.model.del_component(parameter_name)  # Delete parameter
             current_values.update(values)  # Update values with new values
             self.model.add_component(parameter_name, pyo.Param(*indices, initialize=current_values, doc=doc, domain=pyo.Reals))  # Add parameter as new parameter
-
-
-def get_objective(model: pyo.Model) -> pyo.Objective:
-    result = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(model.pInterVarCost[g] * sum(model.bUC[g, :, :]) +  # Fixed cost of thermal generators
-                                                                                                          model.pStartupCost[g] * sum(model.bStartup[g, :, :]) +  # Startup cost of thermal generators
-                                                                                                          model.pSlopeVarCost[g] * sum(model.vGenP[g, :, :]) for g in model.thermalGenerators) +  # Production cost of thermal generators
-                                                                                                      sum(model.pProductionCost[g] * sum(model.vGenP[g, :, :]) for g in model.vresGenerators) +
-                                                                                                      sum(model.pProductionCost[g] * sum(model.vGenP[g, :, :]) for g in model.rorGenerators) +
-                                                                                                      sum(model.pOMVarCost[g] * sum(model.vGenP[g, :, :]) for g in model.storageUnits) +
-                                                                                                      (sum(model.vSlack_DemandNotServed[:, :, :]) + sum(model.vSlack_OverProduction[:, :, :])) * model.pSlackPrice)
-
-    return result
 
 
 def get_objective_value(model: pyo.Model, zoi: bool):

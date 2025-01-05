@@ -164,3 +164,12 @@ def add_constraints(lego: LEGO):
                 if LEGOUtilities.k_to_int(k) >= max(lego.cs.dPower_ThermalGen.loc[g, 'MinUpTime'], lego.cs.dPower_ThermalGen.loc[g, 'MinDownTime']):
                     lego.model.eMinUpTime.add(sum(lego.model.bStartup[g, rp, LEGOUtilities.int_to_k(i)] for i in range(LEGOUtilities.k_to_int(k) - lego.model.pMinUpTime[g] + 1, LEGOUtilities.k_to_int(k))) <= lego.model.bUC[g, rp, k])  # Minimum Up-Time
                     lego.model.eMinDownTime.add(sum(lego.model.bShutdown[g, rp, LEGOUtilities.int_to_k(i)] for i in range(LEGOUtilities.k_to_int(k) - lego.model.pMinDownTime[g] + 1, LEGOUtilities.k_to_int(k))) <= 1 - lego.model.bUC[g, rp, k])  # Minimum Down-Time
+
+    # Objective function
+    lego.model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(lego.model.pInterVarCost[g] * sum(lego.model.bUC[g, :, :]) +  # Fixed cost of thermal generators
+                                                                                                                        lego.model.pStartupCost[g] * sum(lego.model.bStartup[g, :, :]) +  # Startup cost of thermal generators
+                                                                                                                        lego.model.pSlopeVarCost[g] * sum(lego.model.vGenP[g, :, :]) for g in lego.model.thermalGenerators) +  # Production cost of thermal generators
+                                                                                                                    sum(lego.model.pProductionCost[g] * sum(lego.model.vGenP[g, :, :]) for g in lego.model.vresGenerators) +
+                                                                                                                    sum(lego.model.pProductionCost[g] * sum(lego.model.vGenP[g, :, :]) for g in lego.model.rorGenerators) +
+                                                                                                                    sum(lego.model.pOMVarCost[g] * sum(lego.model.vGenP[g, :, :]) for g in lego.model.storageUnits) +
+                                                                                                                    sum((sum(lego.model.vSlack_DemandNotServed[:, :, i]) + sum(lego.model.vSlack_OverProduction[:, :, i])) * lego.model.pSlackPrice[i] for i in lego.model.i))  # Slack variables
