@@ -30,8 +30,8 @@ def add_element_definitions_and_bounds(lego: LEGO):
                     lego.model.vExport[rp, k, i].fix(0)
 
     # Parameters
-    lego.model.pImpExpPrice = pyo.Var(lego.model.rp, lego.model.k, lego.model.importNodes | lego.model.exportNodes, doc='Imp-/Export price at node i',
-                                      initialize=lego.cs.dPower_ImpExp[lego.cs.dPower_ImpExp.index.isin(['Price'], level=2)].droplevel("Type").reorder_levels(["rp", "k", "i"]))
+    lego.model.pImpExpPrice = pyo.Param(lego.model.rp, lego.model.k, lego.model.importNodes | lego.model.exportNodes, doc='Imp-/Export price at node i',
+                                        initialize=lego.cs.dPower_ImpExp[lego.cs.dPower_ImpExp.index.isin(['Price'], level=2)].droplevel("Type").reorder_levels(["rp", "k", "i"]))
 
 
 @LEGOUtilities.checkExecutionLog([add_element_definitions_and_bounds])
@@ -43,3 +43,7 @@ def add_constraints(lego: LEGO):
                 lego.model.eDC_BalanceP_expr[rp, k, i] += lego.model.vImport[rp, k, i]
             for i in lego.model.exportNodes:
                 lego.model.eDC_BalanceP_expr[rp, k, i] -= lego.model.vExport[rp, k, i]
+
+    # Add import/export cost/revenues to total cost
+    lego.model.objective.expr += sum(sum(sum(lego.model.vImport[rp, k, i] * lego.model.pImpExpPrice[rp, k, i] for rp in lego.model.rp) for k in lego.model.k) for i in lego.model.importNodes)
+    lego.model.objective.expr -= sum(sum(sum(lego.model.vExport[rp, k, i] * lego.model.pImpExpPrice[rp, k, i] for rp in lego.model.rp) for k in lego.model.k) for i in lego.model.exportNodes)
