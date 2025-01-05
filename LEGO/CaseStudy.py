@@ -102,11 +102,14 @@ class CaseStudy:
             self.power_hindex_file = power_hindex_file
             self.dPower_Hindex = self.get_dPower_Hindex()
 
-        if dPower_ImpExp is not None:
-            self.dPower_ImpExp = dPower_ImpExp
+        if self.dPower_Parameters["pEnablePowerImportExport"]:
+            if dPower_ImpExp is not None:
+                self.dPower_ImpExp = dPower_ImpExp
+            else:
+                self.power_impexp_file = power_impexp_file
+                self.dPower_ImpExp = self.get_dPower_ImpExp()
         else:
-            self.power_impexp_file = power_impexp_file
-            self.dPower_ImpExp = self.get_dPower_ImpExp()
+            self.dPower_ImpExp = None
 
         # Dataframe that shows connections between g and i, only concatenating g and i from the dataframes
         self.hGenerators_to_Buses = self.update_hGenerators_to_Buses()
@@ -138,7 +141,7 @@ class CaseStudy:
         dPower_Parameters = dPower_Parameters.dropna(how="all")
         dPower_Parameters = dPower_Parameters.set_index('General')
 
-        self.yesNo_to_bool(dPower_Parameters, ['pEnableChDisPower', 'pFixStInterResToIniReserve'])
+        self.yesNo_to_bool(dPower_Parameters, ['pEnableChDisPower', 'pFixStInterResToIniReserve', 'pEnablePowerImportExport'])
 
         # Transform to make it easier to access values
         dPower_Parameters = dPower_Parameters.drop(dPower_Parameters.columns[1:], axis=1)  # Drop all columns but "Value" (rest is just for information in the Excel)

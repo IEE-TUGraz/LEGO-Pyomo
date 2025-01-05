@@ -611,185 +611,191 @@ $onEmbeddedCode Connect:
     - ExcelReader:
         file: %scenarioFolder%/Power_Parameters.xlsx
         symbols:
+            # - name: pEnablePowerImportExport     # NOT IMPLEMENTED
+            #   range: Power Parameters!C5
+            #   rowDimension: 0
+            #   columnDimension: 1
+            #   type: set
+              
             - name: is
-              range: Power Parameters!C5
+              range: Power Parameters!C8
               rowDimension: 0
               columnDimension: 1
               type: set
               
             - name: pENSCost
-              range: Power Parameters!C8
+              range: Power Parameters!C11
               rowDimension: 0
               columnDimension: 0
     
             - name: pSBase
-              range: Power Parameters!C11
-              rowDimension: 0
-              columnDimension: 0
-              
-            - name: pSlackVoltage
               range: Power Parameters!C14
               rowDimension: 0
               columnDimension: 0
               
-            - name: p2ndResUp
+            - name: pSlackVoltage
               range: Power Parameters!C17
+              rowDimension: 0
+              columnDimension: 0
+              
+            - name: p2ndResUp
+              range: Power Parameters!C20
               rowDimension: 0
               columnDimension: 0
                 
             - name: p2ndResDw
-              range: Power Parameters!C20
+              range: Power Parameters!C23
               rowDimension: 0
               columnDimension: 0
               
             - name: pEnableTransNet
-              range: Power Parameters!C24
+              range: Power Parameters!C27
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}       
     
             - name: pEnableSOCP
-              range: Power Parameters!C27
+              range: Power Parameters!C30
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}  
     
             - name: pMaxAngleDiff
-              range: Power Parameters!C30
+              range: Power Parameters!C33
               rowDimension: 0
               columnDimension: 0
               
             # - name: pMaxAngleDCOPF               # NOT IMPLEMENTED
-            #   range: Power Parameters!C33
+            #   range: Power Parameters!C36
             #   rowDimension: 0
             #   columnDimension: 0
            
             - name: pEnableMaxLineLoad
-              range: Power Parameters!C36
+              range: Power Parameters!C39
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
               
             - name: pMaxLineLoad
-              range: Power Parameters!C39
+              range: Power Parameters!C42
               rowDimension: 0
               columnDimension: 0
               
             - name: pLOLCost
-              range: Power Parameters!C42
+              range: Power Parameters!C45
               rowDimension: 0
               columnDimension: 0
     
             - name: pMinGreenProd
-              range: Power Parameters!C46
+              range: Power Parameters!C49
               rowDimension: 0
               columnDimension: 0
     
             - name: pEnableGreenNatBal
-              range: Power Parameters!C49
+              range: Power Parameters!C52
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
     
             - name: pEnableCO2
-              range: Power Parameters!C53
+              range: Power Parameters!C56
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
               
             - name: pCO2Budget
-              range: Power Parameters!C56
-              rowDimension: 0
-              columnDimension: 0
-              
-            - name: pCO2Cost
               range: Power Parameters!C59
               rowDimension: 0
               columnDimension: 0
               
-            - name: pCO2Penalty
+            - name: pCO2Cost
               range: Power Parameters!C62
+              rowDimension: 0
+              columnDimension: 0
+              
+            - name: pCO2Penalty
+              range: Power Parameters!C65
               rowDimension: 0
               columnDimension: 0
             
             - name: pMinFirmCap
-              range: Power Parameters!C67
+              range: Power Parameters!C70
               rowDimension: 0
               columnDimension: 0
               
             - name: pEnableRoCoF
-              range: Power Parameters!C71
+              range: Power Parameters!C74
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
               
             - name: pBaseFreq
-              range: Power Parameters!C74
+              range: Power Parameters!C77
               rowDimension: 0
               columnDimension: 0
     
             - name: pMinInertia
-              range: Power Parameters!C77
-              rowDimension: 0
-              columnDimension: 0
-              
-            - name: pMaxRoCoF
               range: Power Parameters!C80
               rowDimension: 0
               columnDimension: 0
               
-            - name: pSegmentsRoCoF
+            - name: pMaxRoCoF
               range: Power Parameters!C83
+              rowDimension: 0
+              columnDimension: 0
+              
+            - name: pSegmentsRoCoF
+              range: Power Parameters!C86
               rowDimension: 0
               columnDimension: 0
     
             - name: pEnableDSMPower
-              range: Power Parameters!C87
+              range: Power Parameters!C90
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
     
             - name: pEnableZP
-              range: Power Parameters!C91
+              range: Power Parameters!C94
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
               
             - name: pNTCCost
-              range: Power Parameters!C94
+              range: Power Parameters!C97
               rowDimension: 0
               columnDimension: 0
     
             - name: pEnableCDSF
-              range: Power Parameters!C98
+              range: Power Parameters!C101
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
     
             - name: pBlocksRoCoF
-              range: Power Parameters!C101
+              range: Power Parameters!C104
               rowDimension: 0
               columnDimension: 0
               
             - name: pEnableChDisPower
-              range: Power Parameters!C104
+              range: Power Parameters!C107
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
               
             # - name: pFixStInterResToIniReserve               # NOT IMPLEMENTED
-            #   range: Power Parameters!C107
+            #   range: Power Parameters!C110
             #   rowDimension: 0
             #   columnDimension: 0
     
             - name: pEnableMinProdRESTech
-              range: Power Parameters!C111
+              range: Power Parameters!C114
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
               
             - name: pEnableMaxGas
-              range: Power Parameters!C114
+              range: Power Parameters!C117
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}

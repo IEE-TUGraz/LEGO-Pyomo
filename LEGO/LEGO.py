@@ -30,7 +30,8 @@ class LEGO:
         power.add_element_definitions_and_bounds(self)
         storage.add_element_definitions_and_bounds(self)
         secondReserve.add_element_definitions_and_bounds(self)
-        importExport.add_element_definitions_and_bounds(self)
+        if self.cs.dPower_ImpExp is not None:
+            importExport.add_element_definitions_and_bounds(self)
 
         # Helper Sets for zone of interest
         model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=self.cs.dPower_BusInfo.loc[self.cs.dPower_BusInfo["ZoneOfInterest"] == "yes"].index.tolist(), within=self.model.i)
@@ -40,7 +41,8 @@ class LEGO:
         power.add_constraints(self)
         storage.add_constraints(self)
         secondReserve.add_constraints(self)
-        importExport.add_constraints(self)
+        if self.cs.dPower_ImpExp is not None:
+            importExport.add_constraints(self)
 
         stop_time = time.time()
         self.timings["model_building"] = stop_time - start_time
