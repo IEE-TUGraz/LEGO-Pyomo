@@ -40,6 +40,7 @@ class LEGO:
         power.add_constraints(self)
         storage.add_constraints(self)
         secondReserve.add_constraints(self)
+        importExport.add_constraints(self)
 
         # Objective function
         model.objective = get_objective(model)
