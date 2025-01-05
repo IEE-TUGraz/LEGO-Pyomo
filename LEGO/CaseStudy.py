@@ -278,7 +278,7 @@ class CaseStudy:
         indices_exportFix = dPower_ImpExp[dPower_ImpExp.index.isin(['ExportFix'], level=2)].index
         for i, rp, Type, k in indices_exportMax:
             if sum(indices_exportFix.isin([(i, rp, 'ExportFix', k)])) > 0:
-                raise ValueError("ExportFix and ExportMax cannot be specified for the same i, rp, k. Please check these indices: {(i, rp, k)}")
+                raise ValueError(f"ExportFix and ExportMax cannot be specified for the same i, rp, k. Please check these indices: {(i, rp, k)}")
 
         return dPower_ImpExp
 

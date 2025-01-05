@@ -119,12 +119,14 @@ def add_constraints(lego: LEGO):
     def eDC_BalanceP_rule(model, i, rp, k):
         return (sum(model.vGenP[g, rp, k] for g in model.g if lego.cs.hGenerators_to_Buses.loc[g]['i'] == i) -  # Production of generators at bus i
                 sum(model.t[e, rp, k] for e in model.e if (e[0] == i)) +  # Power flow from bus i to bus j
-                sum(model.t[e, rp, k] for e in model.e if (e[1] == i)) ==  # Power flow from bus j to bus i
-                model.pDemandP[rp, i, k] -  # Demand at bus i
-                model.vSlack_DemandNotServed[rp, k, i] +  # Slack variable for demand not served
+                sum(model.t[e, rp, k] for e in model.e if (e[1] == i)) -  # Power flow from bus j to bus i
+                model.pDemandP[rp, i, k] +  # Demand at bus i
+                model.vSlack_DemandNotServed[rp, k, i] -  # Slack variable for demand not served
                 model.vSlack_OverProduction[rp, k, i])  # Slack variable for overproduction
 
-    lego.model.eDC_BalanceP = pyo.Constraint(lego.model.i, lego.model.rp, lego.model.k, doc='Power balance constraint for each bus', rule=eDC_BalanceP_rule)
+    # Note: eDC_BalanceP_expr is defined as expression to enable later adding coefficients to the constraint (e.g., for import/export)
+    lego.model.eDC_BalanceP_expr = pyo.Expression(lego.model.i, lego.model.rp, lego.model.k, rule=eDC_BalanceP_rule)
+    lego.model.eDC_BalanceP = pyo.Constraint(lego.model.i, lego.model.rp, lego.model.k, doc='Power balance constraint for each bus', rule=lambda model, rp, k, i: lego.model.eDC_BalanceP_expr[rp, k, i] == 0)
 
     lego.model.cReactance = pyo.ConstraintList(doc='Reactance constraint for each line (for DC-OPF)')
     for (i, j) in lego.model.e:
