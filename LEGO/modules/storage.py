@@ -91,3 +91,11 @@ def add_constraints(lego: LEGO):
 
     if len(lego.model.rp) > 1:
         lego.model.eStInterRes = pyo.Constraint(lego.model.p, lego.model.storageUnits, doc='Inter-day reserve constraint for storage units', rule=eStInterRes_rule)
+
+    # Add vConsump to eDC_BalanceP (vGenP should already be there, since it gets added for all generators)
+    for rp in lego.model.rp:
+        for k in lego.model.k:
+            for i in lego.model.i:
+                for g in lego.model.storageUnits:
+                    if lego.cs.hGenerators_to_Buses.loc[g]['i'] == i:
+                        lego.model.eDC_BalanceP_expr[rp, k, i] -= lego.model.vConsump[g, rp, k]
