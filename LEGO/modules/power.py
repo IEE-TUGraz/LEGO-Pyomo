@@ -9,6 +9,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     # Sets
     lego.model.i = pyo.Set(doc='Buses', initialize=lego.cs.dPower_BusInfo.index.tolist())
     lego.model.e = pyo.Set(doc='Lines', initialize=lego.cs.dPower_Network.index.tolist())
+    lego.model.c = pyo.Set(doc='Circuits', initialize=lego.cs.dPower_Network["Circuit ID"].unique())
     lego.model.thermalGenerators = pyo.Set(doc='Thermal Generators', initialize=lego.cs.dPower_ThermalGen.index.tolist())
     lego.model.rorGenerators = pyo.Set(doc='Run-of-river generators', initialize=lego.cs.dPower_RoR.index.tolist())
     lego.model.vresGenerators = pyo.Set(doc='Variable renewable energy sources', initialize=lego.cs.dPower_VRES.index.tolist())
@@ -76,8 +77,8 @@ def add_element_definitions_and_bounds(lego: LEGO):
         i += 1
         lego.model.delta[slack_node, :, :].fix(0)
 
-    lego.model.vSlack_DemandNotServed = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Slack variable demand not served', bounds=(0, None))
-    lego.model.vSlack_OverProduction = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Slack variable overproduction', bounds=(0, None))
+    lego.model.vPNS = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Slack variable power not served', bounds=(0, None))
+    lego.model.vEPS = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Slack variable excess power served', bounds=(0, None))
 
     lego.model.bUC = pyo.Var(lego.model.thermalGenerators, lego.model.rp, lego.model.k, doc='Unit commitment of generator g', domain=pyo.Binary)
     lego.model.bStartup = pyo.Var(lego.model.thermalGenerators, lego.model.rp, lego.model.k, doc='Start-up of thermal generator g', domain=pyo.Binary)
@@ -101,12 +102,12 @@ def add_element_definitions_and_bounds(lego: LEGO):
                 exisUnits = lego.cs.dPower_VRES.loc[g, 'ExisUnits']
                 lego.model.vGenP[g, rp, k].setub(maxProd * capacity * exisUnits)
 
-    lego.model.t = pyo.Var(lego.model.e, lego.model.rp, lego.model.k, doc='Power flow from bus i to j', bounds=(None, None))
+    lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.e, lego.model.c, doc='Power flow from bus i to j', bounds=(None, None))
     for (i, j) in lego.model.e:
         match lego.cs.dPower_Network.loc[i, j]["Technical Representation"]:
             case "DC-OPF" | "TP":
-                lego.model.t[(i, j), :, :].setlb(-lego.cs.dPower_Network.loc[i, j]['Pmax'])
-                lego.model.t[(i, j), :, :].setub(lego.cs.dPower_Network.loc[i, j]['Pmax'])
+                lego.model.vLineP[:, :, (i, j), :].setlb(-lego.cs.dPower_Network.loc[i, j]['Pmax'])
+                lego.model.vLineP[:, :, (i, j), :].setub(lego.cs.dPower_Network.loc[i, j]['Pmax'])
             case "SN":
                 assert False  # "SN" line found, although all "Single Node" buses should be merged
             case _:
@@ -118,11 +119,11 @@ def add_element_definitions_and_bounds(lego: LEGO):
 def add_constraints(lego: LEGO):
     def eDC_BalanceP_rule(model, rp, k, i):
         return (sum(model.vGenP[g, rp, k] for g in model.g if lego.cs.hGenerators_to_Buses.loc[g]['i'] == i) -  # Production of generators at bus i
-                sum(model.t[e, rp, k] for e in model.e if (e[0] == i)) +  # Power flow from bus i to bus j
-                sum(model.t[e, rp, k] for e in model.e if (e[1] == i)) -  # Power flow from bus j to bus i
+                sum(model.vLineP[rp, k, e, c] for c in model.c for e in model.e if (e[0] == i)) +  # Power flow from bus i to bus j
+                sum(model.vLineP[rp, k, e, c] for c in model.c for e in model.e if (e[1] == i)) -  # Power flow from bus j to bus i
                 model.pDemandP[rp, i, k] +  # Demand at bus i
-                model.vSlack_DemandNotServed[rp, k, i] -  # Slack variable for demand not served
-                model.vSlack_OverProduction[rp, k, i])  # Slack variable for overproduction
+                model.vPNS[rp, k, i] -  # Slack variable for demand not served
+                model.vEPS[rp, k, i])  # Slack variable for overproduction
 
     # Note: eDC_BalanceP_expr is defined as expression to enable later adding coefficients to the constraint (e.g., for import/export)
     lego.model.eDC_BalanceP_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.i, rule=eDC_BalanceP_rule)
@@ -134,7 +135,8 @@ def add_constraints(lego: LEGO):
             case "DC-OPF":
                 for rp in lego.model.rp:
                     for k in lego.model.k:
-                        lego.model.cReactance.add(lego.model.t[(i, j), rp, k] == (lego.model.delta[i, rp, k] - lego.model.delta[j, rp, k]) * lego.cs.dPower_Parameters["pSBase"] / lego.model.pReactance[(i, j)])
+                        for c in lego.model.c:
+                            lego.model.cReactance.add(lego.model.vLineP[rp, k, (i, j), c] == (lego.model.delta[i, rp, k] - lego.model.delta[j, rp, k]) * lego.cs.dPower_Parameters["pSBase"] / lego.model.pReactance[(i, j)])
             case "TP" | "SN":
                 continue
             case _:
@@ -172,4 +174,4 @@ def add_constraints(lego: LEGO):
                                                                                                                     sum(lego.model.pProductionCost[g] * sum(lego.model.vGenP[g, :, :]) for g in lego.model.vresGenerators) +
                                                                                                                     sum(lego.model.pProductionCost[g] * sum(lego.model.vGenP[g, :, :]) for g in lego.model.rorGenerators) +
                                                                                                                     sum(lego.model.pOMVarCost[g] * sum(lego.model.vGenP[g, :, :]) for g in lego.model.storageUnits) +
-                                                                                                                    sum((sum(lego.model.vSlack_DemandNotServed[:, :, i]) + sum(lego.model.vSlack_OverProduction[:, :, i])) * lego.model.pSlackPrice[i] for i in lego.model.i))  # Slack variables
+                                                                                                                    sum((sum(lego.model.vPNS[:, :, i]) + sum(lego.model.vEPS[:, :, i])) * lego.model.pSlackPrice[i] for i in lego.model.i))  # Slack variables
