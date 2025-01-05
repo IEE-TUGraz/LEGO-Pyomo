@@ -74,7 +74,8 @@ def normalize_constraints(model, constraints_to_skip: list[str] = None, constrai
                 raise ValueError(f"Coefficient {original_names[coefficient['name']]} found twice in constraint {name}.\n"
                                  f"Full constraint: {constraint}")
 
-            indices_groups = re.findall(r"(\w*)\[([^]]*)", original_names[coefficient['name']])[0]
+            regex_result = re.findall(r"(\w*)\[([^]]*)", original_names[coefficient['name']])
+            indices_groups = regex_result[0] if len(regex_result) > 0 else [""]  # No indices found
             if len(indices_groups) > 2:
                 raise ValueError(f"More than one index group found in {original_names[coefficient['name']]}")
             if len(indices_groups) == 1:  # No indices found
