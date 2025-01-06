@@ -24,17 +24,17 @@ def add_element_definitions_and_bounds(lego: LEGO):
     # Variables
     lego.model.bChargeDisCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
 
-    lego.model.vConsump = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Charging of storage unit g', bounds=(0, None))
-    lego.model.vStIntraRes = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Intra-reserve of storage unit g', bounds=(None, None))
+    lego.model.vConsump = pyo.Var(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Charging of storage unit g', bounds=(0, None))
+    lego.model.vStIntraRes = pyo.Var(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Intra-reserve of storage unit g', bounds=(None, None))
     lego.model.vStInterRes = pyo.Var(lego.model.p, lego.model.storageUnits, doc='Inter-reserve of storage unit g', bounds=(None, None))
     for g in lego.model.storageUnits:
         for rp in lego.model.rp:
             for k in lego.model.k:
-                lego.model.vGenP[g, rp, k].setub(lego.model.pMaxProd[g] * lego.model.pExisUnits[g])
-                lego.model.vConsump[g, rp, k].setub(lego.model.pMaxCons[g] * lego.model.pExisUnits[g])
+                lego.model.vGenP[rp, k, g].setub(lego.model.pMaxProd[g] * lego.model.pExisUnits[g])
+                lego.model.vConsump[rp, k, g].setub(lego.model.pMaxCons[g] * lego.model.pExisUnits[g])
 
-                lego.model.vStIntraRes[g, rp, k].setub(lego.model.pMaxProd[g] * lego.model.pExisUnits[g] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'])
-                lego.model.vStIntraRes[g, rp, k].setlb(lego.model.pMaxProd[g] * lego.model.pExisUnits[g] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'] * lego.cs.dPower_Storage.loc[g, 'MinReserve'])
+                lego.model.vStIntraRes[rp, k, g].setub(lego.model.pMaxProd[g] * lego.model.pExisUnits[g] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'])
+                lego.model.vStIntraRes[rp, k, g].setlb(lego.model.pMaxProd[g] * lego.model.pExisUnits[g] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'] * lego.cs.dPower_Storage.loc[g, 'MinReserve'])
 
     for p in lego.model.p:
         for g in lego.model.storageUnits:
@@ -62,16 +62,16 @@ def add_constraints(lego: LEGO):
             for k in lego.model.k:
                 if len(lego.model.rp) == 1:  # Only cyclic if it has multiple representative periods
                     if LEGOUtilities.k_to_int(k) == 1:  # Adding IniReserve if it is the first time step (instead of 'prev' value)
-                        lego.model.eStIntraRes.add(0 == lego.cs.dPower_Storage.loc[g, 'IniReserve'] - lego.model.vStIntraRes[g, rp, k] - lego.model.vGenP[g, rp, k] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vConsump[g, rp, k] * lego.model.pWeight_k[k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
+                        lego.model.eStIntraRes.add(0 == lego.cs.dPower_Storage.loc[g, 'IniReserve'] - lego.model.vStIntraRes[rp, k, g] - lego.model.vGenP[rp, k, g] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vConsump[rp, k, g] * lego.model.pWeight_k[k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
                     else:
-                        lego.model.eStIntraRes.add(0 == lego.model.vStIntraRes[g, rp, lego.model.k.prev(k)] - lego.model.vStIntraRes[g, rp, k] - lego.model.vGenP[g, rp, k] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vConsump[g, rp, k] * lego.model.pWeight_k[k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
+                        lego.model.eStIntraRes.add(0 == lego.model.vStIntraRes[rp, lego.model.k.prev(k), g] - lego.model.vStIntraRes[rp, k, g] - lego.model.vGenP[rp, k, g] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vConsump[rp, k, g] * lego.model.pWeight_k[k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
                 elif len(lego.model.rp) > 1:
-                    lego.model.eStIntraRes.add(0 == lego.model.vStIntraRes[g, rp, lego.model.k.prevw(k)] - lego.model.vStIntraRes[g, rp, k] - lego.model.vGenP[g, rp, k] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vConsump[g, rp, k] * lego.model.pWeight_k[k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
+                    lego.model.eStIntraRes.add(0 == lego.model.vStIntraRes[rp, lego.model.k.prevw(k), g] - lego.model.vStIntraRes[rp, k, g] - lego.model.vGenP[rp, k, g] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vConsump[rp, k, g] * lego.model.pWeight_k[k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
 
                 # TODO: Check if we should rather do a +/- value and calculate charge/discharge ex-post
                 if lego.model.pEnableChDisPower:
-                    lego.model.eExclusiveChargeDischarge.add(lego.model.vConsump[g, rp, k] <= lego.model.bChargeDisCharge[g, rp, k] * lego.model.pMaxCons[g] * lego.model.pExisUnits[g])
-                    lego.model.eExclusiveChargeDischarge.add(lego.model.vGenP[g, rp, k] <= (1 - lego.model.bChargeDisCharge[g, rp, k]) * lego.model.pMaxProd[g] * lego.model.pExisUnits[g])
+                    lego.model.eExclusiveChargeDischarge.add(lego.model.vConsump[rp, k, g] <= lego.model.bChargeDisCharge[rp, k, g] * lego.model.pMaxCons[g] * lego.model.pExisUnits[g])
+                    lego.model.eExclusiveChargeDischarge.add(lego.model.vGenP[rp, k, g] <= (1 - lego.model.bChargeDisCharge[rp, k, g]) * lego.model.pMaxProd[g] * lego.model.pExisUnits[g])
 
     def eStInterRes_rule(model, p, storage_unit):
         # If current p is a multiple of moving window, add constraint
@@ -83,8 +83,8 @@ def add_constraints(lego: LEGO):
                     (model.vStInterRes[LEGOUtilities.int_to_p(LEGOUtilities.p_to_int(p) - model.pMovWindow), storage_unit] if LEGOUtilities.p_to_int(p) - model.pMovWindow > 0 else 0)
                     + (lego.cs.dPower_Storage.loc[storage_unit, 'IniReserve'] if LEGOUtilities.p_to_int(p) == model.pMovWindow else 0)
                     - model.vStInterRes[p, storage_unit]
-                    + sum(- model.vGenP[storage_unit, rp2, k2] * model.pWeight_k[k2] / lego.cs.dPower_Storage.loc[storage_unit, 'DisEffic'] * hindex_count.loc[rp2, k2]
-                          + model.vConsump[storage_unit, rp2, k2] * model.pWeight_k[k2] * lego.cs.dPower_Storage.loc[storage_unit, 'ChEffic'] * hindex_count.loc[rp2, k2] for rp2, k2 in hindex_count.index))
+                    + sum(- model.vGenP[rp2, k2, storage_unit] * model.pWeight_k[k2] / lego.cs.dPower_Storage.loc[storage_unit, 'DisEffic'] * hindex_count.loc[rp2, k2]
+                          + model.vConsump[rp2, k2, storage_unit] * model.pWeight_k[k2] * lego.cs.dPower_Storage.loc[storage_unit, 'ChEffic'] * hindex_count.loc[rp2, k2] for rp2, k2 in hindex_count.index))
 
         else:  # Skip otherwise
             return pyo.Constraint.Skip
@@ -98,4 +98,4 @@ def add_constraints(lego: LEGO):
             for i in lego.model.i:
                 for g in lego.model.storageUnits:
                     if lego.cs.hGenerators_to_Buses.loc[g]['i'] == i:
-                        lego.model.eDC_BalanceP_expr[rp, k, i] -= lego.model.vConsump[g, rp, k]
+                        lego.model.eDC_BalanceP_expr[rp, k, i] -= lego.model.vConsump[rp, k, g]

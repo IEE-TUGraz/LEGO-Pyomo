@@ -184,13 +184,19 @@ class CaseStudy:
         return dPower_Network
 
     def get_dPower_ThermalGen(self):
-        dPower_ThermalGen = self.read_generator_data(self.example_folder + self.power_thermalgen_file)
+        dPower_ThermalGen = pd.read_excel(self.example_folder + self.power_thermalgen_file, skiprows=[0, 1, 3, 4, 5])
+        dPower_ThermalGen = dPower_ThermalGen.drop(dPower_ThermalGen.columns[0], axis=1)
+        dPower_ThermalGen = dPower_ThermalGen.rename(columns={dPower_ThermalGen.columns[0]: "g", dPower_ThermalGen.columns[1]: "tec", dPower_ThermalGen.columns[2]: "i"})
+        dPower_ThermalGen = dPower_ThermalGen.set_index('g')
+        dPower_ThermalGen = dPower_ThermalGen[(dPower_ThermalGen["ExisUnits"] > 0) | (dPower_ThermalGen["EnableInvest"] > 0)]  # Filter out all generators that are not existing and not investable
 
         dPower_ThermalGen['pSlopeVarCostEUR'] = (dPower_ThermalGen['OMVarCost'] * 1e-3 +
                                                  dPower_ThermalGen['SlopeVarCost'] * 1e-3 * dPower_ThermalGen['FuelCost'])
 
         dPower_ThermalGen['pInterVarCostEUR'] = dPower_ThermalGen['InterVarCost'] * 1e-6 * dPower_ThermalGen['FuelCost']
         dPower_ThermalGen['pStartupCostEUR'] = dPower_ThermalGen['StartupCost'] * 1e-6 * dPower_ThermalGen['FuelCost']
+        dPower_ThermalGen['InvestCostEUR'] = dPower_ThermalGen['InvestCost'] * 1e-3 * dPower_ThermalGen['MaxProd']
+        dPower_ThermalGen['MaxInvest'] = dPower_ThermalGen['ExisUnits'].apply(lambda x: 0 if x == 1 else 1)
 
         # Fill NaN values with 0 for MinUpTime and MinDownTime
         dPower_ThermalGen['MinUpTime'] = dPower_ThermalGen['MinUpTime'].fillna(0)
