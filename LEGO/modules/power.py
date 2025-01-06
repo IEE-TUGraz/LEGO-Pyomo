@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pyomo.environ as pyo
 
@@ -8,7 +9,11 @@ from LEGO import LEGO, LEGOUtilities
 def add_element_definitions_and_bounds(lego: LEGO):
     # Sets
     lego.model.i = pyo.Set(doc='Buses', initialize=lego.cs.dPower_BusInfo.index.tolist())
-    lego.model.e = pyo.Set(doc='Lines', initialize=lego.cs.dPower_Network.index.tolist())
+
+    lego.model.la = pyo.Set(doc='All lines', initialize=lego.cs.dPower_Network[lego.cs.dPower_Network["InService"] == 1].index.tolist())
+    lego.model.le = pyo.Set(doc='Existing lines', initialize=lego.cs.dPower_Network[(lego.cs.dPower_Network["InService"] == 1) & (lego.cs.dPower_Network["FixedCost"] == 0)].index.tolist(), within=lego.model.la)
+    lego.model.lc = pyo.Set(doc='Candidate lines', initialize=lego.cs.dPower_Network[(lego.cs.dPower_Network["InService"] == 1) & (lego.cs.dPower_Network["FixedCost"] > 0)].index.tolist(), within=lego.model.la)
+
     lego.model.c = pyo.Set(doc='Circuits', initialize=lego.cs.dPower_Network["Circuit ID"].unique())
     lego.model.thermalGenerators = pyo.Set(doc='Thermal Generators', initialize=lego.cs.dPower_ThermalGen.index.tolist())
     lego.model.rorGenerators = pyo.Set(doc='Run-of-river generators', initialize=lego.cs.dPower_RoR.index.tolist())
@@ -33,7 +38,10 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.pMinUpTime = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['MinUpTime'], doc='Minimum up time of thermal generator g')
     lego.model.pMinDownTime = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['MinDownTime'], doc='Minimum down time of thermal generator g')
 
-    lego.model.pReactance = pyo.Param(lego.model.e, initialize=lego.cs.dPower_Network['X'], doc='Reactance of line e')
+    lego.model.pXline = pyo.Param(lego.model.la, lego.model.c, initialize=lego.cs.dPower_Network.reset_index().set_index(["i", "j", "Circuit ID"]).query("InService == 1")['X'], doc='Reactance of line la')
+    lego.model.pAngle = pyo.Param(lego.model.la, lego.model.c, initialize=lego.cs.dPower_Network.reset_index().set_index(["i", "j", "Circuit ID"]).query("InService == 1")['TapAngle'] * np.pi / 180, doc='Transformer angle shift')
+    lego.model.pRatio = pyo.Param(lego.model.la, lego.model.c, initialize=lego.cs.dPower_Network.reset_index().set_index(["i", "j", "Circuit ID"]).query("InService == 1")['TapRatio'], doc='Transformer ratio')
+    lego.model.pSBase = pyo.Param(initialize=lego.cs.dPower_Parameters['pSBase'], doc='Base power')
     #                                                                                                                                counter TODO: Discuss with Sonja & Diego
     lego.model.pSlackPrice = pyo.Param(lego.model.i, initialize=pd.DataFrame([(i, max(lego.model.pProductionCost.values()) * 100 + (0 * max(lego.model.pProductionCost.values()) / 10)) for counter, i in enumerate(lego.model.i)], columns=["i", "values"]).set_index("i"), doc='Price of slack variable')
 
@@ -50,7 +58,16 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.addToParameter("pExisUnits", lego.cs.dPower_VRES['ExisUnits'])
 
     # Variables
-    lego.model.delta = pyo.Var(lego.model.i, lego.model.rp, lego.model.k, doc='Angle of bus i', bounds=(-lego.cs.dPower_Parameters["pMaxAngleDCOPF"], lego.cs.dPower_Parameters["pMaxAngleDCOPF"]))  # TODO: Discuss impact on runtime etc.(based on discussion with Prof. Renner)
+    lego.model.vTheta = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Angle of bus i', bounds=(-lego.cs.dPower_Parameters["pMaxAngleDCOPF"], lego.cs.dPower_Parameters["pMaxAngleDCOPF"]))  # TODO: Discuss impact on runtime etc.(based on discussion with Prof. Renner)
+    lego.model.vAngle = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, lego.model.c, doc='Angle phase shifting transformer')
+    for i, j in lego.model.la:
+        for c in lego.model.c:
+            if lego.model.pAngle[i, j, c] == 0:
+                lego.model.vAngle[:, :, i, j, c].fix(0)
+            else:
+                lego.model.vAngle[:, :, i, j, c].setub(lego.model.pAngle[i, j, c])
+                lego.model.vAngle[:, :, i, j, c].setlb(-lego.model.pAngle[i, j, c])
+
     # For each DC-OPF "island", set node with highest demand as slack node
     dDCOPFIslands = pd.DataFrame(index=lego.cs.dPower_BusInfo.index, columns=[lego.cs.dPower_BusInfo.index], data=False)
 
@@ -72,10 +89,11 @@ def add_element_definitions_and_bounds(lego: LEGO):
 
         # Set slack node
         slack_node = lego.cs.dPower_Demand.loc[:, connected_buses, :].groupby('i').sum().idxmax().values[0]
+        slack_node = lego.cs.dPower_Parameters["is"]  # TODO: Switch this again to be calculated (fixed to 'is' for compatibility)
         if i == 0: print("Setting slack nodes for DC-OPF zones:")
         print(f"DC-OPF Zone {i:>2} - Slack node: {slack_node}")
         i += 1
-        lego.model.delta[slack_node, :, :].fix(0)
+        lego.model.vTheta[:, :, slack_node].fix(0)
 
     lego.model.vPNS = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Slack variable power not served', bounds=(0, None))
     lego.model.vEPS = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Slack variable excess power served', bounds=(0, None))
@@ -102,8 +120,8 @@ def add_element_definitions_and_bounds(lego: LEGO):
                 exisUnits = lego.cs.dPower_VRES.loc[g, 'ExisUnits']
                 lego.model.vGenP[g, rp, k].setub(maxProd * capacity * exisUnits)
 
-    lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.e, lego.model.c, doc='Power flow from bus i to j', bounds=(None, None))
-    for (i, j) in lego.model.e:
+    lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, lego.model.c, doc='Power flow from bus i to j', bounds=(None, None))
+    for (i, j) in lego.model.la:
         match lego.cs.dPower_Network.loc[i, j]["Technical Representation"]:
             case "DC-OPF" | "TP":
                 lego.model.vLineP[:, :, (i, j), :].setlb(-lego.cs.dPower_Network.loc[i, j]['Pmax'])
@@ -117,10 +135,11 @@ def add_element_definitions_and_bounds(lego: LEGO):
 
 @LEGOUtilities.checkExecutionLog([add_element_definitions_and_bounds])
 def add_constraints(lego: LEGO):
+    # Power balance for nodes
     def eDC_BalanceP_rule(model, rp, k, i):
         return (sum(model.vGenP[g, rp, k] for g in model.g if lego.cs.hGenerators_to_Buses.loc[g]['i'] == i) -  # Production of generators at bus i
-                sum(model.vLineP[rp, k, e, c] for c in model.c for e in model.e if (e[0] == i)) +  # Power flow from bus i to bus j
-                sum(model.vLineP[rp, k, e, c] for c in model.c for e in model.e if (e[1] == i)) -  # Power flow from bus j to bus i
+                sum(model.vLineP[rp, k, e, c] for c in model.c for e in model.la if (e[0] == i)) +  # Power flow from bus i to bus j
+                sum(model.vLineP[rp, k, e, c] for c in model.c for e in model.la if (e[1] == i)) -  # Power flow from bus j to bus i
                 model.pDemandP[rp, i, k] +  # Demand at bus i
                 model.vPNS[rp, k, i] -  # Slack variable for demand not served
                 model.vEPS[rp, k, i])  # Slack variable for overproduction
@@ -129,19 +148,17 @@ def add_constraints(lego: LEGO):
     lego.model.eDC_BalanceP_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.i, rule=eDC_BalanceP_rule)
     lego.model.eDC_BalanceP = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.i, doc='Power balance constraint for each bus', rule=lambda model, rp, k, i: lego.model.eDC_BalanceP_expr[rp, k, i] == 0)
 
-    lego.model.cReactance = pyo.ConstraintList(doc='Reactance constraint for each line (for DC-OPF)')
-    for (i, j) in lego.model.e:
+    def eDC_ExiLinePij_rule(model, rp, k, i, j, c):
         match lego.cs.dPower_Network.loc[i, j]["Technical Representation"]:
             case "DC-OPF":
-                for rp in lego.model.rp:
-                    for k in lego.model.k:
-                        for c in lego.model.c:
-                            lego.model.cReactance.add(lego.model.vLineP[rp, k, (i, j), c] == (lego.model.delta[i, rp, k] - lego.model.delta[j, rp, k]) * lego.cs.dPower_Parameters["pSBase"] / lego.model.pReactance[(i, j)])
+                return model.vLineP[rp, k, i, j, c] == (model.vTheta[rp, k, i] - model.vTheta[rp, k, j] + model.vAngle[rp, k, i, j, c]) * model.pSBase / (model.pXline[i, j, c] * model.pRatio[i, j, c])
             case "TP" | "SN":
-                continue
+                return pyo.Constraint.Skip
             case _:
                 raise ValueError(f"Technical representation '{lego.cs.dPower_Network.loc[i, j]["Technical Representation"]}' "
                                  f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
+
+    lego.model.eDC_ExiLinePij = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le, lego.model.c, doc="Power flow existing lines (for DC-OOPF)", rule=eDC_ExiLinePij_rule)
 
     # Thermal Generator production with unit commitment & ramping
     lego.model.cPowerOutput = pyo.ConstraintList(doc='Power output of thermal generators')
