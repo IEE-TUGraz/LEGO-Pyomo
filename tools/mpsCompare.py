@@ -64,6 +64,8 @@ def normalize_constraints(model, constraints_to_skip: list[str] = None, constrai
             name = (name.replace("c_e_", "")[:-2] + ")")
         if "c_l_" in name:
             name = (name.replace("c_l_", "")[:-2] + ")")
+        if "c_u_" in name:
+            name = (name.replace("c_u_", "")[:-2] + ")")
 
         name = "(".join(name.rsplit("_", 1))
 
