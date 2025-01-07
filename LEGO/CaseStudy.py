@@ -214,7 +214,9 @@ class CaseStudy:
 
     def get_dPower_RoR(self):
         dPower_RoR = self.read_generator_data(self.example_folder + self.power_ror_file)
+
         dPower_RoR['InvestCostEUR'] = dPower_RoR['MaxProd'] * 1e-3 * (dPower_RoR['InvestCostPerMW'] * 1e-3 + dPower_RoR['InvestCostPerMWh'] * 1e-3 * dPower_RoR['Ene2PowRatio'])
+        dPower_RoR['MaxProd'] = dPower_RoR['MaxProd'] * 1e-3
         return dPower_RoR
 
     def get_dPower_VRES(self):
@@ -223,6 +225,7 @@ class CaseStudy:
             dPower_VRES['MinProd'] = 0
 
         dPower_VRES['InvestCostEUR'] = dPower_VRES['InvestCost'] * 1e-3 * dPower_VRES['MaxProd'] * 1e-3
+        dPower_VRES['MaxProd'] = dPower_VRES['MaxProd'] * 1e-3
         return dPower_VRES
 
     def get_dPower_Storage(self):

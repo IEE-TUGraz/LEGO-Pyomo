@@ -33,10 +33,15 @@ def add_element_definitions_and_bounds(lego: LEGO):
     hFuelCost = pd.concat([lego.cs.dPower_ThermalGen['FuelCost'].copy(), pd.Series(0, index=lego.model.rorGenerators), pd.Series(0, index=lego.model.vresGenerators)])
     lego.model.pProductionCost = pyo.Param(lego.model.g, initialize=hFuelCost, doc='Production cost of generator g')
 
-    lego.model.pInvestCost = pyo.Param(lego.model.g, initialize=lego.cs.dPower_ThermalGen['InvestCostEUR'], doc='Investment cost for thermal generator g')
-    lego.model.pMaxInvest = pyo.Param(lego.model.g, initialize=lego.cs.dPower_ThermalGen['MaxInvest'], doc='Maximum investment in thermal generator g')
     lego.model.pEnabInv = pyo.Param(lego.model.g, initialize=lego.cs.dPower_ThermalGen['EnableInvest'], doc='Enable investment in thermal generator g')
+    lego.addToParameter("pEnabInv", lego.cs.dPower_RoR['EnableInvest'])
+    lego.addToParameter("pEnabInv", lego.cs.dPower_VRES['EnableInvest'])
 
+    lego.model.pMaxInvest = pyo.Param(lego.model.g, initialize=lego.cs.dPower_ThermalGen['MaxInvest'], doc='Maximum investment in thermal generator g')
+    lego.addToParameter("pMaxInvest", lego.cs.dPower_RoR['MaxInvest'])
+    lego.addToParameter("pMaxInvest", lego.cs.dPower_VRES['MaxInvest'])
+
+    lego.model.pInvestCost = pyo.Param(lego.model.g, initialize=lego.cs.dPower_ThermalGen['InvestCostEUR'], doc='Investment cost for thermal generator g')
     lego.addToParameter("pInvestCost", lego.cs.dPower_RoR['InvestCostEUR'])
     lego.addToParameter("pInvestCost", lego.cs.dPower_VRES['InvestCostEUR'])
 
@@ -84,7 +89,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
         lego.model.vLineInvest[i, j, :].fix(0)  # Set existing lines to not invest
 
     lego.model.vGenInvest = pyo.Var(lego.model.g, doc="Integer generation investment", bounds=(0, None), domain=pyo.NonNegativeIntegers)
-    for g in lego.model.thermalGenerators:
+    for g in lego.model.thermalGenerators | lego.model.vresGenerators | lego.model.rorGenerators:
         lego.model.vGenInvest[g].setub(lego.model.pMaxProd[g] * lego.model.pMaxInvest[g])
         if not lego.model.pEnabInv[g]:
             lego.model.vGenInvest[g].fix(0)
@@ -132,14 +137,6 @@ def add_element_definitions_and_bounds(lego: LEGO):
         for rp in lego.model.rp:
             for k in lego.model.k:
                 lego.model.vGenP[rp, k, g].setub(min(lego.model.pMaxProd[g], lego.cs.dPower_Inflows.loc[rp, g, k]['Inflow']))  # TODO: Check and adapt for storage
-    for g in lego.model.vresGenerators:
-        for rp in lego.model.rp:
-            for k in lego.model.k:
-                maxProd = lego.model.pMaxProd[g]
-                capacity = lego.cs.dPower_VRESProfiles.loc[rp, lego.cs.dPower_VRES.loc[g, 'i'], k, lego.cs.dPower_VRES.loc[g, 'tec']]['Capacity']
-                capacity = capacity.values[0] if isinstance(capacity, pd.Series) else capacity
-                exisUnits = lego.cs.dPower_VRES.loc[g, 'ExisUnits']
-                lego.model.vGenP[rp, k, g].setub(maxProd * capacity * exisUnits)
 
     lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, lego.model.c, doc='Power flow from bus i to j', bounds=(None, None))
     for (i, j) in lego.model.la:
@@ -201,6 +198,13 @@ def add_constraints(lego: LEGO):
         return model.vLineP[rp, k, i, j, c] / model.pPmax[i, j, c] - model.vLineInvest[i, j, c] <= 0
 
     lego.model.eDC_LimCanLine2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, lego.model.c, doc="Power flow limit standard direction for candidate lines (for DC-OPF)", rule=eDC_LimCanLine2_rule)
+
+    def eReMaxProd_rule(model, rp, k, r):
+        capacity = lego.cs.dPower_VRESProfiles.loc[rp, lego.cs.dPower_VRES.loc[r, 'i'], k, lego.cs.dPower_VRES.loc[r, 'tec']]['Capacity']
+        capacity = capacity.values[0] if isinstance(capacity, pd.Series) else capacity
+        return model.vGenP[rp, k, r] <= model.pMaxProd[r] * (model.vGenInvest[r] + model.pExisUnits[r]) * capacity
+
+    lego.model.eReMaxProd = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.vresGenerators, rule=eReMaxProd_rule)
 
     # Todo: Required when we have circuits:
     #  eTranInves (i,j,c) $[lc(i,j,c) and pEnableTransNet and ord(c)>1]..
