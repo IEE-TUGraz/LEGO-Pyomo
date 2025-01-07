@@ -197,6 +197,8 @@ class CaseStudy:
         dPower_ThermalGen['pStartupCostEUR'] = dPower_ThermalGen['StartupCost'] * 1e-6 * dPower_ThermalGen['FuelCost']
         dPower_ThermalGen['InvestCostEUR'] = dPower_ThermalGen['InvestCost'] * 1e-3 * dPower_ThermalGen['MaxProd']
         dPower_ThermalGen['MaxInvest'] = dPower_ThermalGen['ExisUnits'].apply(lambda x: 0 if x == 1 else 1)
+        dPower_ThermalGen['RampUp'] *= 1e-3
+        dPower_ThermalGen['RampDw'] *= 1e-3
 
         # Fill NaN values with 0 for MinUpTime and MinDownTime
         dPower_ThermalGen['MinUpTime'] = dPower_ThermalGen['MinUpTime'].fillna(0)

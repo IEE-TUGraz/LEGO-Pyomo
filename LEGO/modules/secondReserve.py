@@ -42,3 +42,12 @@ def add_constraints(lego: LEGO):
         return sum(model.v2ndResDW[rp, k, t] for t in model.thermalGenerators) + sum(model.v2ndResDW[rp, k, s] for s in model.storageUnits) >= model.p2ndResDw * sum(model.pDemandP[rp, i, k] for i in model.i)
 
     lego.model.e2ReserveDw = pyo.Constraint(lego.model.rp, lego.model.k, doc="2nd reserve down", rule=e2ReserveDw_rule)
+
+    # Add 2nd reserve to power balance
+    if hasattr(lego.model, "thermalGenerators"):
+        for rp in lego.model.rp:
+            for k in lego.model.k:
+                for g in lego.model.thermalGenerators:
+                    lego.model.eThRampDw_expr[rp, k, g] -= lego.model.v2ndResDW[rp, k, g]
+                    lego.model.eThRampUp_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
+

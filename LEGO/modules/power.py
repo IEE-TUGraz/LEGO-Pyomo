@@ -50,6 +50,8 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.pStartupCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['pStartupCostEUR'], doc='Startup cost of thermal generator g')
     lego.model.pMinUpTime = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['MinUpTime'], doc='Minimum up time of thermal generator g')
     lego.model.pMinDownTime = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['MinDownTime'], doc='Minimum down time of thermal generator g')
+    lego.model.pRampUp = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['RampUp'], doc='Ramp up of thermal generator g')
+    lego.model.pRampDw = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['RampDw'], doc='Ramp down of thermal generator g')
 
     lego.model.pXline = pyo.Param(lego.model.la, lego.model.c, initialize=lego.cs.dPower_Network.reset_index().set_index(["i", "j", "Circuit ID"]).query("InService == 1")['X'], doc='Reactance of line la')
     lego.model.pAngle = pyo.Param(lego.model.la, lego.model.c, initialize=lego.cs.dPower_Network.reset_index().set_index(["i", "j", "Circuit ID"]).query("InService == 1")['TapAngle'] * np.pi / 180, doc='Transformer angle shift')
@@ -129,10 +131,13 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.bShutdown = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Shut-down of thermal generator g', domain=pyo.Binary)
 
     lego.model.vGenP = pyo.Var(lego.model.rp, lego.model.k, lego.model.g, doc='Power output of generator g', bounds=(0, None))
+    lego.model.vGenP1 = pyo.Var(lego.model.rp, lego.model.k, lego.model.g, doc='Power output of generator g above minimum production', bounds=(0, None))
     lego.model.vThermalOutput = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Power output of thermal generator g', bounds=(0, None))
     for g in lego.model.thermalGenerators:
         lego.model.vGenP[g, :, :].setub(lego.model.pMaxProd[g] * lego.cs.dPower_ThermalGen.loc[g, 'ExisUnits'])
         lego.model.vThermalOutput[g, :, :].setub(lego.model.pMaxProd[g] * lego.cs.dPower_ThermalGen.loc[g, 'ExisUnits'] - lego.model.pMinProd[g] * lego.cs.dPower_ThermalGen.loc[g, 'ExisUnits'])
+        lego.model.vGenP1[g, :, :].setub((lego.model.pMaxProd[g] - lego.model.pMinProd[g]) * (lego.model.pMaxInvest[g] + lego.model.pExisUnits[g]))
+
     for g in lego.model.rorGenerators:
         for rp in lego.model.rp:
             for k in lego.model.k:
@@ -206,6 +211,18 @@ def add_constraints(lego: LEGO):
 
     lego.model.eReMaxProd = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.vresGenerators, rule=eReMaxProd_rule)
 
+    def eThRampUp_rule(model, rp, k, g):
+        return model.vGenP1[rp, k, g] - model.vGenP1[rp, lego.model.k.prevw(k), g] - model.vCommit[rp, k, g] * model.pRampUp[g]
+
+    lego.model.eThRampUp_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.thermalGenerators, rule=eThRampUp_rule)
+    lego.model.eThRampUp = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Ramp up for thermal generators', rule=lambda model, rp, k, t: lego.model.eThRampUp_expr[rp, k, t] <= 0)
+
+    def eThRampDw_rule(model, rp, k, g):
+        return model.vGenP1[rp, k, g] - model.vGenP1[rp, lego.model.k.prevw(k), g] + model.vCommit[rp, lego.model.k.prevw(k), g] * model.pRampDw[g]
+
+    lego.model.eThRampDw_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.thermalGenerators, rule=eThRampDw_rule)
+    lego.model.eThRampDw = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Ramp down for thermal generators', rule=lambda model, rp, k, t: lego.model.eThRampDw_expr[rp, k, t] >= 0)
+
     # Todo: Required when we have circuits:
     #  eTranInves (i,j,c) $[lc(i,j,c) and pEnableTransNet and ord(c)>1]..
     #     vLineInvest(i,j,c) =l= vLineInvest(i,j,c-1) + sum[le(i,j,c-1),1];
@@ -213,8 +230,6 @@ def add_constraints(lego: LEGO):
     # Thermal Generator production with unit commitment & ramping
     lego.model.cPowerOutput = pyo.ConstraintList(doc='Power output of thermal generators')
     lego.model.cPHatProduction = pyo.ConstraintList(doc='Production between min and max production of thermal generators')
-    lego.model.cRampUp = pyo.ConstraintList(doc='Ramp-up constraint for thermal generators')
-    lego.model.cRampDown = pyo.ConstraintList(doc='Ramp-down constraint for thermal generators')
     lego.model.cStartupLogic = pyo.ConstraintList(doc='Start-up and shut-down logic for thermal generators')
     lego.model.eMinUpTime = pyo.ConstraintList(doc='Minimum up time for thermal generators')
     lego.model.eMinDownTime = pyo.ConstraintList(doc='Minimum down time for thermal generators')
@@ -230,8 +245,6 @@ def add_constraints(lego: LEGO):
                 lego.model.cPowerOutput.add(lego.model.vGenP[rp, k, g] == lego.cs.dPower_ThermalGen.loc[g, 'MinProd'] * lego.model.vCommit[rp, k, g] + lego.model.vThermalOutput[rp, k, g])
                 lego.model.cPHatProduction.add(lego.model.vThermalOutput[rp, k, g] <= (lego.cs.dPower_ThermalGen.loc[g, 'MaxProd'] - lego.cs.dPower_ThermalGen.loc[g, 'MinProd']) * lego.model.vCommit[rp, k, g])
                 lego.model.cStartupLogic.add(lego.model.vCommit[rp, k, g] - lego.model.vCommit[rp, lego.model.k.prevw(k), g] == lego.model.bStartup[rp, k, g] - lego.model.bShutdown[rp, k, g])
-                lego.model.cRampUp.add(lego.model.vThermalOutput[rp, k, g] - lego.model.vThermalOutput[rp, lego.model.k.prevw(k), g] <= lego.cs.dPower_ThermalGen.loc[g, 'RampUp'] * lego.model.vCommit[rp, k, g])
-                lego.model.cRampDown.add(lego.model.vThermalOutput[rp, k, g] - lego.model.vThermalOutput[rp, lego.model.k.prevw(k), g] >= lego.cs.dPower_ThermalGen.loc[g, 'RampDw'] * -lego.model.vCommit[rp, lego.model.k.prevw(k), g])
 
                 # TODO: Check if implementation is correct
                 # Only enforce MinUpTime and MinDownTime after the minimum time has passed
