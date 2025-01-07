@@ -10,11 +10,12 @@ printer = Printer.getInstance()
 printer.set_width(180)
 
 
-def remove_underscore(string: str) -> str:
-    # Regular expression to find all occurrences of '[0-9]_' in a string
-    regex_replace = re.compile(r"(\d)(_)")
+def normalize_variable_name(string: str) -> str:
+    # Replace first _ with ( and last _ with )
+    string = string.replace("_", "(", 1)
+    string = string[::-1].replace("_", ")", 1)[::-1]
 
-    return regex_replace.sub(r"\1,", string)
+    return string
 
 
 # Normalize constraints by
@@ -231,6 +232,56 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
     return False
 
 
+def compare_variables(vars1, vars2, precision: float = 1e-12):
+    counter = 0
+    for v in vars1:
+        found = False
+        bounds_differ = False
+        for v2 in vars2:
+            if v[0] == v2[0]:
+                found = True
+                if v[1] is None or v2[1] is None:
+                    if v[1] != v2[1]:
+                        bounds_differ = True
+                        break
+                elif v[1] == 0:
+                    if abs(v2[1]) > precision:
+                        bounds_differ = True
+                        break
+                elif abs((v[1] - v2[1]) / v[1]) > precision:
+                    bounds_differ = True
+                    break
+
+                if v[2] is None or v2[2] is None:
+                    if v[2] != v2[2]:
+                        bounds_differ = True
+                        break
+                elif v[2] == 0:
+                    if abs(v2[2]) > precision:
+                        bounds_differ = True
+                        break
+                elif abs((v[2] - v2[2]) / v[2]) > precision:
+                    bounds_differ = True
+                    break
+                counter += 1
+                break
+        if not found:
+            if counter > 0:
+                printer.information(f"{counter} variables matched perfectly")
+                counter = 0
+            printer.warning(f"Variable not found in model2: {v}")
+        if bounds_differ:
+            if counter > 0:
+                printer.information(f"{counter} variables matched perfectly")
+                counter = 0
+            printer.error(f"Variable bounds differ: {v} | {v2}")
+        if counter == 1000:
+            printer.information(f"{counter} variables matched perfectly, resetting counter")
+            counter = 0
+    if counter > 0:
+        printer.information(f"{counter} variables matched perfectly")
+
+
 def compare_mps(file1, file2, check_vars=True, check_constraints=True, print_additional_information=False,
                 constraints_to_skip_from1=None, constraints_to_keep_from1=None, coefficients_to_skip_from1=None,
                 constraints_to_skip_from2=None, constraints_to_keep_from2=None, coefficients_to_skip_from2=None, constraints_to_enforce_from2=None):
@@ -240,24 +291,10 @@ def compare_mps(file1, file2, check_vars=True, check_constraints=True, print_add
 
     # Variables
     if check_vars:
-        vars1 = {(remove_underscore(v.name), v.lowBound, v.upBound) for v in model1[1].variables()}
-        vars2 = {(remove_underscore(v.name), v.lowBound, v.upBound) for v in model2[1].variables()}
+        vars1 = {(normalize_variable_name(v.name), v.lowBound, v.upBound) for v in model1[1].variables()}
+        vars2 = {(v.name, v.lowBound, v.upBound) for v in model2[1].variables()}
 
-        list1 = [v[0] for v in vars1]
-        list2 = [v[0] for v in vars2]
-
-        for v in vars1:
-            found = False
-            for v2 in vars2:
-                if v[0] == v2[0]:
-                    if v[1] == v2[1] and v[2] == v2[2]:
-                        found = True
-                        break
-                    else:
-                        printer.error("Variable bounds differ:", v, v2)
-                        break
-            if not found:
-                printer.error("Variable not found in model2:", v)
+        compare_variables(vars1, vars2)
 
     # Constraints
     if check_constraints:
