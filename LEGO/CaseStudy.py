@@ -213,12 +213,16 @@ class CaseStudy:
         return dPower_ThermalGen
 
     def get_dPower_RoR(self):
-        return self.read_generator_data(self.example_folder + self.power_ror_file)
+        dPower_RoR = self.read_generator_data(self.example_folder + self.power_ror_file)
+        dPower_RoR['InvestCostEUR'] = dPower_RoR['MaxProd'] * 1e-3 * (dPower_RoR['InvestCostPerMW'] * 1e-3 + dPower_RoR['InvestCostPerMWh'] * 1e-3 * dPower_RoR['Ene2PowRatio'])
+        return dPower_RoR
 
     def get_dPower_VRES(self):
         dPower_VRES = self.read_generator_data(self.example_folder + self.power_vres_file)
         if "MinProd" not in dPower_VRES.columns:
             dPower_VRES['MinProd'] = 0
+
+        dPower_VRES['InvestCostEUR'] = dPower_VRES['InvestCost'] * 1e-3 * dPower_VRES['MaxProd'] * 1e-3
         return dPower_VRES
 
     def get_dPower_Storage(self):
@@ -227,6 +231,7 @@ class CaseStudy:
         dPower_Storage['IniReserve'] = dPower_Storage['IniReserve'].fillna(0)
         dPower_Storage['MinReserve'] = dPower_Storage['MinReserve'].fillna(0)
         dPower_Storage['MinProd'] = dPower_Storage["MinProd"].fillna(0)
+        dPower_Storage['InvestCostEUR'] = dPower_Storage['MaxProd'] * 1e-3 * (dPower_Storage['InvestCostPerMW'] * 1e-3 + dPower_Storage['InvestCostPerMWh'] * 1e-3 * dPower_Storage['Ene2PowRatio'])
         return dPower_Storage
 
     def get_dPower_Demand(self):

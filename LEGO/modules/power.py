@@ -33,9 +33,12 @@ def add_element_definitions_and_bounds(lego: LEGO):
     hFuelCost = pd.concat([lego.cs.dPower_ThermalGen['FuelCost'].copy(), pd.Series(0, index=lego.model.rorGenerators), pd.Series(0, index=lego.model.vresGenerators)])
     lego.model.pProductionCost = pyo.Param(lego.model.g, initialize=hFuelCost, doc='Production cost of generator g')
 
-    lego.model.pInvestCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['InvestCostEUR'], doc='Investment cost for thermal generator g')
-    lego.model.pMaxInvest = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['MaxInvest'], doc='Maximum investment in thermal generator g')
-    lego.model.pEnabInv = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['EnableInvest'], doc='Enable investment in thermal generator g')
+    lego.model.pInvestCost = pyo.Param(lego.model.g, initialize=lego.cs.dPower_ThermalGen['InvestCostEUR'], doc='Investment cost for thermal generator g')
+    lego.model.pMaxInvest = pyo.Param(lego.model.g, initialize=lego.cs.dPower_ThermalGen['MaxInvest'], doc='Maximum investment in thermal generator g')
+    lego.model.pEnabInv = pyo.Param(lego.model.g, initialize=lego.cs.dPower_ThermalGen['EnableInvest'], doc='Enable investment in thermal generator g')
+
+    lego.addToParameter("pInvestCost", lego.cs.dPower_RoR['InvestCostEUR'])
+    lego.addToParameter("pInvestCost", lego.cs.dPower_VRES['InvestCostEUR'])
 
     lego.model.pInterVarCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['pInterVarCostEUR'], doc='Inter-variable cost of thermal generator g')
     lego.model.pSlopeVarCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['pSlopeVarCostEUR'], doc='Slope of variable cost of thermal generator g')
@@ -80,7 +83,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     for i, j in lego.model.le:
         lego.model.vLineInvest[i, j, :].fix(0)  # Set existing lines to not invest
 
-    lego.model.vGenInvest = pyo.Var(lego.model.thermalGenerators, doc="Integer generation investment", bounds=(0, None), domain=pyo.NonNegativeIntegers)
+    lego.model.vGenInvest = pyo.Var(lego.model.g, doc="Integer generation investment", bounds=(0, None), domain=pyo.NonNegativeIntegers)
     for g in lego.model.thermalGenerators:
         lego.model.vGenInvest[g].setub(lego.model.pMaxProd[g] * lego.model.pMaxInvest[g])
         if not lego.model.pEnabInv[g]:
@@ -241,4 +244,4 @@ def add_constraints(lego: LEGO):
                                                                                                                     sum(lego.model.pOMVarCost[g] * sum(lego.model.vGenP[g, :, :]) for g in lego.model.storageUnits) +
                                                                                                                     sum((sum(lego.model.vPNS[:, :, i]) + sum(lego.model.vEPS[:, :, i])) * lego.model.pSlackPrice[i] for i in lego.model.i) +  # Slack variables
                                                                                                                     sum(lego.model.pFixedCost[i, j, c] * lego.model.vLineInvest[i, j, c] for i, j in lego.model.lc for c in lego.model.c) +  # Investment cost of transmission lines
-                                                                                                                    sum(lego.model.pInvestCost[g] * lego.model.vGenInvest[g] for g in lego.model.thermalGenerators))  # Investment cost of thermal generators
+                                                                                                                    sum(lego.model.pInvestCost[g] * lego.model.vGenInvest[g] for g in lego.model.g))  # Investment cost of thermal generators

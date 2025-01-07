@@ -14,6 +14,8 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.pOMVarCost = pyo.Param(lego.model.storageUnits, initialize=lego.cs.dPower_Storage['pOMVarCostEUR'], doc='Variable O&M cost of storage unit g')
     lego.model.pWeight_k = pyo.Param(lego.model.k, initialize=lego.cs.dPower_WeightsK, doc='Weight of time step k')
     lego.model.pEnableChDisPower = lego.cs.dPower_Parameters['pEnableChDisPower']  # Avoid simultaneous charging and discharging
+    lego.model.pE2PRatio = pyo.Param(lego.model.storageUnits, initialize=lego.cs.dPower_Storage['Ene2PowRatio'], doc='Energy to power ratio of storage unit g')
+    lego.model.pMinReserve = pyo.Param(lego.model.storageUnits, initialize=lego.cs.dPower_Storage['MinReserve'], doc='Minimum reserve of storage unit g')
 
     lego.addToParameter("pMaxCons", lego.cs.dPower_Storage['MaxCons'], indices=[lego.model.storageUnits], doc='Maximum consumption of storage unit')
 
@@ -21,31 +23,29 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.addToParameter("pMinProd", lego.cs.dPower_Storage['MinProd'])
     lego.addToParameter("pExisUnits", lego.cs.dPower_Storage['ExisUnits'])
 
+    lego.addToParameter("pMaxInvest", lego.cs.dPower_Storage['MaxInvest'])
+    lego.addToParameter("pEnabInv", lego.cs.dPower_Storage['EnableInvest'])
+    lego.addToParameter("pInvestCost", lego.cs.dPower_Storage['InvestCostEUR'])
+
     # Variables
     lego.model.bChargeDisCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
 
     lego.model.vConsump = pyo.Var(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Charging of storage unit g', bounds=(0, None))
     lego.model.vStIntraRes = pyo.Var(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Intra-reserve of storage unit g', bounds=(None, None))
     lego.model.vStInterRes = pyo.Var(lego.model.p, lego.model.storageUnits, doc='Inter-reserve of storage unit g', bounds=(None, None))
-    for g in lego.model.storageUnits:
-        for rp in lego.model.rp:
-            for k in lego.model.k:
-                lego.model.vGenP[rp, k, g].setub(lego.model.pMaxProd[g] * lego.model.pExisUnits[g])
-                lego.model.vConsump[rp, k, g].setub(lego.model.pMaxCons[g] * lego.model.pExisUnits[g])
-
-                lego.model.vStIntraRes[rp, k, g].setub(lego.model.pMaxProd[g] * lego.model.pExisUnits[g] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'])
-                lego.model.vStIntraRes[rp, k, g].setlb(lego.model.pMaxProd[g] * lego.model.pExisUnits[g] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'] * lego.cs.dPower_Storage.loc[g, 'MinReserve'])
 
     for p in lego.model.p:
         for g in lego.model.storageUnits:
-            if LEGOUtilities.p_to_int(p) % lego.model.pMovWindow == 0:
-                lego.model.vStInterRes[p, g].setub(lego.model.pMaxProd[g] * lego.model.pExisUnits[g] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'])
-                lego.model.vStInterRes[p, g].setlb(lego.model.pMaxProd[g] * lego.model.pExisUnits[g] * lego.cs.dPower_Storage.loc[g, 'Ene2PowRatio'] * lego.cs.dPower_Storage.loc[g, 'MinReserve'])
             if LEGOUtilities.p_to_int(p) == len(lego.model.p):
                 if lego.cs.dPower_Parameters['pFixStInterResToIniReserve']:
                     lego.model.vStInterRes[p, g].fix(lego.cs.dPower_Storage.loc[g, 'IniReserve'])
                 else:
                     lego.model.vStInterRes[p, g].setlb(lego.cs.dPower_Storage.loc[g, 'IniReserve'])
+
+    for g in lego.model.storageUnits:
+        lego.model.vGenInvest[g].setub(lego.model.pMaxProd[g] * lego.model.pMaxInvest[g])
+        if not lego.model.pEnabInv[g]:
+            lego.model.vGenInvest[g].fix(0)
 
 
 @LEGOUtilities.checkExecutionLog([add_element_definitions_and_bounds])
@@ -72,6 +72,44 @@ def add_constraints(lego: LEGO):
                 if lego.model.pEnableChDisPower:
                     lego.model.eExclusiveChargeDischarge.add(lego.model.vConsump[rp, k, g] <= lego.model.bChargeDisCharge[rp, k, g] * lego.model.pMaxCons[g] * lego.model.pExisUnits[g])
                     lego.model.eExclusiveChargeDischarge.add(lego.model.vGenP[rp, k, g] <= (1 - lego.model.bChargeDisCharge[rp, k, g]) * lego.model.pMaxProd[g] * lego.model.pExisUnits[g])
+
+    def eStMaxProd_rule(model, rp, k, s):
+        return model.vGenP[rp, k, s] - model.vConsump[rp, k, s] <= model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s])
+
+    lego.model.eStMaxProd = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Max production constraint for storage units', rule=eStMaxProd_rule)
+
+    def eStMaxCons_rule(model, rp, k, s):
+        return model.vGenP[rp, k, s] - model.vConsump[rp, k, s] >= -model.pMaxCons[s] * (model.vGenInvest[s] + model.pExisUnits[s])
+
+    lego.model.eStMaxCons = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Max consumption constraint for storage units', rule=eStMaxCons_rule)
+
+    def eStMaxIntraRes_rule(model, rp, k, s):
+        return model.vStIntraRes[rp, k, s] <= model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s]
+
+    lego.model.eStMaxIntraRes = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Max intra-reserve constraint for storage units', rule=eStMaxIntraRes_rule)
+
+    def eStMinIntraRes(model, rp, k, s):
+        return model.vStIntraRes[rp, k, s] >= model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s] * model.pMinReserve[s]
+
+    lego.model.eStMinIntraRes = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Min intra-reserve constraint for storage units', rule=eStMinIntraRes)
+
+    def eStMaxInterRes_rule(model, p, s):
+        # If current p is a multiple of moving window, add constraint
+        if LEGOUtilities.p_to_int(p) % model.pMovWindow == 0:
+            return model.vStInterRes[p, s] <= model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s]
+        else:
+            return pyo.Constraint.Skip
+
+    lego.model.eStMaxInterRes = pyo.Constraint(lego.model.p, lego.model.storageUnits, doc='Max inter-reserve constraint for storage units', rule=eStMaxInterRes_rule)
+
+    def eStMinInterRes_rule(model, p, s):
+        # If current p is a multiple of moving window, add constraint
+        if LEGOUtilities.p_to_int(p) % model.pMovWindow == 0:
+            return model.vStInterRes[p, s] >= model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s] * model.pMinReserve[s]
+        else:
+            return pyo.Constraint.Skip
+
+    lego.model.eStMinInterRes = pyo.Constraint(lego.model.p, lego.model.storageUnits, doc='Min inter-reserve constraint for storage units', rule=eStMinInterRes_rule)
 
     def eStInterRes_rule(model, p, storage_unit):
         # If current p is a multiple of moving window, add constraint
