@@ -20,7 +20,8 @@ class CaseStudy:
                  power_storage_file: str = "Power_Storage.xlsx", dPower_Storage: pd.DataFrame = None,
                  power_weightsk_file: str = "Power_WeightsK.xlsx", dPower_WeightsK: pd.DataFrame = None,
                  power_hindex_file: str = "Power_Hindex.xlsx", dPower_Hindex: pd.DataFrame = None,
-                 power_impexp_file: str = "Power_ImpExp.xlsx", dPower_ImpExp: pd.DataFrame = None):
+                 power_impexphubs_file: str = "Power_ImpExpHubs.xlsx", dPower_ImpExpHubs: pd.DataFrame = None,
+                 power_impexpprofiles_file: str = "Power_ImpExpProfiles.xlsx", dPower_ImpExpProfiles: pd.DataFrame = None):
         self.example_folder = example_folder
         self.do_not_merge_single_node_buses = do_not_merge_single_node_buses
 
@@ -103,13 +104,20 @@ class CaseStudy:
             self.dPower_Hindex = self.get_dPower_Hindex()
 
         if self.dPower_Parameters["pEnablePowerImportExport"]:
-            if dPower_ImpExp is not None:
-                self.dPower_ImpExp = dPower_ImpExp
+            if dPower_ImpExpHubs is not None:
+                self.dPower_ImpExpHubs = dPower_ImpExpHubs
             else:
-                self.power_impexp_file = power_impexp_file
-                self.dPower_ImpExp = self.get_dPower_ImpExp()
+                self.power_impexphubs_file = power_impexphubs_file
+                self.dPower_ImpExpHubs = self.get_dPower_ImpExpHubs()
+
+            if dPower_ImpExpProfiles is not None:
+                self.dPower_ImpExpProfiles = dPower_ImpExpProfiles
+            else:
+                self.power_impexpprofiles_file = power_impexpprofiles_file
+                self.dPower_ImpExpProfiles = self.get_dPower_ImpExpProfiles()
         else:
-            self.dPower_ImpExp = None
+            self.dPower_ImpExpHubs = None
+            self.dPower_ImpExpProfiles = None
 
         # Dataframe that shows connections between g and i, only concatenating g and i from the dataframes
         self.hGenerators_to_Buses = self.update_hGenerators_to_Buses()
@@ -278,33 +286,82 @@ class CaseStudy:
         dPower_Hindex = dPower_Hindex.set_index(['p', 'rp', 'k'])
         return dPower_Hindex
 
-    def get_dPower_ImpExp(self):
+    def get_dPower_ImpExpHubs(self):
+        dPower_ImpExpHubs = pd.read_excel(self.example_folder + self.power_impexphubs_file, skiprows=[0, 1, 3, 4, 5])
+        dPower_ImpExpHubs = dPower_ImpExpHubs.drop(dPower_ImpExpHubs.columns[0], axis=1)
+        dPower_ImpExpHubs = dPower_ImpExpHubs.rename(columns={dPower_ImpExpHubs.columns[0]: "hub", dPower_ImpExpHubs.columns[1]: "i"})
+
+        dPower_ImpExpHubs["Pmax Import"] *= 1e-3
+        dPower_ImpExpHubs["Pmax Export"] *= 1e-3
+
+        dPower_ImpExpHubs = dPower_ImpExpHubs.set_index(['hub', 'i'])
+        return dPower_ImpExpHubs
+
+    def get_dPower_ImpExpProfiles(self):
         with warnings.catch_warnings(action="ignore", category=UserWarning):  # Otherwise there is a warning regarding data validation in the Excel-File (see https://stackoverflow.com/questions/53965596/python-3-openpyxl-userwarning-data-validation-extension-not-supported)
-            dPower_ImpExp = pd.read_excel(self.example_folder + self.power_impexp_file, skiprows=[0, 1, 3, 4, 5], sheet_name='Power ImpExp')
-        dPower_ImpExp = dPower_ImpExp.drop(dPower_ImpExp.columns[0], axis=1)
-        dPower_ImpExp = dPower_ImpExp.rename(columns={dPower_ImpExp.columns[0]: "i", dPower_ImpExp.columns[1]: "rp", dPower_ImpExp.columns[2]: "Type"})
-        dPower_ImpExp = dPower_ImpExp.melt(id_vars=['i', 'rp', 'Type'], var_name='k', value_name='Value')
-        dPower_ImpExp = dPower_ImpExp.set_index(['i', 'rp', 'Type', 'k'])
+            dPower_ImpExpProfiles = pd.read_excel(self.example_folder + self.power_impexpprofiles_file, skiprows=[0, 1, 3, 4, 5], sheet_name='Power ImpExpProfiles')
+        dPower_ImpExpProfiles = dPower_ImpExpProfiles.drop(dPower_ImpExpProfiles.columns[0], axis=1)
+        dPower_ImpExpProfiles = dPower_ImpExpProfiles.melt(id_vars=['hub', 'rp', 'Type', 'Import Type', 'Export Type'], var_name='k', value_name='Value')
+        dPower_ImpExpProfiles = dPower_ImpExpProfiles.set_index(['hub', 'rp', 'k', 'Type'])
 
         # Validate that each multiindex is only present once
-        if not dPower_ImpExp.index.is_unique:
-            raise ValueError(f"Indices for Imp-/Export values must be unique (i.e., no two entries for the same i, rp, Type and k). Please check these indices: {dPower_ImpExp.index[dPower_ImpExp.index.duplicated(keep=False)]}")
+        if not dPower_ImpExpProfiles.index.is_unique:
+            raise ValueError(f"Indices for Imp-/Export values must be unique (i.e., no two entries for the same hub, rp, Type and k). Please check these indices: {dPower_ImpExpProfiles.index[dPower_ImpExpProfiles.index.duplicated(keep=False)]}")
 
-        # Validate that each index for i, rp and k only has either ImportFix or ImportMax as Type specified
-        indices_importMax = dPower_ImpExp[dPower_ImpExp.index.isin(['ImportMax'], level=2)].index
-        indices_importFix = dPower_ImpExp[dPower_ImpExp.index.isin(['ImportFix'], level=2)].index
-        for i, rp, Type, k in indices_importMax:
-            if sum(indices_importFix.isin([(i, rp, 'ImportFix', k)])) > 0:
-                raise ValueError(f"ImportFix and ImportMax cannot be specified for the same i, rp, k. Please check these indices: {(i, rp, k)}")
+        # Validate that all rows with Type==Price have "Import Type" and "Export Type" == '-'
+        dPower_ImpExpProfiles = dPower_ImpExpProfiles.reset_index().set_index(['hub', 'rp', 'k'])  # Remove 'Type' from index
 
-        # Same validation for ExportFix and ExportMax
-        indices_exportMax = dPower_ImpExp[dPower_ImpExp.index.isin(['ExportMax'], level=2)].index
-        indices_exportFix = dPower_ImpExp[dPower_ImpExp.index.isin(['ExportFix'], level=2)].index
-        for i, rp, Type, k in indices_exportMax:
-            if sum(indices_exportFix.isin([(i, rp, 'ExportFix', k)])) > 0:
-                raise ValueError(f"ExportFix and ExportMax cannot be specified for the same i, rp, k. Please check these indices: {(i, rp, k)}")
+        errors = dPower_ImpExpProfiles[(dPower_ImpExpProfiles['Type'] == 'Price') & (dPower_ImpExpProfiles['Import Type'] != '-')]
+        if len(errors) > 0:
+            raise ValueError(f"'Import Type' for rows with 'Type'=='Price' must be '-'. Please check: {errors}")
+        errors = dPower_ImpExpProfiles[(dPower_ImpExpProfiles['Type'] == 'Price') & (dPower_ImpExpProfiles['Export Type'] != '-')]
+        if len(errors) > 0:
+            raise ValueError(f"'Export Type' for rows with 'Type'=='Price' must be '-'. Please check: {errors}")
 
-        return dPower_ImpExp
+        # Validate that all rows with Type==ImpExp have "Import Type" and "Export Type" == [Imp/ExpFix or Imp/ExpMax]
+        errors = dPower_ImpExpProfiles[(dPower_ImpExpProfiles['Type'] == 'ImpExp') & (dPower_ImpExpProfiles['Import Type'] != 'ImpFix') & (dPower_ImpExpProfiles['Import Type'] != 'ImpMax')]
+        if len(errors) > 0:
+            raise ValueError(f"'Import Type' for rows with 'Type'=='ImpExp' must be 'ImpFix' or 'ImpMax'. Please check: {errors}")
+        errors = dPower_ImpExpProfiles[(dPower_ImpExpProfiles['Type'] == 'ImpExp') & (dPower_ImpExpProfiles['Export Type'] != 'ExpFix') & (dPower_ImpExpProfiles['Export Type'] != 'ExpMax')]
+        if len(errors) > 0:
+            raise ValueError(f"'Export Type' for rows with 'Type'=='ImpExp' must be 'ExpFix' or 'ExpMax'. Please check: {errors}")
+
+        # Create combined table (with one row for each hub, rp and k)
+        dPower_ImpExpProfiles = dPower_ImpExpProfiles.reset_index().set_index(['hub', 'rp', 'k', 'Type'])  # Reset index to include Type (to have correct sorting)
+        dPower_ImpExpProfiles = dPower_ImpExpProfiles.replace('-', np.nan).sort_index().ffill()  # Replace '-' (from Price rows) with nan and then fill with values from ImpExp rows (where sort takes care that the correct values are filled)
+        dPower_ImpExpProfiles = dPower_ImpExpProfiles.reset_index().set_index(['hub', 'rp', 'k', 'Import Type', 'Export Type'])  # Reset index to prepare for pivot
+        dPower_ImpExpProfiles = dPower_ImpExpProfiles.pivot(columns="Type", values="Value")
+        dPower_ImpExpProfiles.columns.name = None  # Fix name of columns/indices (which are altered through pivot)
+
+        dPower_ImpExpProfiles = dPower_ImpExpProfiles.reset_index().set_index(['hub', 'rp', 'k'])  # Prepare indices for usage in model
+
+        # Adjust values
+        dPower_ImpExpProfiles["ImpExp"] *= 1e-3
+
+        # Safety checks for Pmax of ImpExpHubs
+        # Check that maximum import and export for ImpFix or ExpFix is not higher than the maximum capacity of all Pmax of the respective hub connections
+        max_import = dPower_ImpExpProfiles[(dPower_ImpExpProfiles["Import Type"] == "ImpFix") & (dPower_ImpExpProfiles["ImpExp"] >= 0)]["ImpExp"].groupby("hub").max()
+        max_export = -dPower_ImpExpProfiles[(dPower_ImpExpProfiles["Export Type"] == "ExpFix") & (dPower_ImpExpProfiles["ImpExp"] <= 0)]["ImpExp"].groupby("hub").min()
+
+        pmax_sum_by_hub = self.dPower_ImpExpHubs.groupby("hub").sum()
+        import_violations = max_import[max_import > pmax_sum_by_hub["Pmax Import"]]
+        export_violations = max_export[max_export > pmax_sum_by_hub["Pmax Export"]]
+
+        if not import_violations.empty:
+            error_information = pd.concat([import_violations, pmax_sum_by_hub['Pmax Import']], axis=1)  # Add Pmax information and maximum import
+            error_information = error_information.rename(columns={"ImpExp": "Max Import from Profiles", "Pmax Import": "Sum of Pmax Import from Hub Definition"})  # Rename columns for readability
+            error_information = error_information[error_information["Max Import from Profiles"].notna()]  # Only show rows where there is a violation
+            error_information *= 1e3  # Convert back to input format
+            raise ValueError(f"At least one hub has ImpFix imports which exceed the sum of Pmax of all connections to nodes. Please check: \n{error_information}")
+
+        if not export_violations.empty:
+            error_information = pd.concat([export_violations, pmax_sum_by_hub['Pmax Export']], axis=1)
+            error_information = error_information.rename(columns={"ImpExp": "Max Export from Profiles", "Pmax Export": "Sum of Pmax Export from Hub Definition"})
+            error_information = error_information[error_information["Max Export from Profiles"].notna()]
+            error_information *= 1e3  # Convert back to input format
+            raise ValueError(f"At least one hub has ExpFix exports which exceed the sum of Pmax of all connections to nodes. Please check: \n{error_information}")
+
+        return dPower_ImpExpProfiles
 
     def update_hGenerators_to_Buses(self):
         return pd.concat([self.dPower_ThermalGen[['i']], self.dPower_RoR[['i']], self.dPower_VRES[['i']], self.dPower_Storage[['i']]])
