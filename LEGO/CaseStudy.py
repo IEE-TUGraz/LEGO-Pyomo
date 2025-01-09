@@ -289,77 +289,73 @@ class CaseStudy:
     def get_dPower_ImpExpHubs(self):
         dPower_ImpExpHubs = pd.read_excel(self.example_folder + self.power_impexphubs_file, skiprows=[0, 1, 3, 4, 5])
         dPower_ImpExpHubs = dPower_ImpExpHubs.drop(dPower_ImpExpHubs.columns[0], axis=1)
-        dPower_ImpExpHubs = dPower_ImpExpHubs.rename(columns={dPower_ImpExpHubs.columns[0]: "hub", dPower_ImpExpHubs.columns[1]: "i"})
+        dPower_ImpExpHubs = dPower_ImpExpHubs.set_index(['hub', 'i'])
 
+        # Validate that all values for "Import Type" and "Export Type" == [Imp/ExpFix or Imp/ExpMax]
+        errors = dPower_ImpExpHubs[~dPower_ImpExpHubs['Import Type'].isin(['ImpFix', 'ImpMax'])]
+        if len(errors) > 0:
+            raise ValueError(f"'Import Type' must be 'ImpFix' or 'ImpMax'. Please check: \n{errors}\n")
+        errors = dPower_ImpExpHubs[~dPower_ImpExpHubs['Export Type'].isin(['ExpFix', 'ExpMax'])]
+        if len(errors) > 0:
+            raise ValueError(f"'Export Type' must be 'ExpFix' or 'ExpMax'. Please check: \n{errors}\n")
+
+        # Validate that for each hub, all connections have the same Import Type and Export Type
+        errors = dPower_ImpExpHubs.groupby('hub').agg({'Import Type': 'nunique', 'Export Type': 'nunique'})
+        errors = errors[(errors['Import Type'] > 1) | (errors['Export Type'] > 1)]
+        if len(errors) > 0:
+            raise ValueError(f"Each hub must have the same Import Type (Fix or Max) and the same Export Type (Fix or Max) for each connection. Please check: \n{errors.index}\n")
+
+        # Adjust values
         dPower_ImpExpHubs["Pmax Import"] *= 1e-3
         dPower_ImpExpHubs["Pmax Export"] *= 1e-3
 
-        dPower_ImpExpHubs = dPower_ImpExpHubs.set_index(['hub', 'i'])
         return dPower_ImpExpHubs
 
     def get_dPower_ImpExpProfiles(self):
         with warnings.catch_warnings(action="ignore", category=UserWarning):  # Otherwise there is a warning regarding data validation in the Excel-File (see https://stackoverflow.com/questions/53965596/python-3-openpyxl-userwarning-data-validation-extension-not-supported)
             dPower_ImpExpProfiles = pd.read_excel(self.example_folder + self.power_impexpprofiles_file, skiprows=[0, 1, 3, 4, 5], sheet_name='Power ImpExpProfiles')
         dPower_ImpExpProfiles = dPower_ImpExpProfiles.drop(dPower_ImpExpProfiles.columns[0], axis=1)
-        dPower_ImpExpProfiles = dPower_ImpExpProfiles.melt(id_vars=['hub', 'rp', 'Type', 'Import Type', 'Export Type'], var_name='k', value_name='Value')
-        dPower_ImpExpProfiles = dPower_ImpExpProfiles.set_index(['hub', 'rp', 'k', 'Type'])
+        dPower_ImpExpProfiles = dPower_ImpExpProfiles.melt(id_vars=['hub', 'rp', 'Type'], var_name='k', value_name='Value')
 
         # Validate that each multiindex is only present once
+        dPower_ImpExpProfiles = dPower_ImpExpProfiles.set_index(['hub', 'rp', 'k', 'Type'])
         if not dPower_ImpExpProfiles.index.is_unique:
             raise ValueError(f"Indices for Imp-/Export values must be unique (i.e., no two entries for the same hub, rp, Type and k). Please check these indices: {dPower_ImpExpProfiles.index[dPower_ImpExpProfiles.index.duplicated(keep=False)]}")
 
-        # Validate that all rows with Type==Price have "Import Type" and "Export Type" == '-'
-        dPower_ImpExpProfiles = dPower_ImpExpProfiles.reset_index().set_index(['hub', 'rp', 'k'])  # Remove 'Type' from index
-
-        errors = dPower_ImpExpProfiles[(dPower_ImpExpProfiles['Type'] == 'Price') & (dPower_ImpExpProfiles['Import Type'] != '-')]
+        # Validate that all values for "Type" == [ImpExp, Price]
+        dPower_ImpExpProfiles = dPower_ImpExpProfiles.reset_index().set_index(['hub', 'rp', 'k'])
+        errors = dPower_ImpExpProfiles[~dPower_ImpExpProfiles['Type'].isin(['ImpExp', 'Price'])]
         if len(errors) > 0:
-            raise ValueError(f"'Import Type' for rows with 'Type'=='Price' must be '-'. Please check: {errors}")
-        errors = dPower_ImpExpProfiles[(dPower_ImpExpProfiles['Type'] == 'Price') & (dPower_ImpExpProfiles['Export Type'] != '-')]
-        if len(errors) > 0:
-            raise ValueError(f"'Export Type' for rows with 'Type'=='Price' must be '-'. Please check: {errors}")
-
-        # Validate that all rows with Type==ImpExp have "Import Type" and "Export Type" == [Imp/ExpFix or Imp/ExpMax]
-        errors = dPower_ImpExpProfiles[(dPower_ImpExpProfiles['Type'] == 'ImpExp') & (dPower_ImpExpProfiles['Import Type'] != 'ImpFix') & (dPower_ImpExpProfiles['Import Type'] != 'ImpMax')]
-        if len(errors) > 0:
-            raise ValueError(f"'Import Type' for rows with 'Type'=='ImpExp' must be 'ImpFix' or 'ImpMax'. Please check: {errors}")
-        errors = dPower_ImpExpProfiles[(dPower_ImpExpProfiles['Type'] == 'ImpExp') & (dPower_ImpExpProfiles['Export Type'] != 'ExpFix') & (dPower_ImpExpProfiles['Export Type'] != 'ExpMax')]
-        if len(errors) > 0:
-            raise ValueError(f"'Export Type' for rows with 'Type'=='ImpExp' must be 'ExpFix' or 'ExpMax'. Please check: {errors}")
+            raise ValueError(f"'Type' must be 'ImpExp' or 'Price'. Please check: \n{errors}\n")
 
         # Create combined table (with one row for each hub, rp and k)
-        dPower_ImpExpProfiles = dPower_ImpExpProfiles.reset_index().set_index(['hub', 'rp', 'k', 'Type'])  # Reset index to include Type (to have correct sorting)
-        dPower_ImpExpProfiles = dPower_ImpExpProfiles.replace('-', np.nan).sort_index().ffill()  # Replace '-' (from Price rows) with nan and then fill with values from ImpExp rows (where sort takes care that the correct values are filled)
-        dPower_ImpExpProfiles = dPower_ImpExpProfiles.reset_index().set_index(['hub', 'rp', 'k', 'Import Type', 'Export Type'])  # Reset index to prepare for pivot
         dPower_ImpExpProfiles = dPower_ImpExpProfiles.pivot(columns="Type", values="Value")
         dPower_ImpExpProfiles.columns.name = None  # Fix name of columns/indices (which are altered through pivot)
-
-        dPower_ImpExpProfiles = dPower_ImpExpProfiles.reset_index().set_index(['hub', 'rp', 'k'])  # Prepare indices for usage in model
 
         # Adjust values
         dPower_ImpExpProfiles["ImpExp"] *= 1e-3
 
-        # Safety checks for Pmax of ImpExpHubs
-        # Check that maximum import and export for ImpFix or ExpFix is not higher than the maximum capacity of all Pmax of the respective hub connections
-        max_import = dPower_ImpExpProfiles[(dPower_ImpExpProfiles["Import Type"] == "ImpFix") & (dPower_ImpExpProfiles["ImpExp"] >= 0)]["ImpExp"].groupby("hub").max()
-        max_export = -dPower_ImpExpProfiles[(dPower_ImpExpProfiles["Export Type"] == "ExpFix") & (dPower_ImpExpProfiles["ImpExp"] <= 0)]["ImpExp"].groupby("hub").min()
+        # Check that Pmax of ImpExpConnections can handle the maximum import and export (for those connections that are ImpFix or ExpFix)
+        max_import = dPower_ImpExpProfiles[dPower_ImpExpProfiles["ImpExp"] >= 0]["ImpExp"].groupby("hub").max()
+        max_export = -dPower_ImpExpProfiles[dPower_ImpExpProfiles["ImpExp"] <= 0]["ImpExp"].groupby("hub").min()
 
-        pmax_sum_by_hub = self.dPower_ImpExpHubs.groupby("hub").sum()
-        import_violations = max_import[max_import > pmax_sum_by_hub["Pmax Import"]]
-        export_violations = max_export[max_export > pmax_sum_by_hub["Pmax Export"]]
+        pmax_sum_by_hub = self.dPower_ImpExpHubs.groupby('hub').agg({'Pmax Import': 'sum', 'Pmax Export': 'sum', 'Import Type': 'first', 'Export Type': 'first'})
+        import_violations = max_import[(max_import > pmax_sum_by_hub['Pmax Import']) & (pmax_sum_by_hub['Import Type'] == 'ImpFix')]
+        export_violations = max_export[(max_export > pmax_sum_by_hub['Pmax Export']) & (pmax_sum_by_hub['Export Type'] == 'ExpFix')]
 
         if not import_violations.empty:
-            error_information = pd.concat([import_violations, pmax_sum_by_hub['Pmax Import']], axis=1)  # Add Pmax information and maximum import
+            error_information = pd.concat([import_violations, pmax_sum_by_hub['Pmax Import']], axis=1)  # Concat Pmax information and maximum import
+            error_information = error_information[error_information["ImpExp"].notna()]  # Only show rows where there is a violation
             error_information = error_information.rename(columns={"ImpExp": "Max Import from Profiles", "Pmax Import": "Sum of Pmax Import from Hub Definition"})  # Rename columns for readability
-            error_information = error_information[error_information["Max Import from Profiles"].notna()]  # Only show rows where there is a violation
             error_information *= 1e3  # Convert back to input format
-            raise ValueError(f"At least one hub has ImpFix imports which exceed the sum of Pmax of all connections to nodes. Please check: \n{error_information}")
+            raise ValueError(f"At least one hub has ImpFix imports which exceed the sum of Pmax of all connections. Please check: \n{error_information}\n")
 
         if not export_violations.empty:
-            error_information = pd.concat([export_violations, pmax_sum_by_hub['Pmax Export']], axis=1)
-            error_information = error_information.rename(columns={"ImpExp": "Max Export from Profiles", "Pmax Export": "Sum of Pmax Export from Hub Definition"})
-            error_information = error_information[error_information["Max Export from Profiles"].notna()]
+            error_information = pd.concat([export_violations, pmax_sum_by_hub['Pmax Export']], axis=1)  # Concat Pmax information and maximum export
+            error_information = error_information[error_information["ImpExp"].notna()]  # Only show rows where there is a violation
+            error_information = error_information.rename(columns={"ImpExp": "Max Export from Profiles", "Pmax Export": "Sum of Pmax Export from Hub Definition"})  # Rename columns for readability
             error_information *= 1e3  # Convert back to input format
-            raise ValueError(f"At least one hub has ExpFix exports which exceed the sum of Pmax of all connections to nodes. Please check: \n{error_information}")
+            raise ValueError(f"At least one hub has ExpFix exports which exceed the sum of Pmax of all connections. Please check: \n{error_information}\n")
 
         return dPower_ImpExpProfiles
 

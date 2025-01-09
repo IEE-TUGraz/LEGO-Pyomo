@@ -30,7 +30,7 @@ class LEGO:
         power.add_element_definitions_and_bounds(self)
         storage.add_element_definitions_and_bounds(self)
         secondReserve.add_element_definitions_and_bounds(self)
-        if self.cs.dPower_ImpExp is not None:
+        if self.cs.dPower_Parameters["pEnablePowerImportExport"]:
             importExport.add_element_definitions_and_bounds(self)
 
         # Helper Sets for zone of interest
@@ -41,7 +41,7 @@ class LEGO:
         power.add_constraints(self)
         storage.add_constraints(self)
         secondReserve.add_constraints(self)
-        if self.cs.dPower_ImpExp is not None:
+        if self.cs.dPower_Parameters["pEnablePowerImportExport"]:
             importExport.add_constraints(self)
 
         stop_time = time.time()
