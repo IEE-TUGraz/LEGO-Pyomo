@@ -1368,26 +1368,26 @@ $offEmbeddedCode
 $if not errorFree $abort 'Error reading Power_BusInfo.xlsx';
 $offFold
 
-$onFold // Read Power_ImpExp ---------------------------------------------------
-
-$log Reading Power_ImpExp.xlsx
-$onEmbeddedCode Connect:
-
-- ExcelReader:
-    file: %scenarioFolder%/Power_ImpExp.xlsx
-    symbols:
-        - name: tImpExpData
-          range: Power ImpExp!B3
-          rowDimension: 3
-          columnDimension: 1
-          ignoreRows: [4, 5, 6]
-
-- GAMSWriter:
-    symbols: all
-
-$offEmbeddedCode
-$if not errorFree $abort 'Error reading Power_ImpExp.xlsx';
-$offFold
+*$onFold // Read Power_ImpExp ---------------------------------------------------
+*
+*$log Reading Power_ImpExp.xlsx
+*$onEmbeddedCode Connect:
+*
+*- ExcelReader:
+*    file: %scenarioFolder%/Power_ImpExp.xlsx
+*    symbols:
+*        - name: tImpExpData
+*          range: Power ImpExp!B3
+*          rowDimension: 3
+*          columnDimension: 1
+*          ignoreRows: [4, 5, 6]
+*
+*- GAMSWriter:
+*    symbols: all
+*
+*$offEmbeddedCode
+*$if not errorFree $abort 'Error reading Power_ImpExp.xlsx';
+*$offFold
 
 $onFold // Read Power_DSM ------------------------------------------------------
 
@@ -1855,12 +1855,12 @@ $offFold
 
 $onFold // Declaration Import and Export Constraints ---------------------------
 
-   eImport(rp,k,i)              "import on node in countries not within system        "
-   eExport(rp,k,i)              "export on node in countries not within system        "
-   eLineImport(rp,k,i)          "import must be bigger than zero                      "
-   eLineExport(rp,k,i)          "export must be smaller than zero                     "
-   eLineZero  (rp,k,i,i,c)      "set power flow to zero if import and export are zero "
-   
+*   eImport(rp,k,i)              "import on node in countries not within system        "
+*   eExport(rp,k,i)              "export on node in countries not within system        "
+*   eLineImport(rp,k,i)          "import must be bigger than zero                      "
+*   eLineExport(rp,k,i)          "export must be smaller than zero                     "
+*   eLineZero  (rp,k,i,i,c)      "set power flow to zero if import and export are zero "
+
 $offFold
 
 $onFold // Declaration Demand and Production per Zone Constraints --------------
@@ -1950,10 +1950,10 @@ $endIf.H2
    + sum[lc(i,j,c), pFixedCost   (i,j,c)* vLineInvest(i,j,c)]
 * import costs
 *  + sum[(rp,k,lbz(j,i,c))            ,                                                    vLineP(rp,k,j,i,c) * pPriceImpExp(rp,k,i)$[pMaxExport(rp,k,i) > 0]]
-   - sum[(rpk(rp,k),i,j,c)$[lbz (i,j,c) and rpkexp(rp,k,j)], pWeight_rp(rp)*pWeight_k(k) * vLineP(rp,k,i,j,c) * pPriceImpExp(rp,k,j)       ]
+*   - sum[(rpk(rp,k),i,j,c)$[lbz (i,j,c) and rpkexp(rp,k,j)], pWeight_rp(rp)*pWeight_k(k) * vLineP(rp,k,i,j,c) * pPriceImpExp(rp,k,j)       ]
 * export revenue
 *  - sum[(rp,k,lbz(j,i,c))            ,                                                    vLineP(rp,k,j,i,c) * pPriceImpExp(rp,k,i)$[pMaxImport(rp,k,i) > 0]]
-   - sum[(rpk(rp,k),i,j,c)$[lbz (i,j,c) and rpkimp(rp,k,j)], pWeight_rp(rp)*pWeight_k(k) * vLineP(rp,k,i,j,c) * pPriceImpExp(rp,k,j)]
+*   - sum[(rpk(rp,k),i,j,c)$[lbz (i,j,c) and rpkimp(rp,k,j)], pWeight_rp(rp)*pWeight_k(k) * vLineP(rp,k,i,j,c) * pPriceImpExp(rp,k,j)]
 * virtual cost for exceeding maximum power line loading
    + sum[(rpk(rp,k),i,j,c), pWeight_rp(rp)*pWeight_k(k)*vSlack(rp,k,i,j,c)*pLOLCost] $[pEnableMaxLineLoad]
 * virtual cost for exporting to minimize ring flows
@@ -2270,40 +2270,40 @@ $offFold
 $onFold // Formulation Import and Export Constraints ---------------------------
 
 * Import on node in countries not within system =g= =e=
-eImport(rp,k,i)$[(rpkimp(rp,k,i) or rpknimpexp(rp,k,i)) and iact(i) and inws(i)]..
-   +pMaxImport(rp,k,i)
-  =e= 
-   +sum[lbz(j,i,c), vLineP(rp,k,j,i,c)]
+*eImport(rp,k,i)$[(rpkimp(rp,k,i) or rpknimpexp(rp,k,i)) and iact(i) and inws(i)]..
+*   +pMaxImport(rp,k,i)
+*  =e= 
+*   +sum[lbz(j,i,c), vLineP(rp,k,j,i,c)]
 ;
 * If import to nodes not within system could be variable    
 *   pMaxImport(rp,k,i) =g= sum[lbz(j,i,c), vLineP(rp,k,j,i,c)];
 
 
 * Import must be bigger than zero
-eLineImport(rp,k,i)$[(rpkimp(rp,k,i) or rpknimpexp(rp,k,i)) and iact(i) and inws(i)]..
-   +sum[lbz(j,i,c), vLineP(rp,k,j,i,c)]
-  =g=
-   +0
-;
+*eLineImport(rp,k,i)$[(rpkimp(rp,k,i) or rpknimpexp(rp,k,i)) and iact(i) and inws(i)]..
+*   +sum[lbz(j,i,c), vLineP(rp,k,j,i,c)]
+*  =g=
+*   +0
+*;
 
 * Export on node in countries not within system =l= =e=
-eExport(rp,k,i)$[(rpkexp(rp,k,i) or rpknimpexp(rp,k,i)) and iact(i) and inws(i)]..
-   -pMaxExport(rp,k,i)
-  =e=
-   +sum[lbz(j,i,c), vLineP(rp,k,j,i,c)]
-;
+*eExport(rp,k,i)$[(rpkexp(rp,k,i) or rpknimpexp(rp,k,i)) and iact(i) and inws(i)]..
+*   -pMaxExport(rp,k,i)
+*  =e=
+*   +sum[lbz(j,i,c), vLineP(rp,k,j,i,c)]
+*;
 
 * Export must be smaller than zero
-eLineExport(rp,k,i)$[(rpkexp(rp,k,i) or rpknimpexp(rp,k,i)) and iact(i) and inws(i)]..
-   +sum[lbz(j,i,c), vLineP(rp,k,j,i,c)]
-  =l=
-   +0
-;
+*eLineExport(rp,k,i)$[(rpkexp(rp,k,i) or rpknimpexp(rp,k,i)) and iact(i) and inws(i)]..
+*   +sum[lbz(j,i,c), vLineP(rp,k,j,i,c)]
+*  =l=
+*   +0
+*;
 
-eLineZero(rpk(rp,k),le(j,i,c))$[pMaxImport(rp,k,i)=0 and pMaxExport(rp,k,i)=0 and iact(i)  and inws(i)]..
-   +vLineP(rp,k,j,i,c)
-  =e=
-   0
+*eLineZero(rpk(rp,k),le(j,i,c))$[pMaxImport(rp,k,i)=0 and pMaxExport(rp,k,i)=0 and iact(i)  and inws(i)]..
+*   +vLineP(rp,k,j,i,c)
+*  =e=
+*   0
 ;
 
 $offFold
@@ -2814,9 +2814,9 @@ $offFold
 $onFold // Subsets activation and scaling parameters ---------------------------
 
 * assignment of import and export
-pMaxImport  (rp,k,i) = tImpExpData  (i, rp, k,'Import') * 1e-3;
-pMaxExport  (rp,k,i) = tImpExpData  (i, rp, k,'Export') * 1e-3;
-pPriceImpExp(rp,k,i) = tImpExpData  (i, rp, k,'Price' ) * 1e-3;
+* pMaxImport  (rp,k,i) = tImpExpData  (i, rp, k,'Import') * 1e-3;
+* pMaxExport  (rp,k,i) = tImpExpData  (i, rp, k,'Export') * 1e-3;
+* pPriceImpExp(rp,k,i) = tImpExpData  (i, rp, k,'Price' ) * 1e-3;
 
 
 $ifThenE.ZonalPricing (%pEnablePower%=1)and(%pEnableZP%=1)
@@ -2830,9 +2830,9 @@ $endIf.ZonalPricing
 * active representative periods
 rpk(rp,k)$[pWeight_rp(rp) and pWeight_k(k)] = yes ;
 
-rpkimp(rp,k,i)    $[pWeight_rp(rp) and pWeight_k(k) and pMaxImport(rp,k,i)>0                         ] = yes ;
-rpkexp(rp,k,i)    $[pWeight_rp(rp) and pWeight_k(k) and pMaxExport(rp,k,i)>0                         ] = yes ;
-rpknimpexp(rp,k,i)$[pWeight_rp(rp) and pWeight_k(k) and pMaxExport(rp,k,i)=0 and pMaxImport(rp,k,i)=0] = yes ;
+*rpkimp(rp,k,i)    $[pWeight_rp(rp) and pWeight_k(k) and pMaxImport(rp,k,i)>0                         ] = yes ;
+*rpkexp(rp,k,i)    $[pWeight_rp(rp) and pWeight_k(k) and pMaxExport(rp,k,i)>0                         ] = yes ;
+*rpknimpexp(rp,k,i)$[pWeight_rp(rp) and pWeight_k(k) and pMaxExport(rp,k,i)=0 and pMaxImport(rp,k,i)=0] = yes ;
 
 
 
@@ -2943,8 +2943,7 @@ isLe  (i,j  )                                                  = sum[c,le(i,j,c)
 isLine(i,j  )                                                  = sum[c,le(i,j,c)] ;
 iact  (i    ) $[pEnableTransNet = 0 and is(i)]                 = yes              ;
 iact  (i    ) $[pEnableTransNet = 1          ]                 = yes              ;
-inws  (i    ) $[   sum[(rp,k), pMaxImport(rp,k,i)]> 0
-    or sum[(rp,k), pMaxExport(rp,k,i)]> 0]                     = yes              ;
+inws  (i    )                                                  = no              ;
 iws   (i    ) $[iact(i) and not inws(i)]                       = yes              ;
 
 
@@ -3510,24 +3509,24 @@ pTecProd (i,'Q_DSM_Shed','Total [GVarh]') $[pEnableSOCP
                                             
 pTecProdSum (tec         ,'Total [GWh]') =  sum[i                                                 , pTecProd (i,tec         ,'Total [GWh]')]                                      + eps ;
 pTecProdSum ('Sto_Charge','Total [GWh]') =  sum[i                                                 , pTecProd (i,'Sto_Charge','Total [GWh]')]                                      + eps ;
-pTecProdSum ('Imports'   ,'Total [GWh]') = -sum[(rpk(rp,k),i,j,c)$[lbz (i,j,c) and rpkexp(rp,k,j)], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,i,j,c)]                         + eps ;
-pTecProdSum ('Exports'   ,'Total [GWh]') = -sum[(rpk(rp,k),i,j,c)$[lbz (i,j,c) and rpkimp(rp,k,j)], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,i,j,c)]                         + eps ;
+*pTecProdSum ('Imports'   ,'Total [GWh]') = -sum[(rpk(rp,k),i,j,c)$[lbz (i,j,c) and rpkexp(rp,k,j)], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,i,j,c)]                         + eps ;
+*pTecProdSum ('Exports'   ,'Total [GWh]') = -sum[(rpk(rp,k),i,j,c)$[lbz (i,j,c) and rpkimp(rp,k,j)], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,i,j,c)]                         + eps ;
 
 display pTecProdSum;
 
 pTecProdHours(p   , tec         )        =  sum[(hindex(p,rpk(rp,k)),ga(g))$[gtec(g,tec) ]   , vGenP.l    (rp,k,g    )] + eps ;
 pTecProdHours(p   ,'Demand'     )        = -sum[(hindex(p,rpk(rp,k)),i)                      , pDemandP   (rp,k,i    )] + eps ;
 pTecProdHours(p   ,'Sto_Charge' )        = -sum[(hindex(p,rpk(rp,k)),s)                      , vConsump.l (rp,k,s    )] + eps ;
-pTecProdHours(p   ,'Imports'    )        = -sum[(hindex(p,rpk(rp,k)),i,j,c)$[rpkexp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
-pTecProdHours(p   ,'Exports'    )        = -sum[(hindex(p,rpk(rp,k)),i,j,c)$[rpkimp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
+*pTecProdHours(p   ,'Imports'    )        = -sum[(hindex(p,rpk(rp,k)),i,j,c)$[rpkexp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
+*pTecProdHours(p   ,'Exports'    )        = -sum[(hindex(p,rpk(rp,k)),i,j,c)$[rpkimp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
 
 display pTecProdHours;                     
 
 pTecProdRP   (rp,k, tec         )        =  sum[g$[gtec(g,tec)]          , vGenP.l    (rp,k,g    )] + eps ;
 pTecProdRP   (rp,k,'Demand'     )        = -sum[i                        , pDemandP   (rp,k,i    )] + eps ;
 pTecProdRP   (rp,k,'Sto_Charge' )        = -sum[s                        , vConsump.l (rp,k,s    )] + eps ;
-pTecProdRP   (rp,k,'Imports'    )        = -sum[(i,j,c)$[rpkexp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
-pTecProdRP   (rp,k,'Exports'    )        = -sum[(i,j,c)$[rpkimp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
+*pTecProdRP   (rp,k,'Imports'    )        = -sum[(i,j,c)$[rpkexp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
+*pTecProdRP   (rp,k,'Exports'    )        = -sum[(i,j,c)$[rpkimp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
 
 display pTecProdRP;
 
