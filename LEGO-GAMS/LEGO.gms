@@ -3185,21 +3185,23 @@ $offFold
 $onFold // Bounds for variables ------------------------------------------------
 
 vGenP.up      (rpk(rp,k),t) =  pMaxProd  (t)                  *
-                              [pMaxInvest(t) + pExisUnits(t)] ;
+                              [(pMaxInvest(t) * pEnabInv(t)) + pExisUnits(t)] ;
 vGenP1.up     (rpk(rp,k),t) = [pMaxProd  (t) - pMinProd  (t)] *
-                              [pMaxInvest(t) + pExisUnits(t)] ;
+                              [(pMaxInvest(t) * pEnabInv(t)) + pExisUnits(t)] ;
 v2ndResUP.up  (rpk(rp,k),t) = [pMaxProd  (t) - pMinProd  (t)] *
-                              [pMaxInvest(t) + pExisUnits(t)] ;
+                              [(pMaxInvest(t) * pEnabInv(t)) + pExisUnits(t)] ;
 v2ndResDW.up  (rpk(rp,k),t) = [pMaxProd  (t) - pMinProd  (t)] *
-                              [pMaxInvest(t) + pExisUnits(t)] ;
+                              [(pMaxInvest(t) * pEnabInv(t)) + pExisUnits(t)] ;
 
 vGenQ.up      (rpk(rp,k),ga(g)) =  pMaxGenQ  (g)              ;
 vGenQ.lo      (rpk(rp,k),ga(g)) =  pMinGenQ  (g)              ;
 
-vGenP.up      (rpk(rp,k),s) =                  pMaxProd(s)  *[pMaxInvest(s)+pExisUnits(s)];
-v2ndResUP.up  (rpk(rp,k),s) =                  pMaxProd(s)  *[pMaxInvest(s)+pExisUnits(s)];
-vConsump.up   (rpk(rp,k),s) =                  pMaxProd(s)  *[pMaxInvest(s)+pExisUnits(s)];
-v2ndResDW.up  (rpk(rp,k),s) =  max[pMaxCons(s),pMaxProd(s)] *[pMaxInvest(s)+pExisUnits(s)];
+vGenP.up      (rpk(rp,k),s) =                  pMaxProd(s)  *[(pMaxInvest(s) * pEnabInv(s))+pExisUnits(s)];
+v2ndResUP.up  (rpk(rp,k),s) =                  pMaxProd(s)  *[(pMaxInvest(s) * pEnabInv(s))+pExisUnits(s)];
+vConsump.up   (rpk(rp,k),s) =                  pMaxProd(s)  *[(pMaxInvest(s) * pEnabInv(s))+pExisUnits(s)];
+v2ndResDW.up  (rpk(rp,k),s) =  max[pMaxCons(s),pMaxProd(s)] *[(pMaxInvest(s) * pEnabInv(s))+pExisUnits(s)];
+
+vGenP.up      (rpk(rp,k),r) =                  pMaxProd(r)  *[(pMaxInvest(r) * pEnabInv(r))+pExisUnits(r)] * sum[gi(r, i), pResProfile(rp,k ,i,r)];
 
 vDSM_Up.up    (rpk(rp,k),i,sec)$[    pEnableDSMPower] =  pMaxUpDSM (rp,k,i,sec);
 vDSM_Dn.up    (rpk(rp,k),i,sec)$[    pEnableDSMPower] =  pMaxDnDSM (rp,k,i,sec);
@@ -3209,14 +3211,14 @@ vDSM_Dn.fx    (rpk(rp,k),i,sec)$[not pEnableDSMPower] =  0;
 vDSM_Shed.fx  (rpk(rp,k),i,seg)$[not pEnableDSMPower] =  0;
 
 vStIntraRes.up(rpk(rp,k),s) =  pE2PRatio (s) *
-                               pMaxProd  (s) *[pMaxInvest (s)+pExisUnits(s)] ;
+                               pMaxProd  (s) *[(pMaxInvest (s) * pEnabInv(s))+pExisUnits(s)] ;
 vStIntraRes.lo(rpk(rp,k),s) =  pE2PRatio (s) * pMinReserve(s)*
-                               pMaxProd  (s) *[pMaxInvest (s)+pExisUnits(s)] ;
+                               pMaxProd  (s) *[(pMaxInvest (s) * pEnabInv(s))+pExisUnits(s)] ;
 
-vCDSF_dis.up  (rpk(rp,k),s,a) $[cdsf(s)] = pMaxProd (s) *[pMaxInvest(s)+pExisUnits(s)] ;
-vCDSF_ch.up   (rpk(rp,k),s,a) $[cdsf(s)] = pMaxCons (s) *[pMaxInvest(s)+pExisUnits(s)] ;
+vCDSF_dis.up  (rpk(rp,k),s,a) $[cdsf(s)] = pMaxProd (s) *[(pMaxInvest (s) * pEnabInv(s))+pExisUnits(s)] ;
+vCDSF_ch.up   (rpk(rp,k),s,a) $[cdsf(s)] = pMaxCons (s) *[(pMaxInvest (s) * pEnabInv(s))+pExisUnits(s)] ;
 vCDSF_SoC.up  (rpk(rp,k),s,a) $[cdsf(s)] = pE2PRatio(s) *
-                                           pMaxCons (s) *[pMaxInvest(s)+pExisUnits(s)] ;
+                                           pMaxCons (s) *[(pMaxInvest (s) * pEnabInv(s))+pExisUnits(s)] ;
 
 vSpillag.up   (rpk(rp,k),s) =  [ vStIntraRes.up(rp,k,s) -
                                  vStIntraRes.lo(rp,k,s)]$ [not ror(s)]
@@ -3224,8 +3226,8 @@ vSpillag.up   (rpk(rp,k),s) =  [ vStIntraRes.up(rp,k,s) -
 vWaterSell.up (rpk(rp,k),s) =  vStIntraRes.up(rp,k,s) -
                                vStIntraRes.lo(rp,k,s) ;
 
-vStInterRes.up(p,s) $[mod(ord(p),pMovWindow)=0] = pMaxProd(s)*[pMaxInvest(s)+pExisUnits(s)]*pE2PRatio(s)                ;
-vStInterRes.lo(p,s) $[mod(ord(p),pMovWindow)=0] = pMaxProd(s)*[pMaxInvest(s)+pExisUnits(s)]*pE2PRatio(s)*pMinReserve(s) ;
+vStInterRes.up(p,s) $[mod(ord(p),pMovWindow)=0] = pMaxProd(s)*[(pMaxInvest(s) * pEnabInv(s))+pExisUnits(s)]*pE2PRatio(s)                ;
+vStInterRes.lo(p,s) $[mod(ord(p),pMovWindow)=0] = pMaxProd(s)*[(pMaxInvest(s) * pEnabInv(s))+pExisUnits(s)]*pE2PRatio(s)*pMinReserve(s) ;
 
 $ifThenE.ZonalPricing (%pEnablePower%=1)and(%pEnableZP%=1)
     vImpZP.up   (rpk(rp,k),z,y) $[NTCe(z,y)] = pNTC(y,z) ;
