@@ -3234,8 +3234,8 @@ $endIf.ZonalPricing
 
 vLineP.up   (rpk(rp,k),i,j,c) $[le(i,j,c)]  =  pPmax (i,j,c) ;
 vLineP.lo   (rpk(rp,k),i,j,c) $[le(i,j,c)]  = -pPmax (i,j,c) ;
-vLineP.up   (rpk(rp,k),j,i,c) $[le(i,j,c)]  =  pPmax (i,j,c) ;
-vLineP.lo   (rpk(rp,k),j,i,c) $[le(i,j,c)]  = -pPmax (i,j,c) ;
+vLineP.up   (rpk(rp,k),i,j,c) $[lc(i,j,c)]  =  pPmax (i,j,c) ;
+vLineP.lo   (rpk(rp,k),i,j,c) $[lc(i,j,c)]  = -pPmax (i,j,c) ;
 
 vLineQ.up   (rpk(rp,k),i,j,c) $[le(i,j,c)]  =  pQmax (i,j,c) ;
 vLineQ.lo   (rpk(rp,k),i,j,c) $[le(i,j,c)]  = -pQmax (i,j,c) ;
