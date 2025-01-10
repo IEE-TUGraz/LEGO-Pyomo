@@ -256,7 +256,7 @@ class CaseStudy:
         dPower_Demand = dPower_Demand.drop(dPower_Demand.columns[0], axis=1)
         dPower_Demand = dPower_Demand.rename(columns={dPower_Demand.columns[0]: "rp", dPower_Demand.columns[1]: "i"})
         dPower_Demand = dPower_Demand.melt(id_vars=['rp', 'i'], var_name='k', value_name='Demand')
-        dPower_Demand = dPower_Demand.set_index(['rp', 'i', 'k'])
+        dPower_Demand = dPower_Demand.set_index(['rp', 'k', 'i'])
         dPower_Demand = dPower_Demand * 1e-3
         return dPower_Demand
 

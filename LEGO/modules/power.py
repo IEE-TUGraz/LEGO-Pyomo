@@ -26,7 +26,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.hindex = lego.cs.dPower_Hindex.index
 
     # Parameters
-    lego.model.pDemandP = pyo.Param(lego.model.rp, lego.model.i, lego.model.k, initialize=lego.cs.dPower_Demand['Demand'], doc='Demand at bus i in representative period rp and timestep k')
+    lego.model.pDemandP = pyo.Param(lego.model.rp, lego.model.k, lego.model.i, initialize=lego.cs.dPower_Demand['Demand'], doc='Demand at bus i in representative period rp and timestep k')
     lego.model.pMovWindow = lego.cs.dGlobal_Parameters['pMovWindow']
 
     # Helper for FuelCost that has dPower_ThermalGen['FuelCost'] for ThermalGen, and 0 for all gs in ror and vres
@@ -116,19 +116,19 @@ def add_element_definitions_and_bounds(lego: LEGO):
             completed_buses.add(bus)
 
         # Set slack node
-        slack_node = lego.cs.dPower_Demand.loc[:, connected_buses, :].groupby('i').sum().idxmax().values[0]
+        slack_node = lego.cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
         slack_node = lego.cs.dPower_Parameters["is"]  # TODO: Switch this again to be calculated (fixed to 'is' for compatibility)
         if i == 0: print("Setting slack nodes for DC-OPF zones:")
         print(f"DC-OPF Zone {i:>2} - Slack node: {slack_node}")
         i += 1
         lego.model.vTheta[:, :, slack_node].fix(0)
 
-    lego.model.vPNS = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Slack variable power not served', bounds=(0, None))
+    lego.model.vPNS = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Slack variable power not served', bounds=lambda model, rp, k, i: (0, model.pDemandP[rp, k, i]))
     lego.model.vEPS = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Slack variable excess power served', bounds=(0, None))
 
     lego.model.vCommit = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Unit commitment of generator g', domain=pyo.Binary)
-    lego.model.bStartup = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Start-up of thermal generator g', domain=pyo.Binary)
-    lego.model.bShutdown = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Shut-down of thermal generator g', domain=pyo.Binary)
+    lego.model.vStartup = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Start-up of thermal generator g', domain=pyo.Binary)
+    lego.model.vShutdown = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Shut-down of thermal generator g', domain=pyo.Binary)
 
     lego.model.vGenP = pyo.Var(lego.model.rp, lego.model.k, lego.model.g, doc='Power output of generator g', bounds=(0, None))
     lego.model.vGenP1 = pyo.Var(lego.model.rp, lego.model.k, lego.model.g, doc='Power output of generator g above minimum production', bounds=(0, None))
@@ -164,7 +164,7 @@ def add_constraints(lego: LEGO):
         return (sum(model.vGenP[rp, k, g] for g in model.g if lego.cs.hGenerators_to_Buses.loc[g]['i'] == i) -  # Production of generators at bus i
                 sum(model.vLineP[rp, k, e, c] for c in model.c for e in model.la if (e[0] == i)) +  # Power flow from bus i to bus j
                 sum(model.vLineP[rp, k, e, c] for c in model.c for e in model.la if (e[1] == i)) -  # Power flow from bus j to bus i
-                model.pDemandP[rp, i, k] +  # Demand at bus i
+                model.pDemandP[rp, k, i] +  # Demand at bus i
                 model.vPNS[rp, k, i] -  # Slack variable for demand not served
                 model.vEPS[rp, k, i])  # Slack variable for overproduction
 
@@ -249,12 +249,12 @@ def add_constraints(lego: LEGO):
                 # TODO: Check if implementation is correct
                 # Only enforce MinUpTime and MinDownTime after the minimum time has passed
                 if LEGOUtilities.k_to_int(k) >= max(lego.cs.dPower_ThermalGen.loc[g, 'MinUpTime'], lego.cs.dPower_ThermalGen.loc[g, 'MinDownTime']):
-                    lego.model.eMinUpTime.add(sum(lego.model.bStartup[rp, LEGOUtilities.int_to_k(i), g] for i in range(LEGOUtilities.k_to_int(k) - lego.model.pMinUpTime[g] + 1, LEGOUtilities.k_to_int(k))) <= lego.model.vCommit[rp, k, g])  # Minimum Up-Time
-                    lego.model.eMinDownTime.add(sum(lego.model.bShutdown[rp, LEGOUtilities.int_to_k(i), g] for i in range(LEGOUtilities.k_to_int(k) - lego.model.pMinDownTime[g] + 1, LEGOUtilities.k_to_int(k))) <= 1 - lego.model.vCommit[rp, k, g])  # Minimum Down-Time
+                    lego.model.eMinUpTime.add(sum(lego.model.vStartup[rp, LEGOUtilities.int_to_k(i), g] for i in range(LEGOUtilities.k_to_int(k) - lego.model.pMinUpTime[g] + 1, LEGOUtilities.k_to_int(k))) <= lego.model.vCommit[rp, k, g])  # Minimum Up-Time
+                    lego.model.eMinDownTime.add(sum(lego.model.vShutdown[rp, LEGOUtilities.int_to_k(i), g] for i in range(LEGOUtilities.k_to_int(k) - lego.model.pMinDownTime[g] + 1, LEGOUtilities.k_to_int(k))) <= 1 - lego.model.vCommit[rp, k, g])  # Minimum Down-Time
 
     # Objective function
     lego.model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(lego.model.pInterVarCost[g] * sum(lego.model.vCommit[g, :, :]) +  # Fixed cost of thermal generators
-                                                                                                                        lego.model.pStartupCost[g] * sum(lego.model.bStartup[g, :, :]) +  # Startup cost of thermal generators
+                                                                                                                        lego.model.pStartupCost[g] * sum(lego.model.vStartup[g, :, :]) +  # Startup cost of thermal generators
                                                                                                                         lego.model.pSlopeVarCost[g] * sum(lego.model.vGenP[g, :, :]) for g in lego.model.thermalGenerators) +  # Production cost of thermal generators
                                                                                                                     sum(lego.model.pProductionCost[g] * sum(lego.model.vGenP[g, :, :]) for g in lego.model.vresGenerators) +
                                                                                                                     sum(lego.model.pProductionCost[g] * sum(lego.model.vGenP[g, :, :]) for g in lego.model.rorGenerators) +
