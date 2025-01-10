@@ -207,6 +207,8 @@ class CaseStudy:
         dPower_ThermalGen['MaxInvest'] = dPower_ThermalGen['ExisUnits'].apply(lambda x: 0 if x == 1 else 1)
         dPower_ThermalGen['RampUp'] *= 1e-3
         dPower_ThermalGen['RampDw'] *= 1e-3
+        dPower_ThermalGen['MaxProd'] *= 1e-3
+        dPower_ThermalGen['MinProd'] *= 1e-3
 
         # Fill NaN values with 0 for MinUpTime and MinDownTime
         dPower_ThermalGen['MinUpTime'] = dPower_ThermalGen['MinUpTime'].fillna(0)
@@ -226,7 +228,7 @@ class CaseStudy:
         dPower_RoR = self.read_generator_data(self.example_folder + self.power_ror_file)
 
         dPower_RoR['InvestCostEUR'] = dPower_RoR['MaxProd'] * 1e-3 * (dPower_RoR['InvestCostPerMW'] * 1e-3 + dPower_RoR['InvestCostPerMWh'] * 1e-3 * dPower_RoR['Ene2PowRatio'])
-        dPower_RoR['MaxProd'] = dPower_RoR['MaxProd'] * 1e-3
+        dPower_RoR['MaxProd'] *= 1e-3
         return dPower_RoR
 
     def get_dPower_VRES(self):
@@ -235,7 +237,7 @@ class CaseStudy:
             dPower_VRES['MinProd'] = 0
 
         dPower_VRES['InvestCostEUR'] = dPower_VRES['InvestCost'] * 1e-3 * dPower_VRES['MaxProd'] * 1e-3
-        dPower_VRES['MaxProd'] = dPower_VRES['MaxProd'] * 1e-3
+        dPower_VRES['MaxProd'] *= 1e-3
         return dPower_VRES
 
     def get_dPower_Storage(self):
@@ -245,6 +247,8 @@ class CaseStudy:
         dPower_Storage['MinReserve'] = dPower_Storage['MinReserve'].fillna(0)
         dPower_Storage['MinProd'] = dPower_Storage["MinProd"].fillna(0)
         dPower_Storage['InvestCostEUR'] = dPower_Storage['MaxProd'] * 1e-3 * (dPower_Storage['InvestCostPerMW'] * 1e-3 + dPower_Storage['InvestCostPerMWh'] * 1e-3 * dPower_Storage['Ene2PowRatio'])
+        dPower_Storage['MaxProd'] *= 1e-3
+        dPower_Storage['MaxCons'] *= 1e-3
         return dPower_Storage
 
     def get_dPower_Demand(self):
