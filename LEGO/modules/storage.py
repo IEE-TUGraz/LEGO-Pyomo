@@ -30,10 +30,16 @@ def add_element_definitions_and_bounds(lego: LEGO):
     # Variables
     lego.model.bChargeDisCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
 
-    lego.model.vConsump = pyo.Var(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Charging of storage unit g', bounds=(0, None))
-    lego.model.vStIntraRes = pyo.Var(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Intra-reserve of storage unit g', bounds=(None, None))
-    lego.model.vStInterRes = pyo.Var(lego.model.p, lego.model.storageUnits, doc='Inter-reserve of storage unit g', bounds=(None, None))
+    lego.model.vConsump = pyo.Var(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Charging of storage unit g', bounds=lambda model, rp, k, g: (0, model.pMaxCons[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g]))))
 
+    lego.model.vStIntraRes = pyo.Var(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Intra-reserve of storage unit g', bounds=(None, None))
+    for rp in lego.model.rp:
+        for k in lego.model.k:
+            for g in lego.model.storageUnits:
+                lego.model.vStIntraRes[rp, k, g].setub(lego.model.pE2PRatio[g] * lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
+                lego.model.vStIntraRes[rp, k, g].setlb(lego.model.pE2PRatio[g] * lego.model.pMinReserve[g] * lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
+
+    lego.model.vStInterRes = pyo.Var(lego.model.p, lego.model.storageUnits, doc='Inter-reserve of storage unit g', bounds=(None, None))
     for p in lego.model.p:
         for g in lego.model.storageUnits:
             if LEGOUtilities.p_to_int(p) == len(lego.model.p):
@@ -41,6 +47,9 @@ def add_element_definitions_and_bounds(lego: LEGO):
                     lego.model.vStInterRes[p, g].fix(lego.cs.dPower_Storage.loc[g, 'IniReserve'])
                 else:
                     lego.model.vStInterRes[p, g].setlb(lego.cs.dPower_Storage.loc[g, 'IniReserve'])
+            elif LEGOUtilities.p_to_int(p) % lego.model.pMovWindow == 0:
+                lego.model.vStInterRes[p, g].setub(lego.model.pE2PRatio[g] * lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
+                lego.model.vStInterRes[p, g].setlb(lego.model.pE2PRatio[g] * lego.model.pMinReserve[g] * lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
 
     for g in lego.model.storageUnits:
         lego.model.vGenInvest[g].setub(lego.model.pMaxProd[g] * lego.model.pMaxInvest[g])
