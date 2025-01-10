@@ -234,6 +234,7 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
 
 def compare_variables(vars1, vars2, precision: float = 1e-12):
     counter = 0
+    vars2 = vars2.copy()
     for v in vars1:
         found = False
         bounds_differ = False
@@ -263,18 +264,24 @@ def compare_variables(vars1, vars2, precision: float = 1e-12):
                 elif abs((v[2] - v2[2]) / v[2]) > precision:
                     bounds_differ = True
                     break
-                counter += 1
-                break
         if not found:
+            if v[1] == 0 and v[2] == 0:  # Then the variable might only be missing because it is not used, which is ok
+                counter += 1
+                vars2.remove(v2)
+            else:
+                if counter > 0:
+                    printer.information(f"{counter} variables matched perfectly")
+                    counter = 0
+                printer.warning(f"Variable not found in model2: {v}")
+        elif bounds_differ:
+            vars2.remove(v2)
             if counter > 0:
                 printer.information(f"{counter} variables matched perfectly")
                 counter = 0
-            printer.warning(f"Variable not found in model2: {v}")
-        if bounds_differ:
-            if counter > 0:
-                printer.information(f"{counter} variables matched perfectly")
-                counter = 0
-            printer.error(f"Variable bounds differ: {v} | {v2}")
+            printer.error(f"Variable bounds differ: model1: {v} | model2: {v2}")
+        else:
+            counter += 1
+            vars2.remove(v2)
         if counter == 1000:
             printer.information(f"{counter} variables matched perfectly, resetting counter")
             counter = 0
