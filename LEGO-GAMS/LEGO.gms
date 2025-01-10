@@ -185,6 +185,7 @@ parameters
    pEnablePower              "Enables Power (TODO: Not used for now)           " / 1     / 
    pEnableGas                "Enables Gas   (TODO: Not used for now)           " / 1     /
    pEnableHeat               "Enables Heat  (TODO: Not used for now)           " / 1     /
+   pMaxAngleDCOPF            "Maximum angle for vTheta in DCOPF"
 
 * generation units parameters
    pEFOR             (g)     "EFOR                                   [p.u.    ]"
@@ -665,10 +666,10 @@ $onEmbeddedCode Connect:
               rowDimension: 0
               columnDimension: 0
               
-            # - name: pMaxAngleDCOPF               # NOT IMPLEMENTED
-            #   range: Power Parameters!C36
-            #   rowDimension: 0
-            #   columnDimension: 0
+            - name: pMaxAngleDCOPF
+              range: Power Parameters!C36
+              rowDimension: 0
+              columnDimension: 0
            
             - name: pEnableMaxLineLoad
               range: Power Parameters!C39
@@ -3256,6 +3257,8 @@ vSlack.up(rpk(rp,k),i,j,c   ) $[isLe(i,j)or isLc(i,j)] = 1 - pMaxLineLoad ;
 * slack bus voltage and angle
 vSOCP_cii.fx(rpk(rp,k),is)$[    pEnableSOCP] = sqr[pSlackVoltage] ;
 vTheta.fx   (rpk(rp,k),is)$[not pEnableSOCP] = 0   ;
+vTheta.up(rpk(rp, k),i) =  pMaxAngleDCOPF * pi / 180;  // Add bounds for vTheta to make model tighter
+vTheta.lo(rpk(rp, k),i) = -pMaxAngleDCOPF * pi / 180; // Add bounds for vTheta to make model tighter
 
 vPNS.up     (rpk(rp,k),     i ) =  pDemandP   (rp,k,i) ;
 *vPNS.up    (rpk(rp,k),inws(i)) =  pMaxImport (rp,k,i) ;
