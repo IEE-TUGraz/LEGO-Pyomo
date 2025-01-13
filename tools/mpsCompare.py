@@ -7,7 +7,7 @@ from pulp import LpProblem
 from tools.printer import Printer
 
 printer = Printer.getInstance()
-printer.set_width(180)
+printer.set_width(240)
 
 
 def normalize_variable_name(string: str) -> str:
@@ -22,7 +22,7 @@ def normalize_variable_name(string: str) -> str:
 # 1. Replacing all names with actual names in the model
 # 2. Sorting the constraint by name
 # 3. Normalizing all factors based on the constant
-def normalize_constraints(model, constraints_to_skip: list[str] = None, constraints_to_keep: list[str] = None, coefficients_to_skip: list[str] = None):
+def normalize_constraints(model, constraints_to_skip: list[str] = None, constraints_to_keep: list[str] = None, coefficients_to_skip: list[str] = None) -> typing.Dict[str, OrderedDict[str, str]]:
     original_names = {str(b): a.replace("(", "[").replace(")", "]") for a, b in model[0].items()}
     constraints = {}
 
@@ -77,29 +77,23 @@ def normalize_constraints(model, constraints_to_skip: list[str] = None, constrai
                 raise ValueError(f"Coefficient {original_names[coefficient['name']]} found twice in constraint {name}.\n"
                                  f"Full constraint: {constraint}")
 
-            regex_result = re.findall(r"(\w*)\[([^]]*)", original_names[coefficient['name']])
-            indices_groups = regex_result[0] if len(regex_result) > 0 else [""]  # No indices found
-            if len(indices_groups) > 2:
-                raise ValueError(f"More than one index group found in {original_names[coefficient['name']]}")
-            if len(indices_groups) == 1:  # No indices found
-                indices = ""
-            else:
-                indices = ",".join(sorted([i.strip() for i in indices_groups[1].split(",")]))  # Sort indices alphabetically
+            sorted_coefficient = sort_indices(original_names[coefficient['name']])  # Sort indices alphabetically
 
-            sorted_coefficient = f"{indices_groups[0]}[{indices}]"
+            # Skip coefficient if it is in coefficients_to_skip
+            if sorted_coefficient in coefficients_to_skip:
+                continue
 
             if constant != 0:
                 result_constraint_dict[sorted_coefficient] = coefficient['value'] / constant
             else:
                 result_constraint_dict[sorted_coefficient] = coefficient['value']
 
+        # Skip constraints without coefficients (which can happen due to coefficients_to_skip)
+        if len(result_constraint_dict) == 0:
+            continue
+
         # Create result dictionary
         orderedDict = OrderedDict()
-
-        # Add name to the dictionary
-        if 'name' in orderedDict:
-            raise ValueError("'name' already in orderedDict")
-        orderedDict['name'] = name
 
         # Add sense as human-readable string (it is either '<=' [-1], '=' [0], or '>=' [1]) and adjust if constant is negative
         if 'sense' in orderedDict:
@@ -123,13 +117,22 @@ def normalize_constraints(model, constraints_to_skip: list[str] = None, constrai
         # Add sorted coefficients to the dictionary
         orderedDict.update(sorted(result_constraint_dict.items()))
 
-        # Remove coefficients from the skip list
-        for coefficient_name in coefficients_to_skip:
-            orderedDict.pop(coefficient_name, None)
-
         constraints[name] = orderedDict
 
     return constraints
+
+
+def sort_indices(coefficient: str) -> str:
+    regex_result = re.findall(r"(\w*)\[([^]]*)", coefficient)
+    indices_groups = regex_result[0] if len(regex_result) > 0 else [""]  # No indices found
+    if len(indices_groups) > 2:
+        raise ValueError(f"More than one index group found in {coefficient}")
+    if len(indices_groups) == 1:  # No indices found
+        indices = ""
+    else:
+        indices = ",".join(sorted([i.strip() for i in indices_groups[1].split(",")]))  # Sort indices alphabetically
+    sorted_coefficient = f"{indices_groups[0]}[{indices}]"
+    return sorted_coefficient
 
 
 # Sort constraints by number of coefficients
@@ -159,7 +162,10 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
     counter_perfectly_matched_constraints = 0
     for length, constraint_dict1 in constraint_dicts1.items():
         if length not in constraint_dicts2:
-            printer.information(f"No constraints of length {length} in second model, skipping comparison for {len(constraint_dict1)} constraints, e.g. {list(constraint_dict1.keys())[0]}", hard_wrap_chars="[...]")
+            if counter_perfectly_matched_constraints > 0:
+                printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
+                counter_perfectly_matched_constraints = 0
+            printer.error(f"No constraints of length {length} in second model, skipping comparison for {len(constraint_dict1)} constraints, e.g. {list(constraint_dict1.keys())[0]}", hard_wrap_chars="[...]")
             continue
 
         for constraint_name1, constraint1 in constraint_dict1.items():
@@ -219,7 +225,11 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
                 if counter_perfectly_matched_constraints > 0:
                     printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
                     counter_perfectly_matched_constraints = 0
-                printer.error(f"No match found for constraint {constraint_name1}: {constraint1}", hard_wrap_chars=f"[... {len(constraint1)} total]")
+                printer.error(f"No match for {constraint_name1}: {constraint1}", hard_wrap_chars=f"[... {len(constraint1)} total]")
+
+            if counter_perfectly_matched_constraints > 0 and counter_perfectly_matched_constraints % 500 == 0:
+                printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly, continue to count...")
+
     if counter_perfectly_matched_constraints > 0:
         printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
 
@@ -232,9 +242,12 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
     return False
 
 
-def compare_variables(vars1, vars2, precision: float = 1e-12):
+# Compare two lists of variables where coefficients are already normalized
+# Returns a list of variables that are fixed to 0 and missing in the second list
+def compare_variables(vars1, vars2, precision: float = 1e-12) -> list[str]:
     counter = 0
     vars2 = vars2.copy()
+    vars_fixed_to_zero = []  # Variables that are fixed to 0, so if they are missing it is ok
     for v in vars1:
         found = False
         bounds_differ = False
@@ -266,10 +279,14 @@ def compare_variables(vars1, vars2, precision: float = 1e-12):
                     break
                 break  # Found a match so we can break
         if not found:
-            if counter > 0:
-                printer.information(f"{counter} variables matched perfectly")
-                counter = 0
-            printer.warning(f"Variable not found in model2: {v}")
+            if v[1] == 0 and v[2] == 0:  # Variable is missing, but is fixed to 0, so that's ok
+                counter += 1
+                vars_fixed_to_zero.append(v[0])
+            else:
+                if counter > 0:
+                    printer.information(f"{counter} variables matched perfectly")
+                    counter = 0
+                printer.warning(f"Variable not found in model2: {v}")
         elif bounds_differ:
             vars2.remove(v2)
             if counter > 0:
@@ -279,10 +296,16 @@ def compare_variables(vars1, vars2, precision: float = 1e-12):
         else:
             counter += 1
             vars2.remove(v2)
-        if counter > 0 and counter % 1000 == 0:
+        if counter > 0 and counter % 500 == 0:
             printer.information(f"{counter} variables matched perfectly, continue to count...")
     if counter > 0:
         printer.information(f"{counter} variables matched perfectly")
+
+    vars_fixed_to_zero = [sort_indices(v.replace("(", "[").replace(")", "]")) for v in vars_fixed_to_zero]  # Adjust indexing-style and sort indices alphabetically
+    if len(vars_fixed_to_zero) > 0:
+        printer.information(f"Variables missing in list2, but fixed to 0: {', '.join(vars_fixed_to_zero)}", hard_wrap_chars=f"[... {len(vars_fixed_to_zero)} total]")
+
+    return vars_fixed_to_zero
 
 
 def compare_mps(file1, file2, check_vars=True, check_constraints=True, print_additional_information=False,
@@ -297,7 +320,8 @@ def compare_mps(file1, file2, check_vars=True, check_constraints=True, print_add
         vars1 = {(normalize_variable_name(v.name), v.lowBound, v.upBound) for v in model1[1].variables()}
         vars2 = {(v.name, v.lowBound, v.upBound) for v in model2[1].variables()}
 
-        compare_variables(vars1, vars2)
+        vars_fixed_to_zero = compare_variables(vars1, vars2)
+        coefficients_to_skip_from1.extend(vars_fixed_to_zero)  # Add variables that are fixed to 0 to the list of coefficients to skip
 
     # Constraints
     if check_constraints:
