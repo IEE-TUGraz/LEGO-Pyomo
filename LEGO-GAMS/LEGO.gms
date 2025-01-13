@@ -3258,9 +3258,9 @@ vSlack.up(rpk(rp,k),i,j,c   ) $[isLe(i,j)or isLc(i,j)] = 1 - pMaxLineLoad ;
 
 * slack bus voltage and angle
 vSOCP_cii.fx(rpk(rp,k),is)$[    pEnableSOCP] = sqr[pSlackVoltage] ;
-vTheta.fx   (rpk(rp,k),is)$[not pEnableSOCP] = 0   ;
-vTheta.up(rpk(rp, k),i) =  pMaxAngleDCOPF * pi / 180;  // Add bounds for vTheta to make model tighter
+vTheta.up(rpk(rp, k),i) =  pMaxAngleDCOPF * pi / 180; // Add bounds for vTheta to make model tighter
 vTheta.lo(rpk(rp, k),i) = -pMaxAngleDCOPF * pi / 180; // Add bounds for vTheta to make model tighter
+vTheta.fx   (rpk(rp,k),is)$[not pEnableSOCP] = 0   ;
 
 vPNS.up     (rpk(rp,k),     i ) =  pDemandP   (rp,k,i) ;
 *vPNS.up    (rpk(rp,k),inws(i)) =  pMaxImport (rp,k,i) ;
