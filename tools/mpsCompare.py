@@ -264,15 +264,12 @@ def compare_variables(vars1, vars2, precision: float = 1e-12):
                 elif abs((v[2] - v2[2]) / v[2]) > precision:
                     bounds_differ = True
                     break
+                break  # Found a match so we can break
         if not found:
-            if v[1] == 0 and v[2] == 0:  # Then the variable might only be missing because it is not used, which is ok
-                counter += 1
-                vars2.remove(v2)
-            else:
-                if counter > 0:
-                    printer.information(f"{counter} variables matched perfectly")
-                    counter = 0
-                printer.warning(f"Variable not found in model2: {v}")
+            if counter > 0:
+                printer.information(f"{counter} variables matched perfectly")
+                counter = 0
+            printer.warning(f"Variable not found in model2: {v}")
         elif bounds_differ:
             vars2.remove(v2)
             if counter > 0:
@@ -282,9 +279,8 @@ def compare_variables(vars1, vars2, precision: float = 1e-12):
         else:
             counter += 1
             vars2.remove(v2)
-        if counter == 1000:
-            printer.information(f"{counter} variables matched perfectly, resetting counter")
-            counter = 0
+        if counter > 0 and counter % 1000 == 0:
+            printer.information(f"{counter} variables matched perfectly, continue to count...")
     if counter > 0:
         printer.information(f"{counter} variables matched perfectly")
 
