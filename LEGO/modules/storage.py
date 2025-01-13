@@ -51,11 +51,6 @@ def add_element_definitions_and_bounds(lego: LEGO):
                 lego.model.vStInterRes[p, g].setub(lego.model.pE2PRatio[g] * lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
                 lego.model.vStInterRes[p, g].setlb(lego.model.pE2PRatio[g] * lego.model.pMinReserve[g] * lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
 
-    for g in lego.model.storageUnits:
-        lego.model.vGenInvest[g].setub(lego.model.pMaxProd[g] * lego.model.pMaxInvest[g])
-        if not lego.model.pEnabInv[g]:
-            lego.model.vGenInvest[g].fix(0)
-
 
 @LEGOUtilities.checkExecutionLog([add_element_definitions_and_bounds])
 def add_constraints(lego: LEGO):
