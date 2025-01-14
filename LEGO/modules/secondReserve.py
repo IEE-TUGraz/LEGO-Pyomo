@@ -51,3 +51,12 @@ def add_constraints(lego: LEGO):
                     lego.model.eThRampDw_expr[rp, k, g] -= lego.model.v2ndResDW[rp, k, g]
                     lego.model.eThRampUp_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
 
+    # Add 2nd reserve to storage constraints
+    if hasattr(lego.model, "storageUnits"):
+        for rp in lego.model.rp:
+            for k in lego.model.k:
+                for s in lego.model.storageUnits:
+                    lego.model.eStMaxProd_expr[rp, k, s] += lego.model.v2ndResUP[rp, k, s]
+                    lego.model.eStMaxCons_expr[rp, k, s] -= lego.model.v2ndResDW[rp, k, s]
+                    lego.model.eStMaxIntraRes_expr[rp, k, s] += lego.model.v2ndResDW[rp, k, s] + lego.model.v2ndResDW[rp, lego.model.k.prevw(k), s] * lego.model.pWeight_k[k]
+                    lego.model.eStMinIntraRes_expr[rp, k, s] -= lego.model.v2ndResUP[rp, k, s] + lego.model.v2ndResUP[rp, lego.model.k.prevw(k), s] * lego.model.pWeight_k[k]

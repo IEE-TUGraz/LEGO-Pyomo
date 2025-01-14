@@ -78,30 +78,22 @@ def add_constraints(lego: LEGO):
                     lego.model.eExclusiveChargeDischarge.add(lego.model.vConsump[rp, k, g] <= lego.model.bChargeDisCharge[rp, k, g] * lego.model.pMaxCons[g] * lego.model.pExisUnits[g])
                     lego.model.eExclusiveChargeDischarge.add(lego.model.vGenP[rp, k, g] <= (1 - lego.model.bChargeDisCharge[rp, k, g]) * lego.model.pMaxProd[g] * lego.model.pExisUnits[g])
 
-    def eStMaxProd_rule(model, rp, k, s):
-        return model.vGenP[rp, k, s] - model.vConsump[rp, k, s] <= model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s])
+    lego.model.eStMaxProd_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Max production expression for storage units', rule=lambda model, rp, k, s: model.vGenP[rp, k, s] - model.vConsump[rp, k, s] - model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]))
+    lego.model.eStMaxProd = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Max production constraint for storage units', rule=lambda model, rp, k, s: lego.model.eStMaxProd_expr[rp, k, s] <= 0)
 
-    lego.model.eStMaxProd = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Max production constraint for storage units', rule=eStMaxProd_rule)
+    lego.model.eStMaxCons_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Max consumption expression for storage units', rule=lambda model, rp, k, s: model.vGenP[rp, k, s] - model.vConsump[rp, k, s] + model.pMaxCons[s] * (model.vGenInvest[s] + model.pExisUnits[s]))
+    lego.model.eStMaxCons = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Max consumption constraint for storage units', rule=lambda model, rp, k, s: lego.model.eStMaxCons_expr[rp, k, s] >= 0)
 
-    def eStMaxCons_rule(model, rp, k, s):
-        return model.vGenP[rp, k, s] - model.vConsump[rp, k, s] >= -model.pMaxCons[s] * (model.vGenInvest[s] + model.pExisUnits[s])
+    lego.model.eStMaxIntraRes_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Max intra-reserve expression for storage units', rule=lambda model, rp, k, s: model.vStIntraRes[rp, k, s] - model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s])
+    lego.model.eStMaxIntraRes = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Max intra-reserve constraint for storage units', rule=lambda model, rp, k, s: lego.model.eStMaxIntraRes_expr[rp, k, s] <= 0)
 
-    lego.model.eStMaxCons = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Max consumption constraint for storage units', rule=eStMaxCons_rule)
-
-    def eStMaxIntraRes_rule(model, rp, k, s):
-        return model.vStIntraRes[rp, k, s] <= model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s]
-
-    lego.model.eStMaxIntraRes = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Max intra-reserve constraint for storage units', rule=eStMaxIntraRes_rule)
-
-    def eStMinIntraRes(model, rp, k, s):
-        return model.vStIntraRes[rp, k, s] >= model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s] * model.pMinReserve[s]
-
-    lego.model.eStMinIntraRes = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Min intra-reserve constraint for storage units', rule=eStMinIntraRes)
+    lego.model.eStMinIntraRes_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Min intra-reserve expression for storage units', rule=lambda model, rp, k, s: model.vStIntraRes[rp, k, s] - model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s] * model.pMinReserve[s])
+    lego.model.eStMinIntraRes = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Min intra-reserve constraint for storage units', rule=lambda model, rp, k, s: lego.model.eStMinIntraRes_expr[rp, k, s] >= 0)
 
     def eStMaxInterRes_rule(model, p, s):
         # If current p is a multiple of moving window, add constraint
         if LEGOUtilities.p_to_int(p) % model.pMovWindow == 0:
-            return model.vStInterRes[p, s] <= model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s]
+            return 0 >= model.vStInterRes[p, s] - model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s]
         else:
             return pyo.Constraint.Skip
 
@@ -110,7 +102,7 @@ def add_constraints(lego: LEGO):
     def eStMinInterRes_rule(model, p, s):
         # If current p is a multiple of moving window, add constraint
         if LEGOUtilities.p_to_int(p) % model.pMovWindow == 0:
-            return model.vStInterRes[p, s] >= model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s] * model.pMinReserve[s]
+            return 0 <= model.vStInterRes[p, s] - model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s] * model.pMinReserve[s]
         else:
             return pyo.Constraint.Skip
 
