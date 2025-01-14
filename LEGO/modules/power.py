@@ -20,6 +20,10 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.vresGenerators = pyo.Set(doc='Variable renewable energy sources', initialize=lego.cs.dPower_VRES.index.tolist())
     lego.model.g = pyo.Set(doc='Generators', initialize=lego.model.thermalGenerators | lego.model.rorGenerators | lego.model.vresGenerators)
 
+    lego.model.gi = pyo.Set(doc='Generator g connected to bus i', initialize=lego.cs.dPower_ThermalGen.reset_index().set_index(['g', 'i']).index, within=lego.model.g * lego.model.i)
+    lego.addToSet("gi", lego.cs.dPower_RoR.reset_index().set_index(['g', 'i']).index)
+    lego.addToSet("gi", lego.cs.dPower_VRES.reset_index().set_index(['g', 'i']).index)
+
     lego.model.p = pyo.Set(doc='Periods', initialize=lego.cs.dPower_Hindex.index.get_level_values('p').unique().tolist())
     lego.model.rp = pyo.Set(doc='Representative periods', initialize=lego.cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
     lego.model.k = pyo.Set(doc='Timestep within representative period', initialize=lego.cs.dPower_Demand.index.get_level_values('k').unique().tolist())
@@ -157,7 +161,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
 def add_constraints(lego: LEGO):
     # Power balance for nodes
     def eDC_BalanceP_rule(model, rp, k, i):
-        return (sum(model.vGenP[rp, k, g] for g in model.g if lego.cs.hGenerators_to_Buses.loc[g]['i'] == i) -  # Production of generators at bus i
+        return (sum(model.vGenP[rp, k, g] for g in model.g if (g, i) in model.gi) -  # Production of generators at bus i
                 sum(model.vLineP[rp, k, e, c] for c in model.c for e in model.la if (e[0] == i)) +  # Power flow from bus i to bus j
                 sum(model.vLineP[rp, k, e, c] for c in model.c for e in model.la if (e[1] == i)) -  # Power flow from bus j to bus i
                 model.pDemandP[rp, k, i] +  # Demand at bus i

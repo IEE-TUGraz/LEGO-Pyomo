@@ -119,9 +119,6 @@ class CaseStudy:
             self.dPower_ImpExpHubs = None
             self.dPower_ImpExpProfiles = None
 
-        # Dataframe that shows connections between g and i, only concatenating g and i from the dataframes
-        self.hGenerators_to_Buses = self.update_hGenerators_to_Buses()
-
         if not do_not_merge_single_node_buses:
             self.merge_single_node_buses()
 
@@ -363,17 +360,14 @@ class CaseStudy:
 
         return dPower_ImpExpProfiles
 
-    def update_hGenerators_to_Buses(self):
-        return pd.concat([self.dPower_ThermalGen[['i']], self.dPower_RoR[['i']], self.dPower_VRES[['i']], self.dPower_Storage[['i']]])
-
     # Function to read generator data
     @staticmethod
     def read_generator_data(file_path):
         d_generator = pd.read_excel(file_path, skiprows=[0, 1, 3, 4, 5])
         d_generator = d_generator.drop(d_generator.columns[0], axis=1)
+        d_generator = d_generator[(d_generator["ExisUnits"] > 0) | (d_generator["EnableInvest"] > 0)]  # Filter out all generators that are not existing and not investable
         d_generator = d_generator.rename(columns={d_generator.columns[0]: "g", d_generator.columns[1]: "tec", d_generator.columns[2]: "i"})
         d_generator = d_generator.set_index('g')
-        d_generator = d_generator[d_generator["ExisUnits"] > 0]
         return d_generator
 
     @staticmethod
@@ -522,6 +516,3 @@ class CaseStudy:
 
             self.dPower_VRESProfiles = self.dPower_VRESProfiles.groupby(['rp', 'i', 'k', 'tec']).mean()  # TODO: Aggregate using more complex method (capacity * productionCapacity * ... * / Total Production Capacity)
             self.dPower_VRESProfiles.sort_index(inplace=True)
-
-            # Update hGenerators_to_Buses
-            self.hGenerators_to_Buses = self.update_hGenerators_to_Buses()

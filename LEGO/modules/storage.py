@@ -9,6 +9,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     storageUnits = lego.cs.dPower_Storage.index.tolist()
     lego.model.storageUnits = pyo.Set(doc='Storage units', initialize=storageUnits)
     lego.addToSet("g", storageUnits)
+    lego.addToSet("gi", lego.cs.dPower_Storage.reset_index().set_index(['g', 'i']).index)  # Note: Add gi before g to make sure variables & constraints are created properly!
 
     # Parameters
     lego.model.pOMVarCost = pyo.Param(lego.model.storageUnits, initialize=lego.cs.dPower_Storage['pOMVarCostEUR'], doc='Variable O&M cost of storage unit g')
@@ -139,5 +140,5 @@ def add_constraints(lego: LEGO):
         for k in lego.model.k:
             for i in lego.model.i:
                 for g in lego.model.storageUnits:
-                    if lego.cs.hGenerators_to_Buses.loc[g]['i'] == i:
+                    if (g, i) in lego.model.gi:
                         lego.model.eDC_BalanceP_expr[rp, k, i] -= lego.model.vConsump[rp, k, g]
