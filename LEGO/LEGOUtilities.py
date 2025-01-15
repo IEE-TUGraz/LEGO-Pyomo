@@ -1,35 +1,29 @@
 import functools
 import typing
 
-
-# Turns "k0001" into 1, "k0002" into 2, etc.
-def k_to_int(k: str):
-    return int(k[1:])
+import pyomo.environ as pyo
 
 
-# Turns 1 into "k0001", 2 into "k0002", etc.
-def int_to_k(i: int, digits: int = 4):
-    return f"k{i:0{digits}d}"
+# Returns a list of elements from a set, starting from 'first_index' and ending at 'last_index' (both inclusive) with wrapping around
+def set_range_cyclic(set: pyo.Set, first_index: int, last_index: int):
+    if first_index > len(set) or first_index < -len(set):
+        raise ValueError(f"'first_index' must be <= len(set) and >= -len(set) (got {first_index} and {len(set)})")
+    elif last_index < 1:
+        raise ValueError(f"'last_index' must be greater than 1 (got {last_index})")
 
+    while first_index < 1:
+        first_index += len(set)  # Wrap around if first_index is negative (or zero)
 
-# Turns "rp01" into 1, "rp02" into 2, etc.
-def rp_to_int(rp: str):
-    return int(rp[2:])
+    if first_index > last_index:
+        last_index += len(set)  # Wrap around if last_index is smaller than first_index
 
+    current_index = set.at(first_index)
+    result = [current_index]
+    for i in range(first_index + 1, last_index + 1):  # Start from first_index + 1 since we already have the first element and go to last_index + 1 since range() is exclusive
+        current_index = set.nextw(current_index)
+        result.append(current_index)
 
-# Turns 1 into "rp01", 2 into "rp02", etc.
-def int_to_rp(i: int, digits: int = 2):
-    return f"rp{i:0{digits}d}"
-
-
-# Turns "h0001" into 1, "h0002" into 2, etc.
-def p_to_int(p: str):
-    return int(p[1:])
-
-
-# Turns 1 into "h0001", 2 into "h0002", etc.
-def int_to_p(i: int, digits: int = 4):
-    return f"h{i:0{digits}d}"
+    return result
 
 
 # Dictionary to store which functions have been executed for the given object

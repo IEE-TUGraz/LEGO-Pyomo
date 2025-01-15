@@ -42,12 +42,12 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.vStInterRes = pyo.Var(lego.model.p, lego.model.storageUnits, doc='Inter-reserve of storage unit g', bounds=(None, None))
     for p in lego.model.p:
         for g in lego.model.storageUnits:
-            if LEGOUtilities.p_to_int(p) == len(lego.model.p):
+            if lego.model.p.ord(p) == len(lego.model.p):
                 if lego.cs.dPower_Parameters['pFixStInterResToIniReserve']:
                     lego.model.vStInterRes[p, g].fix(lego.cs.dPower_Storage.loc[g, 'IniReserve'])
                 else:
                     lego.model.vStInterRes[p, g].setlb(lego.cs.dPower_Storage.loc[g, 'IniReserve'])
-            elif LEGOUtilities.p_to_int(p) % lego.model.pMovWindow == 0:
+            elif lego.model.p.ord(p) % lego.model.pMovWindow == 0:
                 lego.model.vStInterRes[p, g].setub(lego.model.pE2PRatio[g] * lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
                 lego.model.vStInterRes[p, g].setlb(lego.model.pE2PRatio[g] * lego.model.pMinReserve[g] * lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
 
@@ -65,7 +65,7 @@ def add_constraints(lego: LEGO):
         for rp in lego.model.rp:
             for k in lego.model.k:
                 if len(lego.model.rp) == 1:  # Only cyclic if it has multiple representative periods
-                    if LEGOUtilities.k_to_int(k) == 1:  # Adding IniReserve if it is the first time step (instead of 'prev' value)
+                    if lego.model.k.ord(k) == 1:  # Adding IniReserve if it is the first time step (instead of 'prev' value)
                         lego.model.eStIntraRes.add(0 == lego.cs.dPower_Storage.loc[g, 'IniReserve'] - lego.model.vStIntraRes[rp, k, g] - lego.model.vGenP[rp, k, g] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vConsump[rp, k, g] * lego.model.pWeight_k[k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
                     else:
                         lego.model.eStIntraRes.add(0 == lego.model.vStIntraRes[rp, lego.model.k.prev(k), g] - lego.model.vStIntraRes[rp, k, g] - lego.model.vGenP[rp, k, g] * lego.model.pWeight_k[k] / lego.cs.dPower_Storage.loc[g, 'DisEffic'] + lego.model.vConsump[rp, k, g] * lego.model.pWeight_k[k] * lego.cs.dPower_Storage.loc[g, 'ChEffic'])
@@ -91,7 +91,7 @@ def add_constraints(lego: LEGO):
 
     def eStMaxInterRes_rule(model, p, s):
         # If current p is a multiple of moving window, add constraint
-        if LEGOUtilities.p_to_int(p) % model.pMovWindow == 0:
+        if model.p.ord(p) % model.pMovWindow == 0:
             return 0 >= model.vStInterRes[p, s] - model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s]
         else:
             return pyo.Constraint.Skip
@@ -100,7 +100,7 @@ def add_constraints(lego: LEGO):
 
     def eStMinInterRes_rule(model, p, s):
         # If current p is a multiple of moving window, add constraint
-        if LEGOUtilities.p_to_int(p) % model.pMovWindow == 0:
+        if model.p.ord(p) % model.pMovWindow == 0:
             return 0 <= model.vStInterRes[p, s] - model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s] * model.pMinReserve[s]
         else:
             return pyo.Constraint.Skip
@@ -109,13 +109,13 @@ def add_constraints(lego: LEGO):
 
     def eStInterRes_rule(model, p, storage_unit):
         # If current p is a multiple of moving window, add constraint
-        if LEGOUtilities.p_to_int(p) % model.pMovWindow == 0:
-            relevant_hindeces = model.hindex[LEGOUtilities.p_to_int(p) - model.pMovWindow:LEGOUtilities.p_to_int(p)]
+        if model.p.ord(p) % model.pMovWindow == 0:
+            relevant_hindeces = model.hindex[model.p.ord(p) - model.pMovWindow:model.p.ord(p)]
             hindex_count = relevant_hindeces.to_frame(index=False).groupby(['rp', 'k']).size()
 
             return (0 ==
-                    (model.vStInterRes[LEGOUtilities.int_to_p(LEGOUtilities.p_to_int(p) - model.pMovWindow), storage_unit] if LEGOUtilities.p_to_int(p) - model.pMovWindow > 0 else 0)
-                    + (lego.cs.dPower_Storage.loc[storage_unit, 'IniReserve'] if LEGOUtilities.p_to_int(p) == model.pMovWindow else 0)
+                    (model.vStInterRes[model.p.at(model.p.ord(p) - model.pMovWindow), storage_unit] if model.p.ord(p) - model.pMovWindow > 0 else 0)
+                    + (lego.cs.dPower_Storage.loc[storage_unit, 'IniReserve'] if model.p.ord(p) == model.pMovWindow else 0)
                     - model.vStInterRes[p, storage_unit]
                     + sum(- model.vGenP[rp2, k2, storage_unit] * model.pWeight_k[k2] / lego.cs.dPower_Storage.loc[storage_unit, 'DisEffic'] * hindex_count.loc[rp2, k2]
                           + model.vConsump[rp2, k2, storage_unit] * model.pWeight_k[k2] * lego.cs.dPower_Storage.loc[storage_unit, 'ChEffic'] * hindex_count.loc[rp2, k2] for rp2, k2 in hindex_count.index))
