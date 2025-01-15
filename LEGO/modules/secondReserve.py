@@ -17,6 +17,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.v2ndResDW = pyo.Var(lego.model.rp, lego.model.k, lego.model.secondReserveGenerators, doc="2nd reserve down allocation [GW]", bounds=(0, None))
 
     if hasattr(lego.model, "thermalGenerators"):
+        lego.model.eUCMinOut = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc="Output limit of a committed unit", rule=lambda model, rp, k, t: model.vGenP1[rp, k, t] - model.v2ndResDW[rp, k, t] >= 0)
         for t in lego.model.thermalGenerators:
             lego.model.v2ndResUP[:, :, t].setub((lego.model.pMaxProd[t] - lego.model.pMinProd[t]) * (lego.model.pExisUnits[t] + (lego.model.pMaxInvest[t] * lego.model.pEnabInv[t])))
             lego.model.v2ndResDW[:, :, t].setub((lego.model.pMaxProd[t] - lego.model.pMinProd[t]) * (lego.model.pExisUnits[t] + (lego.model.pMaxInvest[t] * lego.model.pEnabInv[t])))
@@ -43,13 +44,15 @@ def add_constraints(lego: LEGO):
 
     lego.model.e2ReserveDw = pyo.Constraint(lego.model.rp, lego.model.k, doc="2nd reserve down", rule=e2ReserveDw_rule)
 
-    # Add 2nd reserve to power balance
+    # Add 2nd reserve to power balance and unit commitment constraints
     if hasattr(lego.model, "thermalGenerators"):
         for rp in lego.model.rp:
             for k in lego.model.k:
                 for g in lego.model.thermalGenerators:
                     lego.model.eThRampDw_expr[rp, k, g] -= lego.model.v2ndResDW[rp, k, g]
                     lego.model.eThRampUp_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
+                    lego.model.eUCMaxOut1_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
+                    lego.model.eUCMaxOut2_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
 
     # Add 2nd reserve to storage constraints
     if hasattr(lego.model, "storageUnits"):
