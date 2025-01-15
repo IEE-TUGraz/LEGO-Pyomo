@@ -24,3 +24,15 @@ Note: Additionally, bounds for candidate lines were added to make the model more
 lego.model.pSlackPrice = pyo.Param(lego.model.i, initialize=pd.DataFrame([(i, max(lego.model.pProductionCost.values()) * 100 + (0 * max(lego.model.pProductionCost.values()) / 10)) for counter, i in enumerate(lego.model.i)], columns=["i", "values"]).set_index("i"), doc='Price of slack variable')
 # @formatter:on
 ```
+
+# Tight and compact Unit-Commitment constraints
+
+Check, what SD/SU (Shutdown and Startup Capability) means in the context of Germáns paper "Tight and Compact MILP
+Formulation for the Thermal Unit Commitment Problem" (doi: 10.1109/TPWRS.2013.2251373)
+
+# Ramping constraints
+
+Check eThRampUp and eThRampDown in the context of Germáns paper "Tight and Compact MILP Formulation for the Thermal Unit
+Commitment Problem" (doi: 10.1109/TPWRS.2013.2251373)
+
+He doesn't use vCommit in the formulation

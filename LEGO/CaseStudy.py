@@ -209,7 +209,7 @@ class CaseStudy:
         dPower_ThermalGen['pInterVarCostEUR'] = dPower_ThermalGen['InterVarCost'] * 1e-6 * dPower_ThermalGen['FuelCost']
         dPower_ThermalGen['pStartupCostEUR'] = dPower_ThermalGen['StartupCost'] * 1e-6 * dPower_ThermalGen['FuelCost']
         dPower_ThermalGen['InvestCostEUR'] = dPower_ThermalGen['InvestCost'] * 1e-3 * dPower_ThermalGen['MaxProd']
-        dPower_ThermalGen['MaxInvest'] = dPower_ThermalGen['ExisUnits'].apply(lambda x: 0 if x == 1 else 1)
+        dPower_ThermalGen['MaxInvest'] = dPower_ThermalGen.apply(lambda x: 1 if x['EnableInvest'] == 1 and x['ExisUnits'] == 0 else 0, axis=1)
         dPower_ThermalGen['RampUp'] *= 1e-3
         dPower_ThermalGen['RampDw'] *= 1e-3
         dPower_ThermalGen['MaxProd'] *= 1e-3
