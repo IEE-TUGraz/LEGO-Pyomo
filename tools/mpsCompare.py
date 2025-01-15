@@ -211,7 +211,7 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
                         if counter_perfectly_matched_constraints > 0:
                             printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
                             counter_perfectly_matched_constraints = 0
-                        printer.information(f"Found partial match (factors differ by more than {precision * 100}%):")
+                        printer.warning(f"Found partial match (factors differ by more than {precision * 100}%):")
                         printer.information(f"model1 {constraint_name1}: {partial_match_coefficients1}", hard_wrap_chars="[...]")
                         printer.information(f"model2 {constraint_name2}: {partial_match_coefficients2}", hard_wrap_chars="[...]")
                         constraint_dicts2[length].pop(constraint_name2)
@@ -308,6 +308,68 @@ def compare_variables(vars1, vars2, precision: float = 1e-12) -> list[str]:
     return vars_fixed_to_zero
 
 
+def normalize_objective(model, coefficients_to_skip: list[str] = None) -> dict[str, float]:
+    if coefficients_to_skip is None:
+        coefficients_to_skip = []
+
+    normalized_objective = {}
+
+    original_names = {str(b): a.replace("(", "[").replace(")", "]") for a, b in model[0].items()}
+
+    for name, value in model[1].objective.items():
+        skip_coefficient = False
+        for c in coefficients_to_skip:
+            if c in original_names[str(name)]:
+                skip_coefficient = True
+                break
+        if skip_coefficient:
+            continue
+
+        sorted_name = sort_indices(original_names[str(name)])
+        normalized_objective[sorted_name] = value
+
+    return normalized_objective
+
+
+def compare_objectives(objective1, objective2, precision: float = 1e-12) -> bool:
+    objective2 = objective2.copy()
+    counter_perfect_matches = 0
+    partial_matches = []
+    coefficients_missing_in_model1 = []
+    coefficients_missing_in_model2 = []
+
+    for name1, value1 in objective1.items():
+        found = False
+        for name2, value2 in objective2.items():
+            if name1 == name2:
+                if abs((value1 - value2) / value1) > precision:
+                    partial_matches.append(f"{name1}: {value1} != {value2}")
+                else:
+                    counter_perfect_matches += 1
+                objective2.pop(name2)
+                found = True
+                break
+        if not found:
+            coefficients_missing_in_model2.append(f"{name1}: {value1}")
+
+    for name2, value2 in objective2.items():
+        coefficients_missing_in_model1.append(f"{name2}: {value2}")
+
+    printer.success(f"{counter_perfect_matches} coefficients of objective matched perfectly")
+    if len(partial_matches) > 0:
+        printer.error(f"Partial matches found:")
+        for match in partial_matches:
+            printer.warning(f"Partial: {match}", prefix="")
+    if len(coefficients_missing_in_model1) > 0:
+        printer.error(f"Coefficients missing in model1:")
+        for missing in coefficients_missing_in_model1:
+            printer.warning(f"Missing in 1: {missing}", prefix="")
+    if len(coefficients_missing_in_model2) > 0:
+        printer.error(f"Coefficients missing in model2:")
+        for missing in coefficients_missing_in_model2:
+            printer.warning(f"Missing in 2: {missing}", prefix="")
+
+
 def compare_mps(file1, file2, check_vars=True, check_constraints=True, print_additional_information=False,
                 constraints_to_skip_from1=None, constraints_to_keep_from1=None, coefficients_to_skip_from1=None,
                 constraints_to_skip_from2=None, constraints_to_keep_from2=None, coefficients_to_skip_from2=None, constraints_to_enforce_from2=None):
@@ -339,8 +401,9 @@ def compare_mps(file1, file2, check_vars=True, check_constraints=True, print_add
         # Check if constraints are the same
         constraint_check_result = compare_constraints(constraints1, constraints2, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
 
-    # Objectives
-    obj1 = model1[1].objective
-    obj2 = model2[1].objective
+    # Objective
+    objective1 = normalize_objective(model1, coefficients_to_skip=coefficients_to_skip_from1)
+    objective2 = normalize_objective(model2, coefficients_to_skip=coefficients_to_skip_from2)
+    objective_check_result = compare_objectives(objective1, objective2)
 
-    print("Objectives differ:", obj1 != obj2)
+    printer.success("Done comparing MPS files")
