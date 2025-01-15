@@ -64,8 +64,10 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.pFixedCost = pyo.Param(lego.model.la, lego.model.c, initialize=lego.cs.dPower_Network.reset_index().set_index(["i", "j", "Circuit ID"]).query("InService == 1")['FixedCostEUR'], doc='Fixed cost when investing in line la')
     lego.model.pSBase = pyo.Param(initialize=lego.cs.dPower_Parameters['pSBase'], doc='Base power')
     lego.model.pBigM_Flow = pyo.Param(initialize=1e3, doc="Big M for power flow")
-    #                                                                                                                                counter TODO: Discuss with Sonja & Diego
-    lego.model.pSlackPrice = pyo.Param(lego.model.i, initialize=pd.DataFrame([(i, max(lego.model.pProductionCost.values()) * 100 + (0 * max(lego.model.pProductionCost.values()) / 10)) for counter, i in enumerate(lego.model.i)], columns=["i", "values"]).set_index("i"), doc='Price of slack variable')
+    lego.model.pENSCost = pyo.Param(initialize=lego.cs.dPower_Parameters['pENSCost'], doc='Cost used for Power Not Served (PNS) and Excess Power Served (EPS)')
+
+    lego.model.pWeight_rp = pyo.Param(lego.model.rp, initialize=lego.cs.dPower_WeightsRP, doc='Weight of representative period rp')
+    lego.model.pWeight_k = pyo.Param(lego.model.k, initialize=lego.cs.dPower_WeightsK, doc='Weight of time step k')
 
     lego.addToParameter("pMaxProd", lego.cs.dPower_ThermalGen['MaxProd'], indices=[lego.model.g], doc='Maximum production of generator g')
     lego.addToParameter("pMaxProd", lego.cs.dPower_RoR['MaxProd'])
@@ -259,6 +261,7 @@ def add_constraints(lego: LEGO):
                                                                                                                     sum(lego.model.pProductionCost[g] * sum(lego.model.vGenP[g, :, :]) for g in lego.model.vresGenerators) +
                                                                                                                     sum(lego.model.pProductionCost[g] * sum(lego.model.vGenP[g, :, :]) for g in lego.model.rorGenerators) +
                                                                                                                     sum(lego.model.pOMVarCost[g] * sum(lego.model.vGenP[g, :, :]) for g in lego.model.storageUnits) +
-                                                                                                                    sum((sum(lego.model.vPNS[:, :, i]) + sum(lego.model.vEPS[:, :, i])) * lego.model.pSlackPrice[i] for i in lego.model.i) +  # Slack variables
+                                                                                                                    sum(sum(lego.model.vPNS[rp, k, :]) * lego.model.pWeight_rp[rp] * lego.model.pWeight_k[k] * lego.model.pENSCost for rp in lego.model.rp for k in lego.model.k) +  # Power not served
+                                                                                                                    sum(sum(lego.model.vEPS[rp, k, :]) * lego.model.pWeight_rp[rp] * lego.model.pWeight_k[k] * lego.model.pENSCost * 2 for rp in lego.model.rp for k in lego.model.k) +  # Excess power served
                                                                                                                     sum(lego.model.pFixedCost[i, j, c] * lego.model.vLineInvest[i, j, c] for i, j in lego.model.lc for c in lego.model.c) +  # Investment cost of transmission lines
                                                                                                                     sum(lego.model.pInvestCost[g] * lego.model.vGenInvest[g] for g in lego.model.g))  # Investment cost of thermal generators

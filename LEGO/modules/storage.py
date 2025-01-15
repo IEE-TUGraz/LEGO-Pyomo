@@ -13,7 +13,6 @@ def add_element_definitions_and_bounds(lego: LEGO):
 
     # Parameters
     lego.model.pOMVarCost = pyo.Param(lego.model.storageUnits, initialize=lego.cs.dPower_Storage['pOMVarCostEUR'], doc='Variable O&M cost of storage unit g')
-    lego.model.pWeight_k = pyo.Param(lego.model.k, initialize=lego.cs.dPower_WeightsK, doc='Weight of time step k')
     lego.model.pEnableChDisPower = lego.cs.dPower_Parameters['pEnableChDisPower']  # Avoid simultaneous charging and discharging
     lego.model.pE2PRatio = pyo.Param(lego.model.storageUnits, initialize=lego.cs.dPower_Storage['Ene2PowRatio'], doc='Energy to power ratio of storage unit g')
     lego.model.pMinReserve = pyo.Param(lego.model.storageUnits, initialize=lego.cs.dPower_Storage['MinReserve'], doc='Minimum reserve of storage unit g')

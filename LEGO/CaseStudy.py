@@ -18,6 +18,7 @@ class CaseStudy:
                  power_inflows_file: str = "Power_Inflows.xlsx", dPower_Inflows: pd.DataFrame = None,
                  power_vresprofiles_file: str = "Power_VRESProfiles.xlsx", dPower_VRESProfiles: pd.DataFrame = None,
                  power_storage_file: str = "Power_Storage.xlsx", dPower_Storage: pd.DataFrame = None,
+                 power_weightsrp_file: str = "Power_WeightsRP.xlsx", dPower_WeightsRP: pd.DataFrame = None,
                  power_weightsk_file: str = "Power_WeightsK.xlsx", dPower_WeightsK: pd.DataFrame = None,
                  power_hindex_file: str = "Power_Hindex.xlsx", dPower_Hindex: pd.DataFrame = None,
                  power_impexphubs_file: str = "Power_ImpExpHubs.xlsx", dPower_ImpExpHubs: pd.DataFrame = None,
@@ -90,6 +91,12 @@ class CaseStudy:
         else:
             self.power_storage_file = power_storage_file
             self.dPower_Storage = self.get_dPower_Storage()
+
+        if dPower_WeightsRP is not None:
+            self.dPower_WeightsRP = dPower_WeightsRP
+        else:
+            self.power_weightsrp_file = power_weightsrp_file
+            self.dPower_WeightsRP = self.get_dPower_WeightsRP()
 
         if dPower_WeightsK is not None:
             self.dPower_WeightsK = dPower_WeightsK
@@ -273,6 +280,13 @@ class CaseStudy:
         dPower_VRESProfiles = dPower_VRESProfiles.melt(id_vars=['rp', 'i', 'tec'], var_name='k', value_name='Capacity')
         dPower_VRESProfiles = dPower_VRESProfiles.set_index(['rp', 'i', 'k', 'tec'])
         return dPower_VRESProfiles
+
+    def get_dPower_WeightsRP(self):
+        dPower_WeightsRP = pd.read_excel(self.example_folder + self.power_weightsrp_file, skiprows=[0, 1, 3, 4, 5])
+        dPower_WeightsRP = dPower_WeightsRP.drop(dPower_WeightsRP.columns[0], axis=1)
+        dPower_WeightsRP = dPower_WeightsRP.rename(columns={dPower_WeightsRP.columns[0]: "rp", dPower_WeightsRP.columns[1]: "Weight"})
+        dPower_WeightsRP = dPower_WeightsRP.set_index('rp')
+        return dPower_WeightsRP
 
     def get_dPower_WeightsK(self):
         dPower_WeightsK = pd.read_excel(self.example_folder + self.power_weightsk_file, skiprows=[0, 1, 3, 4, 5])
