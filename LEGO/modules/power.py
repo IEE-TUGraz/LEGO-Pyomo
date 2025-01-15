@@ -232,8 +232,6 @@ def add_constraints(lego: LEGO):
     # Thermal Generator production with unit commitment & ramping
     lego.model.cPowerOutput = pyo.ConstraintList(doc='Power output of thermal generators')
     lego.model.cPHatProduction = pyo.ConstraintList(doc='Production between min and max production of thermal generators')
-    lego.model.eMinUpTime = pyo.ConstraintList(doc='Minimum up time for thermal generators')
-    lego.model.eMinDownTime = pyo.ConstraintList(doc='Minimum down time for thermal generators')
 
     def eThMaxUC_rule(model, rp, k, t):
         return model.vCommit[rp, k, t] <= model.vGenInvest[t] + model.pExisUnits[t]
@@ -241,17 +239,27 @@ def add_constraints(lego: LEGO):
     lego.model.eThMaxUC = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Maximum number of active units for thermal generators', rule=eThMaxUC_rule)
     lego.model.eUCStrShut = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Start-up and shut-down logic for thermal generators', rule=lambda model, rp, k, t: model.vCommit[rp, k, t] - model.vCommit[rp, model.k.prevw(k), t] == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t])
 
+    def eMinUpTime_rule(model, rp, k, t):
+        if model.pMinUpTime[t] == 0:
+            raise ValueError("Minimum up time must be at least 1, got 0 instead")
+        else:
+            return sum(model.vStartup[rp, k2, t] for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k))) <= model.vCommit[rp, k, t]
+
+    lego.model.eMinUpTime = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Minimum up time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=eMinUpTime_rule)
+
+    def eMinDownTime_rule(model, rp, k, t):
+        if model.pMinDownTime[t] == 0:
+            raise ValueError("Minimum down time must be at least 1, got 0 instead")
+        else:
+            return sum(model.vShutdown[rp, k2, t] for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinDownTime[t] + 1, model.k.ord(k))) <= 1 - model.vCommit[rp, k, t]
+
+    lego.model.eMinDownTime = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Minimum down time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=eMinDownTime_rule)
+
     for g in lego.model.thermalGenerators:
         for rp in lego.model.rp:
             for k in lego.model.k:
                 lego.model.cPowerOutput.add(lego.model.vGenP[rp, k, g] == lego.cs.dPower_ThermalGen.loc[g, 'MinProd'] * lego.model.vCommit[rp, k, g] + lego.model.vGenP1[rp, k, g])
                 lego.model.cPHatProduction.add(lego.model.vGenP1[rp, k, g] <= (lego.cs.dPower_ThermalGen.loc[g, 'MaxProd'] - lego.cs.dPower_ThermalGen.loc[g, 'MinProd']) * lego.model.vCommit[rp, k, g])
-
-                # TODO: Check if implementation is correct
-                # Only enforce MinUpTime and MinDownTime after the minimum time has passed
-                if LEGOUtilities.k_to_int(k) >= max(lego.cs.dPower_ThermalGen.loc[g, 'MinUpTime'], lego.cs.dPower_ThermalGen.loc[g, 'MinDownTime']):
-                    lego.model.eMinUpTime.add(sum(lego.model.vStartup[rp, LEGOUtilities.int_to_k(i), g] for i in range(LEGOUtilities.k_to_int(k) - lego.model.pMinUpTime[g] + 1, LEGOUtilities.k_to_int(k))) <= lego.model.vCommit[rp, k, g])  # Minimum Up-Time
-                    lego.model.eMinDownTime.add(sum(lego.model.vShutdown[rp, LEGOUtilities.int_to_k(i), g] for i in range(LEGOUtilities.k_to_int(k) - lego.model.pMinDownTime[g] + 1, LEGOUtilities.k_to_int(k))) <= 1 - lego.model.vCommit[rp, k, g])  # Minimum Down-Time
 
     # Objective function
     lego.model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(lego.model.pInterVarCost[g] * sum(lego.model.vCommit[g, :, :]) +  # Fixed cost of thermal generators
