@@ -232,7 +232,6 @@ def add_constraints(lego: LEGO):
     # Thermal Generator production with unit commitment & ramping
     lego.model.cPowerOutput = pyo.ConstraintList(doc='Power output of thermal generators')
     lego.model.cPHatProduction = pyo.ConstraintList(doc='Production between min and max production of thermal generators')
-    lego.model.cStartupLogic = pyo.ConstraintList(doc='Start-up and shut-down logic for thermal generators')
     lego.model.eMinUpTime = pyo.ConstraintList(doc='Minimum up time for thermal generators')
     lego.model.eMinDownTime = pyo.ConstraintList(doc='Minimum down time for thermal generators')
 
@@ -240,13 +239,13 @@ def add_constraints(lego: LEGO):
         return model.vCommit[rp, k, t] <= model.vGenInvest[t] + model.pExisUnits[t]
 
     lego.model.eThMaxUC = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Maximum number of active units for thermal generators', rule=eThMaxUC_rule)
+    lego.model.eUCStrShut = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Start-up and shut-down logic for thermal generators', rule=lambda model, rp, k, t: model.vCommit[rp, k, t] - model.vCommit[rp, model.k.prevw(k), t] == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t])
 
     for g in lego.model.thermalGenerators:
         for rp in lego.model.rp:
             for k in lego.model.k:
                 lego.model.cPowerOutput.add(lego.model.vGenP[rp, k, g] == lego.cs.dPower_ThermalGen.loc[g, 'MinProd'] * lego.model.vCommit[rp, k, g] + lego.model.vGenP1[rp, k, g])
                 lego.model.cPHatProduction.add(lego.model.vGenP1[rp, k, g] <= (lego.cs.dPower_ThermalGen.loc[g, 'MaxProd'] - lego.cs.dPower_ThermalGen.loc[g, 'MinProd']) * lego.model.vCommit[rp, k, g])
-                lego.model.cStartupLogic.add(lego.model.vCommit[rp, k, g] - lego.model.vCommit[rp, lego.model.k.prevw(k), g] == lego.model.vStartup[rp, k, g] - lego.model.vShutdown[rp, k, g])
 
                 # TODO: Check if implementation is correct
                 # Only enforce MinUpTime and MinDownTime after the minimum time has passed
