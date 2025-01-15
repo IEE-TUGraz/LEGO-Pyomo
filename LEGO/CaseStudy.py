@@ -155,6 +155,7 @@ class CaseStudy:
         # Value adjustments
         dPower_Parameters["pMaxAngleDCOPF"] = dPower_Parameters["pMaxAngleDCOPF"] * np.pi / 180  # Convert angle from degrees to radians
         dPower_Parameters["pSBase"] *= 1e-3
+        dPower_Parameters["pENSCost"] *= 1e-3
 
         return dPower_Parameters
 
@@ -182,7 +183,7 @@ class CaseStudy:
         dPower_Network = dPower_Network.drop(dPower_Network.columns[0], axis=1)
         dPower_Network = dPower_Network.rename(columns={dPower_Network.columns[0]: "i", dPower_Network.columns[1]: "j", dPower_Network.columns[2]: "Circuit ID"})
 
-        dPower_Network["FixedCost"] = dPower_Network["FixedCost"].fillna(0)
+        dPower_Network["FixedCostEUR"] = dPower_Network["FixedCost"].fillna(0) * dPower_Network["FxChargeRate"].fillna(0)
         dPower_Network["Pmax"] *= 1e-3
 
         dPower_Network = dPower_Network.set_index(['i', 'j'])
