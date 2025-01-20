@@ -208,12 +208,12 @@ class CaseStudy:
 
         dPower_ThermalGen['pInterVarCostEUR'] = dPower_ThermalGen['InterVarCost'] * 1e-6 * dPower_ThermalGen['FuelCost']
         dPower_ThermalGen['pStartupCostEUR'] = dPower_ThermalGen['StartupCost'] * 1e-6 * dPower_ThermalGen['FuelCost']
-        dPower_ThermalGen['InvestCostEUR'] = dPower_ThermalGen['InvestCost'] * 1e-3 * dPower_ThermalGen['MaxProd']
         dPower_ThermalGen['MaxInvest'] = dPower_ThermalGen.apply(lambda x: 1 if x['EnableInvest'] == 1 and x['ExisUnits'] == 0 else 0, axis=1)
         dPower_ThermalGen['RampUp'] *= 1e-3
         dPower_ThermalGen['RampDw'] *= 1e-3
         dPower_ThermalGen['MaxProd'] *= 1e-3
         dPower_ThermalGen['MinProd'] *= 1e-3
+        dPower_ThermalGen['InvestCostEUR'] = dPower_ThermalGen['InvestCost'] * 1e-3 * dPower_ThermalGen['MaxProd']  # InvestCost is scaled here (1e-3), scaling of MaxProd happens above
 
         # Fill NaN values with 0 for MinUpTime and MinDownTime
         dPower_ThermalGen['MinUpTime'] = dPower_ThermalGen['MinUpTime'].fillna(0)
@@ -243,6 +243,7 @@ class CaseStudy:
 
         dPower_VRES['InvestCostEUR'] = dPower_VRES['InvestCost'] * 1e-3 * dPower_VRES['MaxProd'] * 1e-3
         dPower_VRES['MaxProd'] *= 1e-3
+        dPower_VRES['OMVarCost'] *= 1e-3
         return dPower_VRES
 
     def get_dPower_Storage(self):
