@@ -1,7 +1,9 @@
 import logging
 import time
 
+import pyomo.environ as pyo
 from pyomo.core import NameLabeler
+from pyomo.util.infeasible import log_infeasible_constraints
 
 from LEGO.CaseStudy import CaseStudy
 from LEGO.LEGO import LEGO
@@ -18,11 +20,20 @@ printer = Printer.getInstance()
 
 scenario_folder = "data/example/"
 
+# Select which parts are executed
+execute_gams = True
+execute_pyomo = True
+solve_pyomo = True  # Note: GAMS always solves if it's executed in current setup
+comparison_mps = True  # Compare MPS files?
+check_vars = True
+check_constraints = True
+print_additional_information = False
+
 ########################################################################################################################
 # Re-run with GAMS
 ########################################################################################################################
 
-if True:
+if execute_gams:
     gams_console_log_path = "LEGO-GAMS/gams_console.log"
     gams_path = "C:/GAMS/48/gams.exe"
     lego_path = "LEGO.gms"
@@ -61,11 +72,18 @@ if True:
         timing = stop_time - start_time
         printer.information(f"Executing GAMS took {timing:.2f} seconds")
 
+        with open("LEGO-Gams/LEGO.log", "r") as file:
+            for line in file:
+                if "Objective:" in line:
+                    objective_value_gams = float(line.split()[-1])
+                    printer.information(f"Objective value: {objective_value_gams}")
+                    break
+
 ########################################################################################################################
 # Data input from case study
 ########################################################################################################################
 
-if True:
+if execute_pyomo:
     cs = CaseStudy(scenario_folder, do_not_merge_single_node_buses=True)
     cs.dPower_Network['Technical Representation'] = 'DC-OPF'
 
@@ -79,18 +97,39 @@ if True:
     printer.information(f"Building LEGO model took {timing:.2f} seconds")
     model.write("model.mps", io_options={'labeler': NameLabeler()})
 
-constraints_to_skip_from1 = None  # ["eStIntraRes", "eExclusiveChargeDischarge"]
-constraints_to_keep_from1 = ["eStInterRes", "eStIntraRes"]
-coefficients_to_skip_from1 = ["name"]
+    if solve_pyomo:  # Solve LEGO model?
+        results, timing = lego.solve_model()
+        match results.solver.termination_condition:
+            case pyo.TerminationCondition.optimal:
+                printer.information(f"Optimal solution found after {timing:.2f} seconds")
+                if "objective_value_gams" in locals():  # If GAMS has been executed and solved, compare objective values
+                    digits = max(len(f"{pyo.value(model.objective):.4f}"), len(f"{objective_value_gams:.4f}"))
+                    printer.information(f"Objective value Pyomo: {pyo.value(model.objective):>{digits}.4f}")
+                    printer.information(f"Objective value GAMS : {objective_value_gams:>{digits}.4f}")
+                    printer.information(f"Objective difference : {pyo.value(model.objective) - objective_value_gams:>{digits}.4f} | {100 * (pyo.value(model.objective) - objective_value_gams) / objective_value_gams:.2f}%")
+                else:
+                    printer.information(f"Objective value Pyomo: {pyo.value(model.objective):.4f}")
+
+            case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
+                print(f"ERROR: Model is {results.solver.termination_condition}, logging infeasible constraints:")
+                log_infeasible_constraints(model)
+            case _:
+                print("Solver terminated with condition:", results.solver.termination_condition)
+
+constraints_to_skip_from1 = ["eMinUpTime", "eMinDownTime",  # Not implemented in LEGO-GAMS
+                             "ONE_VAR",  # Is created when using import/export (which is implemented differently in LEGO-GAMS)
+                             ]
+constraints_to_keep_from1 = None
+coefficients_to_skip_from1 = []
 
 constraints_to_skip_from2 = []
-constraints_to_keep_from2 = ["eStInterRes", "eStIntraRes"]
-coefficients_to_skip_from2 = ["name",
-                              "v2ndResDW", "vGenP1"]
-constraints_to_enforce_from2 = ["eStInterRes", "eStIntraRes"]
+constraints_to_keep_from2 = []
+coefficients_to_skip_from2 = ["constobj"]  # Some empty residual coefficient in objective function
+constraints_to_enforce_from2 = [""]
 
-compare_mps("model.mps", "LEGO-GAMS/LEGO-GAMS.mps", check_vars=False, print_additional_information=False,
-            constraints_to_skip_from1=constraints_to_skip_from1, constraints_to_keep_from1=constraints_to_keep_from1, coefficients_to_skip_from1=coefficients_to_skip_from1,
-            constraints_to_skip_from2=constraints_to_skip_from2, constraints_to_keep_from2=constraints_to_keep_from2, coefficients_to_skip_from2=coefficients_to_skip_from2, constraints_to_enforce_from2=constraints_to_enforce_from2)
+if comparison_mps:
+    compare_mps("model.mps", "LEGO-GAMS/LEGO-GAMS.mps", check_vars=check_vars, check_constraints=check_constraints, print_additional_information=print_additional_information,
+                constraints_to_skip_from1=constraints_to_skip_from1, constraints_to_keep_from1=constraints_to_keep_from1, coefficients_to_skip_from1=coefficients_to_skip_from1,
+                constraints_to_skip_from2=constraints_to_skip_from2, constraints_to_keep_from2=constraints_to_keep_from2, coefficients_to_skip_from2=coefficients_to_skip_from2, constraints_to_enforce_from2=constraints_to_enforce_from2)
 
 print("Done")
