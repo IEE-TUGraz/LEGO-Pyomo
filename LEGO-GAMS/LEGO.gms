@@ -2776,7 +2776,7 @@ put      GOPT / 'IIS 1'    / 'rins 1000' / 'nodefilestart 0.5' ;
 putclose GOPT
 ;
 file     COPT / cplex.opt  /                   ;
-put      COPT / 'IIS yes'  / 'rinsheur 1000' / 'writemps LEGO-GAMS.mps' ;
+put      COPT / 'IIS 1'    / 'rinsheur 1000' / 'writemps LEGO-GAMS.mps' ;
 putclose COPT
 ;
 

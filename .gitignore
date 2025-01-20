@@ -15,6 +15,7 @@ __pycache__/
 LEGO*.log*
 *.opt
 *.log
+*.lxi
 
 # Model files
 *.mps
