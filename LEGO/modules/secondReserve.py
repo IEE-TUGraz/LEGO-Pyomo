@@ -29,7 +29,10 @@ def add_element_definitions_and_bounds(lego: LEGO):
 
     # Parameters
     lego.model.p2ndResUp = pyo.Param(initialize=lego.cs.dPower_Parameters["p2ndResUp"], doc="2nd reserve factor up")
-    lego.model.p2ndResDw = pyo.Param(initialize=lego.cs.dPower_Parameters["p2ndResDw"], doc="2nd reserve factor down")
+    lego.model.p2ndResDW = pyo.Param(initialize=lego.cs.dPower_Parameters["p2ndResDW"], doc="2nd reserve factor down")
+
+    lego.model.p2ndResUpCost = pyo.Param(initialize=lego.cs.dPower_Parameters["p2ndResUpCost"], doc="2nd reserve up cost [$/GW]")
+    lego.model.p2ndResDWCost = pyo.Param(initialize=lego.cs.dPower_Parameters["p2ndResDWCost"], doc="2nd reserve down cost [$/GW]")
 
 
 @LEGOUtilities.checkExecutionLog([add_element_definitions_and_bounds])
@@ -40,7 +43,7 @@ def add_constraints(lego: LEGO):
     lego.model.e2ReserveUp = pyo.Constraint(lego.model.rp, lego.model.k, doc="2nd reserve up", rule=e2ReserveUp_rule)
 
     def e2ReserveDw_rule(model, rp, k):
-        return sum(model.v2ndResDW[rp, k, t] for t in model.thermalGenerators) + sum(model.v2ndResDW[rp, k, s] for s in model.storageUnits) >= model.p2ndResDw * sum(model.pDemandP[rp, k, i] for i in model.i)
+        return sum(model.v2ndResDW[rp, k, t] for t in model.thermalGenerators) + sum(model.v2ndResDW[rp, k, s] for s in model.storageUnits) >= model.p2ndResDW * sum(model.pDemandP[rp, k, i] for i in model.i)
 
     lego.model.e2ReserveDw = pyo.Constraint(lego.model.rp, lego.model.k, doc="2nd reserve down", rule=e2ReserveDw_rule)
 
@@ -63,3 +66,12 @@ def add_constraints(lego: LEGO):
                     lego.model.eStMaxCons_expr[rp, k, s] -= lego.model.v2ndResDW[rp, k, s]
                     lego.model.eStMaxIntraRes_expr[rp, k, s] += lego.model.v2ndResDW[rp, k, s] + lego.model.v2ndResDW[rp, lego.model.k.prevw(k), s] * lego.model.pWeight_k[k]
                     lego.model.eStMinIntraRes_expr[rp, k, s] -= lego.model.v2ndResUP[rp, k, s] + lego.model.v2ndResUP[rp, lego.model.k.prevw(k), s] * lego.model.pWeight_k[k]
+
+    # Add 2nd reserve cost to objective
+    if hasattr(lego.model, "thermalGenerators"):
+        lego.model.objective.expr += sum(lego.model.v2ndResUP[rp, k, t] * lego.model.pOMVarCost[t] * lego.model.p2ndResUpCost * lego.model.pWeight_rp[rp] * lego.model.pWeight_k[k] for rp in lego.model.rp for k in lego.model.k for t in lego.model.thermalGenerators)
+        lego.model.objective.expr += sum(lego.model.v2ndResDW[rp, k, t] * lego.model.pOMVarCost[t] * lego.model.p2ndResDWCost * lego.model.pWeight_rp[rp] * lego.model.pWeight_k[k] for rp in lego.model.rp for k in lego.model.k for t in lego.model.thermalGenerators)
+
+    if hasattr(lego.model, "storageUnits"):
+        lego.model.objective.expr += sum(lego.model.v2ndResUP[rp, k, s] * lego.model.pOMVarCost[s] * lego.model.p2ndResUpCost * lego.model.pWeight_rp[rp] * lego.model.pWeight_k[k] for rp in lego.model.rp for k in lego.model.k for s in lego.model.storageUnits)
+        lego.model.objective.expr += sum(lego.model.v2ndResDW[rp, k, s] * lego.model.pOMVarCost[s] * lego.model.p2ndResDWCost * lego.model.pWeight_rp[rp] * lego.model.pWeight_k[k] for rp in lego.model.rp for k in lego.model.k for s in lego.model.storageUnits)

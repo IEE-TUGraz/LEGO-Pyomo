@@ -639,167 +639,177 @@ $onEmbeddedCode Connect:
               rowDimension: 0
               columnDimension: 0
               
-            - name: p2ndResUp
-              range: Power Parameters!C20
-              rowDimension: 0
-              columnDimension: 0
-                
-            - name: p2ndResDw
-              range: Power Parameters!C23
-              rowDimension: 0
-              columnDimension: 0
-              
             - name: pEnableTransNet
-              range: Power Parameters!C27
+              range: Power Parameters!C21
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}       
     
             - name: pEnableSOCP
-              range: Power Parameters!C30
+              range: Power Parameters!C24
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}  
     
             - name: pMaxAngleDiff
-              range: Power Parameters!C33
+              range: Power Parameters!C27
               rowDimension: 0
               columnDimension: 0
               
             - name: pMaxAngleDCOPF
-              range: Power Parameters!C36
+              range: Power Parameters!C30
               rowDimension: 0
               columnDimension: 0
            
             - name: pEnableMaxLineLoad
-              range: Power Parameters!C39
+              range: Power Parameters!C33
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
               
             - name: pMaxLineLoad
-              range: Power Parameters!C42
+              range: Power Parameters!C36
               rowDimension: 0
               columnDimension: 0
               
             - name: pLOLCost
-              range: Power Parameters!C45
+              range: Power Parameters!C39
               rowDimension: 0
               columnDimension: 0
     
             - name: pMinGreenProd
-              range: Power Parameters!C49
+              range: Power Parameters!C43
               rowDimension: 0
               columnDimension: 0
     
             - name: pEnableGreenNatBal
-              range: Power Parameters!C52
+              range: Power Parameters!C46
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
     
             - name: pEnableCO2
-              range: Power Parameters!C56
+              range: Power Parameters!C50
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
               
             - name: pCO2Budget
-              range: Power Parameters!C59
+              range: Power Parameters!C53
               rowDimension: 0
               columnDimension: 0
               
             - name: pCO2Cost
-              range: Power Parameters!C62
+              range: Power Parameters!C56
               rowDimension: 0
               columnDimension: 0
               
             - name: pCO2Penalty
-              range: Power Parameters!C65
+              range: Power Parameters!C59
               rowDimension: 0
               columnDimension: 0
             
             - name: pMinFirmCap
-              range: Power Parameters!C70
+              range: Power Parameters!C64
               rowDimension: 0
               columnDimension: 0
               
             - name: pEnableRoCoF
-              range: Power Parameters!C74
+              range: Power Parameters!C68
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
               
             - name: pBaseFreq
-              range: Power Parameters!C77
+              range: Power Parameters!C71
               rowDimension: 0
               columnDimension: 0
     
             - name: pMinInertia
-              range: Power Parameters!C80
+              range: Power Parameters!C74
               rowDimension: 0
               columnDimension: 0
               
             - name: pMaxRoCoF
-              range: Power Parameters!C83
+              range: Power Parameters!C77
               rowDimension: 0
               columnDimension: 0
               
             - name: pSegmentsRoCoF
-              range: Power Parameters!C86
+              range: Power Parameters!C80
               rowDimension: 0
               columnDimension: 0
     
             - name: pEnableDSMPower
-              range: Power Parameters!C90
+              range: Power Parameters!C84
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
     
             - name: pEnableZP
-              range: Power Parameters!C94
+              range: Power Parameters!C88
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
               
             - name: pNTCCost
-              range: Power Parameters!C97
+              range: Power Parameters!C91
               rowDimension: 0
               columnDimension: 0
     
             - name: pEnableCDSF
-              range: Power Parameters!C101
+              range: Power Parameters!C95
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
     
             - name: pBlocksRoCoF
-              range: Power Parameters!C104
+              range: Power Parameters!C98
               rowDimension: 0
               columnDimension: 0
               
             - name: pEnableChDisPower
-              range: Power Parameters!C107
+              range: Power Parameters!C101
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
               
             # - name: pFixStInterResToIniReserve               # NOT IMPLEMENTED
-            #   range: Power Parameters!C110
+            #   range: Power Parameters!C104
             #   rowDimension: 0
             #   columnDimension: 0
     
             - name: pEnableMinProdRESTech
-              range: Power Parameters!C114
+              range: Power Parameters!C108
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
               
             - name: pEnableMaxGas
-              range: Power Parameters!C117
+              range: Power Parameters!C111
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
+
+            - name: p2ndResUp
+              range: Power Parameters!C115
+              rowDimension: 0
+              columnDimension: 0
+                
+            - name: p2ndResDw
+              range: Power Parameters!C118
+              rowDimension: 0
+              columnDimension: 0
+              
+            - name: p2ndResUpCost
+              range: Power Parameters!C121
+              rowDimension: 0
+              columnDimension: 0
+                
+            - name: p2ndResDwCost
+              range: Power Parameters!C124
+              rowDimension: 0
+              columnDimension: 0
 
     - GAMSWriter:
         symbols: all
