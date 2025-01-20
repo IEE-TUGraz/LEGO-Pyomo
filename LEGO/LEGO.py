@@ -3,6 +3,7 @@ import typing
 
 import pyomo.environ as pyo
 import pyomo.opt.results.results_
+from pyomo.core import TransformationFactory
 
 from LEGO.CaseStudy import CaseStudy
 from LEGO.modules import storage, power, secondReserve, importExport
@@ -55,9 +56,15 @@ class LEGO:
     def get_objective_value(self, zoi: bool):
         return get_objective_value(self.model, zoi)
 
-    def solve_model(self, optimizer, already_solved_ok=False) -> {pyomo.opt.results.results_.SolverResults, float}:
+    def solve_model(self, optimizer=None, already_solved_ok=False) -> {pyomo.opt.results.results_.SolverResults, float}:
         if not already_solved_ok and self.results is not None:
             raise RuntimeError("Model already solved, please set already_solved_ok to True if that's intentional")
+
+        if optimizer is None:
+            optimizer = pyo.SolverFactory("gurobi")
+
+            if self.cs.dGlobal_Parameters["pEnableRMIP"]:
+                TransformationFactory('core.relax_integer_vars').apply_to(self.model)  # Relaxes all integer variables to continuous variables
 
         start_time = time.time()
         results = optimizer.solve(self.model)
