@@ -152,20 +152,26 @@ def sort_constraints(constraints: typing.Dict[str, OrderedDict[str, str]]) -> Or
 
 # Compare two lists of constraints where coefficients are already normalized (i.e. sorted by name and all factors are divided by the constant)
 def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], constraints2: typing.Dict[str, OrderedDict[str, str]], precision: float = 1e-12,
-                        constraints_to_enforce_from2: list[str] = None,
-                        print_additional_information=False) -> bool:
+                        constraints_to_enforce_from2: list[str] = None, print_additional_information=False) -> dict[str, int]:
     # Sort constraints by number of coefficients
     constraint_dicts1 = sort_constraints(constraints=constraints1)
     constraint_dicts2 = sort_constraints(constraints=constraints2)
+
+    counter_perfect_total = 0
+    counter_partial_total = 0
+    counter_missing1_total = 0
+    counter_missing2_total = 0
 
     # Loop through all constraints in first list and for each through all constraints in the second list
     counter_perfectly_matched_constraints = 0
     for length, constraint_dict1 in constraint_dicts1.items():
         if length not in constraint_dicts2:
             if counter_perfectly_matched_constraints > 0:
-                printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
+                printer.success(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
+                counter_perfect_total += counter_perfectly_matched_constraints
                 counter_perfectly_matched_constraints = 0
             printer.error(f"No constraints of length {length} in second model, skipping comparison for {len(constraint_dict1)} constraints, e.g. {list(constraint_dict1.keys())[0]}", hard_wrap_chars="[...]")
+            counter_missing2_total += len(constraint_dict1)
             continue
 
         for constraint_name1, constraint1 in constraint_dict1.items():
@@ -209,12 +215,14 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
                         break
                     case "Coefficient values differ":
                         if counter_perfectly_matched_constraints > 0:
-                            printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
+                            printer.success(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
+                            counter_perfect_total += counter_perfectly_matched_constraints
                             counter_perfectly_matched_constraints = 0
                         printer.warning(f"Found partial match (factors differ by more than {precision * 100}%):")
                         printer.information(f"model1 {constraint_name1}: {partial_match_coefficients1}", hard_wrap_chars="[...]")
                         printer.information(f"model2 {constraint_name2}: {partial_match_coefficients2}", hard_wrap_chars="[...]")
                         constraint_dicts2[length].pop(constraint_name2)
+                        counter_partial_total += 1
                         break
                     case "Coefficient name mismatch":
                         continue
@@ -223,15 +231,18 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
 
             if status != "Perfect match" and status != "Coefficient values differ":
                 if counter_perfectly_matched_constraints > 0:
-                    printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
+                    printer.success(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
+                    counter_perfect_total += counter_perfectly_matched_constraints
                     counter_perfectly_matched_constraints = 0
                 printer.error(f"No match for {constraint_name1}: {constraint1}", hard_wrap_chars=f"[... {len(constraint1)} total]")
+                counter_missing1_total += 1
 
             if counter_perfectly_matched_constraints > 0 and counter_perfectly_matched_constraints % 500 == 0:
                 printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly, continue to count...")
 
     if counter_perfectly_matched_constraints > 0:
-        printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
+        printer.success(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
+        counter_perfect_total += counter_perfectly_matched_constraints
 
     if constraints_to_enforce_from2 is not None:
         for enforced_constraint_name in constraints_to_enforce_from2:
@@ -239,13 +250,19 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
                 for constraint_name2, constraint2 in constraint_dict2.items():
                     if enforced_constraint_name in constraint_name2:
                         printer.error(f"Missing enforced constraint {constraint_name2}: {constraint2}", hard_wrap_chars=f"[... {len(constraint2)} total]")
-    return False
+                        counter_missing1_total += 1
+
+    return {"perfect": counter_perfect_total, "partial": counter_partial_total, "missing in model 1": counter_missing1_total, "missing in model 2": counter_missing2_total}
 
 
 # Compare two lists of variables where coefficients are already normalized
 # Returns a list of variables that are fixed to 0 and missing in the second list
-def compare_variables(vars1, vars2, precision: float = 1e-12) -> list[str]:
+def compare_variables(vars1, vars2, precision: float = 1e-12) -> (dict[str, int], list[str]):
     counter = 0
+    counter_perfect_total = 0
+    counter_partial_total = 0
+    counter_missing1_total = 0
+    counter_missing2_total = 0
     vars2 = vars2.copy()
     vars_fixed_to_zero = []  # Variables that are fixed to 0, so if they are missing it is ok
     for v in vars1:
@@ -284,14 +301,18 @@ def compare_variables(vars1, vars2, precision: float = 1e-12) -> list[str]:
                 vars_fixed_to_zero.append(v[0])
             else:
                 if counter > 0:
-                    printer.information(f"{counter} variables matched perfectly")
+                    printer.success(f"{counter} variables matched perfectly")
+                    counter_perfect_total += counter
                     counter = 0
+                counter_missing2_total += 1
                 printer.warning(f"Variable not found in model2: {v}")
         elif bounds_differ:
             vars2.remove(v2)
             if counter > 0:
-                printer.information(f"{counter} variables matched perfectly")
+                printer.success(f"{counter} variables matched perfectly")
+                counter_perfect_total += counter
                 counter = 0
+            counter_partial_total += 1
             printer.error(f"Variable bounds differ: model1: {v} | model2: {v2}")
         else:
             counter += 1
@@ -299,13 +320,19 @@ def compare_variables(vars1, vars2, precision: float = 1e-12) -> list[str]:
         if counter > 0 and counter % 500 == 0:
             printer.information(f"{counter} variables matched perfectly, continue to count...")
     if counter > 0:
-        printer.information(f"{counter} variables matched perfectly")
+        printer.success(f"{counter} variables matched perfectly")
+
+    if len(vars2) > 0:
+        printer.error(f"Variables missing in model 1: {', '.join([v[0] for v in vars2])}", hard_wrap_chars=f"[... {len(vars2)} total]")
+        counter_missing1_total += len(vars2)
 
     vars_fixed_to_zero = [sort_indices(v.replace("(", "[").replace(")", "]")) for v in vars_fixed_to_zero]  # Adjust indexing-style and sort indices alphabetically
     if len(vars_fixed_to_zero) > 0:
         printer.information(f"Variables missing in list2, but fixed to 0: {', '.join(vars_fixed_to_zero)}", hard_wrap_chars=f"[... {len(vars_fixed_to_zero)} total]")
 
-    return vars_fixed_to_zero
+    counter_perfect_total += counter
+
+    return {"perfect": counter_perfect_total, "partial": counter_partial_total, "missing in model 1": counter_missing1_total, "missing in model 2": counter_missing2_total}, vars_fixed_to_zero
 
 
 def normalize_objective(model, coefficients_to_skip: list[str] = None) -> dict[str, float]:
@@ -331,7 +358,7 @@ def normalize_objective(model, coefficients_to_skip: list[str] = None) -> dict[s
     return normalized_objective
 
 
-def compare_objectives(objective1, objective2, precision: float = 1e-12) -> bool:
+def compare_objectives(objective1, objective2, precision: float = 1e-12) -> dict[str, int]:
     objective2 = objective2.copy()
     counter_perfect_matches = 0
     partial_matches = []
@@ -346,6 +373,8 @@ def compare_objectives(objective1, objective2, precision: float = 1e-12) -> bool
                     partial_matches.append(f"{name1}: {value1} != {value2}")
                 else:
                     counter_perfect_matches += 1
+                    if counter_perfect_matches % 500 == 0:
+                        printer.information(f"{counter_perfect_matches} coefficients matched perfectly, continue to count...")
                 objective2.pop(name2)
                 found = True
                 break
@@ -369,6 +398,8 @@ def compare_objectives(objective1, objective2, precision: float = 1e-12) -> bool
         for missing in coefficients_missing_in_model2:
             printer.warning(f"Missing in 2: {missing}", prefix="")
 
+    return {"perfect": counter_perfect_matches, "partial": len(partial_matches), "missing in model 1": len(coefficients_missing_in_model1), "missing in model 2": len(coefficients_missing_in_model2)}
+
 
 def compare_mps(file1, file2, check_vars=True, check_constraints=True, print_additional_information=False,
                 constraints_to_skip_from1=None, constraints_to_keep_from1=None, coefficients_to_skip_from1=None,
@@ -377,12 +408,14 @@ def compare_mps(file1, file2, check_vars=True, check_constraints=True, print_add
     model1 = LpProblem.fromMPS(file1)
     model2 = LpProblem.fromMPS(file2)
 
+    comparison_results = {}
+
     # Variables
     if check_vars:
-        vars1 = {(normalize_variable_name(v.name), v.lowBound, v.upBound) for v in model1[1].variables()}
-        vars2 = {(v.name, v.lowBound, v.upBound) for v in model2[1].variables()}
+        vars1 = {(normalize_variable_name(v.name), v.lowBound, v.upBound) for v in model1[1].variables() if v.name not in coefficients_to_skip_from1}
+        vars2 = {(v.name, v.lowBound, v.upBound) for v in model2[1].variables() if v.name not in coefficients_to_skip_from2}
 
-        vars_fixed_to_zero = compare_variables(vars1, vars2)
+        comparison_results['variables'], vars_fixed_to_zero = compare_variables(vars1, vars2)
         coefficients_to_skip_from1.extend(vars_fixed_to_zero)  # Add variables that are fixed to 0 to the list of coefficients to skip
 
     # Constraints
@@ -399,11 +432,50 @@ def compare_mps(file1, file2, check_vars=True, check_constraints=True, print_add
         constraints2 = normalize_constraints(model2, constraints_to_skip=constraints_to_skip_from2, constraints_to_keep=constraints_to_keep_from2, coefficients_to_skip=coefficients_to_skip_from2)
 
         # Check if constraints are the same
-        constraint_check_result = compare_constraints(constraints1, constraints2, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
+        comparison_results['constraints'] = compare_constraints(constraints1, constraints2, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
 
     # Objective
     objective1 = normalize_objective(model1, coefficients_to_skip=coefficients_to_skip_from1)
     objective2 = normalize_objective(model2, coefficients_to_skip=coefficients_to_skip_from2)
-    objective_check_result = compare_objectives(objective1, objective2)
+    comparison_results['coefficients of objective'] = compare_objectives(objective1, objective2)
 
-    printer.success("Done comparing MPS files")
+    # Print results
+    printer.information("\n   ---------   \n\nResults of MPS Comparison:")
+    max_key = 0
+    max_digits_perfect = 0
+    max_digits_partial = 0
+    max_digits_missing1 = 0
+    max_digits_missing2 = 0
+    for key, value in comparison_results.items():
+        max_key = max(max_key, len(key))
+        max_digits_perfect = max(max_digits_perfect, len(str(value["perfect"])))
+        max_digits_partial = max(max_digits_partial, len(str(value["partial"])))
+        max_digits_missing1 = max(max_digits_missing1, len(str(value["missing in model 1"])))
+        max_digits_missing2 = max(max_digits_missing2, len(str(value["missing in model 2"])))
+
+    all_perfect = True
+    for key, value in comparison_results.items():
+        text = f"{key:<{max_key}}: "
+
+        text += f"[green]" if value['perfect'] > 0 else f"[yellow]"
+        text += f"Perfect: {value['perfect']:>{max_digits_perfect}}"
+        text += f"[/green] | " if value['perfect'] > 0 else f"[/yellow] | "
+
+        text += f"[yellow]" if value['partial'] > 0 else f"[green]"
+        text += f"Partial: {value['partial']:>{max_digits_partial}}"
+        text += f"[/yellow] | " if value['partial'] > 0 else f"[/green] | "
+
+        text += f"[red]" if value['missing in model 1'] > 0 else "[green]"
+        text += f"Missing in 1: {value['missing in model 1']:>{max_digits_missing1}}"
+        text += f"[/red] | " if value['missing in model 1'] > 0 else f"[/green] | "
+
+        text += f"[red]" if value['missing in model 2'] > 0 else "[green]"
+        text += f"Missing in 2: {value['missing in model 2']:>{max_digits_missing2}}"
+        text += f"[/red]" if value['missing in model 2'] > 0 else f"[/green]"
+
+        printer.information(text)
+
+        all_perfect = all_perfect and value['partial'] == 0 and value['missing in model 1'] == 0 and value['missing in model 2'] == 0
+
+    if all_perfect:
+        printer.success("All checks passed, no missing or partially matching elements found!")
