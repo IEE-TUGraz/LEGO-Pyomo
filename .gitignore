@@ -16,6 +16,7 @@ LEGO*.log*
 *.opt
 *.log
 *.lxi
+*.gsp
 
 # Model files
 *.mps

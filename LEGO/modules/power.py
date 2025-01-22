@@ -93,7 +93,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
 
     lego.model.vLineInvest = pyo.Var(lego.model.la, lego.model.c, doc='Transmission line investment', domain=pyo.Binary)
     for i, j in lego.model.le:
-        lego.model.vLineInvest[i, j, :].fix(0)  # Set existing lines to not invest
+        lego.model.vLineInvest[i, j, :].fix(0)  # Set existing lines to not investable
 
     lego.model.vGenInvest = pyo.Var(lego.model.g, doc="Integer generation investment", bounds=lambda model, g: (0, model.pMaxInvest[g] * model.pEnabInv[g]))
 
@@ -216,17 +216,13 @@ def add_constraints(lego: LEGO):
         return model.vGenP1[rp, k, g] - model.vGenP1[rp, lego.model.k.prevw(k), g] - model.vCommit[rp, k, g] * model.pRampUp[g]
 
     lego.model.eThRampUp_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.thermalGenerators, rule=eThRampUp_rule)
-    lego.model.eThRampUp = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Ramp up for thermal generators', rule=lambda model, rp, k, t: lego.model.eThRampUp_expr[rp, k, t] <= 0)
+    lego.model.eThRampUp = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Ramp up for thermal generators (based on doi:10.1007/s10107-015-0919-9)', rule=lambda model, rp, k, t: lego.model.eThRampUp_expr[rp, k, t] <= 0)
 
     def eThRampDw_rule(model, rp, k, g):
         return model.vGenP1[rp, k, g] - model.vGenP1[rp, lego.model.k.prevw(k), g] + model.vCommit[rp, lego.model.k.prevw(k), g] * model.pRampDw[g]
 
     lego.model.eThRampDw_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.thermalGenerators, rule=eThRampDw_rule)
-    lego.model.eThRampDw = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Ramp down for thermal generators', rule=lambda model, rp, k, t: lego.model.eThRampDw_expr[rp, k, t] >= 0)
-
-    # Todo: Required when we have circuits:
-    #  eTranInves (i,j,c) $[lc(i,j,c) and pEnableTransNet and ord(c)>1]..
-    #     vLineInvest(i,j,c) =l= vLineInvest(i,j,c-1) + sum[le(i,j,c-1),1];
+    lego.model.eThRampDw = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Ramp down for thermal generators (based on doi:10.1007/s10107-015-0919-9)', rule=lambda model, rp, k, t: lego.model.eThRampDw_expr[rp, k, t] >= 0)
 
     # Thermal Generator production with unit commitment & ramping constraints
     lego.model.eUCTotOut = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Total production of thermal generators (from doi:10.1109/TPWRS.2013.2251373)', rule=lambda model, rp, k, g: model.vGenP[rp, k, g] == model.pMinProd[g] * model.vCommit[rp, k, g] + model.vGenP1[rp, k, g])
