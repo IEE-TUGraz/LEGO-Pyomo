@@ -6,7 +6,7 @@ import pyomo.opt.results.results_
 from pyomo.core import TransformationFactory
 
 from LEGO.CaseStudy import CaseStudy
-from LEGO.modules import storage, power, secondReserve, importExport
+from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits
 from tools.printer import Printer
 
 printer = Printer.getInstance()
@@ -33,6 +33,8 @@ class LEGO:
         secondReserve.add_element_definitions_and_bounds(self)
         if self.cs.dPower_Parameters["pEnablePowerImportExport"]:
             importExport.add_element_definitions_and_bounds(self)
+        if self.cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
+            softLineLoadLimits.add_element_definitions_and_bounds(self)
 
         # Helper Sets for zone of interest
         model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=self.cs.dPower_BusInfo.loc[self.cs.dPower_BusInfo["ZoneOfInterest"] == "yes"].index.tolist(), within=self.model.i)
@@ -44,6 +46,8 @@ class LEGO:
         secondReserve.add_constraints(self)
         if self.cs.dPower_Parameters["pEnablePowerImportExport"]:
             importExport.add_constraints(self)
+        if self.cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
+            softLineLoadLimits.add_constraints(self)
 
         stop_time = time.time()
         self.timings["model_building"] = stop_time - start_time

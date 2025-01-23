@@ -249,7 +249,8 @@ def add_constraints(lego: LEGO):
     def eMinUpTime_rule(model, rp, k, t):
         if model.pMinUpTime[t] == 0:
             raise ValueError("Minimum up time must be at least 1, got 0 instead")
-        else:
+        else:  # Other options: Markov Chains or "Initial value" is variable, TODO: Ask Sonja: IEE Letters (2-3 pages maximum), we want to highlight this: "What to do if you use representative periods, how to link them in minimum up/down time (same for ramping)"
+            # TODO: Check: https://ieeexplore.ieee.org/abstract/document/8610245
             return sum(model.vStartup[rp, k2, t] for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k))) <= model.vCommit[rp, k, t]
 
     lego.model.eMinUpTime = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Minimum up time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=eMinUpTime_rule)

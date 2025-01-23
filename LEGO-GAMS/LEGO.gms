@@ -430,7 +430,7 @@ positive  variables
    v2ndResDW       (rp,k,g        ) "2nd res. down allocation                                    [GW   ]"
    vGenP           (rp,k,g        ) "Real power gen. of the unit                                 [GW   ]"
    vGenP1          (rp,k,g        ) "Real power gen. of the unit > minload                       [GW   ]"
-   vSlack          (rp,k,i,i,c    ) "line loading exceeding line load limit                      [GW   ]"
+   vLineOverload   (rp,k,i,i,c    ) "line loading exceeding line load limit                      [%    ]"
    vDSM_Up         (rp,k,i,sec    ) "Demand-side managment Up (shifting)                         [GW   ]"
    vDSM_Dn         (rp,k,i,sec    ) "Demand-side managment Down (shifting)                       [GW   ]"
    vDSM_Shed       (rp,k,i,seg    ) "Price-responsiv Demand-side managment (shed)                [GW   ]"
@@ -1758,11 +1758,11 @@ $onFold // Declaration DC Power Flow Constraints -------------------------------
    eDC_CanLinePij2(rp,k,i,i,c)  "candidate lines DC power flow                     [GW ]"
    eDC_LimCanLine1(rp,k,i,i,c)  "candidate lines DC power flow                     [GW ]"
    eDC_LimCanLine2(rp,k,i,i,c)  "candidate lines DC power flow                     [GW ]"
-   eLLL_Line1     (rp,k,i,i,c)  "postive  soft limit for line load existing  lines [GW ]"
-   eLLL_Line2     (rp,k,i,i,c)  "negative soft limit for line load existing  lines [GW ]"
-   eLLL_Can_Line1 (rp,k,i,i,c)  "postive  soft limit for line load candidate lines [GW ]"
-   eLLL_Can_Line2 (rp,k,i,i,c)  "negative soft limit for line load candidate lines [GW ]"
-   eLLL_Can_Line3 (rp,k,i,i,c)  "              limit for slack var candidate lines [GW ]"
+   eSoftLineLoadLimitPos   (rp,k,i,i,c)  "postive  soft limit for line load existing  lines [GW ]"
+   eSoftLineLoadLimitNeg   (rp,k,i,i,c)  "negative soft limit for line load existing  lines [GW ]"
+   eSoftLineLoadLimitCanPos(rp,k,i,i,c)  "postive  soft limit for line load candidate lines [GW ]"
+   eSoftLineLoadLimitCanNeg(rp,k,i,i,c)  "negative soft limit for line load candidate lines [GW ]"
+   eSoftLineLoadLimitCanInv(rp,k,i,i,c)  "              limit for slack var candidate lines [GW ]"
    
 $offFold
 
@@ -1966,7 +1966,7 @@ $endIf.H2
 *  - sum[(rp,k,lbz(j,i,c))            ,                                                    vLineP(rp,k,j,i,c) * pPriceImpExp(rp,k,i)$[pMaxImport(rp,k,i) > 0]]
 *   - sum[(rpk(rp,k),i,j,c)$[lbz (i,j,c) and rpkimp(rp,k,j)], pWeight_rp(rp)*pWeight_k(k) * vLineP(rp,k,i,j,c) * pPriceImpExp(rp,k,j)]
 * virtual cost for exceeding maximum power line loading
-   + sum[(rpk(rp,k),i,j,c), pWeight_rp(rp)*pWeight_k(k)*vSlack(rp,k,i,j,c)*pLOLCost] $[pEnableMaxLineLoad]
+   + sum[(rpk(rp,k),i,j,c), pWeight_rp(rp)*pWeight_k(k)*vLineOverload(rp,k,i,j,c)*pLOLCost] $[pEnableMaxLineLoad]
 * virtual cost for exporting to minimize ring flows
 $ifThenE.ZonalPricing (%pEnablePower%=1)and(%pEnableZP%=1)
    + sum[(rpk(rp,k),NTCe(z,y)), vExpZP(rp,k,z,y)*pWeight_rp(rp)*pWeight_k(k) * pNTCCost] $[pEnableZP]
@@ -2000,12 +2000,12 @@ $endIf.H2
 e2ReserveUp(rpk(rp,k))$[p2ndResUp].. sum[t, v2ndResUP(rp,k,t) * max(pExisUnits(t), tThermalGen(t,'EnableInvest'))] + sum[s, v2ndResUP(rp,k,s)] =g= p2ndResUp * sum[i, pDemandP(rp,k,i)] ;
 e2ReserveDw(rpk(rp,k))$[p2ndResDw].. sum[t, v2ndResDW(rp,k,t) * max(pExisUnits(t), tThermalGen(t,'EnableInvest'))] + sum[s, v2ndResDW(rp,k,s)] =g= p2ndResDw * sum[i, pDemandP(rp,k,i)] ;
 
-eLLL_Line1       (rpk(rp,k),le(i,j,c))$[pEnableMaxLineLoad].. vLineP(rp,k,i,j,c) =l=  pPmax(i,j,c)       * pMaxLineLoad + vSlack(rp,k,i,j,c) * pPmax(i,j,c);
-eLLL_Line2       (rpk(rp,k),le(i,j,c))$[pEnableMaxLineLoad].. vLineP(rp,k,i,j,c) =g= -pPmax(i,j,c)       * pMaxLineLoad - vSlack(rp,k,i,j,c) * pPmax(i,j,c);
+eSoftLineLoadLimitPos   (rpk(rp,k),le(i,j,c))$[pEnableMaxLineLoad].. vLineP(rp,k,i,j,c) =l=  pPmax(i,j,c)       * pMaxLineLoad + vLineOverload(rp,k,i,j,c) * pPmax(i,j,c);
+eSoftLineLoadLimitNeg   (rpk(rp,k),le(i,j,c))$[pEnableMaxLineLoad].. vLineP(rp,k,i,j,c) =g= -pPmax(i,j,c)       * pMaxLineLoad - vLineOverload(rp,k,i,j,c) * pPmax(i,j,c);
 
-eLLL_Can_Line1   (rpk(rp,k),lc(i,j,c))$[pEnableMaxLineLoad].. vLineP(rp,k,i,j,c) =l=  pPmax(i,j,c)       * pMaxLineLoad * vLineInvest(i,j,c) + vSlack(rp,k,i,j,c) * pPmax(i,j,c);
-eLLL_Can_Line2   (rpk(rp,k),lc(i,j,c))$[pEnableMaxLineLoad].. vLineP(rp,k,i,j,c) =g= -pPmax(i,j,c)       * pMaxLineLoad * vLineInvest(i,j,c) - vSlack(rp,k,i,j,c) * pPmax(i,j,c);
-eLLL_Can_Line3   (rpk(rp,k),lc(i,j,c))$[pEnableMaxLineLoad].. vLineInvest(i,j,c) =g=  vSlack(rp,k,i,j,c) / pPmax(i,j,c);
+eSoftLineLoadLimitCanPos(rpk(rp,k),lc(i,j,c))$[pEnableMaxLineLoad].. vLineP(rp,k,i,j,c) =l=  pPmax(i,j,c)       * pMaxLineLoad * vLineInvest(i,j,c) + vLineOverload(rp,k,i,j,c) * pPmax(i,j,c);
+eSoftLineLoadLimitCanNeg(rpk(rp,k),lc(i,j,c))$[pEnableMaxLineLoad].. vLineP(rp,k,i,j,c) =g= -pPmax(i,j,c)       * pMaxLineLoad * vLineInvest(i,j,c) - vLineOverload(rp,k,i,j,c) * pPmax(i,j,c);
+eSoftLineLoadLimitCanInv(rpk(rp,k),lc(i,j,c))$[pEnableMaxLineLoad].. vLineInvest(i,j,c) =g=  vLineOverload(rp,k,i,j,c) / (1 - pMaxLineLoad);
 
 $offFold
 
@@ -3264,7 +3264,7 @@ vSOCP_sij.lo(rpk(rp,k),i,j  ) $[isLe(i,j)] =        -sqr[pBusMaxV(i)]  ;
 vAngle.up(rpk(rp,k),i,j,c   ) $[la(i,j,c)] =  pAngle(i,j,c);
 vAngle.lo(rpk(rp,k),i,j,c   ) $[la(i,j,c)] = -pAngle(i,j,c);
 
-vSlack.up(rpk(rp,k),i,j,c   ) $[isLe(i,j)or isLc(i,j)] = 1 - pMaxLineLoad ;
+vLineOverload.up(rpk(rp,k),i,j,c) $[isLe(i,j)or isLc(i,j)] = 1 - pMaxLineLoad ;
 
 * slack bus voltage and angle
 vSOCP_cii.fx(rpk(rp,k),is)$[    pEnableSOCP] = sqr[pSlackVoltage] ;

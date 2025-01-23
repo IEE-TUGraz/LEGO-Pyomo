@@ -153,7 +153,7 @@ class CaseStudy:
         dPower_Parameters = dPower_Parameters.dropna(how="all")
         dPower_Parameters = dPower_Parameters.set_index('General')
 
-        self.yesNo_to_bool(dPower_Parameters, ['pEnableChDisPower', 'pFixStInterResToIniReserve', 'pEnablePowerImportExport'])
+        self.yesNo_to_bool(dPower_Parameters, ['pEnableChDisPower', 'pFixStInterResToIniReserve', 'pEnablePowerImportExport', 'pEnableSoftLineLoadLimits'])
 
         # Transform to make it easier to access values
         dPower_Parameters = dPower_Parameters.drop(dPower_Parameters.columns[1:], axis=1)  # Drop all columns but "Value" (rest is just for information in the Excel)
@@ -163,6 +163,7 @@ class CaseStudy:
         dPower_Parameters["pMaxAngleDCOPF"] = dPower_Parameters["pMaxAngleDCOPF"] * np.pi / 180  # Convert angle from degrees to radians
         dPower_Parameters["pSBase"] *= 1e-3
         dPower_Parameters["pENSCost"] *= 1e-3
+        dPower_Parameters["pLOLCost"] *= 1e-3
 
         return dPower_Parameters
 
