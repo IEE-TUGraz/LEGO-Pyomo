@@ -194,7 +194,7 @@ class CaseStudy:
         dPower_Network["FixedCostEUR"] = dPower_Network["FixedCost"].fillna(0) * dPower_Network["FxChargeRate"].fillna(0)
         dPower_Network["Pmax"] *= 1e-3
 
-        dPower_Network = dPower_Network.set_index(['i', 'j'])
+        dPower_Network = dPower_Network.set_index(['i', 'j', 'Circuit ID'])
         return dPower_Network
 
     def get_dPower_ThermalGen(self):

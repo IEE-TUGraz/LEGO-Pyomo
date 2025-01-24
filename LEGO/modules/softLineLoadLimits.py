@@ -10,7 +10,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.pLOLCost = pyo.Param(doc='Cost of exceeding line load limit [€/MWh]', initialize=lego.cs.dPower_Parameters["pLOLCost"])
 
     # Variables
-    lego.model.vLineOverload = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, doc='Line overload [% above Pmax]', bounds=lambda model, rp, k, la: (0, 1 - model.pMaxLineLoad))
+    lego.model.vLineOverload = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, doc='Line overload [% above Pmax]', bounds=lambda model, rp, k, i, j, c: (0, 1 - model.pMaxLineLoad))
 
     # Checks
     if not 0 <= pyo.value(lego.model.pMaxLineLoad) <= 1:
@@ -36,4 +36,4 @@ def add_constraints(lego: LEGO):
                                                          rule=lambda model, rp, k, i, j, c: model.vLineInvest[i, j, c] >= model.vLineOverload[rp, k, i, j, c] / (1 - model.pMaxLineLoad))
 
     # Add cost when exceeding soft line load limit
-    lego.model.objective.expr += sum(lego.model.pWeight_rp(rp) * lego.model.pWeight_k(k) * lego.model.vLineOverload(rp, k, i, j, c) * lego.model.pLOLCost for rp in lego.model.rp for k in lego.model.k for i, j, c in lego.model.ca)
+    lego.model.objective.expr += sum(lego.model.pWeight_rp[rp] * lego.model.pWeight_k[k] * lego.model.vLineOverload[rp, k, i, j, c] * lego.model.pLOLCost for rp in lego.model.rp for k in lego.model.k for i, j, c in lego.model.la)

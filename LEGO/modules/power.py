@@ -10,11 +10,11 @@ def add_element_definitions_and_bounds(lego: LEGO):
     # Sets
     lego.model.i = pyo.Set(doc='Buses', initialize=lego.cs.dPower_BusInfo.index.tolist())
 
-    lego.model.la = pyo.Set(doc='All lines', initialize=lego.cs.dPower_Network[lego.cs.dPower_Network["InService"] == 1].index.tolist(), within=lego.model.i * lego.model.i)
+    lego.model.c = pyo.Set(doc='Circuits', initialize=lego.cs.dPower_Network.index.get_level_values('Circuit ID').unique().tolist())
+    lego.model.la = pyo.Set(doc='All lines', initialize=lego.cs.dPower_Network[lego.cs.dPower_Network["InService"] == 1].index.tolist(), within=lego.model.i * lego.model.i * lego.model.c)
     lego.model.le = pyo.Set(doc='Existing lines', initialize=lego.cs.dPower_Network[(lego.cs.dPower_Network["InService"] == 1) & (lego.cs.dPower_Network["FixedCostEUR"] == 0)].index.tolist(), within=lego.model.la)
     lego.model.lc = pyo.Set(doc='Candidate lines', initialize=lego.cs.dPower_Network[(lego.cs.dPower_Network["InService"] == 1) & (lego.cs.dPower_Network["FixedCostEUR"] > 0)].index.tolist(), within=lego.model.la)
 
-    lego.model.c = pyo.Set(doc='Circuits', initialize=lego.cs.dPower_Network["Circuit ID"].unique())
     lego.model.thermalGenerators = pyo.Set(doc='Thermal Generators', initialize=lego.cs.dPower_ThermalGen.index.tolist())
     lego.model.rorGenerators = pyo.Set(doc='Run-of-river generators', initialize=lego.cs.dPower_RoR.index.tolist())
     lego.model.vresGenerators = pyo.Set(doc='Variable renewable energy sources', initialize=lego.cs.dPower_VRES.index.tolist())
@@ -56,11 +56,11 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.pRampUp = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['RampUp'], doc='Ramp up of thermal generator g')
     lego.model.pRampDw = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['RampDw'], doc='Ramp down of thermal generator g')
 
-    lego.model.pXline = pyo.Param(lego.model.la, lego.model.c, initialize=lego.cs.dPower_Network.reset_index().set_index(["i", "j", "Circuit ID"]).query("InService == 1")['X'], doc='Reactance of line la')
-    lego.model.pAngle = pyo.Param(lego.model.la, lego.model.c, initialize=lego.cs.dPower_Network.reset_index().set_index(["i", "j", "Circuit ID"]).query("InService == 1")['TapAngle'] * np.pi / 180, doc='Transformer angle shift')
-    lego.model.pRatio = pyo.Param(lego.model.la, lego.model.c, initialize=lego.cs.dPower_Network.reset_index().set_index(["i", "j", "Circuit ID"]).query("InService == 1")['TapRatio'], doc='Transformer ratio')
-    lego.model.pPmax = pyo.Param(lego.model.la, lego.model.c, initialize=lego.cs.dPower_Network.reset_index().set_index(["i", "j", "Circuit ID"]).query("InService == 1")['Pmax'], doc='Maximum power flow on line la')
-    lego.model.pFixedCost = pyo.Param(lego.model.la, lego.model.c, initialize=lego.cs.dPower_Network.reset_index().set_index(["i", "j", "Circuit ID"]).query("InService == 1")['FixedCostEUR'], doc='Fixed cost when investing in line la')
+    lego.model.pXline = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network.query("InService == 1")['X'], doc='Reactance of line la')
+    lego.model.pAngle = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network.query("InService == 1")['TapAngle'] * np.pi / 180, doc='Transformer angle shift')
+    lego.model.pRatio = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network.query("InService == 1")['TapRatio'], doc='Transformer ratio')
+    lego.model.pPmax = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network.query("InService == 1")['Pmax'], doc='Maximum power flow on line la')
+    lego.model.pFixedCost = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network.query("InService == 1")['FixedCostEUR'], doc='Fixed cost when investing in line la')
     lego.model.pSBase = pyo.Param(initialize=lego.cs.dPower_Parameters['pSBase'], doc='Base power')
     lego.model.pBigM_Flow = pyo.Param(initialize=1e3, doc="Big M for power flow")
     lego.model.pENSCost = pyo.Param(initialize=lego.cs.dPower_Parameters['pENSCost'], doc='Cost used for Power Not Served (PNS) and Excess Power Served (EPS)')
@@ -82,18 +82,17 @@ def add_element_definitions_and_bounds(lego: LEGO):
 
     # Variables
     lego.model.vTheta = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Angle of bus i', bounds=(-lego.cs.dPower_Parameters["pMaxAngleDCOPF"], lego.cs.dPower_Parameters["pMaxAngleDCOPF"]))  # TODO: Discuss impact on runtime etc.(based on discussion with Prof. Renner)
-    lego.model.vAngle = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, lego.model.c, doc='Angle phase shifting transformer')
-    for i, j in lego.model.la:
-        for c in lego.model.c:
-            if lego.model.pAngle[i, j, c] == 0:
-                lego.model.vAngle[:, :, i, j, c].fix(0)
-            else:
-                lego.model.vAngle[:, :, i, j, c].setub(lego.model.pAngle[i, j, c])
-                lego.model.vAngle[:, :, i, j, c].setlb(-lego.model.pAngle[i, j, c])
+    lego.model.vAngle = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, doc='Angle phase shifting transformer')
+    for i, j, c in lego.model.la:
+        if lego.model.pAngle[i, j, c] == 0:
+            lego.model.vAngle[:, :, i, j, c].fix(0)
+        else:
+            lego.model.vAngle[:, :, i, j, c].setub(lego.model.pAngle[i, j, c])
+            lego.model.vAngle[:, :, i, j, c].setlb(-lego.model.pAngle[i, j, c])
 
-    lego.model.vLineInvest = pyo.Var(lego.model.la, lego.model.c, doc='Transmission line investment', domain=pyo.Binary)
-    for i, j in lego.model.le:
-        lego.model.vLineInvest[i, j, :].fix(0)  # Set existing lines to not investable
+    lego.model.vLineInvest = pyo.Var(lego.model.la, doc='Transmission line investment', domain=pyo.Binary)
+    for i, j, c in lego.model.le:
+        lego.model.vLineInvest[i, j, c].fix(0)  # Set existing lines to not investable
 
     lego.model.vGenInvest = pyo.Var(lego.model.g, doc="Integer generation investment", bounds=lambda model, g: (0, model.pMaxInvest[g] * model.pEnabInv[g]))
 
@@ -101,7 +100,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     dDCOPFIslands = pd.DataFrame(index=lego.cs.dPower_BusInfo.index, columns=[lego.cs.dPower_BusInfo.index], data=False)
 
     for index, entry in lego.cs.dPower_Network.iterrows():
-        if lego.cs.dPower_Network.loc[(index[0], index[1])]["Technical Representation"] == "DC-OPF":
+        if lego.cs.dPower_Network.loc[(index[0], index[1], index[2])]["Technical Representation"] == "DC-OPF":
             dDCOPFIslands.loc[index[0], index[1]] = True
             dDCOPFIslands.loc[index[1], index[0]] = True
 
@@ -144,13 +143,12 @@ def add_element_definitions_and_bounds(lego: LEGO):
             for k in lego.model.k:
                 lego.model.vGenP[rp, k, g].setub((lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])) * lego.cs.dPower_VRESProfiles.loc[rp, lego.cs.dPower_VRES.loc[g, 'i'], k, lego.cs.dPower_VRES.loc[g, 'tec']]['Capacity']))
 
-    lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, lego.model.c, doc='Power flow from bus i to j', bounds=(None, None))
-    for (i, j) in lego.model.la:
-        match lego.cs.dPower_Network.loc[i, j]["Technical Representation"]:
+    lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, doc='Power flow from bus i to j', bounds=(None, None))
+    for (i, j, c) in lego.model.la:
+        match lego.cs.dPower_Network.loc[i, j, c]["Technical Representation"]:
             case "DC-OPF" | "TP":
-                for c in lego.model.c:
-                    lego.model.vLineP[:, :, (i, j), c].setlb(-lego.model.pPmax[i, j, c])
-                    lego.model.vLineP[:, :, (i, j), c].setub(lego.model.pPmax[i, j, c])
+                lego.model.vLineP[:, :, (i, j), c].setlb(-lego.model.pPmax[i, j, c])
+                lego.model.vLineP[:, :, (i, j), c].setub(lego.model.pPmax[i, j, c])
             case "SN":
                 assert False  # "SN" line found, although all "Single Node" buses should be merged
             case _:
@@ -163,8 +161,8 @@ def add_constraints(lego: LEGO):
     # Power balance for nodes
     def eDC_BalanceP_rule(model, rp, k, i):
         return (sum(model.vGenP[rp, k, g] for g in model.g if (g, i) in model.gi) -  # Production of generators at bus i
-                sum(model.vLineP[rp, k, e, c] for c in model.c for e in model.la if (e[0] == i)) +  # Power flow from bus i to bus j
-                sum(model.vLineP[rp, k, e, c] for c in model.c for e in model.la if (e[1] == i)) -  # Power flow from bus j to bus i
+                sum(model.vLineP[rp, k, e] for e in model.la if (e[0] == i)) +  # Power flow from bus i to bus j
+                sum(model.vLineP[rp, k, e] for e in model.la if (e[1] == i)) -  # Power flow from bus j to bus i
                 model.pDemandP[rp, k, i] +  # Demand at bus i
                 model.vPNS[rp, k, i] -  # Slack variable for demand not served
                 model.vEPS[rp, k, i])  # Slack variable for overproduction
@@ -174,7 +172,7 @@ def add_constraints(lego: LEGO):
     lego.model.eDC_BalanceP = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.i, doc='Power balance constraint for each bus', rule=lambda model, rp, k, i: lego.model.eDC_BalanceP_expr[rp, k, i] == 0)
 
     def eDC_ExiLinePij_rule(model, rp, k, i, j, c):
-        match lego.cs.dPower_Network.loc[i, j]["Technical Representation"]:
+        match lego.cs.dPower_Network.loc[i, j, c]["Technical Representation"]:
             case "DC-OPF":
                 return model.vLineP[rp, k, i, j, c] == (model.vTheta[rp, k, i] - model.vTheta[rp, k, j] + model.vAngle[rp, k, i, j, c]) * model.pSBase / (model.pXline[i, j, c] * model.pRatio[i, j, c])
             case "TP" | "SN":
@@ -183,27 +181,27 @@ def add_constraints(lego: LEGO):
                 raise ValueError(f"Technical representation '{lego.cs.dPower_Network.loc[i, j]["Technical Representation"]}' "
                                  f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
 
-    lego.model.eDC_ExiLinePij = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le, lego.model.c, doc="Power flow existing lines (for DC-OPF)", rule=eDC_ExiLinePij_rule)
+    lego.model.eDC_ExiLinePij = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le, doc="Power flow existing lines (for DC-OPF)", rule=eDC_ExiLinePij_rule)
 
     def eDC_CanLinePij1_rule(model, rp, k, i, j, c):
         return model.vLineP[rp, k, i, j, c] / (model.pBigM_Flow * model.pPmax[i, j, c]) >= (model.vTheta[rp, k, i] - model.vTheta[rp, k, j] + model.vAngle[rp, k, i, j, c]) * model.pSBase / (model.pXline[i, j, c] * model.pRatio[i, j, c]) / (model.pBigM_Flow * model.pPmax[i, j, c]) - 1 + model.vLineInvest[i, j, c]
 
-    lego.model.eDC_CanLinePij1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, lego.model.c, doc="Power flow candidate lines (for DC-OPF)", rule=eDC_CanLinePij1_rule)
+    lego.model.eDC_CanLinePij1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, doc="Power flow candidate lines (for DC-OPF)", rule=eDC_CanLinePij1_rule)
 
     def eDC_CanLinePij2_rule(model, rp, k, i, j, c):
         return model.vLineP[rp, k, i, j, c] / (model.pBigM_Flow * model.pPmax[i, j, c]) <= (model.vTheta[rp, k, i] - model.vTheta[rp, k, j] + model.vAngle[rp, k, i, j, c]) * model.pSBase / (model.pXline[i, j, c] * model.pRatio[i, j, c]) / (model.pBigM_Flow * model.pPmax[i, j, c]) + 1 - model.vLineInvest[i, j, c]
 
-    lego.model.eDC_CanLinePij2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, lego.model.c, doc="Power flow candidate lines (for DC-OPF)", rule=eDC_CanLinePij2_rule)
+    lego.model.eDC_CanLinePij2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, doc="Power flow candidate lines (for DC-OPF)", rule=eDC_CanLinePij2_rule)
 
     def eDC_LimCanLine1_rule(model, rp, k, i, j, c):
         return model.vLineP[rp, k, i, j, c] / model.pPmax[i, j, c] + model.vLineInvest[i, j, c] >= 0
 
-    lego.model.eDC_LimCanLine1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, lego.model.c, doc="Power flow limit reverse direction for candidate lines (for DC-OPF)", rule=eDC_LimCanLine1_rule)
+    lego.model.eDC_LimCanLine1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, doc="Power flow limit reverse direction for candidate lines (for DC-OPF)", rule=eDC_LimCanLine1_rule)
 
     def eDC_LimCanLine2_rule(model, rp, k, i, j, c):
         return model.vLineP[rp, k, i, j, c] / model.pPmax[i, j, c] - model.vLineInvest[i, j, c] <= 0
 
-    lego.model.eDC_LimCanLine2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, lego.model.c, doc="Power flow limit standard direction for candidate lines (for DC-OPF)", rule=eDC_LimCanLine2_rule)
+    lego.model.eDC_LimCanLine2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, doc="Power flow limit standard direction for candidate lines (for DC-OPF)", rule=eDC_LimCanLine2_rule)
 
     def eReMaxProd_rule(model, rp, k, r):
         capacity = lego.cs.dPower_VRESProfiles.loc[rp, lego.cs.dPower_VRES.loc[r, 'i'], k, lego.cs.dPower_VRES.loc[r, 'tec']]['Capacity']
@@ -269,5 +267,5 @@ def add_constraints(lego: LEGO):
                                                                                                                     sum(lego.model.vStartup[rp, k, t] * lego.model.pStartupCost[t] * lego.model.pWeight_rp[rp] * lego.model.pWeight_k[k] for rp in lego.model.rp for k in lego.model.k for t in lego.model.thermalGenerators) +  # Startup cost of thermal generators
                                                                                                                     sum(lego.model.vCommit[rp, k, t] * lego.model.pInterVarCost[t] * lego.model.pWeight_rp[rp] * lego.model.pWeight_k[k] for rp in lego.model.rp for k in lego.model.k for t in lego.model.thermalGenerators) +  # Commit cost of thermal generators
                                                                                                                     sum(lego.model.vGenP[rp, k, g] * lego.model.pOMVarCost[g] * lego.model.pWeight_rp[rp] * lego.model.pWeight_k[k] for rp in lego.model.rp for k in lego.model.k for g in lego.model.g) +  # Production cost of generators
-                                                                                                                    sum(lego.model.pFixedCost[i, j, c] * lego.model.vLineInvest[i, j, c] for i, j in lego.model.lc for c in lego.model.c) +  # Investment cost of transmission lines
+                                                                                                                    sum(lego.model.pFixedCost[i, j, c] * lego.model.vLineInvest[i, j, c] for i, j, c in lego.model.lc) +  # Investment cost of transmission lines
                                                                                                                     sum(lego.model.pInvestCost[g] * lego.model.vGenInvest[g] for g in lego.model.g))  # Investment cost of generators
