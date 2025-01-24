@@ -83,7 +83,7 @@ if execute_gams:
         timing = stop_time - start_time
         printer.information(f"Executing GAMS took {timing:.2f} seconds")
 
-        with open("LEGO-Gams/LEGO.log", "r") as file:
+        with open("LEGO-Gams/gams_console.log", "r") as file:
             for line in file:
                 if "Objective:" in line:
                     objective_value_gams = float(line.split()[-1])

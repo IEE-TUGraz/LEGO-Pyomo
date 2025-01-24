@@ -225,7 +225,7 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
                             status = "Perfect match"
                             counter_perfectly_matched_constraints += 1
                             if print_additional_information:
-                                printer.information(f"Perfect match (differing by factor -1) found for constraint {constraint_name1}: {constraint1}")
+                                printer.information(f"Perfect match (differing by factor -1) found for constraint {constraint_name1}: \nmodel1: {constraint1}\n model2: {constraint2}")
                         else:
                             if counter_perfectly_matched_constraints > 0:
                                 printer.success(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
