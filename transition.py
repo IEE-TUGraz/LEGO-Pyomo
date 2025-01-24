@@ -29,6 +29,17 @@ check_vars = True
 check_constraints = True
 print_additional_information = False
 
+constraints_to_skip_from1 = ["eMinUpTime", "eMinDownTime",  # Not implemented in LEGO-GAMS
+                             "ONE_VAR",  # Is created when using import/export (which is implemented differently in LEGO-GAMS)
+                             ]
+constraints_to_keep_from1 = []
+coefficients_to_skip_from1 = []
+
+constraints_to_skip_from2 = []
+constraints_to_keep_from2 = []
+coefficients_to_skip_from2 = ["constobj"]  # Some empty residual coefficient in objective function
+constraints_to_enforce_from2 = [""]
+
 ########################################################################################################################
 # Re-run with GAMS
 ########################################################################################################################
@@ -115,17 +126,6 @@ if execute_pyomo:
                 log_infeasible_constraints(model)
             case _:
                 print("Solver terminated with condition:", results.solver.termination_condition)
-
-constraints_to_skip_from1 = ["eMinUpTime", "eMinDownTime",  # Not implemented in LEGO-GAMS
-                             "ONE_VAR",  # Is created when using import/export (which is implemented differently in LEGO-GAMS)
-                             ]
-constraints_to_keep_from1 = None
-coefficients_to_skip_from1 = []
-
-constraints_to_skip_from2 = []
-constraints_to_keep_from2 = []
-coefficients_to_skip_from2 = ["constobj"]  # Some empty residual coefficient in objective function
-constraints_to_enforce_from2 = [""]
 
 if comparison_mps:
     compare_mps("model.mps", "LEGO-GAMS/LEGO-GAMS.mps", check_vars=check_vars, check_constraints=check_constraints, print_additional_information=print_additional_information,

@@ -1966,7 +1966,7 @@ $endIf.H2
 *  - sum[(rp,k,lbz(j,i,c))            ,                                                    vLineP(rp,k,j,i,c) * pPriceImpExp(rp,k,i)$[pMaxImport(rp,k,i) > 0]]
 *   - sum[(rpk(rp,k),i,j,c)$[lbz (i,j,c) and rpkimp(rp,k,j)], pWeight_rp(rp)*pWeight_k(k) * vLineP(rp,k,i,j,c) * pPriceImpExp(rp,k,j)]
 * virtual cost for exceeding maximum power line loading
-   + sum[(rpk(rp,k),i,j,c), pWeight_rp(rp)*pWeight_k(k)*vLineOverload(rp,k,i,j,c)*pLOLCost] $[pEnableMaxLineLoad]
+   + sum[(rpk(rp,k),i,j,c) $[isLe(i,j) or isLc(i,j)], pWeight_rp(rp)*pWeight_k(k)*vLineOverload(rp,k,i,j,c)*pLOLCost] $[pEnableMaxLineLoad]
 * virtual cost for exporting to minimize ring flows
 $ifThenE.ZonalPricing (%pEnablePower%=1)and(%pEnableZP%=1)
    + sum[(rpk(rp,k),NTCe(z,y)), vExpZP(rp,k,z,y)*pWeight_rp(rp)*pWeight_k(k) * pNTCCost] $[pEnableZP]

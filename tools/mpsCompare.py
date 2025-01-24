@@ -181,6 +181,7 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
 
                 partial_match_coefficients1 = {}
                 partial_match_coefficients2 = {}
+                coefficients_off_by_minus_one = 0  # Counter for coefficients that differ by a factor of -1
                 for coefficient_name1, coefficient_value1 in constraint1.items():
                     if coefficient_name1 not in constraint2:
                         status = "Coefficient name mismatch"
@@ -188,14 +189,16 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
 
                     if ((isinstance(coefficient_value1, int) or isinstance(coefficient_value1, float)) and
                             (isinstance(constraint2[coefficient_name1], int) or isinstance(constraint2[coefficient_name1], float))):  # If both values are numeric
-                        coefficient_value1 = abs(float(coefficient_value1))
-                        coefficient_value2 = abs(float(constraint2[coefficient_name1]))
+                        coefficient_value1 = float(coefficient_value1)
+                        coefficient_value2 = float(constraint2[coefficient_name1])
                         if coefficient_value1 == 0:
                             if abs(coefficient_value2) > precision:  # If coefficient_value1 == 0, check if coefficient_value2 is sufficiently small
                                 status = "Coefficient values differ"
                                 partial_match_coefficients1[coefficient_name1] = coefficient_value1
                                 partial_match_coefficients2[coefficient_name1] = coefficient_value2
                         elif abs((coefficient_value1 - coefficient_value2) / coefficient_value1) > precision:
+                            if abs(((coefficient_value1 * -1) - coefficient_value2) / coefficient_value1) <= precision:  # Check if it's just a sign difference
+                                coefficients_off_by_minus_one += 1
                             status = "Coefficient values differ"
                             partial_match_coefficients1[coefficient_name1] = coefficient_value1
                             partial_match_coefficients2[coefficient_name1] = coefficient_value2
@@ -214,15 +217,25 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
                         constraint_dicts2[length].pop(constraint_name2)
                         break
                     case "Coefficient values differ":
-                        if counter_perfectly_matched_constraints > 0:
-                            printer.success(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
-                            counter_perfect_total += counter_perfectly_matched_constraints
-                            counter_perfectly_matched_constraints = 0
-                        printer.warning(f"Found partial match (factors differ by more than {precision * 100}%):")
-                        printer.information(f"model1 {constraint_name1}: {partial_match_coefficients1}", hard_wrap_chars="[...]")
-                        printer.information(f"model2 {constraint_name2}: {partial_match_coefficients2}", hard_wrap_chars="[...]")
+                        # Check if all coefficients only differ by a factor of -1 and the sense is opposite -> Then they are equivalent
+                        if (coefficients_off_by_minus_one == len(constraint1) - 2 and  # -2 because we have the constant and the sense
+                                ((constraint1['sense'] == '>=' and constraint2['sense'] == '<=') or
+                                 (constraint1['sense'] == '<=' and constraint2['sense'] == '>=') or
+                                 (constraint1['sense'] == '=' and constraint2['sense'] == '='))):
+                            status = "Perfect match"
+                            counter_perfectly_matched_constraints += 1
+                            if print_additional_information:
+                                printer.information(f"Perfect match (differing by factor -1) found for constraint {constraint_name1}: {constraint1}")
+                        else:
+                            if counter_perfectly_matched_constraints > 0:
+                                printer.success(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
+                                counter_perfect_total += counter_perfectly_matched_constraints
+                                counter_perfectly_matched_constraints = 0
+                            printer.warning(f"Found partial match (factors differ by more than {precision * 100}%):")
+                            printer.information(f"model1 {constraint_name1}: {partial_match_coefficients1}", hard_wrap_chars="[...]")
+                            printer.information(f"model2 {constraint_name2}: {partial_match_coefficients2}", hard_wrap_chars="[...]")
+                            counter_partial_total += 1
                         constraint_dicts2[length].pop(constraint_name2)
-                        counter_partial_total += 1
                         break
                     case "Coefficient name mismatch":
                         continue
@@ -404,6 +417,24 @@ def compare_objectives(objective1, objective2, precision: float = 1e-12) -> dict
 def compare_mps(file1, file2, check_vars=True, check_constraints=True, print_additional_information=False,
                 constraints_to_skip_from1=None, constraints_to_keep_from1=None, coefficients_to_skip_from1=None,
                 constraints_to_skip_from2=None, constraints_to_keep_from2=None, coefficients_to_skip_from2=None, constraints_to_enforce_from2=None):
+    # Safety before more expensive operations start
+    if check_constraints:
+        # If any of enforce is in skip, raise error
+        if len(constraints_to_skip_from2) and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)):
+            raise ValueError(f"constraints_to_skip_from2 contains elements of constraints_to_enforce_from2: {set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)}")
+
+        # If any of enforce is not in keep, raise error
+        if len(constraints_to_keep_from2) and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).intersection(constraints_to_keep_from2)):
+            raise ValueError(f"constraints_to_keep_from2 is missing elements of constraints_to_enforce_from2: {set(constraints_to_keep_from2).difference(constraints_to_enforce_from2)}")
+
+        if len(constraints_to_skip_from1) and len(constraints_to_keep_from1):
+            printer.warning("Ignoring 'constraints_to_skip_from1' since 'constraints_to_keep_from1' is set!")
+            constraints_to_skip_from1 = None
+
+        if len(constraints_to_skip_from2) and len(constraints_to_keep_from2):
+            printer.warning("Ignoring 'constraints_to_skip_from2' since 'constraints_to_keep_from2' is set!")
+            constraints_to_skip_from2 = None
+
     # Load MPS files
     model1 = LpProblem.fromMPS(file1)
     model2 = LpProblem.fromMPS(file2)
