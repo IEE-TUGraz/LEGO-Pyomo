@@ -1,0 +1,10 @@
+# .gitattributes defines standard line endings for files in this repository
+
+# Auto-detect binaries (should not be modified)
+* text=auto
+
+# By default, have all text files with LF line-endings
+*.* text eol=lf
+
+# Mark binary files
+*.xlsx binary

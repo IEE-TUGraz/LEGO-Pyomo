@@ -23,7 +23,7 @@ class CaseStudy:
                  power_hindex_file: str = "Power_Hindex.xlsx", dPower_Hindex: pd.DataFrame = None,
                  power_impexphubs_file: str = "Power_ImpExpHubs.xlsx", dPower_ImpExpHubs: pd.DataFrame = None,
                  power_impexpprofiles_file: str = "Power_ImpExpProfiles.xlsx", dPower_ImpExpProfiles: pd.DataFrame = None):
-        self.example_folder = example_folder
+        self.example_folder = example_folder if example_folder.endswith("/") else example_folder + "/"
         self.do_not_merge_single_node_buses = do_not_merge_single_node_buses
 
         if dGlobal_Parameters is not None:
