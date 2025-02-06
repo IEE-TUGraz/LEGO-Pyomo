@@ -110,6 +110,8 @@ class CaseStudy:
             self.power_hindex_file = power_hindex_file
             self.dPower_Hindex = self.get_dPower_Hindex()
 
+        self.rpTransitionMatrixAbsolute, self.rpTransitionMatrixRelative = self.get_rpTransitionMatrices()
+
         if self.dPower_Parameters["pEnablePowerImportExport"]:
             if dPower_ImpExpHubs is not None:
                 self.dPower_ImpExpHubs = dPower_ImpExpHubs
@@ -533,3 +535,22 @@ class CaseStudy:
 
             self.dPower_VRESProfiles = self.dPower_VRESProfiles.groupby(['rp', 'i', 'k', 'tec']).mean()  # TODO: Aggregate using more complex method (capacity * productionCapacity * ... * / Total Production Capacity)
             self.dPower_VRESProfiles.sort_index(inplace=True)
+
+    # Create transition matrix from Hindex
+    def get_rpTransitionMatrices(self):
+        rps = sorted(self.dPower_Hindex.index.get_level_values('rp').unique().tolist())
+        ks = sorted(self.dPower_Hindex.index.get_level_values('k').unique().tolist())
+        rpTransitionMatrixAbsolute = pd.DataFrame(0, index=rps, columns=rps)  # Initialize with zeros
+
+        # Reduce rps in hindex to only include one rp per row (e.g., if it's 24 hours per rp, only take hours 0, 24, 48, ...)
+        hindex_rps = self.dPower_Hindex.index.get_level_values('rp').tolist()[::len(ks)]
+
+        # Iterate through rps in hindex
+        previous_rp = hindex_rps[-1]  # Initialize with last rp to make it circular
+        for rp in hindex_rps:
+            rpTransitionMatrixAbsolute.at[previous_rp, rp] += 1
+            previous_rp = rp
+
+        # Calculate relative transition matrix (nerd info: for the sum, the axis is irrelevant, as there are the same number of transitions to an rp as there are transitions from an rp away. For the division however, the axis matters)
+        rpTransitionMatrixRelative = rpTransitionMatrixAbsolute.div(rpTransitionMatrixAbsolute.sum(axis=1), axis=0)
+        return rpTransitionMatrixAbsolute, rpTransitionMatrixRelative

@@ -42,12 +42,13 @@ printer.information(f"Building LEGO model took {timing:.2f} seconds")
 # Solve LEGO model
 printer.information("Solving LEGO model")
 results, timing = lego.solve_model()
+printer.information(f"Solving LEGO model took {timing:.2f} seconds")
 
 match results.solver.termination_condition:
     case pyo.TerminationCondition.optimal:
-        printer.success(f"Optimal solution found after {timing:.2f} seconds: {pyo.value(model.objective):.4f}")
+        printer.success(f"Optimal solution: {pyo.value(model.objective):.4f}")
     case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
-        printer.error(f"Model returned as {results.solver.termination_condition} after {timing:.2f} seconds, logging infeasible constraints:")
+        printer.error(f"Model returned as {results.solver.termination_condition}, logging infeasible constraints:")
         log_infeasible_constraints(model)
     case _:
-        printer.warning(f"Solver terminated after {timing:.2f} seconds with condition: {results.solver.termination_condition}")
+        printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
