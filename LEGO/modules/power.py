@@ -130,7 +130,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     # Required when using Markov-Chains to connect the timesteps of the representative periods - since fractions of the binary variables (which are present due to the transition-probabilities) are otherwise not possible
     def vUC_domain(model, k, relax_duration_from_beginning):
         if model.k.ord(k) <= relax_duration_from_beginning:
-            return pyo.PercentFraction
+            return pyo.PercentFraction  # PercentFraction = Floating point values in the interval [0,1]
         else:
             return pyo.Binary
 
@@ -255,9 +255,19 @@ def add_constraints(lego: LEGO):
     def eMinUpTime_rule(model, rp, k, t):
         if model.pMinUpTime[t] == 0:
             raise ValueError("Minimum up time must be at least 1, got 0 instead")
-        else:  # Other options: Markov Chains or "Initial value" is variable, TODO: Ask Sonja: IEE Letters (2-3 pages maximum), we want to highlight this: "What to do if you use representative periods, how to link them in minimum up/down time (same for ramping)"
-            # TODO: Check: https://ieeexplore.ieee.org/abstract/document/8610245
-            return sum(model.vStartup[rp, k2, t] for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k))) <= model.vCommit[rp, k, t]
+        else:
+            match lego.cs.dPower_Parameters["pReprPeriodBorderType"]:
+                case "notEnforced":
+                    if model.k.ord(k) < model.pMinUpTime[t]:
+                        return pyo.Constraint.Skip  # Constraint is not active until the minimum up-time is reached
+                    else:
+                        return sum(model.vStartup[rp, k2, t] for k2 in LEGOUtilities.set_range_non_cyclic(model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k))) <= model.vCommit[rp, k, t]
+                case "cyclic":
+                    return sum(model.vStartup[rp, k2, t] for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k))) <= model.vCommit[rp, k, t]
+                case "markov":
+                    raise NotImplementedError("Markov Chains are not yet implemented")
+                case _:
+                    raise ValueError(f"Invalid value for 'pReprPeriodBorderType' in 'Global_Parameters.xlsx': {lego.cs.dPower_Parameters["pReprPeriodBorderType"]} - please choose from 'notEnforced', 'cyclic' or 'markov'!")
 
     lego.model.eMinUpTime = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Minimum up time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=eMinUpTime_rule)
 
@@ -265,7 +275,18 @@ def add_constraints(lego: LEGO):
         if model.pMinDownTime[t] == 0:
             raise ValueError("Minimum down time must be at least 1, got 0 instead")
         else:
-            return sum(model.vShutdown[rp, k2, t] for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinDownTime[t] + 1, model.k.ord(k))) <= 1 - model.vCommit[rp, k, t]
+            match lego.cs.dPower_Parameters["pReprPeriodBorderType"]:
+                case "notEnforced":
+                    if model.k.ord(k) < model.pMinDownTime[t]:
+                        return pyo.Constraint.Skip  # Constraint is not active until the minimum down-time is reached
+                    else:
+                        return sum(model.vShutdown[rp, k2, t] for k2 in LEGOUtilities.set_range_non_cyclic(model.k, model.k.ord(k) - model.pMinDownTime[t] + 1, model.k.ord(k))) <= 1 - model.vCommit[rp, k, t]
+                case "cyclic":
+                    return sum(model.vShutdown[rp, k2, t] for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinDownTime[t] + 1, model.k.ord(k))) <= 1 - model.vCommit[rp, k, t]
+                case "markov":
+                    raise NotImplementedError("Markov Chains are not yet implemented")
+                case _:
+                    raise ValueError(f"Invalid value for 'pReprPeriodBorderType' in 'Global_Parameters.xlsx': {lego.cs.dPower_Parameters["pReprPeriodBorderType"]} - please choose from 'notEnforced', 'cyclic' or 'markov'!")
 
     lego.model.eMinDownTime = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Minimum down time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=eMinDownTime_rule)
 

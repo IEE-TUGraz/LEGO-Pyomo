@@ -4,6 +4,20 @@ import typing
 import pyomo.environ as pyo
 
 
+# Returns a list of elements from a set, starting from 'first_index' and ending at 'last_index' (both inclusive) without wrapping around
+def set_range_non_cyclic(set: pyo.Set, first_index: int, last_index: int):
+    if not (1 <= first_index <= last_index <= len(set)):
+        raise ValueError(f"Please select first and last index so that '1 < first_index <= last_index <= len(set)' holds (got: 1 < {first_index} <= {last_index} <= {len(set)})")
+
+    current_index = set.at(first_index)
+    result = [current_index]
+    for i in range(first_index + 1, last_index + 1):  # Start from first_index + 1 since we already have the first element and go to last_index + 1 since range() is exclusive
+        current_index = set.next(current_index)
+        result.append(current_index)
+
+    return result
+
+
 # Returns a list of elements from a set, starting from 'first_index' and ending at 'last_index' (both inclusive) with wrapping around
 def set_range_cyclic(set: pyo.Set, first_index: int, last_index: int):
     if first_index > len(set) or first_index < -len(set):

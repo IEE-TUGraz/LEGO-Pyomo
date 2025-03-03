@@ -7,7 +7,7 @@ dependencies:
   - pandas=2.2.2
   - pip=24.0
   - psutil=6.1.0
-  - pyomo=6.8.0
+  - pyomo=6.9.0
   - python=3.12.2
   - rich=13.7.1
   - rich-argparse=1.6.0
