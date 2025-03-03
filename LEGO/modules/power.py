@@ -252,7 +252,7 @@ def add_constraints(lego: LEGO):
 
     lego.model.eUCStrShut = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Start-up and shut-down logic for thermal generators (from doi:10.1109/TPWRS.2013.2251373)', rule=lambda model, rp, k, t: model.vCommit[rp, k, t] - model.vCommit[rp, model.k.prevw(k), t] == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t])
 
-    def eMinUpTime_rule(model, rp, k, t):
+    def eMinUpTime_rule(model, rp, k, t, transition_matrix):
         if model.pMinUpTime[t] == 0:
             raise ValueError("Minimum up time must be at least 1, got 0 instead")
         else:
@@ -265,13 +265,25 @@ def add_constraints(lego: LEGO):
                 case "cyclic":
                     return sum(model.vStartup[rp, k2, t] for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k))) <= model.vCommit[rp, k, t]
                 case "markov":
-                    raise NotImplementedError("Markov Chains are not yet implemented")
+                    markov_sum = 0
+                    for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k)):
+                        if model.k.ord(k2) > model.k.ord(k):  # k2 is at the border of the previous periods
+                            safety_check = 0
+                            for rp2 in model.rp:  # Iterate over all representative periods
+                                if transition_matrix.at[rp2, rp] > 0:  # Only consider transitions with a probability > 0
+                                    markov_sum += transition_matrix.at[rp2, rp] * model.vStartup[rp2, k2, t]
+                                    safety_check += transition_matrix.at[rp2, rp]
+                            if safety_check != 1:
+                                raise ValueError(f"Transition matrix is not correctly defined - sum of transition probabilities for timestep {k2} is not 1 (but {safety_check})")
+                        else:
+                            markov_sum += model.vStartup[rp, k2, t]
+                    return markov_sum <= model.vCommit[rp, k, t]
                 case _:
                     raise ValueError(f"Invalid value for 'pReprPeriodBorderType' in 'Global_Parameters.xlsx': {lego.cs.dPower_Parameters["pReprPeriodBorderType"]} - please choose from 'notEnforced', 'cyclic' or 'markov'!")
 
-    lego.model.eMinUpTime = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Minimum up time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=eMinUpTime_rule)
+    lego.model.eMinUpTime = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Minimum up time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=lambda m, rp, k, t: eMinUpTime_rule(m, rp, k, t, lego.cs.rpTransitionMatrixRelativeFrom))
 
-    def eMinDownTime_rule(model, rp, k, t):
+    def eMinDownTime_rule(model, rp, k, t, transition_matrix):
         if model.pMinDownTime[t] == 0:
             raise ValueError("Minimum down time must be at least 1, got 0 instead")
         else:
@@ -284,11 +296,23 @@ def add_constraints(lego: LEGO):
                 case "cyclic":
                     return sum(model.vShutdown[rp, k2, t] for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinDownTime[t] + 1, model.k.ord(k))) <= 1 - model.vCommit[rp, k, t]
                 case "markov":
-                    raise NotImplementedError("Markov Chains are not yet implemented")
+                    markov_sum = 0
+                    for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinDownTime[t] + 1, model.k.ord(k)):
+                        if model.k.ord(k2) > model.k.ord(k):
+                            safety_check = 0
+                            for rp2 in model.rp:
+                                if transition_matrix.at[rp2, rp] > 0:
+                                    markov_sum += transition_matrix.at[rp2, rp] * model.vShutdown[rp2, k2, t]
+                                    safety_check += transition_matrix.at[rp2, rp]
+                            if safety_check != 1:
+                                raise ValueError(f"Transition matrix is not correctly defined - sum of transition probabilities for timestep {k2} is not 1 (but {safety_check})")
+                        else:
+                            markov_sum += model.vShutdown[rp, k2, t]
+                    return markov_sum <= 1 - model.vCommit[rp, k, t]
                 case _:
                     raise ValueError(f"Invalid value for 'pReprPeriodBorderType' in 'Global_Parameters.xlsx': {lego.cs.dPower_Parameters["pReprPeriodBorderType"]} - please choose from 'notEnforced', 'cyclic' or 'markov'!")
 
-    lego.model.eMinDownTime = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Minimum down time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=eMinDownTime_rule)
+    lego.model.eMinDownTime = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Minimum down time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=lambda m, rp, k, t: eMinDownTime_rule(m, rp, k, t, lego.cs.rpTransitionMatrixRelativeFrom))
 
     # Objective function
     lego.model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(sum(lego.model.vPNS[rp, k, :]) * lego.model.pWeight_rp[rp] * lego.model.pWeight_k[k] * lego.model.pENSCost for rp in lego.model.rp for k in lego.model.k) +  # Power not served

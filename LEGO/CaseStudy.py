@@ -110,7 +110,7 @@ class CaseStudy:
             self.power_hindex_file = power_hindex_file
             self.dPower_Hindex = self.get_dPower_Hindex()
 
-        self.rpTransitionMatrixAbsolute, self.rpTransitionMatrixRelative = self.get_rpTransitionMatrices()
+        self.rpTransitionMatrixAbsolute, self.rpTransitionMatrixRelativeTo, self.rpTransitionMatrixRelativeFrom = self.get_rpTransitionMatrices()
 
         if self.dPower_Parameters["pEnablePowerImportExport"]:
             if dPower_ImpExpHubs is not None:
@@ -552,5 +552,6 @@ class CaseStudy:
             previous_rp = rp
 
         # Calculate relative transition matrix (nerd info: for the sum, the axis is irrelevant, as there are the same number of transitions to an rp as there are transitions from an rp away. For the division however, the axis matters)
-        rpTransitionMatrixRelative = rpTransitionMatrixAbsolute.div(rpTransitionMatrixAbsolute.sum(axis=1), axis=0)
-        return rpTransitionMatrixAbsolute, rpTransitionMatrixRelative
+        rpTransitionMatrixRelativeTo = rpTransitionMatrixAbsolute.div(rpTransitionMatrixAbsolute.sum(axis=1), axis=0)  # Sum of probabilities is 1 for r -> all others
+        rpTransitionMatrixRelativeFrom = rpTransitionMatrixAbsolute.div(rpTransitionMatrixAbsolute.sum(axis=0), axis=1) # Sum of probabilities is 1 for all others -> r 
+        return rpTransitionMatrixAbsolute, rpTransitionMatrixRelativeTo, rpTransitionMatrixRelativeFrom
