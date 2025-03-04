@@ -15,14 +15,23 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.le = pyo.Set(doc='Existing lines', initialize=lego.cs.dPower_Network[(lego.cs.dPower_Network["InService"] == 1) & (lego.cs.dPower_Network["FixedCostEUR"] == 0)].index.tolist(), within=lego.model.la)
     lego.model.lc = pyo.Set(doc='Candidate lines', initialize=lego.cs.dPower_Network[(lego.cs.dPower_Network["InService"] == 1) & (lego.cs.dPower_Network["FixedCostEUR"] > 0)].index.tolist(), within=lego.model.la)
 
-    lego.model.thermalGenerators = pyo.Set(doc='Thermal Generators', initialize=lego.cs.dPower_ThermalGen.index.tolist())
-    lego.model.rorGenerators = pyo.Set(doc='Run-of-river generators', initialize=lego.cs.dPower_RoR.index.tolist())
-    lego.model.vresGenerators = pyo.Set(doc='Variable renewable energy sources', initialize=lego.cs.dPower_VRES.index.tolist())
-    lego.model.g = pyo.Set(doc='Generators', initialize=lego.model.thermalGenerators | lego.model.rorGenerators | lego.model.vresGenerators)
+    lego.model.g = pyo.Set(doc='Generators')
+    lego.model.gi = pyo.Set(doc='Generator g connected to bus i', within=lego.model.g * lego.model.i)
 
-    lego.model.gi = pyo.Set(doc='Generator g connected to bus i', initialize=lego.cs.dPower_ThermalGen.reset_index().set_index(['g', 'i']).index, within=lego.model.g * lego.model.i)
-    lego.addToSet("gi", lego.cs.dPower_RoR.reset_index().set_index(['g', 'i']).index)
-    lego.addToSet("gi", lego.cs.dPower_VRES.reset_index().set_index(['g', 'i']).index)
+    if lego.cs.dPower_Parameters["pEnableThermalGen"]:
+        lego.model.thermalGenerators = pyo.Set(doc='Thermal Generators', initialize=lego.cs.dPower_ThermalGen.index.tolist())
+        lego.addToSet("g", lego.model.thermalGenerators)
+        lego.addToSet("gi", lego.cs.dPower_ThermalGen.reset_index().set_index(['g', 'i']).index)
+
+    if lego.cs.dPower_Parameters["pEnableRoR"]:
+        lego.model.rorGenerators = pyo.Set(doc='Run-of-river generators', initialize=lego.cs.dPower_RoR.index.tolist())
+        lego.addToSet("g", lego.model.rorGenerators)
+        lego.addToSet("gi", lego.cs.dPower_RoR.reset_index().set_index(['g', 'i']).index)
+
+    if lego.cs.dPower_Parameters["pEnableVRES"]:
+        lego.model.vresGenerators = pyo.Set(doc='Variable renewable energy sources', initialize=lego.cs.dPower_VRES.index.tolist())
+        lego.addToSet("g", lego.model.vresGenerators)
+        lego.addToSet("gi", lego.cs.dPower_VRES.reset_index().set_index(['g', 'i']).index)
 
     lego.model.p = pyo.Set(doc='Periods', initialize=lego.cs.dPower_Hindex.index.get_level_values('p').unique().tolist())
     lego.model.rp = pyo.Set(doc='Representative periods', initialize=lego.cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
@@ -33,28 +42,47 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.pDemandP = pyo.Param(lego.model.rp, lego.model.k, lego.model.i, initialize=lego.cs.dPower_Demand['Demand'], doc='Demand at bus i in representative period rp and timestep k')
     lego.model.pMovWindow = lego.cs.dGlobal_Parameters['pMovWindow']
 
-    lego.model.pOMVarCost = pyo.Param(lego.model.g, initialize=lego.cs.dPower_ThermalGen['pSlopeVarCostEUR'], doc='Production cost of generator g')
-    lego.addToParameter("pOMVarCost", lego.cs.dPower_RoR['OMVarCost'])
-    lego.addToParameter("pOMVarCost", lego.cs.dPower_VRES['OMVarCost'])
+    lego.model.pOMVarCost = pyo.Param(lego.model.g, doc='Production cost of generator g')
+    lego.model.pEnabInv = pyo.Param(lego.model.g, doc='Enable investment in thermal generator g')
+    lego.model.pMaxInvest = pyo.Param(lego.model.g, doc='Maximum investment in thermal generator g')
+    lego.model.pInvestCost = pyo.Param(lego.model.g, doc='Investment cost for thermal generator g')
+    lego.model.pMaxProd = pyo.Param(lego.model.g, doc='Maximum production of generator g')
+    lego.model.pMinProd = pyo.Param(lego.model.g, doc='Minimum production of generator g')
+    lego.model.pExisUnits = pyo.Param(lego.model.g, doc='Existing units of generator g')
 
-    lego.model.pEnabInv = pyo.Param(lego.model.g, initialize=lego.cs.dPower_ThermalGen['EnableInvest'], doc='Enable investment in thermal generator g')
-    lego.addToParameter("pEnabInv", lego.cs.dPower_RoR['EnableInvest'])
-    lego.addToParameter("pEnabInv", lego.cs.dPower_VRES['EnableInvest'])
+    if lego.cs.dPower_Parameters["pEnableThermalGen"]:
+        lego.addToParameter("pOMVarCost", lego.cs.dPower_ThermalGen['pSlopeVarCostEUR'])
+        lego.addToParameter("pEnabInv", lego.cs.dPower_ThermalGen['EnableInvest'])
+        lego.addToParameter("pMaxInvest", lego.cs.dPower_ThermalGen['MaxInvest'])
+        lego.addToParameter("pInvestCost", lego.cs.dPower_ThermalGen['InvestCostEUR'])
+        lego.addToParameter("pMaxProd", lego.cs.dPower_ThermalGen['MaxProd'])
+        lego.addToParameter("pMinProd", lego.cs.dPower_ThermalGen['MinProd'])
+        lego.addToParameter("pExisUnits", lego.cs.dPower_ThermalGen['ExisUnits'])
 
-    lego.model.pMaxInvest = pyo.Param(lego.model.g, initialize=lego.cs.dPower_ThermalGen['MaxInvest'], doc='Maximum investment in thermal generator g')
-    lego.addToParameter("pMaxInvest", lego.cs.dPower_RoR['MaxInvest'])
-    lego.addToParameter("pMaxInvest", lego.cs.dPower_VRES['MaxInvest'])
+        lego.model.pInterVarCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['pInterVarCostEUR'], doc='Inter-variable cost of thermal generator g')
+        lego.model.pStartupCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['pStartupCostEUR'], doc='Startup cost of thermal generator g')
+        lego.model.pMinUpTime = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['MinUpTime'], doc='Minimum up time of thermal generator g')
+        lego.model.pMinDownTime = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['MinDownTime'], doc='Minimum down time of thermal generator g')
+        lego.model.pRampUp = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['RampUp'], doc='Ramp up of thermal generator g')
+        lego.model.pRampDw = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['RampDw'], doc='Ramp down of thermal generator g')
 
-    lego.model.pInvestCost = pyo.Param(lego.model.g, initialize=lego.cs.dPower_ThermalGen['InvestCostEUR'], doc='Investment cost for thermal generator g')
-    lego.addToParameter("pInvestCost", lego.cs.dPower_RoR['InvestCostEUR'])
-    lego.addToParameter("pInvestCost", lego.cs.dPower_VRES['InvestCostEUR'])
+    if lego.cs.dPower_Parameters["pEnableRoR"]:
+        lego.addToParameter("pOMVarCost", lego.cs.dPower_RoR['OMVarCost'])
+        lego.addToParameter("pEnabInv", lego.cs.dPower_RoR['EnableInvest'])
+        lego.addToParameter("pMaxInvest", lego.cs.dPower_RoR['MaxInvest'])
+        lego.addToParameter("pInvestCost", lego.cs.dPower_RoR['InvestCostEUR'])
+        lego.addToParameter("pMaxProd", lego.cs.dPower_RoR['MaxProd'])
+        lego.addToParameter("pMinProd", lego.cs.dPower_RoR['MinProd'])
+        lego.addToParameter("pExisUnits", lego.cs.dPower_RoR['ExisUnits'])
 
-    lego.model.pInterVarCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['pInterVarCostEUR'], doc='Inter-variable cost of thermal generator g')
-    lego.model.pStartupCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['pStartupCostEUR'], doc='Startup cost of thermal generator g')
-    lego.model.pMinUpTime = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['MinUpTime'], doc='Minimum up time of thermal generator g')
-    lego.model.pMinDownTime = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['MinDownTime'], doc='Minimum down time of thermal generator g')
-    lego.model.pRampUp = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['RampUp'], doc='Ramp up of thermal generator g')
-    lego.model.pRampDw = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['RampDw'], doc='Ramp down of thermal generator g')
+    if lego.cs.dPower_Parameters["pEnableVRES"]:
+        lego.addToParameter("pOMVarCost", lego.cs.dPower_VRES['OMVarCost'])
+        lego.addToParameter("pEnabInv", lego.cs.dPower_VRES['EnableInvest'])
+        lego.addToParameter("pMaxInvest", lego.cs.dPower_VRES['MaxInvest'])
+        lego.addToParameter("pInvestCost", lego.cs.dPower_VRES['InvestCostEUR'])
+        lego.addToParameter("pMaxProd", lego.cs.dPower_VRES['MaxProd'])
+        lego.addToParameter("pMinProd", lego.cs.dPower_VRES['MinProd'])
+        lego.addToParameter("pExisUnits", lego.cs.dPower_VRES['ExisUnits'])
 
     lego.model.pXline = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network.query("InService == 1")['X'], doc='Reactance of line la')
     lego.model.pAngle = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network.query("InService == 1")['TapAngle'] * np.pi / 180, doc='Transformer angle shift')
@@ -67,18 +95,6 @@ def add_element_definitions_and_bounds(lego: LEGO):
 
     lego.model.pWeight_rp = pyo.Param(lego.model.rp, initialize=lego.cs.dPower_WeightsRP, doc='Weight of representative period rp')
     lego.model.pWeight_k = pyo.Param(lego.model.k, initialize=lego.cs.dPower_WeightsK, doc='Weight of time step k')
-
-    lego.addToParameter("pMaxProd", lego.cs.dPower_ThermalGen['MaxProd'], indices=[lego.model.g], doc='Maximum production of generator g')
-    lego.addToParameter("pMaxProd", lego.cs.dPower_RoR['MaxProd'])
-    lego.addToParameter("pMaxProd", lego.cs.dPower_VRES['MaxProd'])
-
-    lego.addToParameter("pMinProd", lego.cs.dPower_ThermalGen['MinProd'], indices=[lego.model.g], doc='Minimum production of generator g')
-    lego.addToParameter("pMinProd", lego.cs.dPower_RoR['MinProd'])
-    lego.addToParameter("pMinProd", lego.cs.dPower_VRES['MinProd'])
-
-    lego.addToParameter("pExisUnits", lego.cs.dPower_ThermalGen['ExisUnits'], indices=[lego.model.g], doc='Existing units of generator g')
-    lego.addToParameter("pExisUnits", lego.cs.dPower_RoR['ExisUnits'])
-    lego.addToParameter("pExisUnits", lego.cs.dPower_VRES['ExisUnits'])
 
     # Variables
     lego.model.vTheta = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Angle of bus i', bounds=(-lego.cs.dPower_Parameters["pMaxAngleDCOPF"], lego.cs.dPower_Parameters["pMaxAngleDCOPF"]))  # TODO: Discuss impact on runtime etc.(based on discussion with Prof. Renner)
@@ -134,22 +150,25 @@ def add_element_definitions_and_bounds(lego: LEGO):
         else:
             return pyo.Binary
 
-    lego.model.vCommit = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Unit commitment of generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, max(model.pMinUpTime[t], model.pMinDownTime[t])) if lego.cs.dPower_Parameters["pReprPeriodBorderType"] == "markov" else pyo.Binary)
-    lego.model.vStartup = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Start-up of thermal generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, model.pMinDownTime[t]) if lego.cs.dPower_Parameters["pReprPeriodBorderType"] == "markov" else pyo.Binary)
-    lego.model.vShutdown = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Shut-down of thermal generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, model.pMinUpTime[t]) if lego.cs.dPower_Parameters["pReprPeriodBorderType"] == "markov" else pyo.Binary)
-
     lego.model.vGenP = pyo.Var(lego.model.rp, lego.model.k, lego.model.g, doc='Power output of generator g', bounds=lambda model, rp, k, g: (0, lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
-    lego.model.vGenP1 = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Power output of generator g above minimum production', bounds=lambda model, rp, k, g: (0, (lego.model.pMaxProd[g] - lego.model.pMinProd[g]) * (lego.model.pExisUnits[g] + lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
 
-    for g in lego.model.rorGenerators:
-        for rp in lego.model.rp:
-            for k in lego.model.k:
-                lego.model.vGenP[rp, k, g].setub(min(lego.model.pMaxProd[g], lego.cs.dPower_Inflows.loc[rp, g, k]['Inflow']))  # TODO: Check and adapt for storage
+    if lego.cs.dPower_Parameters["pEnableThermalGen"]:
+        lego.model.vCommit = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Unit commitment of generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, max(model.pMinUpTime[t], model.pMinDownTime[t])) if lego.cs.dPower_Parameters["pReprPeriodBorderType"] == "markov" else pyo.Binary)
+        lego.model.vStartup = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Start-up of thermal generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, model.pMinDownTime[t]) if lego.cs.dPower_Parameters["pReprPeriodBorderType"] == "markov" else pyo.Binary)
+        lego.model.vShutdown = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Shut-down of thermal generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, model.pMinUpTime[t]) if lego.cs.dPower_Parameters["pReprPeriodBorderType"] == "markov" else pyo.Binary)
+        lego.model.vGenP1 = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Power output of generator g above minimum production', bounds=lambda model, rp, k, g: (0, (lego.model.pMaxProd[g] - lego.model.pMinProd[g]) * (lego.model.pExisUnits[g] + lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
 
-    for g in lego.model.vresGenerators:
-        for rp in lego.model.rp:
-            for k in lego.model.k:
-                lego.model.vGenP[rp, k, g].setub((lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])) * lego.cs.dPower_VRESProfiles.loc[rp, lego.cs.dPower_VRES.loc[g, 'i'], k, lego.cs.dPower_VRES.loc[g, 'tec']]['Capacity']))
+    if lego.cs.dPower_Parameters["pEnableRoR"]:
+        for g in lego.model.rorGenerators:
+            for rp in lego.model.rp:
+                for k in lego.model.k:
+                    lego.model.vGenP[rp, k, g].setub(min(lego.model.pMaxProd[g], lego.cs.dPower_Inflows.loc[rp, g, k]['Inflow']))  # TODO: Check and adapt for storage
+
+    if lego.cs.dPower_Parameters["pEnableVRES"]:
+        for g in lego.model.vresGenerators:
+            for rp in lego.model.rp:
+                for k in lego.model.k:
+                    lego.model.vGenP[rp, k, g].setub((lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])) * lego.cs.dPower_VRESProfiles.loc[rp, lego.cs.dPower_VRES.loc[g, 'i'], k, lego.cs.dPower_VRES.loc[g, 'tec']]['Capacity']))
 
     lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, doc='Power flow from bus i to j', bounds=(None, None))
     for (i, j, c) in lego.model.la:
@@ -216,7 +235,8 @@ def add_constraints(lego: LEGO):
         capacity = capacity.values[0] if isinstance(capacity, pd.Series) else capacity
         return model.vGenP[rp, k, r] <= model.pMaxProd[r] * (model.vGenInvest[r] + model.pExisUnits[r]) * capacity
 
-    lego.model.eReMaxProd = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.vresGenerators, rule=eReMaxProd_rule)
+    if lego.cs.dPower_Parameters["pEnableVRES"]:
+        lego.model.eReMaxProd = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.vresGenerators, rule=eReMaxProd_rule)
 
     def eThRampUp_rule(model, rp, k, g):
         return model.vGenP1[rp, k, g] - model.vGenP1[rp, lego.model.k.prevw(k), g] - model.vCommit[rp, k, g] * model.pRampUp[g]

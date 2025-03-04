@@ -38,12 +38,14 @@ def add_element_definitions_and_bounds(lego: LEGO):
 @LEGOUtilities.checkExecutionLog([add_element_definitions_and_bounds])
 def add_constraints(lego: LEGO):
     def e2ReserveUp_rule(model, rp, k):  # TODO: Check if we need to multiply with ExisUnite or InvestedUnits here
-        return sum(model.v2ndResUP[rp, k, t] for t in model.thermalGenerators) + sum(model.v2ndResUP[rp, k, s] for s in model.storageUnits) >= model.p2ndResUp * sum(model.pDemandP[rp, k, i] for i in model.i)
+        return ((sum(model.v2ndResUP[rp, k, t] for t in model.thermalGenerators) if hasattr(model, "thermalGenerators") else 0) +
+                (sum(model.v2ndResUP[rp, k, s] for s in model.storageUnits) if hasattr(model, "storageUnits") else 0) >= model.p2ndResUp * sum(model.pDemandP[rp, k, i] for i in model.i))
 
     lego.model.e2ReserveUp = pyo.Constraint(lego.model.rp, lego.model.k, doc="2nd reserve up", rule=e2ReserveUp_rule)
 
     def e2ReserveDw_rule(model, rp, k):
-        return sum(model.v2ndResDW[rp, k, t] for t in model.thermalGenerators) + sum(model.v2ndResDW[rp, k, s] for s in model.storageUnits) >= model.p2ndResDW * sum(model.pDemandP[rp, k, i] for i in model.i)
+        return ((sum(model.v2ndResDW[rp, k, t] for t in model.thermalGenerators) if hasattr(model, "thermalGenerators") else 0) +
+                (sum(model.v2ndResDW[rp, k, s] for s in model.storageUnits) if hasattr(model, "storageUnits") else 0) >= model.p2ndResDW * sum(model.pDemandP[rp, k, i] for i in model.i))
 
     lego.model.e2ReserveDw = pyo.Constraint(lego.model.rp, lego.model.k, doc="2nd reserve down", rule=e2ReserveDw_rule)
 

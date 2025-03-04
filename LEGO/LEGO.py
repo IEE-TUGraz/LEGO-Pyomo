@@ -29,7 +29,8 @@ class LEGO:
 
         # Element definitions
         power.add_element_definitions_and_bounds(self)
-        storage.add_element_definitions_and_bounds(self)
+        if self.cs.dPower_Parameters["pEnableStorage"]:
+            storage.add_element_definitions_and_bounds(self)
         secondReserve.add_element_definitions_and_bounds(self)
         if self.cs.dPower_Parameters["pEnablePowerImportExport"]:
             importExport.add_element_definitions_and_bounds(self)
@@ -42,7 +43,8 @@ class LEGO:
 
         # Add constraints
         power.add_constraints(self)
-        storage.add_constraints(self)
+        if self.cs.dPower_Parameters["pEnableStorage"]:
+            storage.add_constraints(self)
         secondReserve.add_constraints(self)
         if self.cs.dPower_Parameters["pEnablePowerImportExport"]:
             importExport.add_constraints(self)

@@ -1,3 +1,4 @@
+import copy
 import warnings
 
 import numpy as np
@@ -50,47 +51,11 @@ class CaseStudy:
             self.power_network_file = power_network_file
             self.dPower_Network = self.get_dPower_Network()
 
-        if dPower_ThermalGen is not None:
-            self.dPower_ThermalGen = dPower_ThermalGen
-        else:
-            self.power_thermalgen_file = power_thermalgen_file
-            self.dPower_ThermalGen = self.get_dPower_ThermalGen()
-
-        if dPower_RoR is not None:
-            self.dPower_RoR = dPower_RoR
-        else:
-            self.power_ror_file = power_ror_file
-            self.dPower_RoR = self.get_dPower_RoR()
-
-        if dPower_VRES is not None:
-            self.dPower_VRES = dPower_VRES
-        else:
-            self.power_vres_file = power_vres_file
-            self.dPower_VRES = self.get_dPower_VRES()
-
         if dPower_Demand is not None:
             self.dPower_Demand = dPower_Demand
         else:
             self.power_demand_file = power_demand_file
             self.dPower_Demand = self.get_dPower_Demand()
-
-        if dPower_Inflows is not None:
-            self.dPower_Inflows = dPower_Inflows
-        else:
-            self.power_inflows_file = power_inflows_file
-            self.dPower_Inflows = self.get_dPower_Inflows()
-
-        if dPower_VRESProfiles is not None:
-            self.dPower_VRESProfiles = dPower_VRESProfiles
-        else:
-            self.power_vresprofiles_file = power_vresprofiles_file
-            self.dPower_VRESProfiles = self.get_dPower_VRESProfiles()
-
-        if dPower_Storage is not None:
-            self.dPower_Storage = dPower_Storage
-        else:
-            self.power_storage_file = power_storage_file
-            self.dPower_Storage = self.get_dPower_Storage()
 
         if dPower_WeightsRP is not None:
             self.dPower_WeightsRP = dPower_WeightsRP
@@ -112,6 +77,46 @@ class CaseStudy:
 
         self.rpTransitionMatrixAbsolute, self.rpTransitionMatrixRelativeTo, self.rpTransitionMatrixRelativeFrom = self.get_rpTransitionMatrices()
 
+        if self.dPower_Parameters["pEnableThermalGen"]:
+            if dPower_ThermalGen is not None:
+                self.dPower_ThermalGen = dPower_ThermalGen
+            else:
+                self.power_thermalgen_file = power_thermalgen_file
+                self.dPower_ThermalGen = self.get_dPower_ThermalGen()
+
+        if self.dPower_Parameters["pEnableRoR"]:
+            if dPower_RoR is not None:
+                self.dPower_RoR = dPower_RoR
+            else:
+                self.power_ror_file = power_ror_file
+                self.dPower_RoR = self.get_dPower_RoR()
+
+            if dPower_Inflows is not None:
+                self.dPower_Inflows = dPower_Inflows
+            else:
+                self.power_inflows_file = power_inflows_file
+                self.dPower_Inflows = self.get_dPower_Inflows()
+
+        if self.dPower_Parameters["pEnableVRES"]:
+            if dPower_VRES is not None:
+                self.dPower_VRES = dPower_VRES
+            else:
+                self.power_vres_file = power_vres_file
+                self.dPower_VRES = self.get_dPower_VRES()
+
+            if dPower_VRESProfiles is not None:
+                self.dPower_VRESProfiles = dPower_VRESProfiles
+            else:
+                self.power_vresprofiles_file = power_vresprofiles_file
+                self.dPower_VRESProfiles = self.get_dPower_VRESProfiles()
+
+        if self.dPower_Parameters["pEnableStorage"]:
+            if dPower_Storage is not None:
+                self.dPower_Storage = dPower_Storage
+            else:
+                self.power_storage_file = power_storage_file
+                self.dPower_Storage = self.get_dPower_Storage()
+
         if self.dPower_Parameters["pEnablePowerImportExport"]:
             if dPower_ImpExpHubs is not None:
                 self.dPower_ImpExpHubs = dPower_ImpExpHubs
@@ -132,11 +137,7 @@ class CaseStudy:
             self.merge_single_node_buses()
 
     def copy(self):
-        return CaseStudy(example_folder=self.example_folder, do_not_merge_single_node_buses=True,
-                         dPower_Parameters=self.dPower_Parameters.copy(), dPower_BusInfo=self.dPower_BusInfo.copy(),
-                         dPower_Network=self.dPower_Network.copy(), dPower_ThermalGen=self.dPower_ThermalGen.copy(),
-                         dPower_RoR=self.dPower_RoR.copy(), dPower_VRES=self.dPower_VRES.copy(), dPower_Demand=self.dPower_Demand.copy(),
-                         dPower_Inflows=self.dPower_Inflows.copy(), dPower_VRESProfiles=self.dPower_VRESProfiles.copy())
+        return copy.deepcopy(self)
 
     def get_dGlobal_Parameters(self):
         dGlobal_Parameters = pd.read_excel(self.example_folder + self.global_parameters_file, skiprows=[0, 1])
@@ -155,7 +156,7 @@ class CaseStudy:
         dPower_Parameters = dPower_Parameters.dropna(how="all")
         dPower_Parameters = dPower_Parameters.set_index('General')
 
-        self.yesNo_to_bool(dPower_Parameters, ['pEnableChDisPower', 'pFixStInterResToIniReserve', 'pEnablePowerImportExport', 'pEnableSoftLineLoadLimits'])
+        self.yesNo_to_bool(dPower_Parameters, ['pEnableChDisPower', 'pFixStInterResToIniReserve', 'pEnableSoftLineLoadLimits', 'pEnableThermalGen', 'pEnableRoR', 'pEnableVRES', 'pEnableStorage', 'pEnablePowerImportExport'])
 
         # Transform to make it easier to access values
         dPower_Parameters = dPower_Parameters.drop(dPower_Parameters.columns[1:], axis=1)  # Drop all columns but "Value" (rest is just for information in the Excel)
@@ -553,5 +554,5 @@ class CaseStudy:
 
         # Calculate relative transition matrix (nerd info: for the sum, the axis is irrelevant, as there are the same number of transitions to an rp as there are transitions from an rp away. For the division however, the axis matters)
         rpTransitionMatrixRelativeTo = rpTransitionMatrixAbsolute.div(rpTransitionMatrixAbsolute.sum(axis=1), axis=0)  # Sum of probabilities is 1 for r -> all others
-        rpTransitionMatrixRelativeFrom = rpTransitionMatrixAbsolute.div(rpTransitionMatrixAbsolute.sum(axis=0), axis=1) # Sum of probabilities is 1 for all others -> r 
+        rpTransitionMatrixRelativeFrom = rpTransitionMatrixAbsolute.div(rpTransitionMatrixAbsolute.sum(axis=0), axis=1)  # Sum of probabilities is 1 for all others -> r
         return rpTransitionMatrixAbsolute, rpTransitionMatrixRelativeTo, rpTransitionMatrixRelativeFrom
