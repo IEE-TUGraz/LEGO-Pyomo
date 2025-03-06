@@ -285,19 +285,7 @@ def add_constraints(lego: LEGO):
                 case "cyclic":
                     return sum(model.vStartup[rp, k2, t] for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k))) <= model.vCommit[rp, k, t]
                 case "markov":
-                    markov_sum = 0
-                    for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k)):
-                        if model.k.ord(k2) > model.k.ord(k):  # k2 is at the border of the previous periods
-                            safety_check = 0
-                            for rp2 in model.rp:  # Iterate over all representative periods
-                                if transition_matrix.at[rp2, rp] > 0:  # Only consider transitions with a probability > 0
-                                    markov_sum += transition_matrix.at[rp2, rp] * model.vStartup[rp2, k2, t]
-                                    safety_check += transition_matrix.at[rp2, rp]
-                            if safety_check != 1:
-                                raise ValueError(f"Transition matrix is not correctly defined - sum of transition probabilities for timestep {k2} is not 1 (but {safety_check})")
-                        else:
-                            markov_sum += model.vStartup[rp, k2, t]
-                    return markov_sum <= model.vCommit[rp, k, t]
+                    return LEGOUtilities.markov_sum(model.rp, rp, model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k), model.vStartup, transition_matrix, t) <= model.vCommit[rp, k, t]
                 case _:
                     raise ValueError(f"Invalid value for 'pReprPeriodEdgeHandlingUnitCommitment' in 'Global_Parameters.xlsx': {lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]} - please choose from 'notEnforced', 'cyclic' or 'markov'!")
 
@@ -316,19 +304,7 @@ def add_constraints(lego: LEGO):
                 case "cyclic":
                     return sum(model.vShutdown[rp, k2, t] for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinDownTime[t] + 1, model.k.ord(k))) <= 1 - model.vCommit[rp, k, t]
                 case "markov":
-                    markov_sum = 0
-                    for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinDownTime[t] + 1, model.k.ord(k)):
-                        if model.k.ord(k2) > model.k.ord(k):
-                            safety_check = 0
-                            for rp2 in model.rp:
-                                if transition_matrix.at[rp2, rp] > 0:
-                                    markov_sum += transition_matrix.at[rp2, rp] * model.vShutdown[rp2, k2, t]
-                                    safety_check += transition_matrix.at[rp2, rp]
-                            if safety_check != 1:
-                                raise ValueError(f"Transition matrix is not correctly defined - sum of transition probabilities for timestep {k2} is not 1 (but {safety_check})")
-                        else:
-                            markov_sum += model.vShutdown[rp, k2, t]
-                    return markov_sum <= 1 - model.vCommit[rp, k, t]
+                    return LEGOUtilities.markov_sum(model.rp, rp, model.k, model.k.ord(k) - model.pMinDownTime[t] + 1, model.k.ord(k), model.vShutdown, transition_matrix, t) <= 1 - model.vCommit[rp, k, t]
                 case _:
                     raise ValueError(f"Invalid value for 'pReprPeriodEdgeHandlingUnitCommitment' in 'Global_Parameters.xlsx': {lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]} - please choose from 'notEnforced', 'cyclic' or 'markov'!")
 
