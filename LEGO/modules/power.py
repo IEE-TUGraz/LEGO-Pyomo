@@ -153,9 +153,9 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.vGenP = pyo.Var(lego.model.rp, lego.model.k, lego.model.g, doc='Power output of generator g', bounds=lambda model, rp, k, g: (0, lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
 
     if lego.cs.dPower_Parameters["pEnableThermalGen"]:
-        lego.model.vCommit = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Unit commitment of generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, max(model.pMinUpTime[t], model.pMinDownTime[t])) if lego.cs.dPower_Parameters["pReprPeriodBorderType"] == "markov" else pyo.Binary)
-        lego.model.vStartup = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Start-up of thermal generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, model.pMinDownTime[t]) if lego.cs.dPower_Parameters["pReprPeriodBorderType"] == "markov" else pyo.Binary)
-        lego.model.vShutdown = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Shut-down of thermal generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, model.pMinUpTime[t]) if lego.cs.dPower_Parameters["pReprPeriodBorderType"] == "markov" else pyo.Binary)
+        lego.model.vCommit = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Unit commitment of generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, max(model.pMinUpTime[t], model.pMinDownTime[t])) if lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov" else pyo.Binary)
+        lego.model.vStartup = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Start-up of thermal generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, model.pMinDownTime[t]) if lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov" else pyo.Binary)
+        lego.model.vShutdown = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Shut-down of thermal generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, model.pMinUpTime[t]) if lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov" else pyo.Binary)
         lego.model.vGenP1 = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Power output of generator g above minimum production', bounds=lambda model, rp, k, g: (0, (lego.model.pMaxProd[g] - lego.model.pMinProd[g]) * (lego.model.pExisUnits[g] + lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
 
     if lego.cs.dPower_Parameters["pEnableRoR"]:
@@ -276,7 +276,7 @@ def add_constraints(lego: LEGO):
         if model.pMinUpTime[t] == 0:
             raise ValueError("Minimum up time must be at least 1, got 0 instead")
         else:
-            match lego.cs.dPower_Parameters["pReprPeriodBorderType"]:
+            match lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]:
                 case "notEnforced":
                     if model.k.ord(k) < model.pMinUpTime[t]:
                         return pyo.Constraint.Skip  # Constraint is not active until the minimum up-time is reached
@@ -299,7 +299,7 @@ def add_constraints(lego: LEGO):
                             markov_sum += model.vStartup[rp, k2, t]
                     return markov_sum <= model.vCommit[rp, k, t]
                 case _:
-                    raise ValueError(f"Invalid value for 'pReprPeriodBorderType' in 'Global_Parameters.xlsx': {lego.cs.dPower_Parameters["pReprPeriodBorderType"]} - please choose from 'notEnforced', 'cyclic' or 'markov'!")
+                    raise ValueError(f"Invalid value for 'pReprPeriodEdgeHandlingUnitCommitment' in 'Global_Parameters.xlsx': {lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]} - please choose from 'notEnforced', 'cyclic' or 'markov'!")
 
     lego.model.eMinUpTime = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Minimum up time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=lambda m, rp, k, t: eMinUpTime_rule(m, rp, k, t, lego.cs.rpTransitionMatrixRelativeFrom))
 
@@ -307,7 +307,7 @@ def add_constraints(lego: LEGO):
         if model.pMinDownTime[t] == 0:
             raise ValueError("Minimum down time must be at least 1, got 0 instead")
         else:
-            match lego.cs.dPower_Parameters["pReprPeriodBorderType"]:
+            match lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]:
                 case "notEnforced":
                     if model.k.ord(k) < model.pMinDownTime[t]:
                         return pyo.Constraint.Skip  # Constraint is not active until the minimum down-time is reached
@@ -330,7 +330,7 @@ def add_constraints(lego: LEGO):
                             markov_sum += model.vShutdown[rp, k2, t]
                     return markov_sum <= 1 - model.vCommit[rp, k, t]
                 case _:
-                    raise ValueError(f"Invalid value for 'pReprPeriodBorderType' in 'Global_Parameters.xlsx': {lego.cs.dPower_Parameters["pReprPeriodBorderType"]} - please choose from 'notEnforced', 'cyclic' or 'markov'!")
+                    raise ValueError(f"Invalid value for 'pReprPeriodEdgeHandlingUnitCommitment' in 'Global_Parameters.xlsx': {lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]} - please choose from 'notEnforced', 'cyclic' or 'markov'!")
 
     lego.model.eMinDownTime = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Minimum down time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=lambda m, rp, k, t: eMinDownTime_rule(m, rp, k, t, lego.cs.rpTransitionMatrixRelativeFrom))
 
