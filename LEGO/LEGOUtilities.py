@@ -41,11 +41,12 @@ def set_range_cyclic(set: pyo.Set, first_index: int, last_index: int):
     return result
 
 
-def markov_summand(rp_set: pyo.Set, rp_target: str, k: str, relevant_variable: pyo.Var, transition_matrix: pd.DataFrame, *other_indices: str) -> pyo.Expression:
+def markov_summand(rp_set: pyo.Set, rp_target: str, from_target_to_others: bool, k: str, relevant_variable: pyo.Var, transition_matrix: pd.DataFrame, *other_indices: str) -> pyo.Expression:
     """
     Calculate the summand of a variable using Markov-Chains for a given transition matrix
     :param pyo.Set rp_set: Set of representative periods (e.g., model.rp)
     :param str rp_target: Current representative period (e.g., "rp01")
+    :param bool from_target_to_others: If True, the summand is calculated from the target rp to the others, otherwise from the others to the target
     :param str k: Current timestep (e.g., "k0001")
     :param pyo.Var relevant_variable: Variable to sum up (e.g., model.vCommit)
     :param pd.DataFrame transition_matrix: Transition matrix between representative periods
@@ -55,9 +56,11 @@ def markov_summand(rp_set: pyo.Set, rp_target: str, k: str, relevant_variable: p
     summand = 0
     safety_check = 0
     for rp in rp_set:  # Iterate over all representative periods
-        if transition_matrix.at[rp, rp_target] > 0:  # Only consider transitions with a probability > 0
-            summand += transition_matrix.at[rp, rp_target] * relevant_variable[rp, k, *other_indices]
-            safety_check += transition_matrix.at[rp, rp_target]
+        i = rp_target if from_target_to_others else rp
+        j = rp if from_target_to_others else rp_target
+        if transition_matrix.at[i, j] > 0:  # Only consider transitions with a probability > 0
+            summand += transition_matrix.at[i, j] * relevant_variable[rp, k, *other_indices]
+            safety_check += transition_matrix.at[i, j]
     if safety_check != 1:
         raise ValueError(f"Transition matrix is not correctly defined - sum of transition probabilities for representative period {rp_target} is not 1 (but {safety_check})")
     return summand
@@ -79,7 +82,7 @@ def markov_sum(rp_set: pyo.Set, rp_target: str, k_set: pyo.Set, k_start_index: i
     expression = 0
     for k in set_range_cyclic(k_set, k_start_index, k_end_index):
         if k_set.ord(k) > k_end_index:  # k is still beyond edge towards previous periods
-            expression += markov_summand(rp_set, rp_target, k, relevant_variable, transition_matrix, *other_indices)
+            expression += markov_summand(rp_set, rp_target, False, k, relevant_variable, transition_matrix, *other_indices)
         else:
             expression += relevant_variable[rp_target, k, *other_indices]
     return expression

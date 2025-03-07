@@ -57,7 +57,13 @@ def add_constraints(lego: LEGO):
                     lego.model.eThRampDw_expr[rp, k, g] -= lego.model.v2ndResDW[rp, k, g]
                     lego.model.eThRampUp_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
                     lego.model.eUCMaxOut1_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
-                    lego.model.eUCMaxOut2_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
+
+                    match lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]:
+                        case "notEnforced":
+                            if k != lego.model.k.last():  # Skip last timestep if constraint is not enforced
+                                lego.model.eUCMaxOut2_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
+                        case "cyclic" | "markov":
+                            lego.model.eUCMaxOut2_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
 
     # Add 2nd reserve to storage constraints
     if hasattr(lego.model, "storageUnits"):
