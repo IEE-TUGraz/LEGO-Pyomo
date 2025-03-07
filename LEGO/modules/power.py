@@ -270,7 +270,19 @@ def add_constraints(lego: LEGO):
     lego.model.eUCMaxOut2_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.thermalGenerators, rule=eUCMaxOut2_rule)
     lego.model.eUCMaxOut2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Maximum production for shutdown of thermal generators (from doi:10.1109/TPWRS.2013.2251373)', rule=lambda model, rp, k, t: lego.model.eUCMaxOut2_expr[rp, k, t] <= 0)
 
-    lego.model.eUCStrShut = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Start-up and shut-down logic for thermal generators (from doi:10.1109/TPWRS.2013.2251373)', rule=lambda model, rp, k, t: model.vCommit[rp, k, t] - model.vCommit[rp, model.k.prevw(k), t] == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t])
+    def eUCStrShut_rule(model, rp, k, t, transition_matrix):
+        match lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]:
+            case "notEnforced":
+                if model.k.ord(k) == 1:
+                    return pyo.Constraint.Skip
+                else:
+                    return model.vCommit[rp, k, t] - model.vCommit[rp, model.k.prevw(k), t] == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t]
+            case "cyclic":
+                return model.vCommit[rp, k, t] - model.vCommit[rp, model.k.prevw(k), t] == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t]
+            case "markov":
+                return model.vCommit[rp, k, t] - LEGOUtilities.markov_summand(model.rp, rp, model.k.prevw(k), model.vCommit, transition_matrix, t) == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t]
+
+    lego.model.eUCStrShut = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Start-up and shut-down logic for thermal generators (from doi:10.1109/TPWRS.2013.2251373)', rule=lambda model, rp, k, t: eUCStrShut_rule(model, rp, k, t, lego.cs.rpTransitionMatrixRelativeFrom))
 
     def eMinUpTime_rule(model, rp, k, t, transition_matrix):
         if model.pMinUpTime[t] == 0:

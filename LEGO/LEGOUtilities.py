@@ -41,11 +41,33 @@ def set_range_cyclic(set: pyo.Set, first_index: int, last_index: int):
     return result
 
 
-def markov_sum(rp_set: pyo.Set, rp_current_value: str, k_set: pyo.Set, k_start_index: int, k_end_index: int, relevant_variable: pyo.Var, transition_matrix: pd.DataFrame, *other_indices: str) -> pyo.Expression:
+def markov_summand(rp_set: pyo.Set, rp_target: str, k: str, relevant_variable: pyo.Var, transition_matrix: pd.DataFrame, *other_indices: str) -> pyo.Expression:
+    """
+    Calculate the summand of a variable using Markov-Chains for a given transition matrix
+    :param pyo.Set rp_set: Set of representative periods (e.g., model.rp)
+    :param str rp_target: Current representative period (e.g., "rp01")
+    :param str k: Current timestep (e.g., "k0001")
+    :param pyo.Var relevant_variable: Variable to sum up (e.g., model.vCommit)
+    :param pd.DataFrame transition_matrix: Transition matrix between representative periods
+    :param str other_indices: Additional indices for the relevant_variable (will be used as 'relevant_variable[rp_current_value, k, *other_indices]')
+    :return: Expression for the summand of the relevant_variable multiplied by corresponding transition probabilities
+    """
+    summand = 0
+    safety_check = 0
+    for rp in rp_set:  # Iterate over all representative periods
+        if transition_matrix.at[rp, rp_target] > 0:  # Only consider transitions with a probability > 0
+            summand += transition_matrix.at[rp, rp_target] * relevant_variable[rp, k, *other_indices]
+            safety_check += transition_matrix.at[rp, rp_target]
+    if safety_check != 1:
+        raise ValueError(f"Transition matrix is not correctly defined - sum of transition probabilities for representative period {rp_target} is not 1 (but {safety_check})")
+    return summand
+
+
+def markov_sum(rp_set: pyo.Set, rp_target: str, k_set: pyo.Set, k_start_index: int, k_end_index: int, relevant_variable: pyo.Var, transition_matrix: pd.DataFrame, *other_indices: str) -> pyo.Expression:
     """
     Calculate the sum of a variable using Markov-Chains for a given transition matrix
     :param pyomo.environ.Set rp_set: Set of representative periods (e.g., model.rp)
-    :param str rp_current_value: Current representative period (e.g., "rp01")
+    :param str rp_target: Current representative period (e.g., "rp01")
     :param pyomo.environ.Set k_set: Set of timesteps (e.g., model.k)
     :param int k_start_index: Start timestep index (e.g., "1")
     :param int k_end_index: End timestep index (e.g., "6")
@@ -54,19 +76,13 @@ def markov_sum(rp_set: pyo.Set, rp_current_value: str, k_set: pyo.Set, k_start_i
     :keyword other_indices: Additional indices for the relevant_variable (will be used as 'relevant_variable[rp_current_value, k, *other_indices]')
     :return: Expression for the sum of the relevant_variable multiplied by corresponding transition probabilities
     """
-    markov_sum = 0
+    expression = 0
     for k in set_range_cyclic(k_set, k_start_index, k_end_index):
         if k_set.ord(k) > k_end_index:  # k is still beyond edge towards previous periods
-            safety_check = 0
-            for rp in rp_set:  # Iterate over all representative periods
-                if transition_matrix.at[rp, rp_current_value] > 0:  # Only consider transitions with a probability > 0
-                    markov_sum += transition_matrix.at[rp, rp_current_value] * relevant_variable[rp, k, *other_indices]
-                    safety_check += transition_matrix.at[rp, rp_current_value]
-            if safety_check != 1:
-                raise ValueError(f"Transition matrix is not correctly defined - sum of transition probabilities for representative period {rp_current_value} is not 1 (but {safety_check})")
+            expression += markov_summand(rp_set, rp_target, k, relevant_variable, transition_matrix, *other_indices)
         else:
-            markov_sum += relevant_variable[rp_current_value, k, *other_indices]
-    return markov_sum
+            expression += relevant_variable[rp_target, k, *other_indices]
+    return expression
 
 
 # Dictionary to store which functions have been executed for the given object
