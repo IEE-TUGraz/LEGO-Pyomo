@@ -33,12 +33,15 @@ printer.information(f"Loading case study took {time.time() - start_time:.2f} sec
 # Create varied case studies
 start_time = time.time()
 cs_notEnforced.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "notEnforced"
+cs_notEnforced.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "notEnforced"
 
 cs_cyclic = cs_notEnforced.copy()
 cs_cyclic.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "cyclic"
+cs_cyclic.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "cyclic"
 
 cs_markov = cs_notEnforced.copy()
 cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "markov"
+cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "markov"
 
 lego_models = [("NoEnf.", LEGO(cs_notEnforced)), ("Cyclic", LEGO(cs_cyclic)), ("Markov", LEGO(cs_markov))]
 printer.information(f"Creating varied case studies took {time.time() - start_time:.2f} seconds")

@@ -54,15 +54,20 @@ def add_constraints(lego: LEGO):
         for rp in lego.model.rp:
             for k in lego.model.k:
                 for g in lego.model.thermalGenerators:
-                    lego.model.eThRampDw_expr[rp, k, g] -= lego.model.v2ndResDW[rp, k, g]
-                    lego.model.eThRampUp_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
                     lego.model.eUCMaxOut1_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
 
                     match lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]:
                         case "notEnforced":
+                            if k != lego.model.k.first():  # Skip first timestep if constraint is not enforced
+                                lego.model.eThRampDw_expr[rp, k, g] -= lego.model.v2ndResDW[rp, k, g]
+                                lego.model.eThRampUp_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
+
                             if k != lego.model.k.last():  # Skip last timestep if constraint is not enforced
                                 lego.model.eUCMaxOut2_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
+
                         case "cyclic" | "markov":
+                            lego.model.eThRampDw_expr[rp, k, g] -= lego.model.v2ndResDW[rp, k, g]
+                            lego.model.eThRampUp_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
                             lego.model.eUCMaxOut2_expr[rp, k, g] += lego.model.v2ndResUP[rp, k, g]
 
     # Add 2nd reserve to storage constraints

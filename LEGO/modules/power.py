@@ -238,16 +238,40 @@ def add_constraints(lego: LEGO):
     if lego.cs.dPower_Parameters["pEnableVRES"]:
         lego.model.eReMaxProd = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.vresGenerators, rule=eReMaxProd_rule)
 
-    def eThRampUp_rule(model, rp, k, g):
-        return model.vGenP1[rp, k, g] - model.vGenP1[rp, lego.model.k.prevw(k), g] - model.vCommit[rp, k, g] * model.pRampUp[g]
+    def eThRampUp_rule(model, rp, k, g, transition_matrix):
+        match lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingRamping"]:
+            case "notEnforced":
+                if model.k.first() == k:
+                    return 0  # Will turn into 'always True' constraint (since 0 <= 0)
+                else:
+                    return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prev(k), g] - model.vCommit[rp, k, g] * model.pRampUp[g]
+            case "cyclic":
+                return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prevw(k), g] - model.vCommit[rp, k, g] * model.pRampUp[g]
+            case "markov":
+                if model.k.first() == k:
+                    return model.vGenP1[rp, k, g] - LEGOUtilities.markov_summand(model.rp, model.rp.prevw(rp), False, k, model.vGenP1, transition_matrix, g) - model.vCommit[rp, k, g] * model.pRampUp[g]
+                else:
+                    return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prevw(k), g] - model.vCommit[rp, k, g] * model.pRampUp[g]
 
-    lego.model.eThRampUp_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.thermalGenerators, rule=eThRampUp_rule)
+    lego.model.eThRampUp_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.thermalGenerators, rule=lambda m, rp, k, t: eThRampUp_rule(m, rp, k, t, lego.cs.rpTransitionMatrixRelativeFrom))
     lego.model.eThRampUp = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Ramp up for thermal generators (based on doi:10.1007/s10107-015-0919-9)', rule=lambda model, rp, k, t: lego.model.eThRampUp_expr[rp, k, t] <= 0)
 
-    def eThRampDw_rule(model, rp, k, g):
-        return model.vGenP1[rp, k, g] - model.vGenP1[rp, lego.model.k.prevw(k), g] + model.vCommit[rp, lego.model.k.prevw(k), g] * model.pRampDw[g]
+    def eThRampDw_rule(model, rp, k, g, transition_matrix):
+        match lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingRamping"]:
+            case "notEnforced":
+                if model.k.first() == k:
+                    return 0  # Will turn into 'always True' constraint (since 0 <= 0)
+                else:
+                    return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prev(k), g] + model.vCommit[rp, model.k.prevw(k), g] * model.pRampDw[g]
+            case "cyclic":
+                return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prevw(k), g] + model.vCommit[rp, model.k.prevw(k), g] * model.pRampDw[g]
+            case "markov":
+                if model.k.first() == k:
+                    return model.vGenP1[rp, k, g] - LEGOUtilities.markov_summand(model.rp, model.rp.prevw(rp), False, k, model.vGenP1, transition_matrix, g) + model.vCommit[rp, model.k.prevw(k), g] * model.pRampDw[g]
+                else:
+                    return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prev(k), g] + model.vCommit[rp, model.k.prevw(k), g] * model.pRampDw[g]
 
-    lego.model.eThRampDw_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.thermalGenerators, rule=eThRampDw_rule)
+    lego.model.eThRampDw_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.thermalGenerators, rule=lambda m, rp, k, t: eThRampDw_rule(m, rp, k, t, lego.cs.rpTransitionMatrixRelativeFrom))
     lego.model.eThRampDw = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Ramp down for thermal generators (based on doi:10.1007/s10107-015-0919-9)', rule=lambda model, rp, k, t: lego.model.eThRampDw_expr[rp, k, t] >= 0)
 
     # Thermal Generator production with unit commitment & ramping constraints
