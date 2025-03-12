@@ -8,6 +8,7 @@ from pyomo.util.infeasible import log_infeasible_constraints
 
 from LEGO.CaseStudy import CaseStudy
 from LEGO.LEGO import LEGO
+from LEGO.LEGOUtilities import plot_unit_commitment
 from tools.printer import Printer
 
 ########################################################################################################################
@@ -20,128 +21,135 @@ printer.console.width = 180
 pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
-########################################################################################################################
-# Data input from case study
-########################################################################################################################
 
-# Load case study from Excels
-printer.information(f"Loading case study from '{"data/markov/"}'")
-start_time = time.time()
-cs_notEnforced = CaseStudy("data/markov/")
-printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
+def execute_case_studies():
+    ########################################################################################################################
+    # Data input from case study
+    ########################################################################################################################
 
-# Create varied case studies
-start_time = time.time()
-cs_notEnforced.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "notEnforced"
-cs_notEnforced.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "notEnforced"
+    # Load case study from Excels
+    printer.information(f"Loading case study from '{"data/markov/"}'")
+    start_time = time.time()
+    cs_notEnforced = CaseStudy("data/markov/")
+    printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
 
-cs_cyclic = cs_notEnforced.copy()
-cs_cyclic.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "cyclic"
-cs_cyclic.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "cyclic"
+    # Create varied case studies
+    start_time = time.time()
+    cs_notEnforced.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "notEnforced"
+    cs_notEnforced.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "notEnforced"
 
-cs_markov = cs_notEnforced.copy()
-cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "markov"
-cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "markov"
+    cs_cyclic = cs_notEnforced.copy()
+    cs_cyclic.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "cyclic"
+    cs_cyclic.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "cyclic"
 
-# Create "truth" case study for comparison
-cs_truth = cs_notEnforced.copy()
-cs_truth.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "notEnforced"
-cs_truth.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "notEnforced"
+    cs_markov = cs_notEnforced.copy()
+    cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "markov"
+    cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "markov"
 
-# Adjust Hindex
-cs_truth.dPower_Hindex = cs_notEnforced.dPower_Hindex.reset_index()
-for i, row in cs_truth.dPower_Hindex.iterrows():
-    cs_truth.dPower_Hindex.loc[i] = f"h{i + 1:0>4}", f"rp01", f"k{i + 1:0>4}"
-cs_truth.dPower_Hindex = cs_truth.dPower_Hindex.set_index(["p", "rp", "k"])
+    # Create "truth" case study for comparison
+    cs_truth = cs_notEnforced.copy()
+    cs_truth.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "notEnforced"
+    cs_truth.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "notEnforced"
 
-# Adjust Demand
-sorted_demand = cs_notEnforced.dPower_Demand.sort_values(by=["rp", "k"])  # Sort so that the iteration makes sense
-cs_truth.dPower_Demand = cs_notEnforced.dPower_Demand.reset_index()
-for i, (df_index, row) in enumerate(sorted_demand.iterrows()):
-    cs_truth.dPower_Demand.loc[i] = f"rp01", f"k{i + 1:0>4}", df_index[2], row["Demand"]
-cs_truth.dPower_Demand = cs_truth.dPower_Demand.set_index(["rp", "k", "i"])
+    # Adjust Hindex
+    cs_truth.dPower_Hindex = cs_notEnforced.dPower_Hindex.reset_index()
+    for i, row in cs_truth.dPower_Hindex.iterrows():
+        cs_truth.dPower_Hindex.loc[i] = f"h{i + 1:0>4}", f"rp01", f"k{i + 1:0>4}"
+    cs_truth.dPower_Hindex = cs_truth.dPower_Hindex.set_index(["p", "rp", "k"])
 
-# Adjust WeightsK
-cs_truth.dPower_WeightsK = cs_truth.dPower_WeightsK.reset_index()
-for i in range(len(cs_truth.dPower_Hindex)):
-    cs_truth.dPower_WeightsK.loc[i] = f"k{i + 1:0>4}", 1
-cs_truth.dPower_WeightsK = cs_truth.dPower_WeightsK.set_index("k")
+    # Adjust Demand
+    sorted_demand = cs_notEnforced.dPower_Demand.sort_values(by=["rp", "k"])  # Sort so that the iteration makes sense
+    cs_truth.dPower_Demand = cs_notEnforced.dPower_Demand.reset_index()
+    for i, (df_index, row) in enumerate(sorted_demand.iterrows()):
+        cs_truth.dPower_Demand.loc[i] = f"rp01", f"k{i + 1:0>4}", df_index[2], row["Demand"]
+    cs_truth.dPower_Demand = cs_truth.dPower_Demand.set_index(["rp", "k", "i"])
 
-# Adjust WeightsRP
-cs_truth.dPower_WeightsRP = cs_truth.dPower_WeightsRP.drop(cs_truth.dPower_WeightsRP.index)
-cs_truth.dPower_WeightsRP.loc["rp01"] = len(cs_truth.dPower_Hindex)
+    # Adjust WeightsK
+    cs_truth.dPower_WeightsK = cs_truth.dPower_WeightsK.reset_index()
+    for i in range(len(cs_truth.dPower_Hindex)):
+        cs_truth.dPower_WeightsK.loc[i] = f"k{i + 1:0>4}", 1
+    cs_truth.dPower_WeightsK = cs_truth.dPower_WeightsK.set_index("k")
 
-lego_models = [("NoEnf.", LEGO(cs_notEnforced)), ("Cyclic", LEGO(cs_cyclic)), ("Markov", LEGO(cs_markov)), ("Truth", LEGO(cs_truth))]
-printer.information(f"Creating varied case studies took {time.time() - start_time:.2f} seconds")
+    # Adjust WeightsRP
+    cs_truth.dPower_WeightsRP = cs_truth.dPower_WeightsRP.drop(cs_truth.dPower_WeightsRP.index)
+    cs_truth.dPower_WeightsRP.loc["rp01"] = len(cs_truth.dPower_Hindex)
 
-########################################################################################################################
-# Evaluation
-########################################################################################################################
+    lego_models = [("NoEnf.", LEGO(cs_notEnforced)), ("Cyclic", LEGO(cs_cyclic)), ("Markov", LEGO(cs_markov)), ("Truth", LEGO(cs_truth))]
+    printer.information(f"Creating varied case studies took {time.time() - start_time:.2f} seconds")
 
-optimizer = SolverFactory("gurobi")
+    ########################################################################################################################
+    # Evaluation
+    ########################################################################################################################
 
-results = []
+    optimizer = SolverFactory("gurobi")
 
-df = pd.DataFrame()
-for caseName, lego in lego_models:
-    printer.information(f"\n\n{'=' * 60}\n{caseName}\n{'=' * 60}")
+    results = []
 
-    model, timing_building = lego.build_model()
-    printer.information(f"Building model took {timing_building:.2f} seconds")
+    df = pd.DataFrame()
+    for caseName, lego in lego_models:
+        printer.information(f"\n\n{'=' * 60}\n{caseName}\n{'=' * 60}")
 
-    result, timing_solving = lego.solve_model(optimizer)
-    printer.information(f"Solving model took {timing_solving:.2f} seconds")
+        model, timing_building = lego.build_model()
+        printer.information(f"Building model took {timing_building:.2f} seconds")
 
-    match result.solver.termination_condition:
-        case pyo.TerminationCondition.optimal:
-            printer.success("Optimal solution found")
-        case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
-            printer.error(f"Model is {result.solver.termination_condition}, logging infeasible constraints:")
-            log_infeasible_constraints(model)
-        case _:
-            printer.warning("Solver terminated with condition:", result.solver.termination_condition)
+        result, timing_solving = lego.solve_model(optimizer)
+        printer.information(f"Solving model took {timing_solving:.2f} seconds")
 
-    # Count binary variables within all variables
-    variables = list(model.component_objects(pyo.Var))
-    counter_binaries = 0
-    for v in variables:
-        indices = [i for i in v]
-        for i in indices:
-            if v[i].domain == pyo.Binary:
-                counter_binaries += 1
+        match result.solver.termination_condition:
+            case pyo.TerminationCondition.optimal:
+                printer.success("Optimal solution found")
+            case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
+                printer.error(f"Model is {result.solver.termination_condition}, logging infeasible constraints:")
+                log_infeasible_constraints(model)
+            case _:
+                printer.warning("Solver terminated with condition:", result.solver.termination_condition)
 
-    if result.solver.termination_condition == pyo.TerminationCondition.optimal:
-        for x in [pd.Series({"case": caseName, "rp": i[0], "k": i[1], "g": i[2],
-                             "vCommit": pyo.value(model.vCommit[i]),
-                             "vStartup": pyo.value(model.vStartup[i]),
-                             "vShutdown": pyo.value(model.vShutdown[i]),
-                             "vGenP": pyo.value(model.vGenP[i]),
-                             "vGenP1": pyo.value(model.vGenP1[i]),
-                             "pMinUpTime": pyo.value(model.pMinUpTime[i[2]]),
-                             "pMinDownTime": pyo.value(model.pMinDownTime[i[2]]),
-                             "pDemandP": sum([pyo.value(model.pDemandP[i[0], i[1], node]) for node in model.i])}) for i in list(model.vCommit)]:
-            df = pd.concat([df, x], axis=1)
+        # Count binary variables within all variables
+        variables = list(model.component_objects(pyo.Var))
+        counter_binaries = 0
+        for v in variables:
+            indices = [i for i in v]
+            for i in indices:
+                if v[i].domain == pyo.Binary:
+                    counter_binaries += 1
 
-    results.append({
-        "Case": caseName,
-        "Objective": pyo.value(model.objective) if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1,
-        "Solution": result.solver.termination_condition,
-        "Build Time": timing_building,
-        "Solve Time": timing_solving,
-        "# Variables Overall": model.nvariables(),
-        "# Binary Variables": counter_binaries,
-        "# Constraints": model.nconstraints(),
-        "PNS": sum(model.vPNS[rp, k, i].value if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
-        "EPS": sum(model.vEPS[rp, k, i].value if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
-        "model": model
-    })
+        if result.solver.termination_condition == pyo.TerminationCondition.optimal:
+            for x in [pd.Series({"case": caseName, "rp": i[0], "k": i[1], "g": i[2],
+                                 "vCommit": pyo.value(model.vCommit[i]),
+                                 "vStartup": pyo.value(model.vStartup[i]),
+                                 "vShutdown": pyo.value(model.vShutdown[i]),
+                                 "vGenP": pyo.value(model.vGenP[i]),
+                                 "vGenP1": pyo.value(model.vGenP1[i]),
+                                 "pMinUpTime": pyo.value(model.pMinUpTime[i[2]]),
+                                 "pMinDownTime": pyo.value(model.pMinDownTime[i[2]]),
+                                 "pDemandP": sum([pyo.value(model.pDemandP[i[0], i[1], node]) for node in model.i])}) for i in list(model.vCommit)]:
+                df = pd.concat([df, x], axis=1)
 
-    print(df.head())
+        results.append({
+            "Case": caseName,
+            "Objective": pyo.value(model.objective) if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1,
+            "Solution": result.solver.termination_condition,
+            "Build Time": timing_building,
+            "Solve Time": timing_solving,
+            "# Variables Overall": model.nvariables(),
+            "# Binary Variables": counter_binaries,
+            "# Constraints": model.nconstraints(),
+            "PNS": sum(model.vPNS[rp, k, i].value if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
+            "EPS": sum(model.vEPS[rp, k, i].value if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
+            "model": model
+        })
 
-printer.information("Case   |  Objective  | Solution | Build Time | Solve Time | # Variables Overall | # Binary Variables | # Constraints | PNS     | EPS    |")
-for result in results:
-    printer.information(f"{result['Case']} | {result['Objective']:11.2f} | {result['Solution']}  | {result['Build Time']:10.2f} | {result['Solve Time']:10.2f} | {result['# Variables Overall']:>19} | {result['# Binary Variables']:>18} | {result['# Constraints']:>13} | {result['PNS']:>7.2f} | {result['EPS']:>7.2f}")
+        print(df.head())
 
-df.T.to_excel("markov.xlsx")
+    printer.information("Case   |  Objective  | Solution | Build Time | Solve Time | # Variables Overall | # Binary Variables | # Constraints | PNS     | EPS    |")
+    for result in results:
+        printer.information(f"{result['Case']} | {result['Objective']:11.2f} | {result['Solution']}  | {result['Build Time']:10.2f} | {result['Solve Time']:10.2f} | {result['# Variables Overall']:>19} | {result['# Binary Variables']:>18} | {result['# Constraints']:>13} | {result['PNS']:>7.2f} | {result['EPS']:>7.2f}")
+
+    df.T.to_excel("markov.xlsx")
+
+
+execute_case_studies()
+
+plot_unit_commitment("markov.xlsx")
 
 printer.success("Done")
