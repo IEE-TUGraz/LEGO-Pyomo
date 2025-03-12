@@ -1,6 +1,7 @@
 import functools
 import typing
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import pyomo.environ as pyo
 
@@ -148,3 +149,71 @@ def checkExecutionLog(required_functions: list[typing.Callable]):
         return wrapper
 
     return decorator
+
+
+def plot_unit_commitment(output_file_path: str):
+    """
+    Plot the unit commitment of a given output file
+    :param output_file_path: Path to Excel-File
+    :return: Nothing (shows plot)
+    """
+    plt.rcParams['figure.dpi'] = 300  # Set resolution of the plot
+    df = pd.read_excel(output_file_path)
+
+    # Fix indices for "Truth" case
+    if "Truth" in df["case"].unique():
+        counter = 0
+        for i, row in df[df["case"] == "Truth"].iterrows():
+            df.loc[i, "rp"] = df.loc[counter, "rp"]
+            df.loc[i, "k"] = df.loc[counter, "k"]
+            counter += 1
+
+    # Plot the data
+    index = [f"{rp}{k}" for rp in df["rp"].unique() for k in df["k"].unique()]
+
+    def prev(i: str, n: int = 1):
+        current_index = index.index(i)
+        return index[current_index - n]
+
+    fig, axs = plt.subplots(len(df["case"].unique()), len(df["g"].unique()), figsize=(6 * len(df["g"].unique()), 2 * len(df["case"].unique())))
+    for i, case in enumerate(df["case"].unique()):
+        for j, g in enumerate(df["g"].unique()):
+
+            data_plot = {}
+            data_bar_startup = {}
+            data_bar_shutdown = {}
+            data_bar_min_uptime_height = {}
+            data_bar_min_downtime_bottom = {}
+            data_plot_demand = {}
+            for rp in df["rp"].unique():
+                for k in df["k"].unique():
+                    data_plot[f"{rp}{k}"] = df[(df["case"] == case) & (df["g"] == g) & (df["rp"] == rp) & (df["k"] == k)]["vCommit"].values[0]
+                    data_bar_startup[f"{rp}{k}"] = df[(df["case"] == case) & (df["g"] == g) & (df["rp"] == rp) & (df["k"] == k)]["vStartup"].values[0]
+                    data_bar_shutdown[f"{rp}{k}"] = df[(df["case"] == case) & (df["g"] == g) & (df["rp"] == rp) & (df["k"] == k)]["vShutdown"].values[0]
+                    data_plot_demand[f"{rp}{k}"] = df[(df["case"] == case) & (df["g"] == g) & (df["rp"] == rp) & (df["k"] == k)]["pDemandP"].values[0]
+
+            for rp in df["rp"].unique():
+                for k in df["k"].unique():
+                    data_bar_min_uptime_height[f"{rp}{k}"] = sum([data_bar_startup[f"{a}"] for a in [prev(f"{rp}{k}", b) for b in range(1, df[(df["case"] == case) & (df["g"] == g) & (df["rp"] == rp) & (df["k"] == k)]["pMinUpTime"].values[0])]])
+                    data_bar_min_downtime_bottom[f"{rp}{k}"] = 1 - sum([data_bar_shutdown[f"{a}"] for a in [prev(f"{rp}{k}", b) for b in range(1, df[(df["case"] == case) & (df["g"] == g) & (df["rp"] == rp) & (df["k"] == k)]["pMinDownTime"].values[0])]])
+
+            axs[i, j].set_ylim(-0.05, 1.05)
+            axs[i, j].plot(index, data_plot.values(), color="black", alpha=0.3)
+            axs[i, j].bar(index, data_bar_startup.values(), color="green", alpha=0.5, bottom=[list(data_plot.values())[-1]] + list(data_plot.values())[:-1], width=1)
+            axs[i, j].bar(index, data_bar_shutdown.values(), color="red", alpha=0.5, bottom=data_plot.values(), width=1)
+            axs[i, j].bar(index, data_bar_min_uptime_height.values(), color="green", alpha=0.2, width=1)
+            axs[i, j].bar(index, bottom=data_bar_min_downtime_bottom.values(), height=[1 - x for x in data_bar_min_downtime_bottom.values()], color="red", alpha=0.2, width=1)
+            axs[i, j].set_title(f"{case} - {g}")
+
+            # Plot demand on second y-axis
+            axs2 = axs[i, j].twinx()
+            axs2.plot(index, data_plot_demand.values(), color="blue", alpha=0.3)
+
+            # Set ticks and vertical lines
+            axs[i, j].set_xticks(index[::24] + [index[-1]])  # Set x-axis ticks to only show every 24th value
+            for x in index[::24]:  # Create vertical lines for each 24th x-tick
+                axs[i, j].axvline(x=x, color="gray", linestyle="--", alpha=0.5)
+            axs[i, j].axvline(x=index[-1], color="gray", linestyle="--", alpha=0.5)
+
+    plt.tight_layout()
+    plt.show()
