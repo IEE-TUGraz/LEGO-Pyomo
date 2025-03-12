@@ -43,7 +43,35 @@ cs_markov = cs_notEnforced.copy()
 cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "markov"
 cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "markov"
 
-lego_models = [("NoEnf.", LEGO(cs_notEnforced)), ("Cyclic", LEGO(cs_cyclic)), ("Markov", LEGO(cs_markov))]
+# Create "truth" case study for comparison
+cs_truth = cs_notEnforced.copy()
+cs_truth.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "notEnforced"
+cs_truth.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "notEnforced"
+
+# Adjust Hindex
+cs_truth.dPower_Hindex = cs_notEnforced.dPower_Hindex.reset_index()
+for i, row in cs_truth.dPower_Hindex.iterrows():
+    cs_truth.dPower_Hindex.loc[i] = f"h{i + 1:0>4}", f"rp01", f"k{i + 1:0>4}"
+cs_truth.dPower_Hindex = cs_truth.dPower_Hindex.set_index(["p", "rp", "k"])
+
+# Adjust Demand
+sorted_demand = cs_notEnforced.dPower_Demand.sort_values(by=["rp", "k"])  # Sort so that the iteration makes sense
+cs_truth.dPower_Demand = cs_notEnforced.dPower_Demand.reset_index()
+for i, (df_index, row) in enumerate(sorted_demand.iterrows()):
+    cs_truth.dPower_Demand.loc[i] = f"rp01", f"k{i + 1:0>4}", df_index[2], row["Demand"]
+cs_truth.dPower_Demand = cs_truth.dPower_Demand.set_index(["rp", "k", "i"])
+
+# Adjust WeightsK
+cs_truth.dPower_WeightsK = cs_truth.dPower_WeightsK.reset_index()
+for i in range(len(cs_truth.dPower_Hindex)):
+    cs_truth.dPower_WeightsK.loc[i] = f"k{i + 1:0>4}", 1
+cs_truth.dPower_WeightsK = cs_truth.dPower_WeightsK.set_index("k")
+
+# Adjust WeightsRP
+cs_truth.dPower_WeightsRP = cs_truth.dPower_WeightsRP.drop(cs_truth.dPower_WeightsRP.index)
+cs_truth.dPower_WeightsRP.loc["rp01"] = len(cs_truth.dPower_Hindex)
+
+lego_models = [("NoEnf.", LEGO(cs_notEnforced)), ("Cyclic", LEGO(cs_cyclic)), ("Markov", LEGO(cs_markov)), ("Truth", LEGO(cs_truth))]
 printer.information(f"Creating varied case studies took {time.time() - start_time:.2f} seconds")
 
 ########################################################################################################################
@@ -83,7 +111,15 @@ for caseName, lego in lego_models:
                 counter_binaries += 1
 
     if result.solver.termination_condition == pyo.TerminationCondition.optimal:
-        for x in [pd.Series({"case": caseName, "rp": i[0], "k": i[1], "g": i[2], "vCommit": pyo.value(model.vCommit[i]), "vGenP1": pyo.value(model.vGenP1[i])}) for i in list(model.vCommit)]:
+        for x in [pd.Series({"case": caseName, "rp": i[0], "k": i[1], "g": i[2],
+                             "vCommit": pyo.value(model.vCommit[i]),
+                             "vStartup": pyo.value(model.vStartup[i]),
+                             "vShutdown": pyo.value(model.vShutdown[i]),
+                             "vGenP": pyo.value(model.vGenP[i]),
+                             "vGenP1": pyo.value(model.vGenP1[i]),
+                             "pMinUpTime": pyo.value(model.pMinUpTime[i[2]]),
+                             "pMinDownTime": pyo.value(model.pMinDownTime[i[2]]),
+                             "pDemandP": sum([pyo.value(model.pDemandP[i[0], i[1], node]) for node in model.i])}) for i in list(model.vCommit)]:
             df = pd.concat([df, x], axis=1)
 
     results.append({
@@ -96,7 +132,8 @@ for caseName, lego in lego_models:
         "# Binary Variables": counter_binaries,
         "# Constraints": model.nconstraints(),
         "PNS": sum(model.vPNS[rp, k, i].value if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
-        "EPS": sum(model.vEPS[rp, k, i].value if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i)
+        "EPS": sum(model.vEPS[rp, k, i].value if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
+        "model": model
     })
 
     print(df.head())
