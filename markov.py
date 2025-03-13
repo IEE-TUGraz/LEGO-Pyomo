@@ -74,7 +74,7 @@ def execute_case_studies():
     cs_truth.dPower_WeightsRP = cs_truth.dPower_WeightsRP.drop(cs_truth.dPower_WeightsRP.index)
     cs_truth.dPower_WeightsRP.loc["rp01"] = len(cs_truth.dPower_Hindex)
 
-    lego_models = [("NoEnf.", LEGO(cs_notEnforced)), ("Cyclic", LEGO(cs_cyclic)), ("Markov", LEGO(cs_markov)), ("Truth", LEGO(cs_truth))]
+    lego_models = [("NoEnf.", LEGO(cs_notEnforced)), ("Cyclic", LEGO(cs_cyclic)), ("Markov", LEGO(cs_markov)), ("Truth ", LEGO(cs_truth))]
     printer.information(f"Creating varied case studies took {time.time() - start_time:.2f} seconds")
 
     ########################################################################################################################
@@ -150,6 +150,7 @@ def execute_case_studies():
 
 execute_case_studies()
 
+printer.information("Plotting unit commitment")
 plot_unit_commitment("markov.xlsx")
 
 printer.success("Done")

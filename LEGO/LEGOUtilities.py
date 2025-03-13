@@ -161,9 +161,9 @@ def plot_unit_commitment(output_file_path: str):
     df = pd.read_excel(output_file_path)
 
     # Fix indices for "Truth" case
-    if "Truth" in df["case"].unique():
+    if "Truth " in df["case"].unique():
         counter = 0
-        for i, row in df[df["case"] == "Truth"].iterrows():
+        for i, row in df[df["case"] == "Truth "].iterrows():
             df.loc[i, "rp"] = df.loc[counter, "rp"]
             df.loc[i, "k"] = df.loc[counter, "k"]
             counter += 1
