@@ -3208,7 +3208,7 @@ vGenQ.lo      (rpk(rp,k),ga(g)) =  pMinGenQ  (g)              ;
 
 vGenP.up      (rpk(rp,k),s) =                  pMaxProd(s)  *[(pMaxInvest(s) * pEnabInv(s))+pExisUnits(s)];
 v2ndResUP.up  (rpk(rp,k),s) =                  pMaxProd(s)  *[(pMaxInvest(s) * pEnabInv(s))+pExisUnits(s)];
-vConsump.up   (rpk(rp,k),s) =                  pMaxProd(s)  *[(pMaxInvest(s) * pEnabInv(s))+pExisUnits(s)];
+vConsump.up   (rpk(rp,k),s) =                  pMaxCons(s)  *[(pMaxInvest(s) * pEnabInv(s))+pExisUnits(s)];
 v2ndResDW.up  (rpk(rp,k),s) =  max[pMaxCons(s),pMaxProd(s)] *[(pMaxInvest(s) * pEnabInv(s))+pExisUnits(s)];
 
 vGenP.up      (rpk(rp,k),r) =                  pMaxProd(r)  *[(pMaxInvest(r) * pEnabInv(r))+pExisUnits(r)] * sum[gi(r, i), pResProfile(rp,k ,i,r)];
