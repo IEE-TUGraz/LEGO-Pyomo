@@ -72,7 +72,7 @@ def execute_case_studies():
 
     # Adjust WeightsRP
     cs_truth.dPower_WeightsRP = cs_truth.dPower_WeightsRP.drop(cs_truth.dPower_WeightsRP.index)
-    cs_truth.dPower_WeightsRP.loc["rp01"] = len(cs_truth.dPower_Hindex)
+    cs_truth.dPower_WeightsRP.loc["rp01"] = 1
 
     lego_models = [("NoEnf.", LEGO(cs_notEnforced)), ("Cyclic", LEGO(cs_cyclic)), ("Markov", LEGO(cs_markov)), ("Truth ", LEGO(cs_truth))]
     printer.information(f"Creating varied case studies took {time.time() - start_time:.2f} seconds")
