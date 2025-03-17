@@ -1,0 +1,3 @@
+print("Hey, this worked!")
+
+exit(0)
