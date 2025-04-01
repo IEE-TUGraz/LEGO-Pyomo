@@ -22,15 +22,15 @@ pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
 
-def execute_case_studies():
+def execute_case_studies(case_study_path: str):
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
 
     # Load case study from Excels
-    printer.information(f"Loading case study from '{"data/markov/"}'")
+    printer.information(f"Loading case study from '{case_study_path}'")
     start_time = time.time()
-    cs_notEnforced = CaseStudy("data/markov/")
+    cs_notEnforced = CaseStudy(case_study_path)
     printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
 
     # Create varied case studies
@@ -50,22 +50,36 @@ def execute_case_studies():
     cs_truth = cs_notEnforced.copy()
     cs_truth.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "notEnforced"
     cs_truth.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "notEnforced"
+    # Adjust Demand
+    adjusted_demand = []
+    for i, _ in cs_truth.dPower_BusInfo.iterrows():
+        for h, row in cs_truth.dPower_Hindex.iterrows():
+            adjusted_demand.append(["rp01", h[0].replace("h", "k"), i, cs_truth.dPower_Demand.loc[(h[1], h[2], i), "Demand"]])
+
+    cs_truth.dPower_Demand = pd.DataFrame(adjusted_demand, columns=["rp", "k", "i", "Demand"])
+    cs_truth.dPower_Demand = cs_truth.dPower_Demand.set_index(["rp", "k", "i"])
+
+    # Adjust VRESProfiles
+    adjusted_vresprofiles = []
+    cs_truth.dPower_VRESProfiles.sort_index(inplace=True)
+    for i in cs_truth.dPower_VRESProfiles.index.get_level_values('i').unique().tolist():
+        for tec in cs_truth.dPower_VRESProfiles.index.get_level_values('tec').unique().tolist():
+            if len(cs_truth.dPower_VRESProfiles.loc[:, i, :, tec]) > 0:  # Check if VRESProfiles has entries for a combination of i and tec
+                for h, row in cs_truth.dPower_Hindex.iterrows():
+                    adjusted_vresprofiles.append(["rp01", i, h[0].replace("h", "k"), tec, cs_truth.dPower_VRESProfiles.loc[(h[1], i, h[2], tec), "Capacity"]])
+
+    cs_truth.dPower_VRESProfiles = pd.DataFrame(adjusted_vresprofiles, columns=["rp", "i", "k", "tec", "Capacity"])
+    cs_truth.dPower_VRESProfiles = cs_truth.dPower_VRESProfiles.set_index(["rp", "i", "k", "tec"])
 
     # Adjust Hindex
-    cs_truth.dPower_Hindex = cs_notEnforced.dPower_Hindex.reset_index()
+    cs_truth.dPower_Hindex = cs_truth.dPower_Hindex.reset_index()
     for i, row in cs_truth.dPower_Hindex.iterrows():
         cs_truth.dPower_Hindex.loc[i] = f"h{i + 1:0>4}", f"rp01", f"k{i + 1:0>4}"
     cs_truth.dPower_Hindex = cs_truth.dPower_Hindex.set_index(["p", "rp", "k"])
 
-    # Adjust Demand
-    sorted_demand = cs_notEnforced.dPower_Demand.sort_values(by=["rp", "k"])  # Sort so that the iteration makes sense
-    cs_truth.dPower_Demand = cs_notEnforced.dPower_Demand.reset_index()
-    for i, (df_index, row) in enumerate(sorted_demand.iterrows()):
-        cs_truth.dPower_Demand.loc[i] = f"rp01", f"k{i + 1:0>4}", df_index[2], row["Demand"]
-    cs_truth.dPower_Demand = cs_truth.dPower_Demand.set_index(["rp", "k", "i"])
-
     # Adjust WeightsK
     cs_truth.dPower_WeightsK = cs_truth.dPower_WeightsK.reset_index()
+    cs_truth.dPower_WeightsK = cs_truth.dPower_WeightsK.drop(cs_truth.dPower_WeightsK.index)
     for i in range(len(cs_truth.dPower_Hindex)):
         cs_truth.dPower_WeightsK.loc[i] = f"k{i + 1:0>4}", 1
     cs_truth.dPower_WeightsK = cs_truth.dPower_WeightsK.set_index("k")
@@ -148,9 +162,12 @@ def execute_case_studies():
     df.T.to_excel("markov.xlsx")
 
 
-execute_case_studies()
+if __name__ == "__main__":
+    case_study_folder = "data/example/"
+    # execute_case_studies(case_study_folder)
 
-printer.information("Plotting unit commitment")
-plot_unit_commitment("markov.xlsx")
 
-printer.success("Done")
+    printer.information("Plotting unit commitment")
+    plot_unit_commitment("markov.xlsx", case_study_folder, 7 * 24, 7 * 24)
+
+    printer.success("Done")
