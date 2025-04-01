@@ -1,3 +1,6 @@
 [submodule "Conda-Activation-Scripts"]
 	path = Conda-Activation-Scripts
 	url = https://github.com/IEE-TUGraz/Conda-Activation-Scripts.git
+[submodule "InOutModule"]
+	path = InOutModule
+	url = https://github.com/IEE-TUGraz/InOutModule.git
