@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import pyomo.environ as pyo
 
+from InOutModule import ExcelReader
+
 
 # Returns a list of elements from a set, starting from 'first_index' and ending at 'last_index' (both inclusive) without wrapping around
 def set_range_non_cyclic(set: pyo.Set, first_index: int, last_index: int):
@@ -151,33 +153,39 @@ def checkExecutionLog(required_functions: list[typing.Callable]):
     return decorator
 
 
-def plot_unit_commitment(output_file_path: str):
+def plot_unit_commitment(output_file_path: str, power_hindex_path: str, number_of_hours: int = 24 * 7, start_hour: int = 1):
     """
     Plot the unit commitment of a given output file
     :param output_file_path: Path to Excel-File
+    :param power_hindex_path: Path to folder containing Power_Hindex file
+    :param number_of_hours: Number of hours to plot (default: 24 * 7 = 168)
+    :param start_hour: Start hour for the plot (default: 1)
     :return: Nothing (shows plot)
     """
     plt.rcParams['figure.dpi'] = 300  # Set resolution of the plot
     df = pd.read_excel(output_file_path)
+    df = df.set_index(["case", "rp", "k", "g"])
 
-    # Fix indices for "Truth" case
-    if "Truth " in df["case"].unique():
-        counter = 0
-        for i, row in df[df["case"] == "Truth "].iterrows():
-            df.loc[i, "rp"] = df.loc[counter, "rp"]
-            df.loc[i, "k"] = df.loc[counter, "k"]
-            counter += 1
+    # Get original mapping from Power_Hindex
+    hindex = ExcelReader.get_dPower_Hindex(power_hindex_path + "Power_Hindex.xlsx")
+    hindex = hindex.reset_index()
+    hindex["p_int"] = hindex["p"].str.extract(r'(\d+)').astype(int)  # Extract the integer part of the "p" column
+    hindex["rp_int"] = hindex["rp"].str.extract(r'(\d+)').astype(int)  # Extract the integer part of the "rp" column
+    hindex["k_int"] = hindex["k"].str.extract(r'(\d+)').astype(int)  # Extract the integer part of the "k" column
+
+    # Filter the dataframe to only include the relevant hours
+    hindex = hindex.loc[(hindex["p_int"] >= start_hour) & (hindex["p_int"] <= start_hour + number_of_hours - 1)]
 
     # Plot the data
-    index = [f"{rp}{k}" for rp in df["rp"].unique() for k in df["k"].unique()]
+    index = [f"{i + 1}" for i in range(len(hindex))]
 
     def prev(i: str, n: int = 1):
         current_index = index.index(i)
         return index[current_index - n]
 
-    fig, axs = plt.subplots(len(df["case"].unique()), len(df["g"].unique()), figsize=(6 * len(df["g"].unique()), 2 * len(df["case"].unique())))
-    for i, case in enumerate(df["case"].unique()):
-        for j, g in enumerate(df["g"].unique()):
+    fig, axs = plt.subplots(len(df.index.get_level_values("case").unique()), len(df.index.get_level_values("g").unique()), figsize=(6 * len(df.index.get_level_values("g").unique()), 2 * len(df.index.get_level_values("case").unique())))
+    for i, case in enumerate(df.index.get_level_values("case").unique()):
+        for j, g in enumerate(df.index.get_level_values("g").unique()):
 
             data_plot = {}
             data_bar_startup = {}
@@ -185,24 +193,24 @@ def plot_unit_commitment(output_file_path: str):
             data_bar_min_uptime_height = {}
             data_bar_min_downtime_bottom = {}
             data_plot_demand = {}
-            for rp in df["rp"].unique():
-                for k in df["k"].unique():
-                    data_plot[f"{rp}{k}"] = df[(df["case"] == case) & (df["g"] == g) & (df["rp"] == rp) & (df["k"] == k)]["vCommit"].values[0]
-                    data_bar_startup[f"{rp}{k}"] = df[(df["case"] == case) & (df["g"] == g) & (df["rp"] == rp) & (df["k"] == k)]["vStartup"].values[0]
-                    data_bar_shutdown[f"{rp}{k}"] = df[(df["case"] == case) & (df["g"] == g) & (df["rp"] == rp) & (df["k"] == k)]["vShutdown"].values[0]
-                    data_plot_demand[f"{rp}{k}"] = df[(df["case"] == case) & (df["g"] == g) & (df["rp"] == rp) & (df["k"] == k)]["pDemandP"].values[0]
-
-            for rp in df["rp"].unique():
-                for k in df["k"].unique():
-                    data_bar_min_uptime_height[f"{rp}{k}"] = sum([data_bar_startup[f"{a}"] for a in [prev(f"{rp}{k}", b) for b in range(1, df[(df["case"] == case) & (df["g"] == g) & (df["rp"] == rp) & (df["k"] == k)]["pMinUpTime"].values[0])]])
-                    data_bar_min_downtime_bottom[f"{rp}{k}"] = 1 - sum([data_bar_shutdown[f"{a}"] for a in [prev(f"{rp}{k}", b) for b in range(1, df[(df["case"] == case) & (df["g"] == g) & (df["rp"] == rp) & (df["k"] == k)]["pMinDownTime"].values[0])]])
+            for counter, (_, row) in enumerate(hindex.iterrows()):
+                rp = row["rp"] if case != "Truth " else "rp01"
+                k = row["k"] if case != "Truth " else row["p"].replace("h", "k")
+                data_plot[f"{counter}"] = df.loc[case, rp, k, g]["vCommit"]
+                data_bar_startup[f"{counter}"] = df.loc[case, rp, k, g]["vStartup"]
+                data_bar_shutdown[f"{counter}"] = df.loc[case, rp, k, g]["vShutdown"]
+                data_plot_demand[f"{counter}"] = df.loc[case, rp, k, g]["pDemandP"]
+                # TODO: Fix min uptime and downtime bars
+                # data_bar_min_uptime_height[f"{counter}"] = sum([data_bar_startup[f"{a}"] for a in [prev(f"{counter}", b) for b in range(1, int(df.loc[case, rp, k, g]["pMinUpTime"]))]])
+                # data_bar_min_downtime_bottom[f"{counter}"] = 1 - sum([data_bar_shutdown[f"{a}"] for a in [prev(f"{counter}", b) for b in range(1, int(df.loc[case, rp, k, g]["pMinDownTime"]))]])
 
             axs[i, j].set_ylim(-0.05, 1.05)
             axs[i, j].plot(index, data_plot.values(), color="black", alpha=0.3)
             axs[i, j].bar(index, data_bar_startup.values(), color="green", alpha=0.5, bottom=[list(data_plot.values())[-1]] + list(data_plot.values())[:-1], width=1)
             axs[i, j].bar(index, data_bar_shutdown.values(), color="red", alpha=0.5, bottom=data_plot.values(), width=1)
-            axs[i, j].bar(index, data_bar_min_uptime_height.values(), color="green", alpha=0.2, width=1)
-            axs[i, j].bar(index, bottom=data_bar_min_downtime_bottom.values(), height=[1 - x for x in data_bar_min_downtime_bottom.values()], color="red", alpha=0.2, width=1)
+            # TODO: Fix min uptime and downtime bars
+            # axs[i, j].bar(index, data_bar_min_uptime_height.values(), color="green", alpha=0.2, width=1)
+            # axs[i, j].bar(index, bottom=data_bar_min_downtime_bottom.values(), height=[1 - x for x in data_bar_min_downtime_bottom.values()], color="red", alpha=0.2, width=1)
             axs[i, j].set_title(f"{case} - {g}")
 
             # Plot demand on second y-axis

@@ -4,6 +4,8 @@ import warnings
 import numpy as np
 import pandas as pd
 
+from InOutModule import ExcelReader
+
 
 class CaseStudy:
 
@@ -73,7 +75,7 @@ class CaseStudy:
             self.dPower_Hindex = dPower_Hindex
         else:
             self.power_hindex_file = power_hindex_file
-            self.dPower_Hindex = self.get_dPower_Hindex()
+            self.dPower_Hindex = ExcelReader.get_dPower_Hindex(self.example_folder + self.power_hindex_file)
 
         self.rpTransitionMatrixAbsolute, self.rpTransitionMatrixRelativeTo, self.rpTransitionMatrixRelativeFrom = self.get_rpTransitionMatrices()
 
@@ -299,13 +301,6 @@ class CaseStudy:
         dPower_WeightsK = dPower_WeightsK.rename(columns={dPower_WeightsK.columns[0]: "k", dPower_WeightsK.columns[1]: "Weight"})
         dPower_WeightsK = dPower_WeightsK.set_index('k')
         return dPower_WeightsK
-
-    def get_dPower_Hindex(self):
-        dPower_Hindex = pd.read_excel(self.example_folder + self.power_hindex_file, skiprows=[0, 1, 2, 3, 4])
-        dPower_Hindex = dPower_Hindex.drop(dPower_Hindex.columns[0], axis=1)
-        dPower_Hindex = dPower_Hindex.rename(columns={dPower_Hindex.columns[0]: "p", dPower_Hindex.columns[1]: "rp", dPower_Hindex.columns[2]: "k"})
-        dPower_Hindex = dPower_Hindex.set_index(['p', 'rp', 'k'])
-        return dPower_Hindex
 
     def get_dPower_ImpExpHubs(self):
         dPower_ImpExpHubs = pd.read_excel(self.example_folder + self.power_impexphubs_file, skiprows=[0, 1, 3, 4, 5])
