@@ -45,7 +45,7 @@ class CaseStudy:
             self.dPower_BusInfo = dPower_BusInfo
         else:
             self.power_businfo_file = power_businfo_file
-            self.dPower_BusInfo = self.get_dPower_BusInfo()
+            self.dPower_BusInfo = ExcelReader.get_dPower_BusInfo(self.example_folder + self.power_businfo_file)
 
         if dPower_Network is not None:
             self.dPower_Network = dPower_Network
@@ -183,13 +183,6 @@ class CaseStudy:
                 case _:
                     raise ValueError(f"Value for {column} must be either 'Yes' or 'No'.")
         return df
-
-    def get_dPower_BusInfo(self):
-        dPower_BusInfo = pd.read_excel(self.example_folder + self.power_businfo_file, skiprows=[0, 1, 3, 4, 5])
-        dPower_BusInfo = dPower_BusInfo.drop(dPower_BusInfo.columns[0], axis=1)
-        dPower_BusInfo = dPower_BusInfo.rename(columns={dPower_BusInfo.columns[0]: "i", dPower_BusInfo.columns[1]: "System"})
-        dPower_BusInfo = dPower_BusInfo.set_index('i')
-        return dPower_BusInfo
 
     def get_dPower_Network(self):
         dPower_Network = pd.read_excel(self.example_folder + self.power_network_file, skiprows=[0, 1, 3, 4, 5])

@@ -38,7 +38,7 @@ class LEGO:
             softLineLoadLimits.add_element_definitions_and_bounds(self)
 
         # Helper Sets for zone of interest
-        model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=self.cs.dPower_BusInfo.loc[self.cs.dPower_BusInfo["ZoneOfInterest"] == "yes"].index.tolist(), within=self.model.i)
+        model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=self.cs.dPower_BusInfo.loc[self.cs.dPower_BusInfo["zoi"] == 1].index.tolist(), within=self.model.i)
         model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=[g for g in self.model.g for i in self.model.i if (g, i) in self.model.gi], within=self.model.g)
 
         # Add constraints
