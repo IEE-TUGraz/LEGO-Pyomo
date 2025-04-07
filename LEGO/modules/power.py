@@ -10,10 +10,10 @@ def add_element_definitions_and_bounds(lego: LEGO):
     # Sets
     lego.model.i = pyo.Set(doc='Buses', initialize=lego.cs.dPower_BusInfo.index.tolist())
 
-    lego.model.c = pyo.Set(doc='Circuits', initialize=lego.cs.dPower_Network.index.get_level_values('Circuit ID').unique().tolist())
-    lego.model.la = pyo.Set(doc='All lines', initialize=lego.cs.dPower_Network[lego.cs.dPower_Network["InService"] == 1].index.tolist(), within=lego.model.i * lego.model.i * lego.model.c)
-    lego.model.le = pyo.Set(doc='Existing lines', initialize=lego.cs.dPower_Network[(lego.cs.dPower_Network["InService"] == 1) & (lego.cs.dPower_Network["FixedCostEUR"] == 0)].index.tolist(), within=lego.model.la)
-    lego.model.lc = pyo.Set(doc='Candidate lines', initialize=lego.cs.dPower_Network[(lego.cs.dPower_Network["InService"] == 1) & (lego.cs.dPower_Network["FixedCostEUR"] > 0)].index.tolist(), within=lego.model.la)
+    lego.model.c = pyo.Set(doc='Circuits', initialize=lego.cs.dPower_Network.index.get_level_values('c').unique().tolist())
+    lego.model.la = pyo.Set(doc='All lines', initialize=lego.cs.dPower_Network.index.tolist(), within=lego.model.i * lego.model.i * lego.model.c)
+    lego.model.le = pyo.Set(doc='Existing lines', initialize=lego.cs.dPower_Network[(lego.cs.dPower_Network["pEnableInvest"] == 0)].index.tolist(), within=lego.model.la)
+    lego.model.lc = pyo.Set(doc='Candidate lines', initialize=lego.cs.dPower_Network[(lego.cs.dPower_Network["pEnableInvest"] == 1)].index.tolist(), within=lego.model.la)
 
     lego.model.g = pyo.Set(doc='Generators')
     lego.model.gi = pyo.Set(doc='Generator g connected to bus i', within=lego.model.g * lego.model.i)
@@ -84,11 +84,11 @@ def add_element_definitions_and_bounds(lego: LEGO):
         lego.addToParameter("pMinProd", lego.cs.dPower_VRES['MinProd'])
         lego.addToParameter("pExisUnits", lego.cs.dPower_VRES['ExisUnits'])
 
-    lego.model.pXline = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network.query("InService == 1")['X'], doc='Reactance of line la')
-    lego.model.pAngle = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network.query("InService == 1")['TapAngle'] * np.pi / 180, doc='Transformer angle shift')
-    lego.model.pRatio = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network.query("InService == 1")['TapRatio'], doc='Transformer ratio')
-    lego.model.pPmax = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network.query("InService == 1")['Pmax'], doc='Maximum power flow on line la')
-    lego.model.pFixedCost = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network.query("InService == 1")['FixedCostEUR'], doc='Fixed cost when investing in line la')
+    lego.model.pXline = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network['pXline'], doc='Reactance of line la')
+    lego.model.pAngle = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network['pAngle'] * np.pi / 180, doc='Transformer angle shift')
+    lego.model.pRatio = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network['pRatio'], doc='Transformer ratio')
+    lego.model.pPmax = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network['pPmax'], doc='Maximum power flow on line la')
+    lego.model.pFixedCost = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network['pInvestCost'], doc='Fixed cost when investing in line la')  # TODO: Think about renaming this parameter (something related to 'investment cost')
     lego.model.pSBase = pyo.Param(initialize=lego.cs.dPower_Parameters['pSBase'], doc='Base power')
     lego.model.pBigM_Flow = pyo.Param(initialize=1e3, doc="Big M for power flow")
     lego.model.pENSCost = pyo.Param(initialize=lego.cs.dPower_Parameters['pENSCost'], doc='Cost used for Power Not Served (PNS) and Excess Power Served (EPS)')
