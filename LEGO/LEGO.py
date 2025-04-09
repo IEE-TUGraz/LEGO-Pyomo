@@ -5,7 +5,7 @@ import pyomo.environ as pyo
 import pyomo.opt.results.results_
 from pyomo.core import TransformationFactory
 
-from LEGO.CaseStudy import CaseStudy
+from InOutModule.CaseStudy import CaseStudy
 from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits
 from tools.printer import Printer
 
