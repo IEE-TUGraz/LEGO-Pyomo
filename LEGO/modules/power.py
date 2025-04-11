@@ -93,7 +93,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.pBigM_Flow = pyo.Param(initialize=1e3, doc="Big M for power flow")
     lego.model.pENSCost = pyo.Param(initialize=lego.cs.dPower_Parameters['pENSCost'], doc='Cost used for Power Not Served (PNS) and Excess Power Served (EPS)')
 
-    lego.model.pWeight_rp = pyo.Param(lego.model.rp, initialize=lego.cs.dPower_WeightsRP, doc='Weight of representative period rp')
+    lego.model.pWeight_rp = pyo.Param(lego.model.rp, initialize=lego.cs.dPower_WeightsRP["pWeight_rp"], doc='Weight of representative period rp')
     lego.model.pWeight_k = pyo.Param(lego.model.k, initialize=lego.cs.dPower_WeightsK, doc='Weight of time step k')
 
     # Variables
