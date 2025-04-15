@@ -21,7 +21,7 @@ printer = Printer.getInstance()
 scenario_folder = "data/example/"
 
 # Select which parts are executed
-execute_gams = True
+execute_gams = False
 execute_pyomo = True
 solve_pyomo = True  # Note: GAMS always solves if it's executed in current setup
 comparison_mps = True  # Compare MPS files?
@@ -29,15 +29,13 @@ check_vars = True
 check_constraints = True
 print_additional_information = False
 
-constraints_to_skip_from1 = ["eMinUpTime", "eMinDownTime",  # Not implemented in LEGO-GAMS
-                             "ONE_VAR",  # Is created when using import/export (which is implemented differently in LEGO-GAMS)
-                             ]
+constraints_to_skip_from1 = []
 constraints_to_keep_from1 = []
 coefficients_to_skip_from1 = []
 
 constraints_to_skip_from2 = []
 constraints_to_keep_from2 = []
-coefficients_to_skip_from2 = ["constobj"]  # Some empty residual coefficient in objective function
+coefficients_to_skip_from2 = []
 constraints_to_enforce_from2 = [""]
 
 ########################################################################################################################
@@ -128,7 +126,7 @@ if execute_pyomo:
                 print("Solver terminated with condition:", results.solver.termination_condition)
 
 if comparison_mps:
-    compare_mps("model.mps", "LEGO-GAMS/LEGO-GAMS.mps", check_vars=check_vars, check_constraints=check_constraints, print_additional_information=print_additional_information,
+    compare_mps("model.mps", True, "data/mps-archive/model-feac8422246633f43b3c98cf402798ca07a7109b.mps", True, check_vars=check_vars, check_constraints=check_constraints, print_additional_information=print_additional_information,
                 constraints_to_skip_from1=constraints_to_skip_from1, constraints_to_keep_from1=constraints_to_keep_from1, coefficients_to_skip_from1=coefficients_to_skip_from1,
                 constraints_to_skip_from2=constraints_to_skip_from2, constraints_to_keep_from2=constraints_to_keep_from2, coefficients_to_skip_from2=coefficients_to_skip_from2, constraints_to_enforce_from2=constraints_to_enforce_from2)
 
