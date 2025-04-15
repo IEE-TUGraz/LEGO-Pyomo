@@ -326,6 +326,8 @@ def add_constraints(lego: LEGO):
     def eMinUpTime_rule(model, rp, k, t, transition_matrix):
         if model.pMinUpTime[t] == 0:
             raise ValueError("Minimum up time must be at least 1, got 0 instead")
+        elif model.pMinUpTime[t] == 1:
+            return pyo.Constraint.Skip
         else:
             match lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]:
                 case "notEnforced":
@@ -345,6 +347,8 @@ def add_constraints(lego: LEGO):
     def eMinDownTime_rule(model, rp, k, t, transition_matrix):
         if model.pMinDownTime[t] == 0:
             raise ValueError("Minimum down time must be at least 1, got 0 instead")
+        elif model.pMinDownTime[t] == 1:
+            return pyo.Constraint.Skip
         else:
             match lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]:
                 case "notEnforced":
