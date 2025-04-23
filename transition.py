@@ -94,7 +94,7 @@ if execute_gams:
 
 if execute_pyomo:
     cs = CaseStudy(scenario_folder, do_not_merge_single_node_buses=True)
-    cs.dPower_Network['Technical Representation'] = 'DC-OPF'
+    cs.dPower_Network['pTecRepr'] = 'DC-OPF'
 
     lego = LEGO(cs)
 

@@ -116,7 +116,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     dDCOPFIslands = pd.DataFrame(index=lego.cs.dPower_BusInfo.index, columns=[lego.cs.dPower_BusInfo.index], data=False)
 
     for index, entry in lego.cs.dPower_Network.iterrows():
-        if lego.cs.dPower_Network.loc[(index[0], index[1], index[2])]["Technical Representation"] == "DC-OPF":
+        if lego.cs.dPower_Network.loc[(index[0], index[1], index[2])]["pTecRepr"] == "DC-OPF":
             dDCOPFIslands.loc[index[0], index[1]] = True
             dDCOPFIslands.loc[index[1], index[0]] = True
 
@@ -172,14 +172,14 @@ def add_element_definitions_and_bounds(lego: LEGO):
 
     lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, doc='Power flow from bus i to j', bounds=(None, None))
     for (i, j, c) in lego.model.la:
-        match lego.cs.dPower_Network.loc[i, j, c]["Technical Representation"]:
+        match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
             case "DC-OPF" | "TP":
                 lego.model.vLineP[:, :, (i, j), c].setlb(-lego.model.pPmax[i, j, c])
                 lego.model.vLineP[:, :, (i, j), c].setub(lego.model.pPmax[i, j, c])
             case "SN":
                 assert False  # "SN" line found, although all "Single Node" buses should be merged
             case _:
-                raise ValueError(f"Technical representation '{lego.cs.dPower_Network.loc[i, j]["Technical Representation"]}' "
+                raise ValueError(f"Technical representation '{lego.cs.dPower_Network.loc[i, j]["pTecRepr"]}' "
                                  f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
 
 
@@ -199,13 +199,13 @@ def add_constraints(lego: LEGO):
     lego.model.eDC_BalanceP = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.i, doc='Power balance constraint for each bus', rule=lambda model, rp, k, i: lego.model.eDC_BalanceP_expr[rp, k, i] == 0)
 
     def eDC_ExiLinePij_rule(model, rp, k, i, j, c):
-        match lego.cs.dPower_Network.loc[i, j, c]["Technical Representation"]:
+        match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
             case "DC-OPF":
                 return model.vLineP[rp, k, i, j, c] == (model.vTheta[rp, k, i] - model.vTheta[rp, k, j] + model.vAngle[rp, k, i, j, c]) * model.pSBase / (model.pXline[i, j, c] * model.pRatio[i, j, c])
             case "TP" | "SN":
                 return pyo.Constraint.Skip
             case _:
-                raise ValueError(f"Technical representation '{lego.cs.dPower_Network.loc[i, j]["Technical Representation"]}' "
+                raise ValueError(f"Technical representation '{lego.cs.dPower_Network.loc[i, j]["pTecRepr"]}' "
                                  f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
 
     lego.model.eDC_ExiLinePij = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le, doc="Power flow existing lines (for DC-OPF)", rule=eDC_ExiLinePij_rule)
@@ -242,7 +242,7 @@ def add_constraints(lego: LEGO):
         match lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingRamping"]:
             case "notEnforced":
                 if model.k.first() == k:
-                    return 0  # Will turn into 'always True' constraint (since 0 <= 0)
+                    return None  # Is not enforced and should therefore be turned into pyo.Constraint.Skip in constraint construction
                 else:
                     return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prev(k), g] - model.vCommit[rp, k, g] * model.pRampUp[g]
             case "cyclic":
@@ -252,15 +252,17 @@ def add_constraints(lego: LEGO):
                     return model.vGenP1[rp, k, g] - LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k), model.vGenP1, transition_matrix, g) - model.vCommit[rp, k, g] * model.pRampUp[g]
                 else:
                     return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prev(k), g] - model.vCommit[rp, k, g] * model.pRampUp[g]
+            case _:
+                raise ValueError(f"Period edge handling ramping '{lego.cs.dPower_Parameters['pReprPeriodEdgeHandlingRamping']}' not recognized - please check input file 'Power_Parameters.xlsx'!")
 
     lego.model.eThRampUp_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.thermalGenerators, rule=lambda m, rp, k, t: eThRampUp_rule(m, rp, k, t, lego.cs.rpTransitionMatrixRelativeFrom))
-    lego.model.eThRampUp = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Ramp up for thermal generators (based on doi:10.1007/s10107-015-0919-9)', rule=lambda model, rp, k, t: lego.model.eThRampUp_expr[rp, k, t] <= 0)
+    lego.model.eThRampUp = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Ramp up for thermal generators (based on doi:10.1007/s10107-015-0919-9)', rule=lambda model, rp, k, t: lego.model.eThRampUp_expr[rp, k, t] <= 0 if not ((lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] == "notEnforced") and (model.k.first() == k)) else pyo.Constraint.Skip)
 
     def eThRampDw_rule(model, rp, k, g, transition_matrix):
         match lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingRamping"]:
             case "notEnforced":
                 if model.k.first() == k:
-                    return 0  # Will turn into 'always True' constraint (since 0 <= 0)
+                    return None  # Is not enforced and should therefore be turned into pyo.Constraint.Skip in constraint construction
                 else:
                     return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prev(k), g] + model.vCommit[rp, model.k.prevw(k), g] * model.pRampDw[g]
             case "cyclic":
@@ -270,9 +272,11 @@ def add_constraints(lego: LEGO):
                     return model.vGenP1[rp, k, g] - LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k), model.vGenP1, transition_matrix, g) + LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k), model.vCommit, transition_matrix, g) * model.pRampDw[g]
                 else:
                     return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prev(k), g] + model.vCommit[rp, model.k.prev(k), g] * model.pRampDw[g]
+            case _:
+                raise ValueError(f"Period edge handling ramping '{lego.cs.dPower_Parameters['pReprPeriodEdgeHandlingRamping']}' not recognized - please check input file 'Power_Parameters.xlsx'!")
 
     lego.model.eThRampDw_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.thermalGenerators, rule=lambda m, rp, k, t: eThRampDw_rule(m, rp, k, t, lego.cs.rpTransitionMatrixRelativeFrom))
-    lego.model.eThRampDw = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Ramp down for thermal generators (based on doi:10.1007/s10107-015-0919-9)', rule=lambda model, rp, k, t: lego.model.eThRampDw_expr[rp, k, t] >= 0)
+    lego.model.eThRampDw = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Ramp down for thermal generators (based on doi:10.1007/s10107-015-0919-9)', rule=lambda model, rp, k, t: lego.model.eThRampDw_expr[rp, k, t] >= 0 if not ((lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] == "notEnforced") and (model.k.first() == k)) else pyo.Constraint.Skip)
 
     # Thermal Generator production with unit commitment & ramping constraints
     lego.model.eUCTotOut = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Total production of thermal generators (from doi:10.1109/TPWRS.2013.2251373)', rule=lambda model, rp, k, g: model.vGenP[rp, k, g] == model.pMinProd[g] * model.vCommit[rp, k, g] + model.vGenP1[rp, k, g])
@@ -292,7 +296,7 @@ def add_constraints(lego: LEGO):
         match lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]:
             case "notEnforced":
                 if model.k.last() == k:
-                    return 0  # Will turn into 'always True' constraint (since 0 <= 0)
+                    return None  # Is not enforced and should therefore be turned into pyo.Constraint.Skip in constraint construction
                 else:
                     return model.vGenP1[rp, k, t] - (model.pMaxProd[t] - model.pMinProd[t]) * (model.vCommit[rp, k, t] - model.vShutdown[rp, model.k.nextw(k), t])
             case "cyclic":
@@ -302,9 +306,12 @@ def add_constraints(lego: LEGO):
                     return model.vGenP1[rp, k, t] - (model.pMaxProd[t] - model.pMinProd[t]) * (model.vCommit[rp, k, t] - LEGOUtilities.markov_summand(model.rp, rp, True, model.k.nextw(k), model.vShutdown, transition_matrix, t))
                 else:
                     return model.vGenP1[rp, k, t] - (model.pMaxProd[t] - model.pMinProd[t]) * (model.vCommit[rp, k, t] - model.vShutdown[rp, model.k.nextw(k), t])
+            case _:
+                raise ValueError(f"Period edge handling unit commitment '{lego.cs.dPower_Parameters['pReprPeriodEdgeHandlingUnitCommitment']}' not recognized - please check input file 'Power_Parameters.xlsx'!")
 
     lego.model.eUCMaxOut2_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.thermalGenerators, rule=lambda m, rp, k, t: eUCMaxOut2_rule(m, rp, k, t, lego.cs.rpTransitionMatrixRelativeTo))
-    lego.model.eUCMaxOut2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Maximum production for shutdown of thermal generators (from doi:10.1109/TPWRS.2013.2251373)', rule=lambda model, rp, k, t: lego.model.eUCMaxOut2_expr[rp, k, t] <= 0)
+    lego.model.eUCMaxOut2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Maximum production for shutdown of thermal generators (from doi:10.1109/TPWRS.2013.2251373)',
+                                           rule=lambda model, rp, k, t: lego.model.eUCMaxOut2_expr[rp, k, t] <= 0 if not ((lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "notEnforced") and (model.k.last() == k)) else pyo.Constraint.Skip)
 
     def eUCStrShut_rule(model, rp, k, t, transition_matrix):
         match lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]:
@@ -320,6 +327,8 @@ def add_constraints(lego: LEGO):
                     return model.vCommit[rp, k, t] - LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k), model.vCommit, transition_matrix, t) == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t]
                 else:
                     return model.vCommit[rp, k, t] - model.vCommit[rp, model.k.prevw(k), t] == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t]
+            case _:
+                raise ValueError(f"Period edge handling unit commitment '{lego.cs.dPower_Parameters['pReprPeriodEdgeHandlingUnitCommitment']}' not recognized - please check input file 'Power_Parameters.xlsx'!")
 
     lego.model.eUCStrShut = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Start-up and shut-down logic for thermal generators (from doi:10.1109/TPWRS.2013.2251373)', rule=lambda model, rp, k, t: eUCStrShut_rule(model, rp, k, t, lego.cs.rpTransitionMatrixRelativeFrom))
 

@@ -6,9 +6,9 @@ import pyomo.environ as pyo
 from pyomo.opt import SolverFactory
 from pyomo.util.infeasible import log_infeasible_constraints
 
-from LEGO.CaseStudy import CaseStudy
+from InOutModule.CaseStudy import CaseStudy
 from LEGO.LEGO import LEGO
-from LEGO.LEGOUtilities import plot_unit_commitment
+from LEGO.LEGOUtilities import plot_unit_commitment, calculate_unit_commitment_regret
 from tools.printer import Printer
 
 ########################################################################################################################
@@ -50,6 +50,8 @@ def execute_case_studies(case_study_path: str):
     cs_truth = cs_notEnforced.copy()
     cs_truth.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "notEnforced"
     cs_truth.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "notEnforced"
+
+    # cs_truth.dPower_Hindex = cs_truth.dPower_Hindex.iloc[:-8000]  # TODO: Remove this line when using real data
     # Adjust Demand
     adjusted_demand = []
     for i, _ in cs_truth.dPower_BusInfo.iterrows():
@@ -62,26 +64,25 @@ def execute_case_studies(case_study_path: str):
     # Adjust VRESProfiles
     adjusted_vresprofiles = []
     cs_truth.dPower_VRESProfiles.sort_index(inplace=True)
-    for i in cs_truth.dPower_VRESProfiles.index.get_level_values('i').unique().tolist():
-        for tec in cs_truth.dPower_VRESProfiles.index.get_level_values('tec').unique().tolist():
-            if len(cs_truth.dPower_VRESProfiles.loc[:, i, :, tec]) > 0:  # Check if VRESProfiles has entries for a combination of i and tec
-                for h, row in cs_truth.dPower_Hindex.iterrows():
-                    adjusted_vresprofiles.append(["rp01", i, h[0].replace("h", "k"), tec, cs_truth.dPower_VRESProfiles.loc[(h[1], i, h[2], tec), "Capacity"]])
+    for g in cs_truth.dPower_VRESProfiles.index.get_level_values('g').unique().tolist():
+        if len(cs_truth.dPower_VRESProfiles.loc[:, :, g]) > 0:  # Check if VRESProfiles has entries for g
+            for h, row in cs_truth.dPower_Hindex.iterrows():
+                adjusted_vresprofiles.append(["rp01", h[0].replace("h", "k"), g, cs_truth.dPower_VRESProfiles.loc[(h[1], h[2], g), "Capacity"]])
 
-    cs_truth.dPower_VRESProfiles = pd.DataFrame(adjusted_vresprofiles, columns=["rp", "i", "k", "tec", "Capacity"])
-    cs_truth.dPower_VRESProfiles = cs_truth.dPower_VRESProfiles.set_index(["rp", "i", "k", "tec"])
+    cs_truth.dPower_VRESProfiles = pd.DataFrame(adjusted_vresprofiles, columns=["rp", "k", "g", "Capacity"])
+    cs_truth.dPower_VRESProfiles = cs_truth.dPower_VRESProfiles.set_index(["rp", "k", "g"])
 
     # Adjust Hindex
     cs_truth.dPower_Hindex = cs_truth.dPower_Hindex.reset_index()
     for i, row in cs_truth.dPower_Hindex.iterrows():
-        cs_truth.dPower_Hindex.loc[i] = f"h{i + 1:0>4}", f"rp01", f"k{i + 1:0>4}"
+        cs_truth.dPower_Hindex.loc[i] = f"h{i + 1:0>4}", f"rp01", f"k{i + 1:0>4}", None, None, None
     cs_truth.dPower_Hindex = cs_truth.dPower_Hindex.set_index(["p", "rp", "k"])
 
     # Adjust WeightsK
     cs_truth.dPower_WeightsK = cs_truth.dPower_WeightsK.reset_index()
     cs_truth.dPower_WeightsK = cs_truth.dPower_WeightsK.drop(cs_truth.dPower_WeightsK.index)
     for i in range(len(cs_truth.dPower_Hindex)):
-        cs_truth.dPower_WeightsK.loc[i] = f"k{i + 1:0>4}", 1
+        cs_truth.dPower_WeightsK.loc[i] = f"k{i + 1:0>4}", None, 1, None, None
     cs_truth.dPower_WeightsK = cs_truth.dPower_WeightsK.set_index("k")
 
     # Adjust WeightsRP
@@ -131,7 +132,7 @@ def execute_case_studies(case_study_path: str):
             for x in [pd.Series({"case": caseName, "rp": i[0], "k": i[1], "g": i[2],
                                  "vCommit": pyo.value(model.vCommit[i]),
                                  "vStartup": pyo.value(model.vStartup[i]),
-                                 "vShutdown": pyo.value(model.vShutdown[i]),
+                                 "vShutdown": pyo.value(model.vShutdown[i]) if not model.vShutdown[i].stale else None,
                                  "vGenP": pyo.value(model.vGenP[i]),
                                  "vGenP1": pyo.value(model.vGenP1[i]),
                                  "pMinUpTime": pyo.value(model.pMinUpTime[i[2]]),
@@ -164,8 +165,9 @@ def execute_case_studies(case_study_path: str):
 
 if __name__ == "__main__":
     case_study_folder = "data/example/"
-    # execute_case_studies(case_study_folder)
+    execute_case_studies(case_study_folder)
 
+    calculate_unit_commitment_regret("markov.xlsx", case_study_folder)
 
     printer.information("Plotting unit commitment")
     plot_unit_commitment("markov.xlsx", case_study_folder, 7 * 24, 7 * 24)
