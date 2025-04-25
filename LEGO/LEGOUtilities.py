@@ -153,17 +153,17 @@ def checkExecutionLog(required_functions: list[typing.Callable]):
     return decorator
 
 
-def plot_unit_commitment(output_file_path: str, power_hindex_path: str, number_of_hours: int = 24 * 7, start_hour: int = 1):
+def plot_unit_commitment(unit_commitment_result_file: str, power_hindex_path: str, number_of_hours: int = 24 * 7, start_hour: int = 1):
     """
     Plot the unit commitment of a given output file
-    :param output_file_path: Path to Excel-File
+    :param unit_commitment_result_file: Path to Excel-File containing unit commitment results
     :param power_hindex_path: Path to folder containing Power_Hindex file
     :param number_of_hours: Number of hours to plot (default: 24 * 7 = 168)
     :param start_hour: Start hour for the plot (default: 1)
     :return: Nothing (shows plot)
     """
     plt.rcParams['figure.dpi'] = 300  # Set resolution of the plot
-    df = pd.read_excel(output_file_path)
+    df = pd.read_excel(unit_commitment_result_file)
     df = df.set_index(["case", "rp", "k", "g"])
 
     # Get original mapping from Power_Hindex
@@ -177,9 +177,9 @@ def plot_unit_commitment(output_file_path: str, power_hindex_path: str, number_o
     hindex = hindex.loc[(hindex["p_int"] >= start_hour) & (hindex["p_int"] <= start_hour + number_of_hours - 1)]
 
     # Plot the data
-    index = [f"{i + 1}" for i in range(len(hindex))]
+    index = [i + 1 for i in range(len(hindex))]
 
-    def prev(i: str, n: int = 1):
+    def prev(i: int, n: int = 1):
         current_index = index.index(i)
         return index[current_index - n]
 
@@ -194,28 +194,32 @@ def plot_unit_commitment(output_file_path: str, power_hindex_path: str, number_o
             data_bar_min_downtime_bottom = {}
             data_plot_demand = {}
             for counter, (_, row) in enumerate(hindex.iterrows()):
+                counter += 1
                 rp = row["rp"] if case != "Truth " else "rp01"
                 k = row["k"] if case != "Truth " else row["p"].replace("h", "k")
-                data_plot[f"{counter}"] = df.loc[case, rp, k, g]["vCommit"]
-                data_bar_startup[f"{counter}"] = df.loc[case, rp, k, g]["vStartup"]
-                data_bar_shutdown[f"{counter}"] = df.loc[case, rp, k, g]["vShutdown"]
-                data_plot_demand[f"{counter}"] = df.loc[case, rp, k, g]["pDemandP"]
-                # TODO: Fix min uptime and downtime bars
-                # data_bar_min_uptime_height[f"{counter}"] = sum([data_bar_startup[f"{a}"] for a in [prev(f"{counter}", b) for b in range(1, int(df.loc[case, rp, k, g]["pMinUpTime"]))]])
-                # data_bar_min_downtime_bottom[f"{counter}"] = 1 - sum([data_bar_shutdown[f"{a}"] for a in [prev(f"{counter}", b) for b in range(1, int(df.loc[case, rp, k, g]["pMinDownTime"]))]])
+                data_plot[counter] = df.loc[case, rp, k, g]["vCommit"]
+                data_bar_startup[counter] = df.loc[case, rp, k, g]["vStartup"]
+                data_bar_shutdown[counter] = df.loc[case, rp, k, g]["vShutdown"]
+                data_plot_demand[counter] = df.loc[case, rp, k, g]["pDemandP"]
+
+            for counter, (_, row) in enumerate(hindex.iterrows()):
+                counter += 1
+                data_bar_min_uptime_height[counter] = sum([data_bar_startup[a] for a in [prev(counter, b) for b in range(0, int(df.loc[case, rp, k, g]["pMinUpTime"] - 1))]])
+                data_bar_min_downtime_bottom[counter] = 1 - sum([data_bar_shutdown[a] for a in [prev(counter, b) for b in range(0, int(df.loc[case, rp, k, g]["pMinDownTime"] - 1))]])
 
             axs[i, j].set_ylim(-0.05, 1.05)
             axs[i, j].plot(index, data_plot.values(), color="black", alpha=0.3)
             axs[i, j].bar(index, data_bar_startup.values(), color="green", alpha=0.5, bottom=[list(data_plot.values())[-1]] + list(data_plot.values())[:-1], width=1)
             axs[i, j].bar(index, data_bar_shutdown.values(), color="red", alpha=0.5, bottom=data_plot.values(), width=1)
-            # TODO: Fix min uptime and downtime bars
-            # axs[i, j].bar(index, data_bar_min_uptime_height.values(), color="green", alpha=0.2, width=1)
-            # axs[i, j].bar(index, bottom=data_bar_min_downtime_bottom.values(), height=[1 - x for x in data_bar_min_downtime_bottom.values()], color="red", alpha=0.2, width=1)
+            axs[i, j].bar(index, data_bar_min_uptime_height.values(), color="green", alpha=0.2, width=1)
+            axs[i, j].bar(index, bottom=data_bar_min_downtime_bottom.values(), height=[1 - x for x in data_bar_min_downtime_bottom.values()], color="red", alpha=0.2, width=1)
             axs[i, j].set_title(f"{case} - {g}")
 
             # Plot demand on second y-axis
             axs2 = axs[i, j].twinx()
             axs2.plot(index, data_plot_demand.values(), color="blue", alpha=0.3)
+
+            # TODO: Add offset for start_hour
 
             # Set ticks and vertical lines
             axs[i, j].set_xticks(index[::24] + [index[-1]])  # Set x-axis ticks to only show every 24th value

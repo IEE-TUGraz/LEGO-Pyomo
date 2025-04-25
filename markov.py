@@ -22,7 +22,7 @@ pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
 
-def execute_case_studies(case_study_path: str):
+def execute_case_studies(case_study_path: str, unit_commitment_result_file: str = "markov.xlsx"):
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
@@ -62,15 +62,16 @@ def execute_case_studies(case_study_path: str):
     cs_truth.dPower_Demand = cs_truth.dPower_Demand.set_index(["rp", "k", "i"])
 
     # Adjust VRESProfiles
-    adjusted_vresprofiles = []
-    cs_truth.dPower_VRESProfiles.sort_index(inplace=True)
-    for g in cs_truth.dPower_VRESProfiles.index.get_level_values('g').unique().tolist():
-        if len(cs_truth.dPower_VRESProfiles.loc[:, :, g]) > 0:  # Check if VRESProfiles has entries for g
-            for h, row in cs_truth.dPower_Hindex.iterrows():
-                adjusted_vresprofiles.append(["rp01", h[0].replace("h", "k"), g, cs_truth.dPower_VRESProfiles.loc[(h[1], h[2], g), "Capacity"]])
+    if hasattr(cs_truth, "dPower_VRESProfiles"):
+        adjusted_vresprofiles = []
+        cs_truth.dPower_VRESProfiles.sort_index(inplace=True)
+        for g in cs_truth.dPower_VRESProfiles.index.get_level_values('g').unique().tolist():
+            if len(cs_truth.dPower_VRESProfiles.loc[:, :, g]) > 0:  # Check if VRESProfiles has entries for g
+                for h, row in cs_truth.dPower_Hindex.iterrows():
+                    adjusted_vresprofiles.append(["rp01", h[0].replace("h", "k"), g, cs_truth.dPower_VRESProfiles.loc[(h[1], h[2], g), "Capacity"]])
 
-    cs_truth.dPower_VRESProfiles = pd.DataFrame(adjusted_vresprofiles, columns=["rp", "k", "g", "Capacity"])
-    cs_truth.dPower_VRESProfiles = cs_truth.dPower_VRESProfiles.set_index(["rp", "k", "g"])
+        cs_truth.dPower_VRESProfiles = pd.DataFrame(adjusted_vresprofiles, columns=["rp", "k", "g", "Capacity"])
+        cs_truth.dPower_VRESProfiles = cs_truth.dPower_VRESProfiles.set_index(["rp", "k", "g"])
 
     # Adjust Hindex
     cs_truth.dPower_Hindex = cs_truth.dPower_Hindex.reset_index()
@@ -160,16 +161,17 @@ def execute_case_studies(case_study_path: str):
     for result in results:
         printer.information(f"{result['Case']} | {result['Objective']:11.2f} | {result['Solution']}  | {result['Build Time']:10.2f} | {result['Solve Time']:10.2f} | {result['# Variables Overall']:>19} | {result['# Binary Variables']:>18} | {result['# Constraints']:>13} | {result['PNS']:>7.2f} | {result['EPS']:>7.2f}")
 
-    df.T.to_excel("markov.xlsx")
+    df.T.to_excel(unit_commitment_result_file)
 
 
 if __name__ == "__main__":
-    case_study_folder = "data/example/"
-    execute_case_studies(case_study_folder)
+    case_study_folder = "data/markov/"
+    unit_commitment_result_file = "markov_quick.xlsx"
+    execute_case_studies(case_study_folder, unit_commitment_result_file)
 
-    calculate_unit_commitment_regret("markov.xlsx", case_study_folder)
+    calculate_unit_commitment_regret(unit_commitment_result_file, case_study_folder)
 
     printer.information("Plotting unit commitment")
-    plot_unit_commitment("markov.xlsx", case_study_folder, 7 * 24, 7 * 24)
+    plot_unit_commitment(unit_commitment_result_file, case_study_folder, 7 * 24)
 
     printer.success("Done")
