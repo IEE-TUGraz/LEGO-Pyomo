@@ -47,48 +47,7 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
     cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "markov"
 
     # Create "truth" case study for comparison
-    cs_truth = cs_notEnforced.copy()
-    cs_truth.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "notEnforced"
-    cs_truth.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "notEnforced"
-
-    # cs_truth.dPower_Hindex = cs_truth.dPower_Hindex.iloc[:-8000]  # TODO: Remove this line when using real data
-    # Adjust Demand
-    adjusted_demand = []
-    for i, _ in cs_truth.dPower_BusInfo.iterrows():
-        for h, row in cs_truth.dPower_Hindex.iterrows():
-            adjusted_demand.append(["rp01", h[0].replace("h", "k"), i, cs_truth.dPower_Demand.loc[(h[1], h[2], i), "Demand"]])
-
-    cs_truth.dPower_Demand = pd.DataFrame(adjusted_demand, columns=["rp", "k", "i", "Demand"])
-    cs_truth.dPower_Demand = cs_truth.dPower_Demand.set_index(["rp", "k", "i"])
-
-    # Adjust VRESProfiles
-    if hasattr(cs_truth, "dPower_VRESProfiles"):
-        adjusted_vresprofiles = []
-        cs_truth.dPower_VRESProfiles.sort_index(inplace=True)
-        for g in cs_truth.dPower_VRESProfiles.index.get_level_values('g').unique().tolist():
-            if len(cs_truth.dPower_VRESProfiles.loc[:, :, g]) > 0:  # Check if VRESProfiles has entries for g
-                for h, row in cs_truth.dPower_Hindex.iterrows():
-                    adjusted_vresprofiles.append(["rp01", h[0].replace("h", "k"), g, cs_truth.dPower_VRESProfiles.loc[(h[1], h[2], g), "Capacity"]])
-
-        cs_truth.dPower_VRESProfiles = pd.DataFrame(adjusted_vresprofiles, columns=["rp", "k", "g", "Capacity"])
-        cs_truth.dPower_VRESProfiles = cs_truth.dPower_VRESProfiles.set_index(["rp", "k", "g"])
-
-    # Adjust Hindex
-    cs_truth.dPower_Hindex = cs_truth.dPower_Hindex.reset_index()
-    for i, row in cs_truth.dPower_Hindex.iterrows():
-        cs_truth.dPower_Hindex.loc[i] = f"h{i + 1:0>4}", f"rp01", f"k{i + 1:0>4}", None, None, None
-    cs_truth.dPower_Hindex = cs_truth.dPower_Hindex.set_index(["p", "rp", "k"])
-
-    # Adjust WeightsK
-    cs_truth.dPower_WeightsK = cs_truth.dPower_WeightsK.reset_index()
-    cs_truth.dPower_WeightsK = cs_truth.dPower_WeightsK.drop(cs_truth.dPower_WeightsK.index)
-    for i in range(len(cs_truth.dPower_Hindex)):
-        cs_truth.dPower_WeightsK.loc[i] = f"k{i + 1:0>4}", None, 1, None, None
-    cs_truth.dPower_WeightsK = cs_truth.dPower_WeightsK.set_index("k")
-
-    # Adjust WeightsRP
-    cs_truth.dPower_WeightsRP = cs_truth.dPower_WeightsRP.drop(cs_truth.dPower_WeightsRP.index)
-    cs_truth.dPower_WeightsRP.loc["rp01"] = 1
+    cs_truth = cs_notEnforced.to_full_hourly_model(inplace=False)  # Create a full hourly model (which copies from notEnforced)
 
     lego_models = [("NoEnf.", LEGO(cs_notEnforced)), ("Cyclic", LEGO(cs_cyclic)), ("Markov", LEGO(cs_markov)), ("Truth ", LEGO(cs_truth))]
     printer.information(f"Creating varied case studies took {time.time() - start_time:.2f} seconds")
