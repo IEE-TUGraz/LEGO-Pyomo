@@ -172,6 +172,6 @@ if __name__ == "__main__":
     calculate_unit_commitment_regret(unit_commitment_result_file, case_study_folder)
 
     printer.information("Plotting unit commitment")
-    plot_unit_commitment(unit_commitment_result_file, case_study_folder, 7 * 24)
+    plot_unit_commitment(unit_commitment_result_file, case_study_folder, 6 * 24, 1)
 
     printer.success("Done")

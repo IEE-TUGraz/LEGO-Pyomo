@@ -153,11 +153,11 @@ def checkExecutionLog(required_functions: list[typing.Callable]):
     return decorator
 
 
-def plot_unit_commitment(unit_commitment_result_file: str, power_hindex_path: str, number_of_hours: int = 24 * 7, start_hour: int = 1):
+def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: str, number_of_hours: int = 24 * 7, start_hour: int = 1):
     """
     Plot the unit commitment of a given output file
     :param unit_commitment_result_file: Path to Excel-File containing unit commitment results
-    :param power_hindex_path: Path to folder containing Power_Hindex file
+    :param case_study_folder: Path to folder containing Power_Hindex file
     :param number_of_hours: Number of hours to plot (default: 24 * 7 = 168)
     :param start_hour: Start hour for the plot (default: 1)
     :return: Nothing (shows plot)
@@ -167,7 +167,7 @@ def plot_unit_commitment(unit_commitment_result_file: str, power_hindex_path: st
     df = df.set_index(["case", "rp", "k", "g"])
 
     # Get original mapping from Power_Hindex
-    hindex = ExcelReader.get_dPower_Hindex(power_hindex_path + "Power_Hindex.xlsx")
+    hindex = ExcelReader.get_dPower_Hindex(case_study_folder + "Power_Hindex.xlsx")
     hindex = hindex.reset_index()
     hindex["p_int"] = hindex["p"].str.extract(r'(\d+)').astype(int)  # Extract the integer part of the "p" column
     hindex["rp_int"] = hindex["rp"].str.extract(r'(\d+)').astype(int)  # Extract the integer part of the "rp" column
@@ -178,10 +178,6 @@ def plot_unit_commitment(unit_commitment_result_file: str, power_hindex_path: st
 
     # Plot the data
     index = [i + 1 for i in range(len(hindex))]
-
-    def prev(i: int, n: int = 1):
-        current_index = index.index(i)
-        return index[current_index - n]
 
     fig, axs = plt.subplots(len(df.index.get_level_values("case").unique()), len(df.index.get_level_values("g").unique()), figsize=(6 * len(df.index.get_level_values("g").unique()), 2 * len(df.index.get_level_values("case").unique())))
     for i, case in enumerate(df.index.get_level_values("case").unique()):
@@ -204,8 +200,8 @@ def plot_unit_commitment(unit_commitment_result_file: str, power_hindex_path: st
 
             for counter, (_, row) in enumerate(hindex.iterrows()):
                 counter += 1
-                data_bar_min_uptime_height[counter] = sum([data_bar_startup[a] for a in [prev(counter, b) for b in range(0, int(df.loc[case, rp, k, g]["pMinUpTime"] - 1))]])
-                data_bar_min_downtime_bottom[counter] = 1 - sum([data_bar_shutdown[a] for a in [prev(counter, b) for b in range(0, int(df.loc[case, rp, k, g]["pMinDownTime"] - 1))]])
+                data_bar_min_uptime_height[counter] = sum([data_bar_startup[a] for a in [counter - b for b in range(0, int(df.loc[case, rp, k, g]["pMinUpTime"] - 1)) if counter - b > 0]])
+                data_bar_min_downtime_bottom[counter] = 1 - sum([data_bar_shutdown[a] for a in [counter - b for b in range(0, int(df.loc[case, rp, k, g]["pMinDownTime"] - 1)) if counter - b > 0]])
 
             axs[i, j].set_ylim(-0.05, 1.05)
             axs[i, j].plot(index, data_plot.values(), color="black", alpha=0.3)
@@ -219,13 +215,38 @@ def plot_unit_commitment(unit_commitment_result_file: str, power_hindex_path: st
             axs2 = axs[i, j].twinx()
             axs2.plot(index, data_plot_demand.values(), color="blue", alpha=0.3)
 
-            # TODO: Add offset for start_hour
-
             # Set ticks and vertical lines
-            axs[i, j].set_xticks(index[::24] + [index[-1]])  # Set x-axis ticks to only show every 24th value
-            for x in index[::24]:  # Create vertical lines for each 24th x-tick
+            index_labels = []
+            index_positions = []
+            axvline_thick_positions = []
+            axvline_thin_positions = []
+            for x in index:
+                if x == index[0]:  # First index
+                    index_labels.append(x + start_hour - 1)
+                    index_positions.append(x)
+                    if (x + start_hour - 2) % 24 == 0:  # If it's the start of a new day, add a thick line, else a thin line
+                        axvline_thick_positions.append(x)
+                    else:
+                        axvline_thin_positions.append(x)
+                elif x == index[-1]:  # Last index
+                    index_labels.append(x + start_hour - 1)
+                    index_positions.append(x)
+                    if (x + start_hour - 2) % 24 == 0:  # If it's the start of a new day, add a thick line, else a thin line
+                        axvline_thick_positions.append(x)
+                    else:
+                        axvline_thin_positions.append(x)
+                elif (x + start_hour - 2) % 24 == 0:
+                    axvline_thick_positions.append(x)  # Every 24th index (i.e., every day)
+                    if abs(x - index[0]) > 2 and abs(x - index[-1]) > 2:  # Every 24th index (i.e., every day), if distance to first and last is big enough (to not overlap)
+                        index_labels.append(x + start_hour - 1)
+                        index_positions.append(x)
+
+            axs[i, j].set_xticks(index_positions)
+            axs[i, j].set_xticklabels(index_labels)
+            for x in axvline_thick_positions:
                 axs[i, j].axvline(x=x, color="gray", linestyle="--", alpha=0.5)
-            axs[i, j].axvline(x=index[-1], color="gray", linestyle="--", alpha=0.5)
+            for x in axvline_thin_positions:
+                axs[i, j].axvline(x=x, color="gray", linestyle="-", alpha=0.2)
 
     plt.tight_layout()
     plt.show()
