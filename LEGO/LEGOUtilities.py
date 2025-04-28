@@ -5,7 +5,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import pyomo.environ as pyo
 
-from InOutModule import ExcelReader
+from InOutModule import ExcelReader, CaseStudy
+from LEGO import LEGO
 
 
 # Returns a list of elements from a set, starting from 'first_index' and ending at 'last_index' (both inclusive) without wrapping around
@@ -250,3 +251,63 @@ def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: st
 
     plt.tight_layout()
     plt.show()
+
+
+def add_UnitCommitmentSlack_And_FixVariables(cs_notEnforced: CaseStudy, regret_lego: LEGO, original_model: pyo.Model, slack_cost: float):
+    """
+    Adds unit commitment slack variables and constraints to the provided model. This function modifies
+    the provided `regret_lego` model by introducing slack variables for startup and shutdown
+    correction, adds corresponding constraints and adjusts the objective function to include penalties
+    for these deviations.
+
+    :param cs_notEnforced: Case study with information regarding hindex.
+    :param regret_lego: Model that will be adjusted with new variables, constraints, and adapted
+        objective to include unit commitment slack corrections.
+    :param original_model: The reference model containing the original startup and shutdown variable
+        values, which are being corrected by the slack adjustments integrated into `regret_lego`.
+    :param slack_cost: A scalar multiplier representing the cost incurrence for imposing each unit
+        of slack correction (startup or shutdown). It contributes to the objective function
+        modifications in `regret_lego`.
+    :return: None
+    """
+
+    def hourly_k_to_rp(k: str, hindex_df: pd.DataFrame) -> str:
+        return hindex_df.loc[k.replace("k", "h")]["rp"]
+
+    def hourly_k_to_k(k: str, hindex_df: pd.DataFrame) -> str:
+        return hindex_df.loc[k.replace("k", "h")]["k"]
+
+    regret_lego.model.vStartupCorrectHigher = pyo.Var(regret_lego.model.rp, regret_lego.model.k, regret_lego.model.thermalGenerators, doc='Startup correction towards 1 for thermal generator g', domain=pyo.PercentFraction)
+    regret_lego.model.vStartupCorrectLower = pyo.Var(regret_lego.model.rp, regret_lego.model.k, regret_lego.model.thermalGenerators, doc='Startup correction towards 0 for thermal generator g', domain=pyo.PercentFraction)
+    regret_lego.model.vShutdownCorrectHigher = pyo.Var(regret_lego.model.rp, regret_lego.model.k, regret_lego.model.thermalGenerators, doc='Shutdown correction towards 1 for thermal generator g', domain=pyo.PercentFraction)
+    regret_lego.model.vShutdownCorrectLower = pyo.Var(regret_lego.model.rp, regret_lego.model.k, regret_lego.model.thermalGenerators, doc='Shutdown correction towards 0 for thermal generator g', domain=pyo.PercentFraction)
+
+    # Get and adjust Power_hindex from case study
+    hindex_df = cs_notEnforced.dPower_Hindex.copy()
+    hindex_df = hindex_df.reset_index()
+    hindex_df = hindex_df.set_index("p")
+
+    # Add correction constraints which also fix the startup and shutdown variables
+    regret_lego.model.eStartupCorrection = pyo.Constraint(regret_lego.model.rp, regret_lego.model.k, regret_lego.model.thermalGenerators, doc='Startup correction for thermal generator g',
+                                                          rule=lambda m, rp, k, t: m.vStartup[rp, k, t] == (original_model.vStartup[hourly_k_to_rp(k, hindex_df), hourly_k_to_k(k, hindex_df), t].value if not original_model.vStartup[hourly_k_to_rp(k, hindex_df), hourly_k_to_k(k, hindex_df), t].stale else 0) + m.vStartupCorrectHigher[rp, k, t] - m.vStartupCorrectLower[rp, k, t])
+    regret_lego.model.eShutdownCorrection = pyo.Constraint(regret_lego.model.rp, regret_lego.model.k, regret_lego.model.thermalGenerators, doc='Shutdown correction for thermal generator g',
+                                                           rule=lambda m, rp, k, t: m.vShutdown[rp, k, t] == (original_model.vShutdown[hourly_k_to_rp(k, hindex_df), hourly_k_to_k(k, hindex_df), t].value if not original_model.vShutdown[hourly_k_to_rp(k, hindex_df), hourly_k_to_k(k, hindex_df), t].stale else 0) + m.vShutdownCorrectHigher[rp, k, t] - m.vShutdownCorrectLower[rp, k, t])
+
+    # Add penalty for correcting startup and shutdown variables
+    regret_lego.model.objective += sum((regret_lego.model.vStartupCorrectHigher[rp, k, t] + regret_lego.model.vStartupCorrectLower[rp, k, t]) * slack_cost * regret_lego.model.pWeight_rp[rp] * regret_lego.model.pWeight_k[k] for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators)  # Startup correction
+    regret_lego.model.objective += sum((regret_lego.model.vShutdownCorrectHigher[rp, k, t] + regret_lego.model.vShutdownCorrectLower[rp, k, t]) * slack_cost * regret_lego.model.pWeight_rp[rp] * regret_lego.model.pWeight_k[k] for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators)  # Shutdown correction
+
+
+def getUnitCommitmentSlackCost(lego: LEGO, slack_cost: float) -> float:
+    """
+    Calculate the unit commitment slack cost based on corrections for startup and
+    shutdown values in the model.
+
+    :param lego: LEGO model object containing the Pyomo model and associated
+        parameters.
+    :param slack_cost: Slack cost multiplier applied to the calculated correction
+        values to derive the overall adjustment to the unit commitment slack cost.
+    :return: The total unit commitment slack cost weighted by the given factors.
+    """
+    return sum((pyo.value(lego.model.vStartupCorrectHigher[rp, k, t]) + pyo.value(lego.model.vStartupCorrectLower[rp, k, t])) * slack_cost * lego.model.pWeight_rp[rp] * lego.model.pWeight_k[k] for rp in lego.model.rp for k in lego.model.k for t in lego.model.thermalGenerators) + \
+        sum((pyo.value(lego.model.vShutdownCorrectHigher[rp, k, t]) + pyo.value(lego.model.vShutdownCorrectLower[rp, k, t])) * slack_cost * lego.model.pWeight_rp[rp] * lego.model.pWeight_k[k] for rp in lego.model.rp for k in lego.model.k for t in lego.model.thermalGenerators)

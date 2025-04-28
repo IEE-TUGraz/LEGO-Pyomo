@@ -8,7 +8,7 @@ from pyomo.util.infeasible import log_infeasible_constraints
 
 from InOutModule.CaseStudy import CaseStudy
 from LEGO.LEGO import LEGO
-from LEGO.LEGOUtilities import plot_unit_commitment, calculate_unit_commitment_regret
+from LEGO.LEGOUtilities import plot_unit_commitment, add_UnitCommitmentSlack_And_FixVariables, getUnitCommitmentSlackCost
 from tools.printer import Printer
 
 ########################################################################################################################
@@ -16,7 +16,7 @@ from tools.printer import Printer
 ########################################################################################################################
 
 printer = Printer.getInstance()
-printer.console.width = 180
+printer.console.width = 300
 
 pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
@@ -114,14 +114,8 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
             if caseName != "Truth ":
                 regret_lego = truth_lego.copy()
 
-                # Iterate over hindex to fix vCommit, vStartup and vShutdown
-                for row in cs_notEnforced.dPower_Hindex.iterrows():  # NOTE: Iterating cs_notEnforced, as Hindex is not adjusted there
-                    regret_k = row[0][0].replace("h", "k")
-                    for g in regret_lego.model.g:
-
-                        regret_lego.model.vStartup["rp01", regret_k, g].fix(model.vStartup[row[0][1], row[0][2], g].value, skip_validation=True)
-                        if not model.vShutdown[row[0][1], row[0][2], g].stale:  # and model.vShutdown[row[0][1], row[0][2], g].value > 0:
-                            regret_lego.model.vShutdown["rp01", regret_k, g].fix(model.vShutdown[row[0][1], row[0][2], g].value, skip_validation=True)
+                slack_cost = 0.1 * cs_notEnforced.dPower_Parameters["pENSCost"]
+                add_UnitCommitmentSlack_And_FixVariables(cs_notEnforced, regret_lego, model, slack_cost)
 
                 # Re-solve the model
                 printer.information("Re-solving model with fixed variables for regret calculation")
@@ -139,7 +133,13 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
                                              "vGenP1": pyo.value(regret_lego.model.vGenP1[i]),
                                              "pMinUpTime": pyo.value(regret_lego.model.pMinUpTime[i[2]]),
                                              "pMinDownTime": pyo.value(regret_lego.model.pMinDownTime[i[2]]),
-                                             "pDemandP": sum([pyo.value(regret_lego.model.pDemandP[i[0], i[1], node]) for node in regret_lego.model.i])}) for i in list(regret_lego.model.vCommit)]:
+                                             "pDemandP": sum([pyo.value(regret_lego.model.pDemandP[i[0], i[1], node]) for node in regret_lego.model.i]),
+                                             "vPNS regr.": sum([pyo.value(regret_lego.model.vPNS[i[0], i[1], node]) for node in regret_lego.model.i]),
+                                             "vEPS regr.": sum([pyo.value(regret_lego.model.vEPS[i[0], i[1], node]) for node in regret_lego.model.i]),
+                                             "vStartupCorrectHigher": pyo.value(regret_lego.model.vStartupCorrectHigher[i]),
+                                             "vStartupCorrectLower": pyo.value(regret_lego.model.vStartupCorrectLower[i]),
+                                             "vShutdownCorrectHigher": pyo.value(regret_lego.model.vShutdownCorrectHigher[i]),
+                                             "vShutdownCorrectLower": pyo.value(regret_lego.model.vShutdownCorrectLower[i])}) for i in list(regret_lego.model.vCommit)]:
                             df = pd.concat([df, x], axis=1)
                     case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
                         printer.error(f"Model is {regret_result.solver.termination_condition}, logging infeasible constraints:")
@@ -150,7 +150,8 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
         results.append({
             "Case": caseName,
             "Objective": pyo.value(model.objective) if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1,
-            "Objective Regret": pyo.value(regret_lego.model.objective) if regret_result.solver.termination_condition == pyo.TerminationCondition.optimal and caseName != "Truth " else -1,
+            "Objective Regret": pyo.value(regret_lego.model.objective) - getUnitCommitmentSlackCost(regret_lego, slack_cost) if regret_result.solver.termination_condition == pyo.TerminationCondition.optimal and caseName != "Truth " else -1,
+            "Correction Cost": getUnitCommitmentSlackCost(regret_lego, slack_cost) if caseName != "Truth " else -1,
             "Solution": result.solver.termination_condition,
             "Build Time": timing_building,
             "Solve Time": timing_solving,
@@ -159,12 +160,19 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
             "# Constraints": model.nconstraints(),
             "PNS": sum(model.vPNS[rp, k, i].value if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "EPS": sum(model.vEPS[rp, k, i].value if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
+            "PNS regr.": sum(regret_lego.model.vPNS[rp, k, i].value if regret_lego.model.vPNS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if caseName != "Truth " else -1,
+            "EPS regr.": sum(regret_lego.model.vEPS[rp, k, i].value if regret_lego.model.vEPS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if caseName != "Truth " else -1,
+            "Startup Correction +": sum(regret_lego.model.vStartupCorrectHigher[rp, k, t].value if regret_lego.model.vStartupCorrectHigher[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1,
+            "Startup Correction -": sum(regret_lego.model.vStartupCorrectLower[rp, k, t].value if regret_lego.model.vStartupCorrectLower[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1,
+            "Shutdown Correction +": sum(regret_lego.model.vShutdownCorrectHigher[rp, k, t].value if regret_lego.model.vShutdownCorrectHigher[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1,
+            "Shutdown Correction -": sum(regret_lego.model.vShutdownCorrectLower[rp, k, t].value if regret_lego.model.vShutdownCorrectLower[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1,
             "model": model
         })
 
-    printer.information("Case   |  Objective  | Objective Regret | Solution | Build Time | Solve Time | # Variables Overall | # Binary Variables | # Constraints | PNS     | EPS    |")
+    printer.information("Case   |  Objective  | Objective Regret | Correction Cost | Solution | Build Time | Solve Time | # Variables Overall | # Binary Variables | # Constraints | PNS     | EPS     | PNS regr. | EPS regr. | Startup Correction + | Startup Correction - | Shutdown Correction + | Shutdown Correction - |")
     for result in results:
-        printer.information(f"{result['Case']} | {result['Objective']:11.2f} | {result['Objective Regret']:16.2f} | {result['Solution']}  | {result['Build Time']:10.2f} | {result['Solve Time']:10.2f} | {result['# Variables Overall']:>19} | {result['# Binary Variables']:>18} | {result['# Constraints']:>13} | {result['PNS']:>7.2f} | {result['EPS']:>7.2f}")
+        printer.information(
+            f"{result['Case']} | {result['Objective']:11.2f} | {result['Objective Regret']:16.2f} | {result['Correction Cost']:15.2f} | {result['Solution']}  | {result['Build Time']:10.2f} | {result['Solve Time']:10.2f} | {result['# Variables Overall']:>19} | {result['# Binary Variables']:>18} | {result['# Constraints']:>13} | {result['PNS']:>7.2f} | {result['EPS']:>7.2f} | {result['PNS regr.']:>9.2f} | {result['EPS regr.']:>9.2f} | {result['Startup Correction +']:>20.2f} | {result['Startup Correction -']:>20.2f} | {result['Shutdown Correction +']:>21.2f} | {result['Shutdown Correction -']:>21.2f}")
     df.T.to_excel(unit_commitment_result_file)
 
 
@@ -172,8 +180,6 @@ if __name__ == "__main__":
     case_study_folder = "data/markov/"
     unit_commitment_result_file = "markov_quick.xlsx"
     execute_case_studies(case_study_folder, unit_commitment_result_file)
-
-    calculate_unit_commitment_regret(unit_commitment_result_file, case_study_folder)
 
     printer.information("Plotting unit commitment")
     plot_unit_commitment(unit_commitment_result_file, case_study_folder, 6 * 24, 1)
