@@ -48,18 +48,22 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
     cs_markov = cs_notEnforced.copy()
     cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "markov"
     cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "markov"
+    printer.information(f"Creating varied case studies took {time.time() - start_time:.2f} seconds")
 
     # Create "truth" case study for comparison
+    start_time = time.time()
     cs_truth = cs_notEnforced.to_full_hourly_model(inplace=False)  # Create a full hourly model (which copies from notEnforced)
+    printer.information(f"Creating truth case study (full-hourly) took {time.time() - start_time:.2f} seconds")
 
     # Build truth model already as it is used later for regret calculations as well
+    start_time = time.time()
     truth_lego = LEGO(cs_truth)
     truth_lego_model, truth_timing_building = truth_lego.build_model()  # Build the truth model (for regret calculations later)
-    printer.information(f"Building regret model took {truth_timing_building:.2f} seconds (will be used later for regret calculations)")
+    printer.information(f"Building regret model took {time.time() - start_time:.2f} seconds (will be used later for regret calculations)")
 
+    start_time = time.time()
     lego_models = [("NoEnf.", LEGO(cs_notEnforced)), ("Cyclic", LEGO(cs_cyclic)), ("Markov", LEGO(cs_markov)), ("Truth ", truth_lego)]
-
-    printer.information(f"Creating varied case studies took {time.time() - start_time:.2f} seconds")
+    printer.information(f"Creating the rest of the LEGO models took {time.time() - start_time:.2f} seconds")
 
     ########################################################################################################################
     # Evaluation
