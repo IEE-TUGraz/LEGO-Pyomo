@@ -1,3 +1,4 @@
+import copy
 import time
 import typing
 
@@ -133,6 +134,9 @@ class LEGO:
             self.model.del_component(parameter_name)  # Delete parameter
             current_values.update(values)  # Update values with new values
             self.model.add_component(parameter_name, pyo.Param(*indices, initialize=current_values, doc=doc, domain=pyo.Reals))  # Add parameter as new parameter
+
+    def copy(self):
+        return copy.deepcopy(self)
 
 
 def get_objective_value(model: pyo.Model, zoi: bool):

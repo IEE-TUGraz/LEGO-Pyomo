@@ -191,8 +191,8 @@ def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: st
             data_plot_demand = {}
             for counter, (_, row) in enumerate(hindex.iterrows()):
                 counter += 1
-                rp = row["rp"] if case != "Truth " else "rp01"
-                k = row["k"] if case != "Truth " else row["p"].replace("h", "k")
+                rp = row["rp"] if case != "Truth " and "regret" not in case else "rp01"
+                k = row["k"] if case != "Truth " and "regret" not in case else row["p"].replace("h", "k")
                 data_plot[counter] = df.loc[case, rp, k, g]["vCommit"]
                 data_bar_startup[counter] = df.loc[case, rp, k, g]["vStartup"]
                 data_bar_shutdown[counter] = df.loc[case, rp, k, g]["vShutdown"]
