@@ -1,10 +1,13 @@
+import argparse
 import logging
+import os
 import time
 
 import pandas as pd
 import pyomo.environ as pyo
 from pyomo.opt import SolverFactory
 from pyomo.util.infeasible import log_infeasible_constraints
+from rich_argparse import RichHelpFormatter
 
 from InOutModule.CaseStudy import CaseStudy
 from LEGO.LEGO import LEGO
@@ -177,11 +180,19 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
 
 
 if __name__ == "__main__":
-    case_study_folder = "data/markov/"
-    unit_commitment_result_file = "markov_quick.xlsx"
-    execute_case_studies(case_study_folder, unit_commitment_result_file)
+    parser = argparse.ArgumentParser(description="Compare edge-handling for given case-study", formatter_class=RichHelpFormatter)
+    parser.add_argument("caseStudyFolder", type=str, default=None, help="Path to folder containing data for LEGO model", nargs="?")
+    args = parser.parse_args()
+
+    if args.caseStudyFolder is None:
+        args.caseStudyFolder = "data/markov/"
+    printer.information(f"Loading case study from '{args.caseStudyFolder}'")
+
+    unit_commitment_result_file = f"unitCommitmentResult-{os.path.basename(os.path.normpath(args.caseStudyFolder))}.xlsx"
+    printer.information(f"Unit commitment result file: '{unit_commitment_result_file}'")
+    execute_case_studies(args.caseStudyFolder, unit_commitment_result_file)
 
     printer.information("Plotting unit commitment")
-    plot_unit_commitment(unit_commitment_result_file, case_study_folder, 6 * 24, 1)
+    plot_unit_commitment(unit_commitment_result_file, args.caseStudyFolder, 6 * 24, 1)
 
     printer.success("Done")
