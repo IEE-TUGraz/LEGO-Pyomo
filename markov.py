@@ -121,8 +121,7 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
             if caseName != "Truth ":
                 regret_lego = truth_lego.copy()
 
-                slack_cost = 0.1 * cs_notEnforced.dPower_Parameters["pENSCost"]
-                add_UnitCommitmentSlack_And_FixVariables(cs_notEnforced, regret_lego, model, slack_cost)
+                add_UnitCommitmentSlack_And_FixVariables(regret_lego, model, cs_notEnforced.dPower_Hindex, cs_notEnforced.dPower_ThermalGen, cs_notEnforced.dPower_Parameters["pENSCost"])
 
                 # Re-solve the model
                 printer.information("Re-solving model with fixed variables for regret calculation")
@@ -143,10 +142,8 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
                                              "pDemandP": sum([pyo.value(regret_lego.model.pDemandP[i[0], i[1], node]) for node in regret_lego.model.i]),
                                              "vPNS regr.": sum([pyo.value(regret_lego.model.vPNS[i[0], i[1], node]) for node in regret_lego.model.i]),
                                              "vEPS regr.": sum([pyo.value(regret_lego.model.vEPS[i[0], i[1], node]) for node in regret_lego.model.i]),
-                                             "vStartupCorrectHigher": pyo.value(regret_lego.model.vStartupCorrectHigher[i]),
-                                             "vStartupCorrectLower": pyo.value(regret_lego.model.vStartupCorrectLower[i]),
-                                             "vShutdownCorrectHigher": pyo.value(regret_lego.model.vShutdownCorrectHigher[i]),
-                                             "vShutdownCorrectLower": pyo.value(regret_lego.model.vShutdownCorrectLower[i])}) for i in list(regret_lego.model.vCommit)]:
+                                             "vCommitCorrectHigher": pyo.value(regret_lego.model.vCommitCorrectHigher[i]) if not regret_lego.model.vCommitCorrectHigher[i].stale else None,
+                                             "vCommitCorrectLower": pyo.value(regret_lego.model.vCommitCorrectLower[i]) if not regret_lego.model.vCommitCorrectLower[i].stale else None, }) for i in list(regret_lego.model.vCommit)]:
                             df = pd.concat([df, x], axis=1)
                     case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
                         printer.error(f"Model is {regret_result.solver.termination_condition}, logging infeasible constraints:")
@@ -157,8 +154,8 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
         results.append({
             "Case": caseName,
             "Objective": pyo.value(model.objective) if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1,
-            "Objective Regret": pyo.value(regret_lego.model.objective) - getUnitCommitmentSlackCost(regret_lego, slack_cost) if regret_result.solver.termination_condition == pyo.TerminationCondition.optimal and caseName != "Truth " else -1,
-            "Correction Cost": getUnitCommitmentSlackCost(regret_lego, slack_cost) if caseName != "Truth " else -1,
+            "Objective Regret": pyo.value(regret_lego.model.objective) - getUnitCommitmentSlackCost(regret_lego, cs_notEnforced.dPower_ThermalGen, cs_notEnforced.dPower_Parameters["pENSCost"]) if regret_result.solver.termination_condition == pyo.TerminationCondition.optimal and caseName != "Truth " else -1,
+            "Correction Cost": getUnitCommitmentSlackCost(regret_lego, cs_notEnforced.dPower_ThermalGen, cs_notEnforced.dPower_Parameters["pENSCost"]) if caseName != "Truth " else -1,
             "Solution": result.solver.termination_condition,
             "Build Time": timing_building,
             "Solve Time": timing_solving,
@@ -169,17 +166,15 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
             "EPS": sum(model.vEPS[rp, k, i].value if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "PNS regr.": sum(regret_lego.model.vPNS[rp, k, i].value if regret_lego.model.vPNS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if caseName != "Truth " else -1,
             "EPS regr.": sum(regret_lego.model.vEPS[rp, k, i].value if regret_lego.model.vEPS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if caseName != "Truth " else -1,
-            "Startup Correction +": sum(regret_lego.model.vStartupCorrectHigher[rp, k, t].value if regret_lego.model.vStartupCorrectHigher[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1,
-            "Startup Correction -": sum(regret_lego.model.vStartupCorrectLower[rp, k, t].value if regret_lego.model.vStartupCorrectLower[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1,
-            "Shutdown Correction +": sum(regret_lego.model.vShutdownCorrectHigher[rp, k, t].value if regret_lego.model.vShutdownCorrectHigher[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1,
-            "Shutdown Correction -": sum(regret_lego.model.vShutdownCorrectLower[rp, k, t].value if regret_lego.model.vShutdownCorrectLower[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1,
+            "Commit Correction +": sum(regret_lego.model.vCommitCorrectHigher[rp, k, t].value if regret_lego.model.vCommitCorrectHigher[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1,
+            "Commit Correction -": sum(regret_lego.model.vCommitCorrectLower[rp, k, t].value if regret_lego.model.vCommitCorrectLower[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1,
             "model": model
         })
 
-    printer.information("Case   |  Objective  | Objective Regret | Correction Cost | Solution | Build Time | Solve Time | # Variables Overall | # Binary Variables | # Constraints | PNS     | EPS     | PNS regr. | EPS regr. | Startup Correction + | Startup Correction - | Shutdown Correction + | Shutdown Correction - |")
+    printer.information("Case   |  Objective  | Objective Regret | Correction Cost | Solution | Build Time | Solve Time | # Variables Overall | # Binary Variables | # Constraints | PNS     | EPS     | PNS regr. | EPS regr. | Commit Correction + | Commit Correction - ")
     for result in results:
         printer.information(
-            f"{result['Case']} | {result['Objective']:11.2f} | {result['Objective Regret']:16.2f} | {result['Correction Cost']:15.2f} | {result['Solution']}  | {result['Build Time']:10.2f} | {result['Solve Time']:10.2f} | {result['# Variables Overall']:>19} | {result['# Binary Variables']:>18} | {result['# Constraints']:>13} | {result['PNS']:>7.2f} | {result['EPS']:>7.2f} | {result['PNS regr.']:>9.2f} | {result['EPS regr.']:>9.2f} | {result['Startup Correction +']:>20.2f} | {result['Startup Correction -']:>20.2f} | {result['Shutdown Correction +']:>21.2f} | {result['Shutdown Correction -']:>21.2f}")
+            f"{result['Case']} | {result['Objective']:11.2f} | {result['Objective Regret']:16.2f} | {result['Correction Cost']:15.2f} | {result['Solution']}  | {result['Build Time']:10.2f} | {result['Solve Time']:10.2f} | {result['# Variables Overall']:>19} | {result['# Binary Variables']:>18} | {result['# Constraints']:>13} | {result['PNS']:>7.2f} | {result['EPS']:>7.2f} | {result['PNS regr.']:>9.2f} | {result['EPS regr.']:>9.2f} | {result['Commit Correction +']:>19.2f} | {result['Commit Correction -']:>19.2f} ")
     df.T.to_excel(unit_commitment_result_file)
 
 
