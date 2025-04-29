@@ -6,7 +6,7 @@ import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
-from LEGO.CaseStudy import CaseStudy
+from InOutModule.CaseStudy import CaseStudy
 from LEGO.LEGO import LEGO
 from tools.printer import Printer
 
