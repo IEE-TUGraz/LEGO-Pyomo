@@ -9,10 +9,11 @@ from pyomo.opt import SolverFactory
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
+from InOutModule import SQLiteWriter
 from InOutModule.CaseStudy import CaseStudy
+from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO
 from LEGO.LEGOUtilities import plot_unit_commitment, add_UnitCommitmentSlack_And_FixVariables, getUnitCommitmentSlackCost
-from InOutModule.printer import Printer
 
 ########################################################################################################################
 # Setup
@@ -88,6 +89,12 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
         result, timing_solving = lego.solve_model(optimizer)
         printer.information(f"Solving model took {timing_solving:.2f} seconds")
 
+        sqlite_timer = time.time()
+        sqlite_file = f"{os.path.basename(os.path.normpath(case_study_path))}-{caseName.replace(".", "")}.sqlite"
+        printer.information(f"Writing model to SQLite database: {sqlite_file}")
+        SQLiteWriter.model_to_sqlite(lego.model, sqlite_file)
+        printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
+
         match result.solver.termination_condition:
             case pyo.TerminationCondition.optimal:
                 printer.success("Optimal solution found")
@@ -127,6 +134,12 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
                 printer.information("Re-solving model with fixed variables for regret calculation")
                 regret_result, regret_timing_solving = regret_lego.solve_model(optimizer, already_solved_ok=True)
                 printer.information(f"Solving regret model took {regret_timing_solving:.2f} seconds")
+
+                sqlite_timer = time.time()
+                sqlite_file = f"{os.path.basename(os.path.normpath(case_study_path))}-{caseName.replace(".", "")}-regret.sqlite"
+                printer.information(f"Writing model to SQLite database: {sqlite_file}")
+                SQLiteWriter.model_to_sqlite(regret_lego.model, sqlite_file)
+                printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
 
                 match regret_result.solver.termination_condition:
                     case pyo.TerminationCondition.optimal:

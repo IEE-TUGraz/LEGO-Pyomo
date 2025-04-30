@@ -8,7 +8,7 @@ from tabulate import tabulate
 
 from LEGO.CaseStudy import CaseStudy
 from LEGO.LEGO import LEGO, build_from_clone_with_fixed_results
-from PyomoResult import model_to_sqlite
+from InOutModule.PyomoResult import model_to_sqlite
 from InOutModule.printer import pprint_zoi_var, Printer
 
 ########################################################################################################################
