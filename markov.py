@@ -193,22 +193,32 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compare edge-handling for given case-study", formatter_class=RichHelpFormatter)
-    parser.add_argument("caseStudyFolder", type=str, default=None, help="Path to folder containing data for LEGO model", nargs="?")
+    parser.add_argument("caseStudyFolder", type=str, default=None, help="Path to folder containing data for LEGO model. Can be a comma-separated list of multiple folders (executed after each other)", nargs="?")
+    parser.add_argument("--plot", action="store_true", help="Plot unit commitment results")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode where exceptions are passed on")
     args = parser.parse_args()
 
     if args.caseStudyFolder is None:
         args.caseStudyFolder = "data/markov/"
 
-    folder_name = os.path.basename(os.path.normpath(args.caseStudyFolder))
-    printer.set_logfile(f"markov-{folder_name}.log")
-    printer.information(f"Loading case study from '{args.caseStudyFolder}'")
-    printer.information(f"Logfile: '{printer.get_logfile()}'")
+    for folder in args.caseStudyFolder.split(","):
+        try:
+            folder_name = os.path.basename(os.path.normpath(args.caseStudyFolder))
+            printer.set_logfile(f"markov-{folder_name}.log")
+            printer.information(f"Loading case study from '{folder}'")
+            printer.information(f"Logfile: '{printer.get_logfile()}'")
 
-    unit_commitment_result_file = f"unitCommitmentResult-{folder_name}.xlsx"
-    printer.information(f"Unit commitment result file: '{unit_commitment_result_file}'")
-    execute_case_studies(args.caseStudyFolder, unit_commitment_result_file)
+            unit_commitment_result_file = f"unitCommitmentResult-{folder_name}.xlsx"
+            printer.information(f"Unit commitment result file: '{unit_commitment_result_file}'")
+            execute_case_studies(folder, unit_commitment_result_file)
 
-    printer.information("Plotting unit commitment")
-    plot_unit_commitment(unit_commitment_result_file, args.caseStudyFolder, 6 * 24, 1)
+            printer.information("Plotting unit commitment")
+            if args.plot:
+                plot_unit_commitment(unit_commitment_result_file, folder, 6 * 24, 1)
+        except Exception as e:
+            printer.error(f"Exception while executing case study '{folder}': {e}")
+            printer.error(f"Continuing with next case study")
+            if args.debug:
+                raise e
 
     printer.success("Done")
