@@ -5,7 +5,7 @@ import pandas as pd
 import pyomo.core.base.set
 import pyomo.environ as pyo
 
-from tools.printer import Printer
+from InOutModule.printer import Printer
 
 printer = Printer.getInstance()
 

@@ -8,7 +8,7 @@ from pyomo.core import TransformationFactory
 
 from InOutModule.CaseStudy import CaseStudy
 from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits
-from tools.printer import Printer
+from InOutModule.printer import Printer
 
 printer = Printer.getInstance()
 

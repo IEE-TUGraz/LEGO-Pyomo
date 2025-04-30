@@ -12,14 +12,14 @@ from rich_argparse import RichHelpFormatter
 from InOutModule.CaseStudy import CaseStudy
 from LEGO.LEGO import LEGO
 from LEGO.LEGOUtilities import plot_unit_commitment, add_UnitCommitmentSlack_And_FixVariables, getUnitCommitmentSlackCost
-from tools.printer import Printer
+from InOutModule.printer import Printer
 
 ########################################################################################################################
 # Setup
 ########################################################################################################################
 
 printer = Printer.getInstance()
-printer.console.width = 300
+printer.set_width(300)
 
 pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
@@ -185,9 +185,13 @@ if __name__ == "__main__":
 
     if args.caseStudyFolder is None:
         args.caseStudyFolder = "data/markov/"
-    printer.information(f"Loading case study from '{args.caseStudyFolder}'")
 
-    unit_commitment_result_file = f"unitCommitmentResult-{os.path.basename(os.path.normpath(args.caseStudyFolder))}.xlsx"
+    folder_name = os.path.basename(os.path.normpath(args.caseStudyFolder))
+    printer.set_logfile(f"markov-{folder_name}.log")
+    printer.information(f"Loading case study from '{args.caseStudyFolder}'")
+    printer.information(f"Logfile: '{printer.get_logfile()}'")
+
+    unit_commitment_result_file = f"unitCommitmentResult-{folder_name}.xlsx"
     printer.information(f"Unit commitment result file: '{unit_commitment_result_file}'")
     execute_case_studies(args.caseStudyFolder, unit_commitment_result_file)
 

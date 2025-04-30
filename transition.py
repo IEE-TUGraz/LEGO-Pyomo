@@ -8,7 +8,7 @@ from pyomo.util.infeasible import log_infeasible_constraints
 from InOutModule.CaseStudy import CaseStudy
 from LEGO.LEGO import LEGO
 from tools.mpsCompare import compare_mps
-from tools.printer import Printer
+from InOutModule.printer import Printer
 
 ########################################################################################################################
 # Setup
