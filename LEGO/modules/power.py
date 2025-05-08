@@ -39,7 +39,23 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.hindex = lego.cs.dPower_Hindex.index
 
     # Parameters
-    lego.model.pDemandP = pyo.Param(lego.model.rp, lego.model.k, lego.model.i, initialize=lego.cs.dPower_Demand['Demand'], doc='Demand at bus i in representative period rp and timestep k')
+    # Initialize demand parameter
+    demand_data = lego.cs.dPower_Demand['Demand']
+    all_nodes = set(lego.model.i)
+    nodes_with_demand = set(demand_data.index.get_level_values('i').unique())
+    missing_nodes = all_nodes - nodes_with_demand
+
+    # Add missing nodes with demand set to 0
+    for node in missing_nodes:
+        for rp in lego.model.rp:
+            for k in lego.model.k:
+                demand_data.loc[(rp, k, node)] = 0
+
+    # Log missing nodes
+    if missing_nodes:
+        print(f"Added missing nodes to demand data with demand set to 0: {', '.join(map(str, missing_nodes))}")
+
+    lego.model.pDemandP = pyo.Param(lego.model.rp, lego.model.k, lego.model.i, initialize=demand_data, doc='Demand at bus i in representative period rp and timestep k')
     lego.model.pMovWindow = lego.cs.dGlobal_Parameters['pMovWindow']
 
     lego.model.pOMVarCost = pyo.Param(lego.model.g, doc='Production cost of generator g')
@@ -132,14 +148,29 @@ def add_element_definitions_and_bounds(lego: LEGO):
             completed_buses.add(bus)
 
         # Set slack node
-        slack_node = lego.cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
+
+        available_buses = lego.cs.dPower_Demand.index.get_level_values(2).unique()
+
+        # Filter only valid connected buses
+        valid_buses = [bus for bus in connected_buses if bus in available_buses]
+
+        if not valid_buses:
+            raise ValueError("No valid connected buses found in dPower_Demand.")
+
+        # Use only valid buses in the indexing
+        slack_node = lego.cs.dPower_Demand.loc[:, :, valid_buses].groupby('i').sum().idxmax().values[0]
         slack_node = lego.cs.dPower_Parameters["is"]  # TODO: Switch this again to be calculated (fixed to 'is' for compatibility)
         if i == 0: print("Setting slack nodes for DC-OPF zones:")
         print(f"DC-OPF Zone {i:>2} - Slack node: {slack_node}")
         i += 1
         lego.model.vTheta[:, :, slack_node].fix(0)
 
-    lego.model.vPNS = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Slack variable power not served', bounds=lambda model, rp, k, i: (0, model.pDemandP[rp, k, i]))
+    lego.model.vPNS = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Slack variable power not served', bounds=lambda model, rp, k, i: (0, model.pDemandP[rp, k, i] if (rp, k, i) in model.pDemandP else 0))
+    # Print elements for which specific demand data was not found and therefore set to 0
+    for rp in lego.model.rp:
+        for i in lego.model.i:
+            if (rp, k, i) not in lego.model.pDemandP:
+                print(f"Demand data not found, set to 0: i={i}")
     lego.model.vEPS = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Slack variable excess power served', bounds=(0, None))
 
     # Used to relax vCommit, vStartup and vShutdown in the first timesteps of each representative period
@@ -159,10 +190,18 @@ def add_element_definitions_and_bounds(lego: LEGO):
         lego.model.vGenP1 = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc='Power output of generator g above minimum production', bounds=lambda model, rp, k, g: (0, (lego.model.pMaxProd[g] - lego.model.pMinProd[g]) * (lego.model.pExisUnits[g] + lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
 
     if lego.cs.dPower_Parameters["pEnableRoR"]:
+        generators_with_zero_inflow = set()
         for g in lego.model.rorGenerators:
             for rp in lego.model.rp:
                 for k in lego.model.k:
-                    lego.model.vGenP[rp, k, g].setub(min(lego.model.pMaxProd[g], lego.cs.dPower_Inflows.loc[rp, g, k]['Inflow']))  # TODO: Check and adapt for storage
+                    if (rp, g, k) in lego.cs.dPower_Inflows.index:
+                        inflow = lego.cs.dPower_Inflows.loc[rp, g, k]['Inflow']
+                    else:
+                        inflow = 0
+                        generators_with_zero_inflow.add(g)
+                    lego.model.vGenP[rp, k, g].setub(min(lego.model.pMaxProd[g], inflow))
+        if generators_with_zero_inflow:
+            print(f"Added missing Inflows set to 0: {', '.join(map(str, generators_with_zero_inflow))}")
 
     if lego.cs.dPower_Parameters["pEnableVRES"]:
         for g in lego.model.vresGenerators:
