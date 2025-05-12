@@ -1,6 +1,7 @@
 import argparse
 import os
 import time
+import logging
 
 import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
@@ -43,6 +44,15 @@ printer.information(f"Building LEGO model took {timing:.2f} seconds")
 printer.information("Solving LEGO model")
 results, timing = lego.solve_model()
 printer.information(f"Solving LEGO model took {timing:.2f} seconds")
+
+logger = logging.getLogger('pyomo.util.infeasible')
+logger.setLevel(logging.WARNING)  
+
+# Ensure there is a handler attached
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('%(message)s'))
+    logger.addHandler(handler)
 
 match results.solver.termination_condition:
     case pyo.TerminationCondition.optimal:
