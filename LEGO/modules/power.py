@@ -14,6 +14,49 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.la = pyo.Set(doc='All lines', initialize=lego.cs.dPower_Network.index.tolist(), within=lego.model.i * lego.model.i * lego.model.c)
     lego.model.le = pyo.Set(doc='Existing lines', initialize=lego.cs.dPower_Network[(lego.cs.dPower_Network["pEnableInvest"] == 0)].index.tolist(), within=lego.model.la)
     lego.model.lc = pyo.Set(doc='Candidate lines', initialize=lego.cs.dPower_Network[(lego.cs.dPower_Network["pEnableInvest"] == 1)].index.tolist(), within=lego.model.la)
+    
+    match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
+        
+        case "AC-OPF":
+            # Helper function for creating reverse and bidirectional sets
+            def make_reverse_set(original_set):
+                reverse = []
+                for (i, j, c) in original_set:
+                    reverse.append((j, i, c))
+                return reverse
+            
+            lego.model.la_reverse = pyo.Set(
+                doc='Reverse lines (la)',
+                initialize=lambda model: make_reverse_set(model.la),
+                within=lego.model.i * lego.model.i * lego.model.c
+            ) 
+
+            lego.model.la_full = pyo.Set(
+                initialize=lambda m: set(m.la) | set(m.la_reverse),
+                within=lego.model.i * lego.model.i * lego.model.c
+            )
+
+            lego.model.le_reverse = pyo.Set(
+                doc='Reverse lines (le)',
+                initialize=lambda model: make_reverse_set(model.le),
+                within=lego.model.la_reverse
+            )
+
+            lego.model.le_full = pyo.Set(
+                initialize=lambda m: set(m.le) | set(m.le_reverse),
+                within=lego.model.la_full
+            )
+
+            lego.model.lc_reverse = pyo.Set(
+                doc='Reverse lines (lc)',
+                initialize=lambda model: make_reverse_set(model.lc),
+                within=lego.model.la_reverse
+            )
+
+            lego.model.lc_full = pyo.Set(
+                initialize=lambda m: set(m.lc) | set(m.lc_reverse),
+                within=lego.model.la_full
+            )
 
     lego.model.g = pyo.Set(doc='Generators')
     lego.model.gi = pyo.Set(doc='Generator g connected to bus i', within=lego.model.g * lego.model.i)
