@@ -15,7 +15,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.le = pyo.Set(doc='Existing lines', initialize=lego.cs.dPower_Network[(lego.cs.dPower_Network["pEnableInvest"] == 0)].index.tolist(), within=lego.model.la)
     lego.model.lc = pyo.Set(doc='Candidate lines', initialize=lego.cs.dPower_Network[(lego.cs.dPower_Network["pEnableInvest"] == 1)].index.tolist(), within=lego.model.la)
     
-    if (lego.cs.dPower_Network["pTecRepr"] == "SOCP").any():
+    if lego.cs.dPower_Parameters.get("pEnableSOCP", "").lower() == "yes":
             # Helper function for creating reverse and bidirectional sets
             def make_reverse_set(original_set):
                 reverse = []
@@ -79,6 +79,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.k = pyo.Set(doc='Timestep within representative period', initialize=lego.cs.dPower_Demand.index.get_level_values('k').unique().tolist())
     lego.model.hindex = lego.cs.dPower_Hindex.index
 
+    print(lego.model.le_reverse.ordered_data())
     # Parameters
     lego.model.pDemandP = pyo.Param(lego.model.rp, lego.model.k, lego.model.i, initialize=lego.cs.dPower_Demand['Demand'], doc='Demand at bus i in representative period rp and timestep k')
     lego.model.pMovWindow = lego.cs.dGlobal_Parameters['pMovWindow']
@@ -133,7 +134,6 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.pPmax = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network['pPmax'], doc='Maximum power flow on line la')
     lego.model.pFixedCost = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network['pInvestCost'], doc='Fixed cost when investing in line la')  # TODO: Think about renaming this parameter (something related to 'investment cost')
     lego.model.pSBase = pyo.Param(initialize=lego.cs.dPower_Parameters['pSBase'], doc='Base power')
-    lego.model.pBcline = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network['pBcline'], doc='Susceptance of line la')
     lego.model.pBigM_Flow = pyo.Param(initialize=1e3, doc="Big M for power flow")
     lego.model.pENSCost = pyo.Param(initialize=lego.cs.dPower_Parameters['pENSCost'], doc='Cost used for Power Not Served (PNS) and Excess Power Served (EPS)')
 
@@ -141,6 +141,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.pWeight_k = pyo.Param(lego.model.k, initialize=lego.cs.dPower_WeightsK["pWeight_k"], doc='Weight of time step k')
 
     lego.model.pGline = pyo.Param(lego.model.la,initialize=lambda model, i, j, c: 1 / (model.pRline[i, j, c] if model.pRline[i, j, c] > 1e-6 else 1e-6),doc='Conductance of line la (1 / R, with lower bound)')
+    lego.model.pBline = pyo.Param(lego.model.la,initialize=lambda model, i, j, c: 1 / (model.pXline[i, j, c] if model.pXline[i, j, c] > 1e-6 else 1e-6),doc='Susceptance of line la (1 / X, with lower bound)')
     # Variables
     lego.model.vTheta = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Angle of bus i', bounds=(-lego.cs.dPower_Parameters["pMaxAngleDCOPF"], lego.cs.dPower_Parameters["pMaxAngleDCOPF"]))  # TODO: Discuss impact on runtime etc.(based on discussion with Prof. Renner)
     lego.model.vAngle = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, doc='Angle phase shifting transformer')
@@ -222,22 +223,26 @@ def add_element_definitions_and_bounds(lego: LEGO):
             for rp in lego.model.rp:
                 for k in lego.model.k:
                     lego.model.vGenP[rp, k, g].setub((lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])) * lego.cs.dPower_VRESProfiles.loc[rp, k, g]['Capacity']))
-    match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
-        case "DC-OPF" | "TP":
-            lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, doc='Power flow from bus i to j', bounds=(None, None))
+    
+    if lego.cs.dPower_Parameters.get("pEnableSOCP", "").lower() == "yes":
+            lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.la_full, doc='Power flow from bus i to j', bounds=(None, None))
             for (i, j, c) in lego.model.la:
                 lego.model.vLineP[:, :, (i, j), c].setlb(-lego.model.pPmax[i, j, c])
                 lego.model.vLineP[:, :, (i, j), c].setub(lego.model.pPmax[i, j, c])
-        case "SN":
-            assert False  # "SN" line found, although all "Single Node" buses should be merged
-        case "SOCP":
-            lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.la_full, doc='Power flow from bus i to j', bounds=(None, None))
-            for (i, j, c) in lego.model.la_full:
-                lego.model.vLineP[:, :, (i, j), c].setlb(-lego.model.pPmax[i, j, c])
-                lego.model.vLineP[:, :, (i, j), c].setub(lego.model.pPmax[i, j, c])
-        case _:
-            raise ValueError(f"Technical representation '{lego.cs.dPower_Network.loc[i, j]["pTecRepr"]}' "
-                                f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
+    else:
+        lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, doc='Power flow from bus i to j', bounds=(None, None))
+        for (i, j, c) in lego.model.la:
+            match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
+                case "DC-OPF" | "TP":
+                    lego.model.vLineP[:, :, (i, j), c].setlb(-lego.model.pPmax[i, j, c])
+                    lego.model.vLineP[:, :, (i, j), c].setub(lego.model.pPmax[i, j, c])
+
+                case "SN":
+                    assert False  # "SN" line found, although all "Single Node" buses should be merged
+        
+                case _:
+                    raise ValueError(f"Technical representation '{lego.cs.dPower_Network.loc[i, j]["pTecRepr"]}' "
+                                        f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
 
 @LEGOUtilities.checkExecutionLog([add_element_definitions_and_bounds])
 def add_constraints(lego: LEGO):
@@ -258,7 +263,7 @@ def add_constraints(lego: LEGO):
         match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
             case "DC-OPF":
                 return model.vLineP[rp, k, i, j, c] == (model.vTheta[rp, k, i] - model.vTheta[rp, k, j] + model.vAngle[rp, k, i, j, c]) * model.pSBase / (model.pXline[i, j, c] * model.pRatio[i, j, c])
-            case "TP" | "SN":
+            case "TP" | "SN" | "SOCP":
                 return pyo.Constraint.Skip
             
     lego.model.eDC_ExiLinePij = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le, doc="Power flow existing lines (for DC-OPF)", rule=eDC_ExiLinePij_rule)
@@ -271,21 +276,21 @@ def add_constraints(lego: LEGO):
                 
                 return ( model.vLineP[rp, k, i, j, c] == model.pSBase * (
                     + model.pGline[i, j, c] * model.vSOCP_cii[rp, k, i] /  pyo.sqrt(model.pRatio[i, j, c])
-                    - (1/model.pRatio[i, j, c]) * (model.pGline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) - model.pBLine * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j]
-                    - (1/model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGLine * pyo.sin(model.pAngle[i, j, c])) * - model.vSOCP_cij[rp, k, i, j])
+                    - (1/model.pRatio[i, j, c]) * (model.pGline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j, c]
+                    - (1/model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * - model.vSOCP_sij[rp, k, i, j, c])
                 )
     
     lego.model.eAC_ExiLinePij = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le, doc="Power flow existing lines from i to j (for AC-OPF)", rule=eAC_ExiLinePij_rule)
     
     def eAC_ExiLinePji_rule(model, rp, k, i, j, c): #Fertig
-        match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
+        match lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"]:
             case "DC-OPF" |"TP" | "SN":
                 return pyo.Constraint.Skip
             case "SOCP":
                 return( model.vLineP[rp, k, i, j, c] == model.pSBase * (
                     + (model.pGline[j, i, c] * model.vSOCP_cii[rp, k, i])
-                    - (1/model.pRatio[j, i, c]) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBLine * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, i, j]
-                    - (1/model.pRatio[j, i, c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGLine * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, i, j])
+                    - (1/model.pRatio[j, i, c]) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, i, j, c]
+                    - (1/model.pRatio[j, i, c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, i, j, c])
                 )
     
     lego.model.eAC_ExiLinePji = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le_reverse, doc="Power flow existing lines from j to i (for AC-OPF)", rule=eAC_ExiLinePji_rule)
@@ -325,9 +330,9 @@ def add_constraints(lego: LEGO):
                 case "SOCP":
                     return( model.vLineP[rp, k, i, j, c] >= model.pSBase * (
                         + model.pGline[i, j, c] * model.vSOCP_cii[rp, k, i] / pyo.sqrt(model.pRatio[i, j, c])
-                        - (1 / model.pRatio[i, j, c]) * (model.pGline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) - model.pBLine * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j]
-                        - (1 / model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGLine * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j])
-                        - model.pBigM_Flow * [1-model.vLineInvest[i, j, c]]
+                        - (1 / model.pRatio[i, j, c]) * (model.pGline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j, c]
+                        - (1 / model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j, c])
+                        - 1000 * [1-model.vLineInvest[i, j, c]]
                         )
     
     lego.model.eAC_CanLinePij1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, doc="Power flow candidate lines from i to j (for AC-OPF)", rule=eAC_CanLinePij1_rule)
@@ -339,36 +344,36 @@ def add_constraints(lego: LEGO):
                 case "SOCP":                
                     return( model.vLineP[rp, k, i, j, c] <= model.pSBase * (
                         + model.pGline[i, j, c] * model.vSOCP_cii[rp, k, i] / pyo.sqrt(model.pRatio[i, j, c])
-                        - (1 / model.pRatio[i, j, c]) * (model.pGline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) - model.pBLine * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j]
-                        - (1 / model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGLine * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j])
+                        - (1 / model.pRatio[i, j, c]) * (model.pGline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j, c]
+                        - (1 / model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j, c])
                         + model.pBigM_Flow * [1-model.vLineInvest[i, j, c]]
                         )
 
     lego.model.eAC_CanLinePij2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, doc="Power flow candidate lines from i to j (for AC-OPF)", rule=eAC_CanLinePij2_rule)
 
     def eAC_CanLinePji1_rule(model, rp, k, i, j, c): # Fertig
-            match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
+            match lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"]:
                 case "DC-OPF" | "TP" | "SN":
                     return pyo.Constraint.Skip
                 case "SOCP":
                     return( model.vLineP[rp, k, i, j, c] >= model.pSBase * (
                         + model.pGline[j, i, c] * model.vSOCP_cii[rp, k, i]
-                        - (1 / model.pRatio[j, i, c]) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBLine * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, i, j]
-                        - (1 / model.pRatio[j, i, c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGLine * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, i, j])
+                        - (1 / model.pRatio[j, i, c]) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, i, j, c]
+                        - (1 / model.pRatio[j, i, c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, i, j, c])
                         - model.pBigM_Flow * [1-model.vLineInvest[i, j, c]]
                         )
                 
     lego.model.eAC_CanLinePji1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_reverse, doc="Power flow candidate lines from j to i (for AC-OPF)", rule=eAC_CanLinePji1_rule)            
 
     def eAC_CanLinePji2_rule(model, rp, k, i, j, c): 
-            match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
+            match lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"]:
                 case "DC-OPF" | "TP" | "SN":
                     return pyo.Constraint.Skip
                 case "SOCP":
                     return( model.vLineP[rp, k, i, j, c] <= model.pSBase * (
                         + model.pGline[j, i, c] * model.vSOCP_cii[rp, k, i]
-                        - (1 / model.pRatio[i, j, c]) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBLine * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, i, j]
-                        - (1 / model.pRatio[j, i, c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGLine * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, i, j])
+                        - (1 / model.pRatio[i, j, c]) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, i, j, c]
+                        - (1 / model.pRatio[j, i, c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, i, j, c])
                         + model.pBigM_Flow * [1-model.vLineInvest[i, j, c]]
                         )
     
@@ -381,20 +386,20 @@ def add_constraints(lego: LEGO):
             case "SOCP":
                 return ( model.vLineQ[rp, k, i, j, c] == model.pSBase * (
                     - model.vSOCP_cii[rp, k, i] * (model.pBline[i, j, c] + model.pBcline[i, j, c]/2) / pyo.sqrt(model.pRatio[i, j, c])
-                    - (1/model.pRatio) * (model.pGline[i ,j ,c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j]
-                    + (1/model.pRatio) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j])
+                    - (1/model.pRatio) * (model.pGline[i ,j ,c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j, c]
+                    + (1/model.pRatio) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j, c])
                 )
     lego.model.eAC_ExiLineQij = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le, rule=eAC_ExiLineQij_rule, doc="Reactive power flow existing lines (for DC-OPF)")
 
     def eAC_ExiLineQji_rule(model, rp, k, i, j, c): # Fertig
-        match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
+        match lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"]:
             case "DC-OPF" | "TP" | "SN":
                 return pyo.Constraint.Skip
             case "SOCP":
                 return ( model.vLineQ[rp, k, i, j, c] == model.pSBase * (
                     - model.vSOCP_cii[rp, k, i] * (model.pBline[j, i, c] + model.pBcline[j, i, c]/2)
-                    - (1/model.pRatio) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, i, j]
-                    + (1/model.pRatio) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, i, j])
+                    - (1/model.pRatio) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, i, j, c]
+                    + (1/model.pRatio) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, i, j, c])
                 )
     lego.model.eAC_ExiLineQji = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le_reverse, rule=eAC_ExiLineQji_rule, doc="Reactive power flow existing lines (for DC-OPF)")
 
@@ -407,8 +412,8 @@ def add_constraints(lego: LEGO):
             case "SOCP":
                 return ( model.vLineQ[rp, k, i, j, c] >= model.pSBase * (
                     - model.vSOCP_cii[rp, k, i] * (model.pBline[i, j, c] + model.pBcline[i, j, c]/2) / pyo.sqrt(model.pRatio[i, j, c])
-                    - (1/model.pRatio) * (model.pGline[i ,j ,c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j]
-                    + (1/model.pRatio) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j])
+                    - (1/model.pRatio) * (model.pGline[i ,j ,c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j, c]
+                    + (1/model.pRatio) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j, c])
                     - model.pBigM_Flow * (1-model.vLineInvest[i, j, c]) 
                 )
 
@@ -421,22 +426,22 @@ def add_constraints(lego: LEGO):
             case "SOCP":
                 return ( model.vLineQ[rp, k, i, j, c] <= model.pSBase * (
                     - model.vSOCP_cii[rp, k, i] * (model.pBline[i, j, c] + model.pBcline[i, j, c]/2) / pyo.sqrt(model.pRatio[i, j, c])
-                    - (1/model.pRatio) * (model.pGline[i ,j ,c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j]
-                    + (1/model.pRatio) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j])
+                    - (1/model.pRatio) * (model.pGline[i ,j ,c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j, c]
+                    + (1/model.pRatio) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j, c])
                     + model.pBigM_Flow * (1-model.vLineInvest[i, j, c]) 
                 )
 
     lego.model.eAC_CanLineQij2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, doc="Reactive power flow candidate lines from i to j (for AC-OPF)", rule=eAC_CanLineQij2_rule)
 
     def eAC_CanLineQji1_rule(model, rp, k, i, j, c): 
-        match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
+        match lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"]:
             case "DC-OPF" | "TP" | "SN":
                 return pyo.Constraint.Skip
             case "SOCP":
                 return ( model.vLineQ[rp, k, i, j, c] >= model.pSBase * (
                     - model.vSOCP_cii[rp, k, i] * (model.pBline[j, i, c] + model.pBcline[j, i, c]/2)
-                    - (1/model.pRatio) * (model.pGline[j, i ,c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, i, j]
-                    + (1/model.pRatio) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, i, j])
+                    - (1/model.pRatio) * (model.pGline[j, i ,c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, i, j, c]
+                    + (1/model.pRatio) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, i, j, c])
                     - model.pBigM_Flow * (1-model.vLineInvest[i, j, c]) 
                 )
             
@@ -449,8 +454,8 @@ def add_constraints(lego: LEGO):
             case "SOCP":
                 return ( model.vLineQ[rp, k, i, j, c] <= model.pSBase * (
                     - model.vSOCP_cii[rp, k, i] * (model.pBline[j, i, c] + model.pBcline[j, i, c]/2)
-                    - (1/model.pRatio) * (model.pGline[j, i ,c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, i, j]
-                    + (1/model.pRatio) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, i, j])
+                    - (1/model.pRatio) * (model.pGline[j, i ,c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, i, j, c]
+                    + (1/model.pRatio) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, i, j, c])
                     + model.pBigM_Flow * (1-model.vLineInvest[i, j, c]) 
                 )
 
@@ -486,7 +491,7 @@ def add_constraints(lego: LEGO):
     lego.model.eAC_LimCanLinePij2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, doc="Power flow limit standard direction for candidate lines (for AC-OPF) 2", rule=eAC_LimCanLinePij2_rule)
             
     def eAC_LimCanLinePji1_rule(model, rp, k, i, j, c):
-         match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
+         match lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"]:
             case "DC-OPF" | "TP" | "SN":
                 return pyo.Constraint.Skip
             case "SOCP":
@@ -495,7 +500,7 @@ def add_constraints(lego: LEGO):
     lego.model.eAC_LimCanLinePji1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_reverse, doc="Power flow limit reverse direction for candidate lines (for AC-OPF) 1", rule=eAC_LimCanLinePji1_rule)
 
     def eAC_LimCanLinePji2_rule(model, rp, k, j, i, c):
-        match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
+        match lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"]:
             case "DC-OPF" | "TP" | "SN":
                 return pyo.Constraint.Skip
             case "SOCP":
@@ -522,7 +527,7 @@ def add_constraints(lego: LEGO):
     lego.model.eAC_LimCanLineQij2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, doc="Reactive power flow limit standard direction for candidate lines (for AC-OPF) 2", rule=eAC_LimCanLineQij2_rule)
 
     def eAC_LimCanLineQji1_rule(model, rp, k, i, j, c):
-         match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
+         match lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"]:
             case "DC-OPF" | "TP" | "SN":
                 return pyo.Constraint.Skip
             case "SOCP":
@@ -531,7 +536,7 @@ def add_constraints(lego: LEGO):
     lego.model.eAC_LimCanLineQji1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_reverse, doc="Reactive power flow limit reverse direction for candidate lines (for AC-OPF) 1", rule=eAC_LimCanLineQji1_rule)  
              
     def eAC_LimCanLineQji2_rule(model, rp, k, i, j, c):
-        match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
+        match lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"]:
             case "DC-OPF" | "TP" | "SN":
                 return pyo.Constraint.Skip
             case "SOCP":
@@ -563,7 +568,7 @@ def add_constraints(lego: LEGO):
     #         case "DC-OPF" | "TP" | "SN":
     #             return pyo.Constraint.Skip
     #         case "SOCP":
-    #             return model.vSOCP_sij[rp, k, i, j] == - model.vSOCP_sij[j, i, c, k]
+    #             return model.vSOCP_sij[rp, k, i, j, c] == - model.vSOCP_sij[j, i, c, k]
 
     # lego.model.eAC_Additional = pyo.Constraint(lego.model.k, lego.model.i, lego.model.i, lego.model.c, rule=eAC_Sij_Unsymmetry_rule, doc="Additional constraint for SOCP representation")
 
