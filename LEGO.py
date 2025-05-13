@@ -47,6 +47,7 @@ printer.information(f"Solving LEGO model took {timing:.2f} seconds")
 
 logger = logging.getLogger('pyomo.util.infeasible')
 logger.setLevel(logging.WARNING)  
+
 # Ensure there is a handler attached
 if not logger.handlers:
     handler = logging.StreamHandler()

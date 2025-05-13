@@ -443,12 +443,6 @@ def add_constraints(lego: LEGO):
                 return pyo.Constraint.Skip
             case "SOCP":
                 return model.vLineP[rp, k, i, j, c] / model.pPmax[i, j, c] <=  model.vLineInvest[i, j, c]
-    def eAC_LimCanLineQij1_rule(model, rp, k, i, j, c):
-        match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
-            case "DC-OPF" | "TP" | "SN":
-                return pyo.Constraint.Skip
-            case "SOCP":
-                return model.vLineQ[rp, k, i, j, c] / model.pQmax[i, j, c] >= - model.vLineInvest[i, j, c]
     def eAC_LimCanLineQij2_rule(model, rp, k, i, j, c):
         match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
             case "DC-OPF" | "TP" | "SN":
