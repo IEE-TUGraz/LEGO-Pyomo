@@ -37,7 +37,9 @@ printer.information(f"Loading case study took {time.time() - start_time:.2f} sec
 
 # Build LEGO model
 printer.information("Building LEGO model")
+#lego.cs.dPower_Demand = lego.cs.dPower_Demand["k" >= 24]
 model, timing = lego.build_model()
+# fix solved variables
 printer.information(f"Building LEGO model took {timing:.2f} seconds")
 
 # Solve LEGO model
