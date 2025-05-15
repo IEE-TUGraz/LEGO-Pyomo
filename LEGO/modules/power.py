@@ -39,7 +39,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.hindex = lego.cs.dPower_Hindex.index
 
     # Parameters
-    lego.model.pDemandP = pyo.Param(lego.model.rp, lego.model.k, lego.model.i, initialize=lego.cs.dPower_Demand['Demand'], doc='Demand at bus i in representative period rp and timestep k')
+    lego.model.pDemandP = pyo.Param(lego.model.rp, lego.model.k, lego.model.i, initialize=lego.cs.dPower_Demand['value'], doc='Demand at bus i in representative period rp and timestep k')
     lego.model.pMovWindow = lego.cs.dGlobal_Parameters['pMovWindow']
 
     lego.model.pOMVarCost = pyo.Param(lego.model.g, doc='Production cost of generator g')
@@ -168,7 +168,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
         for g in lego.model.vresGenerators:
             for rp in lego.model.rp:
                 for k in lego.model.k:
-                    lego.model.vGenP[rp, k, g].setub((lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])) * lego.cs.dPower_VRESProfiles.loc[rp, k, g]['Capacity']))
+                    lego.model.vGenP[rp, k, g].setub((lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])) * lego.cs.dPower_VRESProfiles.loc[rp, k, g]['value']))
 
     lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, doc='Power flow from bus i to j', bounds=(None, None))
     for (i, j, c) in lego.model.la:
@@ -231,7 +231,7 @@ def add_constraints(lego: LEGO):
     lego.model.eDC_LimCanLine2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, doc="Power flow limit standard direction for candidate lines (for DC-OPF)", rule=eDC_LimCanLine2_rule)
 
     def eReMaxProd_rule(model, rp, k, r):
-        capacity = lego.cs.dPower_VRESProfiles.loc[rp, k, r]['Capacity']
+        capacity = lego.cs.dPower_VRESProfiles.loc[rp, k, r]['value']
         capacity = capacity.values[0] if isinstance(capacity, pd.Series) else capacity
         return model.vGenP[rp, k, r] <= model.pMaxProd[r] * (model.vGenInvest[r] + model.pExisUnits[r]) * capacity
 
