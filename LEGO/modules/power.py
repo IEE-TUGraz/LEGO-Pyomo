@@ -595,10 +595,11 @@ def add_constraints(lego: LEGO):
 
     # SOCP constraints for candidate lines
     # Does only apply if the line is not in le (existing lines set) for the first circuit and is a candidate line (lc), therefore is not a candidate line in a different circuit while one already exists(parallel lines)   
- --------------break   
+ 
     def eSOCP_CanLine_rule(model, rp, k, i, j, c):
         
         c_str = c[0] if isinstance(c, tuple) else c
+
         if (i, j, c) in lego.model.lc: 
             if (lego.first_circuit_map.get((i, j)) != c_str or
                 (i, j, c) in lego.model.le):
@@ -616,8 +617,12 @@ def add_constraints(lego: LEGO):
         
     lego.model.eSOCP_CanLine = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_CanLine_rule)
 
+    # Does only apply if the line is in le (existing lines set) for the first circuit and is a candidate line (lc), therefore is a candidate line in a different circuit while one already exists (parallel lines)   
+ 
     def eSOCP_CanLine_cij_rule(model, rp, k, i, j, c):
+
         c_str = c[0] if isinstance(c, tuple) else c
+
         if (i, j, c) in lego.model.lc:  
             if (lego.first_circuit_map.get((i, j)) != c_str or
                 (i, j, c) not in lego.model.le):
@@ -626,109 +631,108 @@ def add_constraints(lego: LEGO):
                 model.vSOCP_cij[rp, k, i, j, c] <= model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c]
                 ) if lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
         elif (i, j, c) in lego.model.lc_reverse:
-            if (lego.first_circuit_map.get((i, j)) != c_str or
+            if (lego.first_circuit_map.get((j, i)) != c_str or
                 (i, j, c) not in lego.model.le_reverse):
                 return pyo.Constraint.Skip
             return ( 
-                model.vSOCP_cij[rp, k, i, j, c] <= model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c]
+                model.vSOCP_cij[rp, k, j, i, c] <= model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c]
                 ) if lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
     
-    lego.model.eSOCP_CanLine_cij = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc,doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_CanLine_cij_rule) 
+    lego.model.eSOCP_CanLine_cij = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="SOCP constraint for candidate lines (only if in le)",rule=eSOCP_CanLine_cij_rule) 
 
 
-    def eSOCP_CanLine_sij1_forward(model, rp, k, i, j, c):
-
-        c_str = c[0] if isinstance(c, tuple) else c
-        if lego.first_circuit_map.get((i, j)) != c_str:
-            return pyo.Constraint.Skip
-        return (
-            model.vSOCP_sij[rp, k, i, j, c] <= model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c]
-        ) if lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
-    
-    lego.model.eSOCP_CanLine_sij_forward = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc,doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_CanLine_sij1_forward)
-
-    def eSOCP_CanLine_sij1_reverse(model, rp, k, i, j, c):
+    def eSOCP_CanLine_sij1_rule(model, rp, k, i, j, c):
 
         c_str = c[0] if isinstance(c, tuple) else c
-        if lego.first_circuit_map.get((j, i)) != c_str:
-            return pyo.Constraint.Skip
-        return (
-            model.vSOCP_sij[rp, k, i, j, c] <= model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c]
-        ) if lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
-    
-    lego.model.eSOCP_CanLine_sij_reverse = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_reverse,doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_CanLine_sij1_reverse)
 
-    def eSOCP_CanLine_sij2_forward(model, rp, k, i, j, c):
+        if (i, j, c) in lego.model.lc:  
+            if (lego.first_circuit_map.get((i, j)) != c_str or
+                (i, j, c) not in lego.model.le):
+                return pyo.Constraint.Skip
+            return (
+                model.vSOCP_sij[rp, k, i, j, c] <= model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c]
+                ) if lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
+        elif (i, j, c) in lego.model.lc_reverse:
+            if (lego.first_circuit_map.get((j, i)) != c_str or
+                (i, j, c) not in lego.model.le_reverse):
+                return pyo.Constraint.Skip
+            return (
+                model.vSOCP_sij[rp, k, i, j, c] <= model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c]
+                ) if lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
+    
+    lego.model.eSOCP_CanLine_sij = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc,doc="SOCP constraint for candidate lines (only if in le)",rule=eSOCP_CanLine_sij1_rule)
+
+    
+    def eSOCP_CanLine_sij2_rule(model, rp, k, i, j, c):
 
         c_str = c[0] if isinstance(c, tuple) else c
-        if lego.first_circuit_map.get((i, j)) != c_str:
-            return pyo.Constraint.Skip
-        return (
-            model.vSOCP_sij[rp, k, i, j, c] >= -model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c]
-        ) if lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
-    
-    lego.model.eSOCP_CanLine_sij2_forward = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc,doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_CanLine_sij2_forward)
 
-    def eSOCP_CanLine_sij2_reverse(model, rp, k, i, j, c):
+        if (i, j, c) in lego.model.lc:  
+            if (lego.first_circuit_map.get((i, j)) != c_str or
+                (i, j, c) not in lego.model.le):
+                return pyo.Constraint.Skip
+            return (
+                model.vSOCP_sij[rp, k, i, j, c] >= -model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c]
+                ) if lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
+        elif (i, j, c) in lego.model.lc_reverse:
+            if (lego.first_circuit_map.get((j, i)) != c_str or
+                (i, j, c) not in lego.model.le_reverse):
+                return pyo.Constraint.Skip
+            return (
+                model.vSOCP_sij[rp, k, i, j, c] >= -model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c]
+                ) if lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
+    
+    lego.model.eSOCP_CanLine_sij2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="SOCP constraint for candidate lines (only if in le)",rule=eSOCP_CanLine_sij2_rule)
+    
+    def eSOCP_IndicConnecNodes1_rule(model, i, j, c):
 
         c_str = c[0] if isinstance(c, tuple) else c
-        if lego.first_circuit_map.get((j, i)) != c_str:
-            return pyo.Constraint.Skip
-        return (
-            model.vSOCP_sij[rp, k, i, j, c] >= -model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c]
-        ) if lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
-    
-    lego.model.eSOCP_CanLine_sij_reverse = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_reverse,doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_CanLine_sij2_reverse)
-    
-    def eSOCP_IndicConnecNodes1_forward(model, i, j, c):
 
-        c_str = c[0] if isinstance(c, tuple) else c
-        if lego.first_circuit_map.get((i, j)) != c_str:
-            return pyo.Constraint.Skip
-        return ( sum(
-            model.vSOCP_IndicConnecNodes[i, j, c_] 
-            for (i_, j_, c_) in model.lc 
-            if i_ == i and j_ == j
-            ) == 1
-        ) if lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
-    
-    lego.model.eSOCP_IndicConnecNodes1_forward = pyo.Constraint(lego.model.lc,doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_IndicConnecNodes1_forward)
-
-    def eSOCP_IndicConnecNodes1_reverse(model, i, j, c):
-        c_str = c[0] if isinstance(c, tuple) else c
-        if lego.first_circuit_map.get((i, j)) != c_str:
-            return pyo.Constraint.Skip
-        return ( sum(
+        if (i, j, c) in lego.model.lc:  
+            if (lego.first_circuit_map.get((i, j)) != c_str or
+                (i, j, c) not in lego.model.le):
+                return pyo.Constraint.Skip
+            return ( sum(
+                model.vSOCP_IndicConnecNodes[i, j, c_] 
+                for (i_, j_, c_) in model.lc 
+                if i_ == i and j_ == j
+                ) == 1
+                ) if lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
+        elif (i, j, c) in lego.model.lc_reverse:
+            if (lego.first_circuit_map.get((j, i)) != c_str or
+                (i, j, c) not in lego.model.le):
+                return pyo.Constraint.Skip
+            return ( sum(
             model.vSOCP_IndicConnecNodes[i, j, c_] 
             for (i_, j_, c_) in model.lc_reverse 
             if i_ == j and j_ == i
             ) == 1
-        ) if lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
+            ) if lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
     
-    lego.model.eSOCP_IndicConnecNodes1_reverse = pyo.Constraint(lego.model.lc_reverse, doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_IndicConnecNodes1_reverse)
+    lego.model.eSOCP_IndicConnecNodes1 = pyo.Constraint(lego.model.lc_full,doc="SOCP constraint for candidate lines (only if in le)",rule=eSOCP_IndicConnecNodes1_rule)
 
-    def eSOCP_IndicConnecNodes2_forward(model, i, j, c):
+
+    def eSOCP_IndicConnecNodes2_rule(model, i, j, c):
+
         c_str = c[0] if isinstance(c, tuple) else c
-        if (lego.first_circuit_map.get((i, j)) != c_str or
-            (i, j, c) in lego.model.le):
-            return pyo.Constraint.Skip
-        return (
-            model.vSOCP_IndicConnecNodes[i, j, c] == model.vLineInvest[i, j, c]
-        ) if lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
-    
-    lego.model.eSOCP_IndicConnecNodes2_forward = pyo.Constraint(lego.model.lc, doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_IndicConnecNodes2_forward)
 
-    def eSOCP_IndicConnecNodes2_reverse(model, i, j, c):
-        c_str = c[0] if isinstance(c, tuple) else c
-        if (lego.first_circuit_map.get((j, i)) != c_str or
-            (i, j, c) in lego.model.le_reverse):
-            return pyo.Constraint.Skip
-        return (
-            model.vSOCP_IndicConnecNodes[i, j, c] == model.vLineInvest[j, i, c]
-        ) if lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
-    
-    lego.model.eSOCP_IndicConnecNodes2_reverse = pyo.Constraint(lego.model.lc_reverse,doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_IndicConnecNodes2_reverse)
-
+        if (i, j, c) in lego.model.lc:  
+            if (lego.first_circuit_map.get((i, j)) != c_str or
+                (i, j, c) in lego.model.le):
+                return pyo.Constraint.Skip
+            return (
+                model.vSOCP_IndicConnecNodes[i, j, c] == model.vLineInvest[i, j, c]
+                ) if lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
+        elif (i, j, c) in lego.model.lc_reverse:
+            if (lego.first_circuit_map.get((j, i)) != c_str or
+                (i, j, c) not in lego.model.le):
+                return pyo.Constraint.Skip
+            return (
+                model.vSOCP_IndicConnecNodes[i, j, c] == model.vLineInvest[j, i, c]
+                ) if lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
+        
+    lego.model.eSOCP_IndicConnecNodes2 = pyo.Constraint(lego.model.lc, doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_IndicConnecNodes2_rule)
+---------------------BREAK---------------- Rule hinzufügen nicht vergessen
     # Limits for SOCP variables of candidates lines
 
     def eSOCP_CanLineCijUpLim(model, rp, k, i, j, c):
@@ -748,7 +752,7 @@ def add_constraints(lego: LEGO):
                 model.vSOCP_cij[rp, k, i, j, c] <= pyo.sqrt(model.pBusMaxV[i]) + model.pBigM_SOCP * (1 -  model.vSOCP_IndicConnecNodes[i, j, c])
             ) if lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
 
-    lego.model.eSOCP_CanLineCijUpLim = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_CanLineCijUpLim)
+    lego.model.eSOCP_CanLineCijUpLim = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="Limits for SOCP variables lines (only if not in le)",rule=eSOCP_CanLineCijUpLim)
     
     def eSOCP_CanLineCijLoLim(model, rp, k, i, j, c):
         c_str = c[0] if isinstance(c, tuple) else c
@@ -766,7 +770,7 @@ def add_constraints(lego: LEGO):
             return (
                 model.vSOCP_cij[rp, k, i, j, c] >= pyo.sqrt(model.pBusMaxV[i]) - model.pBigM_SOCP * (1 -  model.vSOCP_IndicConnecNodes[i, j, c])
                 ) if lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
-    lego.model.eSOCP_CanLineCijLoLim= pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_CanLineCijLoLim)
+    lego.model.eSOCP_CanLineCijLoLim= pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="Limits for SOCP variables (only if not in le)",rule=eSOCP_CanLineCijLoLim)
 
     def eSOCP_CanLineSijUpLim(model, rp, k, i, j, c):
         c_str = c[0] if isinstance(c, tuple) else c
@@ -785,7 +789,7 @@ def add_constraints(lego: LEGO):
             model.vSOCP_sij[rp, k, i, j, c] <= pyo.sqrt(model.pBusMaxV[i]) + model.pBigM_SOCP * (1 - model.vSOCP_IndicConnecNodes[i, j, c])
             ) if lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip 
     
-    lego.model.eSOCP_CanLineSijUpLim = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_CanLineSijUpLim)
+    lego.model.eSOCP_CanLineSijUpLim = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="Limits for SOCP variables (only if not in le)",rule=eSOCP_CanLineSijUpLim)
 
     def eSOCP_CanLineSijLoLim(model, rp, k, i, j, c):
         c_str = c[0] if isinstance(c, tuple) else c
@@ -803,7 +807,7 @@ def add_constraints(lego: LEGO):
             return (
                 model.vSOCP_sij[rp, k, i, j, c] >= -pyo.sqrt(model.pBusMaxV[i]) - model.pBigM_SOCP * (1 - model.vSOCP_IndicConnecNodes[i, j, c])
             ) if lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
-    lego.model.eSOCP_CanLineSijLoLim = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_CanLineSijLoLim)
+    lego.model.eSOCP_CanLineSijLoLim = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="Limits for SOCP variables (only if not in le)",rule=eSOCP_CanLineSijLoLim)
 
     
     # Angle difference constraints for lines
@@ -819,7 +823,7 @@ def add_constraints(lego: LEGO):
                 ) if lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
         return pyo.Constraint.Skip
 
-    lego.model.eSOCP_ExiLineAngDif1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le_full,doc="Angle difference existing lines (for AC-OPF)",rule=eSOCP_ExiLineAngDif1)
+    lego.model.eSOCP_ExiLineAngDif1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le_full,doc="Angle difference existing lines",rule=eSOCP_ExiLineAngDif1)
 
     def eSOCP_ExiLineAngDif2(model, rp, k, i, j, c):
         if (i, j, c) in lego.model.le:
@@ -831,7 +835,7 @@ def add_constraints(lego: LEGO):
                 return model.vSOCP_sij[rp, k, i, j, c] >= -model.vSOCP_cij[rp, k, i, j, c] * pyo.tan(model.pMaxAngleDiff
                 ) if lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip  
      
-    lego.model.eSOCP_ExiLineAngDif2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le_full, doc="Angle difference existing lines (for AC-OPF)", rule=eSOCP_ExiLineAngDif2)
+    lego.model.eSOCP_ExiLineAngDif2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le_full, doc="Angle difference existing lines", rule=eSOCP_ExiLineAngDif2)
 
     # Angle difference constraints for candidate lines
 
@@ -850,7 +854,7 @@ def add_constraints(lego: LEGO):
             return model.vSOCP_sij[rp, k, i, j, c] <= model.vSOCP_cij[rp, k, i, j, c] * pyo.tan(model.pMaxAngleDiff) + model.pBigM_Flow * (1-model.vSOCP_IndicConnecNodes[i, j, c]
             ) if lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
         return pyo.Constraint.Skip
-    lego.model.eSOCP_CanLineAngDif1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full, doc="Angle difference candidate lines (for AC-OPF)", rule=eSOCP_CanLineAngDif1)
+    lego.model.eSOCP_CanLineAngDif1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full, doc="Angle difference candidate lines", rule=eSOCP_CanLineAngDif1)
 
     def eSOCP_CanLineAngDif2(model, rp, k, i, j, c):
         c_str = c[0] if isinstance(c, tuple) else c
@@ -867,7 +871,7 @@ def add_constraints(lego: LEGO):
             return model.vSOCP_sij[rp, k, i, j, c] >= - model.vSOCP_cij[rp, k, i, j, c] * pyo.tan(model.pMaxAngleDiff) - model.pBigM_Flow * (1-model.vSOCP_IndicConnecNodes[i, j, c]
             ) if lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"] == "SOCP" else pyo.Constraint.Skip
         return pyo.Constraint.Skip
-    lego.model.eSOCP_CanLineAngDif2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full, doc="Angle difference candidate lines (for AC-OPF)", rule=eSOCP_CanLineAngDif2)
+    lego.model.eSOCP_CanLineAngDif2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full, doc="Angle difference candidate lines ", rule=eSOCP_CanLineAngDif2)
 
     # Production constraints
 
