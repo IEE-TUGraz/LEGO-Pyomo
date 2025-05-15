@@ -4,7 +4,7 @@ from collections import OrderedDict
 
 from pulp import LpProblem
 
-from tools.printer import Printer
+from InOutModule.printer import Printer
 
 printer = Printer.getInstance()
 printer.set_width(240)

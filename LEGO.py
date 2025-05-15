@@ -8,7 +8,7 @@ from rich_argparse import RichHelpFormatter
 
 from InOutModule.CaseStudy import CaseStudy
 from LEGO.LEGO import LEGO
-from tools.printer import Printer
+from InOutModule.printer import Printer
 
 printer = Printer.getInstance()
 

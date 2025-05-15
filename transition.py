@@ -8,7 +8,7 @@ from pyomo.util.infeasible import log_infeasible_constraints
 from InOutModule.CaseStudy import CaseStudy
 from LEGO.LEGO import LEGO
 from tools.mpsCompare import compare_mps
-from tools.printer import Printer
+from InOutModule.printer import Printer
 
 ########################################################################################################################
 # Setup
@@ -44,7 +44,7 @@ constraints_to_enforce_from2 = [""]
 
 if execute_gams:
     gams_console_log_path = "LEGO-GAMS/gams_console.log"
-    gams_path = "C:/GAMS/48/gams.exe"
+    gams_path = "C:/GAMS/49/gams.exe"
     lego_path = "LEGO.gms"
     max_runtime_in_seconds = 60
 
