@@ -28,7 +28,8 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.addToParameter("pInvestCost", lego.cs.dPower_Storage['InvestCostEUR'])
 
     # Variables
-    lego.model.bChargeDisCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
+    if lego.model.pEnableChDisPower:
+        lego.model.bChargeDisCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
 
     lego.model.vConsump = pyo.Var(lego.model.rp, lego.model.k, lego.model.storageUnits, doc='Charging of storage unit g', bounds=lambda model, rp, k, g: (0, model.pMaxCons[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g]))))
 

@@ -6,9 +6,10 @@ import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
+from InOutModule import SQLiteWriter, ExcelWriter
 from InOutModule.CaseStudy import CaseStudy
-from LEGO.LEGO import LEGO
 from InOutModule.printer import Printer
+from LEGO.LEGO import LEGO
 
 printer = Printer.getInstance()
 
@@ -52,3 +53,6 @@ match results.solver.termination_condition:
         log_infeasible_constraints(model)
     case _:
         printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
+
+SQLiteWriter.model_to_sqlite(model, "model.sqlite")
+ExcelWriter.model_to_excel(model, "model.xlsx")
