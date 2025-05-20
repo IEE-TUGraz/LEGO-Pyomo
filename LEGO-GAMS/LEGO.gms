@@ -490,7 +490,7 @@ Table    tStorage      (g<                , tStorageColumns    );
 Table    tRunOfRiver   (g<                , tStorageColumns    );
 Table    tInflows      (rp<   , g<  , k<                       );
 Table    tRenewable    (g<                , tRenewableColumns  );
-Table    tVRESProfiles (rp<   , i<  , tec<, k<                 );
+Table    tVRESProfiles (rp<   , g<        , k<                 );
 Table    tFACTS        (g<                , tFACTSColumns      );
 Table    tNetwork      (i<    , j<  , c<  , tNetworkColumns    );
 Table    tBusInfo      (i<                , tBusInfoColumns    );
@@ -878,20 +878,13 @@ $onEmbeddedCode Connect:
         gamsParameters = connect.container.getSymbols()
         tDemand = next((x for x in gamsParameters if x.name == "tDemand"), None)
 
-        df = xls.parse(sheet_name="Power Demand",
-                       skiprows=[0, 1, 3, 4, 5])
-        
-        # Rename columns and set scenario name for each entry of this sheet
-        df = df.rename(columns={df.columns[0]: "Excl.", df.columns[1]: "rp", df.columns[2]: "i"})
-        
-        # Drop rows where "Excl."-Column is filled, only keep empty ones
-        df = df[pd.isna(df['Excl.'])]
+        df = xls.parse(skiprows=[0, 1, 2, 4, 5, 6])
         
         # Replace empty cells with 0
         df = df.fillna(0)
         
         # Transpose table for tDemand
-        tDemand.setRecords(pd.melt(df.drop(['Excl.'], axis=1), id_vars=["rp", "i"],
+        tDemand.setRecords(pd.melt(df.drop(['dataPackage', 'dataSource'], axis=1), id_vars=["rp", "i"],
                                        var_name="k", value_name="Value"))
 - GAMSWriter:
     symbols:
@@ -942,23 +935,19 @@ $onEmbeddedCode Connect:
         gtec_thermal_gen = next((x for x in gamsParameters if x.name == "gtec_thermal_gen"), None)
         gi_help_thermal_gen = next((x for x in gamsParameters if x.name == "gi_help_thermal_gen"), None)
 
-        df = xls.parse(sheet_name="Power ThermalGen",
-                       skiprows=[0, 1, 3, 4, 5])
+        df = xls.parse(skiprows=[0, 1, 2, 4, 5, 6])
         
-        # Rename columns and set scenario name for each entry of this sheet
-        df = df.rename(columns={df.columns[0]: "Excl.", df.columns[1]: "g", df.columns[2]: "tec", df.columns[3]: "i"})
+        # Drop rows where "excl"-Column is filled, only keep empty ones
+        df = df[pd.isna(df['excl'])]
         
-        # Drop rows where "Excl."-Column is filled, only keep empty ones
-        df = df[pd.isna(df['Excl.'])]
-        
-        # Drop all columns starting from "PPName" (and all to the right of it)
-        df = df.drop(columns=df.columns[df.columns.get_loc("PPName"):], axis=1)
+        # Drop all columns starting from given column (and all to the right of it)
+        df = df.drop(columns=df.columns[df.columns.get_loc("YearCom"):], axis=1)
         
         # Replace empty cells with 0
-        df = df.fillna(0)
+        df = df.infer_objects(copy=False).fillna(0)
         
         # Skip columns "tec" and "i" & transpose table for tThermalGen
-        tThermalGen.setRecords(pd.melt(df.drop(['Excl.', 'tec', 'i'], axis=1), id_vars=["g"],
+        tThermalGen.setRecords(pd.melt(df.drop(['excl', 'tec', 'i'], axis=1), id_vars=["g"],
                                        var_name="tThermalGenColumns", value_name="Value"))
                                        
         # Create df for gtec_thermal_gen & gi_help_thermal_gen and set records
@@ -1003,7 +992,7 @@ $onEmbeddedCode Connect:
         # Drop rows where "Excl."-Column is filled, only keep empty ones
         df = df[pd.isna(df['Excl.'])]
         
-        # Drop all columns starting from "PPName" (and all to the right of it)
+        # Drop all columns starting from given column (and all to the right of it)
         df = df.drop(columns=df.columns[df.columns.get_loc("PPName"):], axis=1)
         
         # Replace empty cells with 0
@@ -1050,19 +1039,19 @@ $onEmbeddedCode Connect:
                        skiprows=[0, 1, 3, 4, 5])
         
         # Rename columns and set scenario name for each entry of this sheet
-        df = df.rename(columns={df.columns[0]: "Excl.", df.columns[1]: "g", df.columns[2]: "tec", df.columns[3]: "i"})
+        df = df.rename(columns={df.columns[0]: "excl", df.columns[1]: "g", df.columns[2]: "tec", df.columns[3]: "i"})
         
-        # Drop rows where "Excl."-Column is filled, only keep empty ones
-        df = df[pd.isna(df['Excl.'])]
+        # Drop rows where "excl"-Column is filled, only keep empty ones
+        df = df[pd.isna(df['excl'])]
         
-        # Drop all columns starting from "PPName" (and all to the right of it)
+        # Drop all columns starting from given column (and all to the right of it)
         df = df.drop(columns=df.columns[df.columns.get_loc("PPName"):], axis=1)
         
         # Replace empty cells with 0
         df = df.fillna(0)
         
         # Skip columns "tec" and "i" & transpose table for tRunOfRiver
-        tRunOfRiver.setRecords(pd.melt(df.drop(['Excl.', 'tec', 'i'], axis=1), id_vars=["g"],
+        tRunOfRiver.setRecords(pd.melt(df.drop(['excl', 'tec', 'i'], axis=1), id_vars=["g"],
                                        var_name="tStorageColumns", value_name="Value"))
                                        
         # Create df for gtec_storage_ror_run_of_river & gi_help_storage_run_of_river and set records
@@ -1120,23 +1109,19 @@ $onEmbeddedCode Connect:
         gtec_vres = next((x for x in gamsParameters if x.name == "gtec_vres"), None)
         gi_help_vres = next((x for x in gamsParameters if x.name == "gi_help_vres"), None)
 
-        df = xls.parse(sheet_name="Power VRES",
-                       skiprows=[0, 1, 3, 4, 5])
+        df = xls.parse(skiprows=[0, 1, 2, 4, 5, 6])
         
-        # Rename columns and set scenario name for each entry of this sheet
-        df = df.rename(columns={df.columns[0]: "Excl.", df.columns[1]: "g", df.columns[2]: "tec", df.columns[3]: "i"})
+        # Drop rows where "excl"-Column is filled, only keep empty ones
+        df = df[pd.isna(df['excl'])]
         
-        # Drop rows where "Excl."-Column is filled, only keep empty ones
-        df = df[pd.isna(df['Excl.'])]
-        
-        # Drop all columns starting from "PPName" (and all to the right of it)
-        df = df.drop(columns=df.columns[df.columns.get_loc("PPName"):], axis=1)
+        # Drop all columns starting from given column (and all to the right of it)
+        df = df.drop(columns=df.columns[df.columns.get_loc("YearCom"):], axis=1)
         
         # Replace empty cells with 0
         df = df.fillna(0)
         
         # Skip columns "tec" and "i" & transpose table for tRenewable
-        tRenewable.setRecords(pd.melt(df.drop(['Excl.', 'tec', 'i'], axis=1), id_vars=["g"],
+        tRenewable.setRecords(pd.melt(df.drop(['excl', 'tec', 'i'], axis=1), id_vars=["g"],
                                        var_name="tRenewableColumns", value_name="Value"))
                                        
         # Create df for gtec_vres & gi_help_vres and set records
@@ -1152,21 +1137,33 @@ $if not errorFree $abort 'Error reading Power_VRES.xlsx';
 $offFold
 
 $onFold // Read Power_VRESProfiles ---------------------------------------------
-
 $log Reading Power_VRESProfiles.xlsx
 $onEmbeddedCode Connect:
-
-- ExcelReader:
-    file: %scenarioFolder%/Power_VRESProfiles.xlsx
+- GAMSReader:
     symbols:
         - name: tVRESProfiles
-          range: Power VRESProfiles!B3
-          rowDimension: 3
-          columnDimension: 1
-          ignoreRows: [4, 5, 6]
+- PythonCode:
+    code: |
+        import pandas as pd
 
+        filePath = r"%scenarioFolder%/Power_VRESProfiles.xlsx"
+        xls = pd.ExcelFile(filePath)
+
+        # Get the Gams-Parameters
+        gamsParameters = connect.container.getSymbols()
+        tVRESProfiles = next((x for x in gamsParameters if x.name == "tVRESProfiles"), None)
+
+        df = xls.parse(skiprows=[0, 1, 2, 4, 5, 6])
+
+        # Replace empty cells with 0
+        df = df.fillna(0)
+
+        # Transpose table
+        tVRESProfiles.setRecords(pd.melt(df.drop(['id', 'dataPackage', 'dataSource'], axis=1), id_vars=["rp", "g"],
+                                       var_name="k", value_name="Value"))
 - GAMSWriter:
-    symbols: all
+    symbols:
+        - name: tVRESProfiles
 
 $offEmbeddedCode
 $if not errorFree $abort 'Error reading Power_VRESProfiles.xlsx';
@@ -1197,19 +1194,19 @@ $onEmbeddedCode Connect:
                        skiprows=[0, 1, 3, 4, 5])
         
         # Rename columns and set scenario name for each entry of this sheet
-        df = df.rename(columns={df.columns[0]: "Excl.", df.columns[1]: "g", df.columns[2]: "tec", df.columns[3]: "i"})
+        df = df.rename(columns={df.columns[0]: "excl", df.columns[1]: "g", df.columns[2]: "tec", df.columns[3]: "i"})
         
-        # Drop rows where "Excl."-Column is filled, only keep empty ones
-        df = df[pd.isna(df['Excl.'])]
+        # Drop rows where "excl"-Column is filled, only keep empty ones
+        df = df[pd.isna(df['excl'])]
         
-        # Drop all columns starting from "PPName" (and all to the right of it)
+        # Drop all columns starting from given column (and all to the right of it)
         df = df.drop(columns=df.columns[df.columns.get_loc("PPName"):], axis=1)
         
         # Replace empty cells with 0
         df = df.fillna(0)
         
         # Skip columns "tec" and "i" & transpose table for tFACTS
-        tFACTS.setRecords(pd.melt(df.drop(['Excl.', 'tec', 'i'], axis=1), id_vars=["g"],
+        tFACTS.setRecords(pd.melt(df.drop(['excl', 'tec', 'i'], axis=1), id_vars=["g"],
                                        var_name="tFACTSColumns", value_name="Value"))
                                        
         # Create df for gtec_five & gi_help_facts and set records
@@ -1224,63 +1221,101 @@ $offEmbeddedCode
 $if not errorFree $abort 'Error reading Power_FACTS.xlsx';
 $offFold
 
-$onFold // Read Power_WeightsRP ------------------------------------------------
-
+$onFold // Read Power_WeightsRP -----------------------------------------------
 $log Reading Power_WeightsRP.xlsx
 $onEmbeddedCode Connect:
-
-- ExcelReader:
-    file: %scenarioFolder%/Power_WeightsRP.xlsx
+- GAMSReader:
     symbols:
         - name: pWeight_rp
-          range: Power Weights RP!B7
-          rowDimension: 1
-          columnDimension: 0
+- PythonCode:
+    code: |
+        import pandas as pd
 
+        filePath = r"%scenarioFolder%/Power_WeightsRP.xlsx"
+        xls = pd.ExcelFile(filePath)
+
+        # Get the Gams-Parameters
+        gamsParameters = connect.container.getSymbols()
+        pWeight_rp = next((x for x in gamsParameters if x.name == "pWeight_rp"), None)
+
+        df = xls.parse(skiprows=[0, 1, 2, 4, 5, 6])
+
+        # Drop all columns starting from given column (and all to the right of it)
+        df = df.drop(columns=df.columns[df.columns.get_loc("dataPackage"):], axis=1)
+
+        # Drop very first and 'id' column
+        df = df.drop([df.columns[0], 'id'], axis=1)
+
+        pWeight_rp.setRecords(df)
 - GAMSWriter:
-    symbols: all
-
+    symbols:
+        - name: pWeight_rp
 $offEmbeddedCode
 $if not errorFree $abort 'Error reading Power_WeightsRP.xlsx';
 $offFold
 
-$onFold // Read Power_WeightsK -------------------------------------------------
-
+$onFold // Read Power_WeightsK -----------------------------------------------
 $log Reading Power_WeightsK.xlsx
 $onEmbeddedCode Connect:
-
-- ExcelReader:
-    file: %scenarioFolder%/Power_WeightsK.xlsx
+- GAMSReader:
     symbols:
         - name: pWeight_k
-          range: Power Weights K!B7
-          rowDimension: 1
-          columnDimension: 0
+- PythonCode:
+    code: |
+        import pandas as pd
 
+        filePath = r"%scenarioFolder%/Power_WeightsK.xlsx"
+        xls = pd.ExcelFile(filePath)
+
+        # Get the Gams-Parameters
+        gamsParameters = connect.container.getSymbols()
+        pWeight_k = next((x for x in gamsParameters if x.name == "pWeight_k"), None)
+
+        df = xls.parse(skiprows=[0, 1, 2, 4, 5, 6])
+
+        # Drop all columns starting from given column (and all to the right of it)
+        df = df.drop(columns=df.columns[df.columns.get_loc("dataPackage"):], axis=1)
+
+        # Drop very first and 'id' column
+        df = df.drop([df.columns[0], 'id'], axis=1)
+
+        pWeight_k.setRecords(df)
 - GAMSWriter:
-    symbols: all
-
+    symbols:
+        - name: pWeight_k
 $offEmbeddedCode
 $if not errorFree $abort 'Error reading Power_WeightsK.xlsx';
 $offFold
 
-$onFold // Read Power_Hindex ---------------------------------------------------
-
+$onFold // Read Power_Hindex -----------------------------------------------
 $log Reading Power_Hindex.xlsx
 $onEmbeddedCode Connect:
-
-- ExcelReader:
-    file: %scenarioFolder%/Power_Hindex.xlsx
+- GAMSReader:
     symbols:
         - name: hindex
-          range: Power Hindex!B7
-          rowDimension: 3
-          columnDimension: 0
-          type: set
+- PythonCode:
+    code: |
+        import pandas as pd
 
+        filePath = r"%scenarioFolder%/Power_Hindex.xlsx"
+        xls = pd.ExcelFile(filePath)
+
+        # Get the Gams-Parameters
+        gamsParameters = connect.container.getSymbols()
+        hindex = next((x for x in gamsParameters if x.name == "hindex"), None)
+
+        df = xls.parse(skiprows=[0, 1, 2, 4, 5, 6])
+
+        # Drop all columns starting from given column (and all to the right of it)
+        df = df.drop(columns=df.columns[df.columns.get_loc("dataPackage"):], axis=1)
+
+        # Drop very first and 'id' column
+        df = df.drop([df.columns[0], 'id'], axis=1)
+
+        hindex.setRecords(df)
 - GAMSWriter:
-    symbols: all
-
+    symbols:
+        - name: hindex
 $offEmbeddedCode
 $if not errorFree $abort 'Error reading Power_Hindex.xlsx';
 $offFold
@@ -1302,20 +1337,16 @@ $onEmbeddedCode Connect:
         gamsParameters = connect.container.getSymbols()
         tNetwork = next((x for x in gamsParameters if x.name == "tNetwork"), None)
 
-        df = xls.parse(sheet_name="Power Network",
-                       skiprows=[0, 1, 3, 4, 5])
+        df = xls.parse(skiprows=[0, 1, 2, 4, 5, 6])
         
-        # Rename columns and set scenario name for each entry of this sheet
-        df = df.rename(columns={df.columns[0]: "Excl.", df.columns[1]: "i", df.columns[2]: "j", df.columns[3]: "c"})
+        # Drop rows where "excl"-Column is filled, only keep empty ones
+        df = df[pd.isna(df['excl'])]
         
-        # Drop rows where "Excl."-Column is filled, only keep empty ones
-        df = df[pd.isna(df['Excl.'])]
-        
-        # Drop all columns starting from "Technical Representation" (and all to the right of it)
-        df = df.drop(columns=df.columns[df.columns.get_loc("Technical Representation"):], axis=1)
+        # Drop all columns starting from given column (and all to the right of it)
+        df = df.drop(columns=df.columns[df.columns.get_loc("pTecRepr"):], axis=1)
         
         # Replace empty cells with 0
-        df = df.fillna(0)
+        df = df.infer_objects(copy=False).fillna(0)
         
         # Skip columns "tec" and "i" & transpose table for tNetwork
         tNetwork.setRecords(pd.melt(df, id_vars=['i', 'j', 'c'],
@@ -1346,23 +1377,19 @@ $onEmbeddedCode Connect:
         tBusInfo = next((x for x in gamsParameters if x.name == "tBusInfo"), None)
         iz = next((x for x in gamsParameters if x.name == "iz"), None)
 
-        df = xls.parse(sheet_name="Power BusInfo",
-                       skiprows=[0, 1, 3, 4, 5])
+        df = xls.parse(skiprows=[0, 1, 2, 4, 5, 6])
         
-        # Rename columns and set scenario name for each entry of this sheet
-        df = df.rename(columns={df.columns[0]: "Excl.", df.columns[1]: "i", df.columns[2]: "z"})
+        # Drop rows where "excl"-Column is filled, only keep empty ones
+        df = df[pd.isna(df['excl'])]
         
-        # Drop rows where "Excl."-Column is filled, only keep empty ones
-        df = df[pd.isna(df['Excl.'])]
-        
-        # Drop all columns starting from "ZoneOfInterest" (and all to the right of it)
-        df = df.drop(columns=df.columns[df.columns.get_loc("ZoneOfInterest"):], axis=1)
+        # Drop all columns starting from given column (and all to the right of it)
+        df = df.drop(columns=df.columns[df.columns.get_loc("YearCom"):], axis=1)
         
         # Replace empty cells with 0
         df = df.fillna(0)
         
         # Skip column "z" & transpose table for tBusInfo
-        tBusInfo.setRecords(pd.melt(df.drop(['Excl.', 'z'], axis=1), id_vars=["i"],
+        tBusInfo.setRecords(pd.melt(df.drop(['excl', 'z', 'id'], axis=1), id_vars=["i"],
                                        var_name="tBusInfoColumns", value_name="Value"))
                                        
         # Create df for iz and set records
@@ -1587,19 +1614,19 @@ $onEmbeddedCode Connect:
                        skiprows=[0, 1, 3, 4, 5])
         
         # Rename columns and set scenario name for each entry of this sheet
-        df = df.rename(columns={df.columns[0]: "Excl.", df.columns[1]: "h2u", df.columns[2]: "h2tec", df.columns[3]: "i", df.columns[4]: "h2i"})
+        df = df.rename(columns={df.columns[0]: "excl", df.columns[1]: "h2u", df.columns[2]: "h2tec", df.columns[3]: "i", df.columns[4]: "h2i"})
         
-        # Drop rows where "Excl."-Column is filled, only keep empty ones
-        df = df[pd.isna(df['Excl.'])]
+        # Drop rows where "excl"-Column is filled, only keep empty ones
+        df = df[pd.isna(df['excl'])]
         
-        # Drop all columns to the right of "MaxInvest"
+        # Drop all columns starting from given column (and all to the right of it)
         df = df.drop(columns=df.columns[df.columns.get_loc("MaxInvest")+1:], axis=1)
         
         # Replace empty cells with 0
         df = df.fillna(0)
         
         # Skip columns "tec" and "i" & transpose table for tH2GenUnits
-        tH2GenUnits.setRecords(pd.melt(df.drop(['Excl.', 'h2tec', 'i', 'h2i'], axis=1), id_vars=["h2u"],
+        tH2GenUnits.setRecords(pd.melt(df.drop(['excl', 'h2tec', 'i', 'h2i'], axis=1), id_vars=["h2u"],
                                        var_name="tH2GenUnitsColumns", value_name="Value"))
                                        
         # Create df for other symbols and set records
@@ -1641,16 +1668,16 @@ $onEmbeddedCode Connect:
                        skiprows=[0, 1, 3, 4, 5])
         
         # Rename columns and set scenario name for each entry of this sheet
-        df = df.rename(columns={df.columns[0]: "Excl.", df.columns[1]: "h2i", df.columns[2]: "h2j"})
+        df = df.rename(columns={df.columns[0]: "excl", df.columns[1]: "h2i", df.columns[2]: "h2j"})
         
-        # Drop rows where "Excl."-Column is filled, only keep empty ones
-        df = df[pd.isna(df['Excl.'])]
+        # Drop rows where "excl"-Column is filled, only keep empty ones
+        df = df[pd.isna(df['excl'])]
         
         # Replace empty cells with 0
         df = df.fillna(0)
         
         # Transpose table for tH2Network
-        tH2Network.setRecords(pd.melt(df.drop(['Excl.'], axis=1), id_vars=["h2i", "h2j"],
+        tH2Network.setRecords(pd.melt(df.drop(['excl'], axis=1), id_vars=["h2i", "h2j"],
                                        var_name="tH2NetworkColumns", value_name="Value"))
 - GAMSWriter:
     symbols:
@@ -2972,7 +2999,7 @@ pENSCost                     =                            pENSCost              
 pLOLCost                     =                            pLOLCost                   * 1e-3 ;
 pDSMShiftCost(rpk(rp,k),i  ) =                            tDSMshiftcost(rp,i,k)      * 1e-3 ;
 pInflows     (rpk(rp,k),  s) =                            tInflows     (rp,s,k)      * 1e-3 ;
-pResProfile  (rpk(rp,k),i,r) = sum[(gtec(r,tec),gi(r,i)), tVRESProfiles(rp,i,tec,k)]        ;
+pResProfile  (rpk(rp,k),i,r) = sum[(gtec(r,tec),gi(r,i)), tVRESProfiles(rp,r,k)]            ;
 
 
 * Thermal generation parameters
@@ -3371,691 +3398,691 @@ if(pEnableSOCP,
 $offFold
 
 
-*-------------------------------------------------------------------------------
-*             Calculating ex post parameters for results
-*-------------------------------------------------------------------------------
-$onFold // Summary -------------------------------------------------------------
-pSummary('----------- MODEL STATISTICS -----------    ') = eps ;
-pSummary('Obj Func Model                       [M€   ]') = LEGO.objVal  + eps ;
-pSummary('CAPEX (GEP, TEP, H2GEP)              [M€   ]') = + sum[ga(g    ), pInvestCost  (g    )* vGenInvest.l (g    )]
-                                                           + sum[lc(i,j,c), pFixedCost   (i,j,c)* vLineInvest.l(i,j,c)]
-$ifThenE.H2 (%pEnableH2%=1)
-                                                           + sum[h2u      , pH2InvestCost(h2u  )* vH2Invest.l  (h2u  )] $[pEnableH2]
-$endIf.H2
-                                                           + eps;
-pSummary('OPEX                                 [M€   ]') = vTotalVCost.l
-                                                           - sum[ga(g    ), pInvestCost  (g    )* vGenInvest.l (g    )]
-                                                           - sum[lc(i,j,c), pFixedCost   (i,j,c)* vLineInvest.l(i,j,c)]
-$ifThenE.H2 (%pEnableH2%=1)
-                                                           - sum[h2u      , pH2InvestCost(h2u  )* vH2Invest.l  (h2u  )] $[pEnableH2]
-$endIf.H2
-                                                           - eps;
-
-
-pSummary('CPU Time Model generation            [s    ]') = LEGO.resGen     + eps ;
-pSummary('CPU Time Model solution              [s    ]') = LEGO.resUsd     + eps ;
-pSummary('Number of variables                         ') = LEGO.numVar     + eps ;
-pSummary('Number of discrete variables                ') = LEGO.numDVar    + eps ;
-pSummary('Number of equations                         ') = LEGO.numEqu     + eps ;
-pSummary('Number of nonzero elements                  ') = LEGO.numNZ      + eps ;
-pSummary('Best possible solution for MIP              ') = LEGO.objest     + eps ;
-pSummary('Results for regret calculation              ') = pRegretCalc     + eps ;
-pSummary('Network Constraints 1->yes                  ') = pEnableTransNet + eps ;
-pSummary('1->SOCP , 0->DC                             ') = pEnableSOCP     + eps ;
-pSummary('1->RoCoF, 0->MinInert                       ') = pEnableRoCoF    + eps ;
-
-pSummary('SOCP Mean Error          ') $[not pEnableSOCP] = eps ;
-pSummary('SOCP Mean Error          ') $[    pEnableSOCP] = sum[(rpk(rp,k),i,j)$isLine(i,j),
-                                                               + vSOCP_cii.l(rp,k,i  ) * vSOCP_cii.l(rp,k,j  )
-                                                               - vSOCP_cij.l(rp,k,i,j) * vSOCP_cij.l(rp,k,i,j)
-                                                               - vSOCP_sij.l(rp,k,i,j) * vSOCP_sij.l(rp,k,i,j)] /
-                                                           sum[(rpk(rp,k),i,j)$isLine(i,j),
-                                                               + vSOCP_cii.l(rp,k,i  ) * vSOCP_cii.l(rp,k,j  )];
-
-
-pSummary('------------- POWER SYSTEM -------------    ') = eps ;
-pSummary('Total  system demand                 [GWh  ]') = sum[(rp,k),pWeight_rp(rp)*pWeight_k(k)*sum[j, pDemandP (rp,k,j)]] ;
-pSummary('Total  renewable + storage prod.     [GWh  ]') = sum[(rp,k),pWeight_rp(rp)*pWeight_k(k)*[+ sum[gi(r,j), vGenP.L(rp,k,r)]
-                                                                                                   + sum[gi(s,j), vGenP.L(rp,k,s)]]] + eps;
-
-pSummary('Total  renewable curtailment         [GWh  ]') = sum[(rp,k,gi(r,i)),pWeight_rp(rp)*pWeight_k(k)*[pResProfile(rp,k,i,r)*pMaxProd(r)*[vGenInvest.l(r)+pExisUnits(r)] - vGenP.l(rp,k,r)]] + eps ;
-pSummary('Total  thermal   production          [GWh  ]') = sum[(rp,k),pWeight_rp(rp)*pWeight_k(k)*[+ sum[gi(t,j), vGenP.L(rp,k,t)]]] + eps;
-pSummary('Actual green     production          [p.u. ]') = pSummary('Total  renewable + storage prod.     [GWh  ]') / pSummary('Total  system demand                 [GWh  ]') + eps;
-pSummary('Actual thermal   production          [p.u. ]') = pSummary('Total  thermal   production          [GWh  ]') / pSummary('Total  system demand                 [GWh  ]') + eps;
-
-pSummary('Total  renewable EAG + storage prod. [GWh  ]') = sum[(rp,k),pWeight_rp(rp)*pWeight_k(k)*[+ sum[gi(r,j), vGenP.L   (rp,k,r)]
-                                                                                                                   + sum[gi(s,j), vGenP.L   (rp,k,s)]
-                                                                                                                   + sum[gi(b,j), vGenP.L   (rp,k,b)]
-                                                                                                                   - sum[gi(s,j), vConsump.L(rp,k,s)]]] + eps;
-pSummary('Total  thermal   production EAG      [GWh  ]') = sum[(rp,k),pWeight_rp(rp)*pWeight_k(k)*[+ sum[gi(t,j), vGenP.L(rp,k,t)]
-                                                                                                   - sum[gi(b,j), vGenP.L(rp,k,b)]]] + eps;
-
-pSummary('Actual green     production EAG      [p.u. ]') = pSummary('Total  thermal   production EAG      [GWh  ]') / pSummary('Total  system demand                 [GWh  ]') + eps;
-pSummary('Actual thermal   production EAG      [p.u. ]') = pSummary('Total  thermal   production EAG      [GWh  ]') / pSummary('Total  system demand                 [GWh  ]') + eps;
-
-pSummary('Thermal            Investment        [GW   ]') = sum[t        , vGenInvest.l (t    ) * pMaxProd(t    )] + eps;
-pSummary('Renewable          Investment        [GW   ]') = sum[r        , vGenInvest.l (r    ) * pMaxProd(r    )] + eps;
-pSummary('Storage            Investment        [GW   ]') = sum[s        , vGenInvest.l (s    ) * pMaxProd(s    )] + eps;
-pSummary('Transmission lines Investment        [GW   ]') = sum[lc(i,j,c), vLineInvest.l(i,j,c) * pPmax   (i,j,c)] + eps;
-pSummary('Energy non-supplied                  [GWh  ]') = sum[(rp,k),pWeight_rp(rp)*pWeight_k(k)*sum[j          , vPNS.l (rp,k,j        )]] + eps;
-
-$ifThenE.H2 (%pEnableH2%=1)
-pSummary('----------- HYDROGEN SYSTEM ------------    ') = eps ;
-pSummary('H2 non-supplied                      [t    ]') = sum[(rp,k),pWeight_rp(rp)*pWeight_k(k)*sum[(h2i,h2sec), vH2NS.l(rp,k,h2i,h2sec)]] + eps;
-$endIf.H2
-pSummary('------------ CO2 EMISSIONS -------------    ') = eps ;
-pSummary('Budget CO2 emissions                 [MtCO2]') = pCO2Budget + eps ;
-pSummary('Actual CO2 emissions                 [MtCO2]') = sum[(rpk(rp,k),t), pWeight_rp(rp)*pWeight_k(k)*pCO2Emis(t)
-                                                               *[+(pStartupCons     (t)*vStartup.l(rp,k,t  ))
-                                                                 +(pInterVarCons    (t)*vCommit.l (rp,k,t  ))
-                                                                 +(pSlopeVarFuelCons(t)*vGenP.l   (rp,k,t  ))]]$[pEnableCO2]
-                                                           + eps;
-pSummary('CO2-target overshoot                 [MtCO2]') = vCO2Overshoot.l + eps;
-pSummary('--------------- POLICIES ---------------    ') = eps ;
-pSummary('Cost renewable quota                 [€/MWh]')$[not pEnableGreenNatBal]  = - eCleanProdLimThermal.m  * 1e3 + eps;
-pSummary('Cost renewable quota                 [€/MWh]')$[    pEnableGreenNatBal]  =   eCleanProdNatBal.m      * 1e3 + eps;
-pSummary('Payment firm capacity                [€/MW ]')$[    pMinFirmCap ]        =   eFirmCapCon.m           * 1e3 + eps;
-
-$offFold
-
-$onFold // Investment Results --------------------------------------------------
-
-pGenInvest (tec      ,'[MW]  ') = sum[gtec(ga(g),tec), pMaxProd(    g)*vGenInvest.l (    g)] * 1e3 + eps ;
-pGenInvest (tec      ,'[MVar]') = sum[gtec(ga(g),tec), pMaxGenQ(    g)*vGenInvest.l (    g)] * 1e3 + eps ;
-pTraInvest (lc(i,j,c),'[MW]'  ) =                      pPmax   (i,j,c)*vLineInvest.l(i,j,c)  * 1e3 + eps ;
-
-$offFold
-
-$onFold // Operating Dispatch Results ------------------------------------------
-
-pCommit  (p,t    ) = sum[hindex(p,rpk(rp,k)), vCommit.l (rp,k,t)    ]   + eps ;
-pGenP    (p,ga(g)) = sum[hindex(p,rpk(rp,k)), vGenP.l   (rp,k,g)*1e3]   + eps ;
-pGenQ    (p,ga(g)) = sum[hindex(p,rpk(rp,k)), vGenQ.l   (rp,k,g)*1e3]   + eps ;
-pChrP    (p,   s ) = sum[hindex(p,rpk(rp,k)), vConsump.l(rp,k,s)*1e3]   + eps ;
-pCurtP_k (rp,k,r ) = sum[   gi(r,i)         ,[pResProfile(rp,k,i,r)*pMaxProd(r)*[vGenInvest.l(r)+pExisUnits(r)] - vGenP.l(rp,k,r)]*1e3] + eps ;
-pCurtP_rp(rp,  r ) = sum[(k,gi(r,i))        ,[pResProfile(rp,k,i,r)*pMaxProd(r)*[vGenInvest.l(r)+pExisUnits(r)] - vGenP.l(rp,k,r)]*1e3] + eps ;
-pSpillag (p,ga(g)) = sum[hindex(p,rpk(rp,k)), vSpillag.l (rp,k,g)*1e3]  + eps ;
-
-pStIntra (k,s,rp) $[rpk(rp,k) and [card(rp)=1]                      ] = vStIntraRes.l(rp,k,s) / [pMaxProd(s)*[vGenInvest.l(s)+pExisUnits(s)]*pE2PRatio(s) + 1e-6] + eps ;
-pStIntra (k,s,rp) $[rpk(rp,k) and [card(rp)>1] and [not pIsHydro(s)]] = vStIntraRes.l(rp,k,s) / [pMaxProd(s)*[vGenInvest.l(s)+pExisUnits(s)]*pE2PRatio(s) + 1e-6] + eps ;
-
-pStLevel (p,s   ) $[[card(rp)=1]                      ] = sum[hindex   (p,rpk(rp,k)) , pStIntra(k,s,rp)]    ;
-pStLevel (p,s   ) $[[card(rp)>1] and [not pIsHydro(s)]] = sum[hindex   (p,rpk(rp,k)) , pStIntra(k,s,rp)]    ;
-pStLevel (p,s   ) $[[card(rp)>1] and [    pIsHydro(s)]] = vStInterRes.l(p   ,s) / [pMaxProd(s)*[vGenInvest.l(s)+pExisUnits(s)]*pE2PRatio(s) + 1e-6] + eps ;
-
-pStLvMW  (p,s   ) $[[card(rp)=1] and [    pIsHydro(s)] and [mod(ord(p),pMovWindow)=0]] = sum[hindex(p,rpk(rp,k)), vStIntraRes.l(rp,k,s)] + eps ;
-pStLvMW  (p,s   ) $[[card(rp)>1] and [    pIsHydro(s)] and [mod(ord(p),pMovWindow)=0]] =                          vStInterRes.l( p  ,s)  + eps ;
-
-pLineP(k,i,j,c,rp) $[rpk(rp,k) and la(i,j,c) and not pEnableTransNet                    ] =                               eps ;
-pLineP(k,i,j,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet                    ] =  vLineP.l(rp,k,i,j,c) * 1e3 + eps ;
-pLineP(k,j,i,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet and not pEnableSOCP] = -vLineP.l(rp,k,i,j,c) * 1e3 + eps ;
-pLineP(k,j,i,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet and     pEnableSOCP] =  vLineP.l(rp,k,j,i,c) * 1e3 + eps ;
-pLineQ(k,i,j,c,rp) $[rpk(rp,k) and la(i,j,c) and not pEnableTransNet                    ] =                               eps ;
-pLineQ(k,i,j,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet and not pEnableSOCP] =                               eps ;
-pLineQ(k,i,j,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet and     pEnableSOCP] =  vLineQ.l(rp,k,i,j,c) * 1e3 + eps ;
-pLineQ(k,j,i,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet and     pEnableSOCP] =  vLineQ.l(rp,k,j,i,c) * 1e3 + eps ;
-
-pLineP_Perc(k,i,j,c,rp) $[rpk(rp,k) and la(i,j,c) and not pEnableTransNet                    ] =                                      eps ;
-pLineP_Perc(k,i,j,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet                    ] =  vLineP.l(rp,k,i,j,c)/pPmax(i,j,c) + eps ;
-pLineP_Perc(k,j,i,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet and not pEnableSOCP] = -vLineP.l(rp,k,i,j,c)/pPmax(i,j,c) + eps ;
-
-
-pTecProd (i,tec         ,'Total [GWh]'  )                    =  sum[(rpk(rp,k),ga(g))$[gtec(g,tec) and gi(g,i)], pWeight_rp(rp)*pWeight_k(k)* vGenP.l    (rp,k,g    )               ] + eps ;
-pTecProd (i,'Sto_Charge','Total [GWh]'  )                    = -sum[(rpk(rp,k),   s )$[                gi(s,i)], pWeight_rp(rp)*pWeight_k(k)* vConsump.l (rp,k,s    )               ] + eps ;
-pTecProd (i,'ENS'       ,'Total [GWh]'  )                    =  sum[ rpk(rp,k)                                 , pWeight_rp(rp)*pWeight_k(k)* vPNS.l     (rp,k,i    )               ] + eps ;
-pTecProd (i,'P_Demand'  ,'Total [GWh]'  )                    = -sum[ rpk(rp,k)                                 , pWeight_rp(rp)*pWeight_k(k)* pDemandP   (rp,k,i    )               ] + eps ;
-pTecProd (i,'P_DSM_Shed','Total [GWh]'  ) $[pEnableDSMPower] =  sum[(rpk(rp,k),seg)                            , pWeight_rp(rp)*pWeight_k(k)* vDSM_Shed.l(rp,k,i,seg)               ] + eps ;
-pTecProd (i,'P_NetFlo'  ,'Total [GWh]'  )                    = -sum[(rpk(rp,k),j,c  )$[la (i,j,c)             ], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,i,j,c)               ]
-                                                               +sum[(rpk(rp,k),j,c  )$[la (j,i,c)             ], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,j,i,c)               ] + eps ;
-pTecProd (i,'P_NetFlo'  ,'Total [GWh]'  ) $[pEnableSOCP]     = -sum[(rpk(rp,k),j,c  )$[la (i,j,c)             ], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,i,j,c)               ]
-                                                               -sum[(rpk(rp,k),j,c  )$[la (j,i,c)             ], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,i,j,c)               ] + eps ;
-                                                             
-pTecProd (i,tec         ,'Total [GVarh]') $[pEnableSOCP]     =  sum[(rpk(rp,k),ga(g))$[gtec(g,tec) and gi(g,i)], pWeight_rp(rp)*pWeight_k(k)* vGenQ.l    (rp,k,g    )               ] + eps ;
-pTecProd (i,'QNS'       ,'Total [GVarh]') $[pEnableSOCP]     =  sum[ rpk(rp,k)                                 , pWeight_rp(rp)*pWeight_k(k)* vPNS.l     (rp,k,i    )*pRatioDemQP(i)] + eps ;
-pTecProd (i,'Q_Demand'  ,'Total [GVarh]') $[pEnableSOCP]     = -sum[ rpk(rp,k)                                 , pWeight_rp(rp)*pWeight_k(k)* pDemandQ   (rp,k,i    )*pEnableSOCP   ] + eps ;
-pTecProd (i,'Q_NetFlo'  ,'Total [GVarh]') $[pEnableSOCP]     = -sum[(rpk(rp,k),j,c  )$[la (i,j,c)             ], pWeight_rp(rp)*pWeight_k(k)* vLineQ.l   (rp,k,i,j,c)               ]
-                                                               -sum[(rpk(rp,k),j,c  )$[la (j,i,c)             ], pWeight_rp(rp)*pWeight_k(k)* vLineQ.l   (rp,k,i,j,c)               ] + eps ;
-pTecProd (i,'Q_DSM_Shed','Total [GVarh]') $[pEnableSOCP
-                                        and pEnableDSMPower] =  sum[(rpk(rp,k),seg)                            , pWeight_rp(rp)*pWeight_k(k)* vDSM_Shed.l(rp,k,i,seg)*pRatioDemQP(i)] + eps ;
-                                            
-pTecProdSum (tec         ,'Total [GWh]') =  sum[i                                                 , pTecProd (i,tec         ,'Total [GWh]')]                                      + eps ;
-pTecProdSum ('Sto_Charge','Total [GWh]') =  sum[i                                                 , pTecProd (i,'Sto_Charge','Total [GWh]')]                                      + eps ;
-*pTecProdSum ('Imports'   ,'Total [GWh]') = -sum[(rpk(rp,k),i,j,c)$[lbz (i,j,c) and rpkexp(rp,k,j)], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,i,j,c)]                         + eps ;
-*pTecProdSum ('Exports'   ,'Total [GWh]') = -sum[(rpk(rp,k),i,j,c)$[lbz (i,j,c) and rpkimp(rp,k,j)], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,i,j,c)]                         + eps ;
-
-display pTecProdSum;
-
-pTecProdHours(p   , tec         )        =  sum[(hindex(p,rpk(rp,k)),ga(g))$[gtec(g,tec) ]   , vGenP.l    (rp,k,g    )] + eps ;
-pTecProdHours(p   ,'Demand'     )        = -sum[(hindex(p,rpk(rp,k)),i)                      , pDemandP   (rp,k,i    )] + eps ;
-pTecProdHours(p   ,'Sto_Charge' )        = -sum[(hindex(p,rpk(rp,k)),s)                      , vConsump.l (rp,k,s    )] + eps ;
-*pTecProdHours(p   ,'Imports'    )        = -sum[(hindex(p,rpk(rp,k)),i,j,c)$[rpkexp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
-*pTecProdHours(p   ,'Exports'    )        = -sum[(hindex(p,rpk(rp,k)),i,j,c)$[rpkimp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
-
-display pTecProdHours;                     
-
-pTecProdRP   (rp,k, tec         )        =  sum[g$[gtec(g,tec)]          , vGenP.l    (rp,k,g    )] + eps ;
-pTecProdRP   (rp,k,'Demand'     )        = -sum[i                        , pDemandP   (rp,k,i    )] + eps ;
-pTecProdRP   (rp,k,'Sto_Charge' )        = -sum[s                        , vConsump.l (rp,k,s    )] + eps ;
-*pTecProdRP   (rp,k,'Imports'    )        = -sum[(i,j,c)$[rpkexp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
-*pTecProdRP   (rp,k,'Exports'    )        = -sum[(i,j,c)$[rpkimp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
-
-display pTecProdRP;
-
-pVoltage(k,i,rp)$[rpk(rp,k) and not pEnableTransNet                    ] = 1                         + eps ;
-pVoltage(k,i,rp)$[rpk(rp,k) and     pEnableTransNet and not pEnableSOCP] = 1                         + eps ;
-pVoltage(k,i,rp)$[rpk(rp,k) and     pEnableTransNet and     pEnableSOCP] = sqrt[vSOCP_cii.l(rp,k,i)] + eps ;
-
-pTheta  (k,i,rp)$[rpk(rp,k) and not pEnableTransNet] =                             eps ;
-pTheta  (k,i,rp)$[rpk(rp,k) and     pEnableTransNet] = vTheta.l(rp,k,i) * 180/pi + eps ;
-
-pBusRes (k,i,rp,'Qs','[Mvar]') $[rpk(rp,k) and pBusB(i)] = - [sqr[pVoltage(k,i,rp)] * pBusB(i) * pSBase] * 1e3 + eps ;
-pBusRes (k,i,rp,'Ps','[MW]'  ) $[rpk(rp,k) and pBusG(i)] = + [sqr[pVoltage(k,i,rp)] * pBusG(i) * pSBase] * 1e3 + eps ;
-
-pResulCDSF('obj. fun. cycle aging costs [M$]',s)$[not pIsHydro(s)] =
- sum[(rpk(rp,k),a), pWeight_rp(rp)*pWeight_k(k)*pCDSF_Cost(s,a)*vCDSF_dis.l(rp,k,s,a)] + eps
-;
-
-pCDSF_delta (p,s) = 0 ;
-pCDSF_delta (p,s)        $[pDisEffic(s)*pMaxProd(s)*[vGenInvest.l(s)+pExisUnits(s)]*pE2PRatio(s)]
-     = pGenP(p,s) * 1E-3 /[pDisEffic(s)*pMaxProd(s)*[vGenInvest.l(s)+pExisUnits(s)]*pE2PRatio(s)]
-     + pCDSF_delta (p-1,s)$[ord(p)>1]
-;
-pResulCDSF('Annual life loss from cycling [%]',s)$[not pIsHydro(s)] =
-  sum[p, pCDSF_alpha(s)*rPower[pCDSF_delta (p,s),pCDSF_beta(s)]] + eps;
-;
-
-pResulCDSF('Annual prorated cycle aging cost [M€]',s)$[not pIsHydro(s)] =
-  pReplaceCost(s) *[pMaxProd(s)*[vGenInvest.l(s)+pExisUnits(s)] * pE2PRatio(s)] *
-  pResulCDSF('Annual life loss from cycling [%]',s)
-;
-
-pResulCDSF('Battery life expectancy [year]',s)$[not pIsHydro(s) and pShelfLife(s)] =
-* assuming proportional annual self life loss
-  1 /[1/pShelfLife(s) + pResulCDSF('Annual life loss from cycling [%]',s)]
-;
-
-$offFold
-
-$onFold // Economic Results Calculation ----------------------------------------
-
-* electricity prices [€/MWh]
-pSRMC(p,i)$[not pEnableTransNet                    ] = sum[hindex(p,rpk(rp,k)), eSN_BalanceP.m  (rp,k,i) * 1e3 / [pWeight_rp(rp)*pWeight_k(k)]] + eps ;
-pSRMC(p,i)$[    pEnableTransNet and not pEnableSOCP] = sum[hindex(p,rpk(rp,k)), eDC_BalanceP.m  (rp,k,i) * 1e3 / [pWeight_rp(rp)*pWeight_k(k)]] + eps ;
-pSRMC(p,i)$[    pEnableTransNet and     pEnableSOCP] = sum[hindex(p,rpk(rp,k)), eSOCP_BalanceP.m(rp,k,i) * 1e3 / [pWeight_rp(rp)*pWeight_k(k)]] + eps ;
-
-* electricity prices in rp and k [M€/GW]
-pMC(rp,k,i)$[not pEnableTransNet                                      ] = eSN_BalanceP.m  (rp,k,i) + eps ;
-pMC(rp,k,i)$[    pEnableTransNet and not pEnableSOCP and not pEnableZP] = eDC_BalanceP.m  (rp,k,i) + eps ;
-pMC(rp,k,i)$[    pEnableTransNet and     pEnableSOCP                  ] = eSOCP_BalanceP.m(rp,k,i) + eps ;
-
-$onFold // Ex-post calculation Zonal Pricing -----------------------------------
-
-$ifThenE.ZonalPricing (%pEnablePower%=1)and(%pEnableZP%=1)
-* zonal prices in rp and k [€/MWh]
-pZonalPriceRP(rp,k,za(z))$[pEnableZP] =                          eZP_BalanceP.m  (rp,k,z) * 1e3 / [pWeight_rp(rp)*pWeight_k(k)]  + eps ;
-* zonal prices per hour [€/MWhW]
-pZonalPrice  (p,za(z)   )$[pEnableZP] = sum[hindex(p,rpk(rp,k)), eZP_BalanceP.m  (rp,k,z) * 1e3 / [pWeight_rp(rp)*pWeight_k(k)]] + eps ;
-$endIf.ZonalPricing
-
-$offFold
-
-* dual variables of inertia constraints
-pInertDual(k,rp) $[rpk(rp,k) and     pEnableRoCoF] = eRoCoF_SyEq1.m(rp,k) * 1e6 + eps ;
-pInertDual(k,rp) $[rpk(rp,k) and not pEnableRoCoF] = eMinInertia.m (rp,k) * 1e6 + eps ;
-
-* new calculations for economic results (revenues, costs, profits, etc)
-pRevSpot (g)$[not pEnableTransNet                    ]  = + sum[(rpk(rp,k)), vGenP.l   (rp,k,g) * sum[i$gi(g,i), eSN_BalanceP.m(rp,k,i)]];
-pRevSpot (g)$[    pEnableTransNet and not pEnableSOCP]  = + sum[(rpk(rp,k)), vGenP.l   (rp,k,g) * sum[i$gi(g,i), eDC_BalanceP.m(rp,k,i)]];
-pRevSpot (g)$[    pEnableTransNet and     pEnableSOCP]  = + sum[(rpk(rp,k)), vGenP.l   (rp,k,g) * sum[i$gi(g,i), eSOCP_BalanceP.m(rp,k,i)]];
-
-* only storage units can buy energy on spot market
-pCostSpot (s)$[not pEnableTransNet                    ] = + sum[(rpk(rp,k)), vConsump.l(rp,k,s) * sum[i$gi(s,i), eSN_BalanceP.m(rp,k,i)]];
-pCostSpot (s)$[    pEnableTransNet and not pEnableSOCP] = + sum[(rpk(rp,k)), vConsump.l(rp,k,s) * sum[i$gi(s,i), eDC_BalanceP.m(rp,k,i)]];
-pCostSpot (s)$[    pEnableTransNet and     pEnableSOCP] = + sum[(rpk(rp,k)), vConsump.l(rp,k,s) * sum[i$gi(s,i), eSOCP_BalanceP.m(rp,k,i)]];
-
-
-pRevReserve (g)   = + sum[(rpk(rp,k)), v2ndResUP.l(rp,k,g) * e2ReserveUp.m(rp,k)]
-                    + sum[(rpk(rp,k)), v2ndResDW.l(rp,k,g) * e2ReserveDw.m(rp,k)];
-
-pReserveCost(s)   = + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pOMVarCost   (s)  *
-                                                    p2ndResUpCost     * v2ndResUP.l(rp,k,s)]
-                    + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pOMVarCost   (s)  *
-                                                    p2ndResDwCost     * v2ndResDW.l(rp,k,s)] ;
-pReserveCost(t)   = + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pSlopeVarCost(t) *
-                                                    p2ndResUpCost  * v2ndResUP.l(rp,k,t)]
-                    + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pSlopeVarCost(t)  *
-                                                    p2ndResDwCost     * v2ndResDW.l(rp,k,t)] ;
-
-* calculation of pRevRESQuota with hourly eCleanProdLimThermal constraint
-pRevRESQuota(t)$[pMinGreenProd and not pEnableGreenNatBal] = eCleanProdLimThermal.m  * sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k) * vGenP.l(rp,k,t)] ;
-
-* calculation of pRevRESQuota with national balance eCleanProdNatBal constraint
-pRevRESQuota(b)$[pMinGreenProd and pEnableGreenNatBal] =  eCleanProdNatBal.m  * sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k) *  vGenP.l(rp,k,b)] ;
-pRevRESQuota(r)$[pMinGreenProd and pEnableGreenNatBal] =  eCleanProdNatBal.m  * sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k) *  vGenP.l(rp,k,r)] ;
-pRevRESQuota(s)$[pMinGreenProd and pEnableGreenNatBal] =  eCleanProdNatBal.m  * sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k) * [vGenP.l(rp,k,s) - vConsump.l(rp,k,s  )]] ;
-
-pFirmCapPay (g)$[pMinFirmCap] = eFirmCapCon.m * pFirmCapCoef(g)* pMaxProd(g)*[vGenInvest.l(g)+pExisUnits(g)];
-
-pInvCost(g)$ga(g) = pInvestCost(g)* vGenInvest.l(g);
-pOMCost       (s) = + sum[(rpk(rp,k)),             pWeight_rp(rp)*pWeight_k(k)*pOMVarCost(s  )*vGenP.l    (rp,k,s  )]
-                    + sum[(rpk(rp,k),a)$[cdsf(s)], pWeight_rp(rp)*pWeight_k(k)*pCDSF_Cost(s,a)*vCDSF_dis.l(rp,k,s,a)] ;
-pOMCost       (r) = + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pOMVarCost   (r) * vGenP.l    (rp,k,r)] ;
-pOMCost       (t) = + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pSlopeVarCost(t) * vGenP.l    (rp,k,t)]
-                    + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pStartupCost (t) * vStartup.l (rp,k,t)]
-                    + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pInterVarCost(t) * vCommit.l  (rp,k,t)] ;
-
-pTotalProfits (g) =   pRevSpot    (g)
-                    - pCostSpot   (g)
-                    + pRevReserve (g)
-                    - pReserveCost(g)
-                    + pFirmCapPay (g)
-                    + pRevRESQuota(g)
-                    - pInvCost    (g)
-                    - pOMCost     (g)
-;
-
-pEconomicResults('Spot market revenues    [M€]',g) =    pRevSpot     (g) + eps;
-pEconomicResults('Spot market costs       [M€]',g) =  - pCostSpot    (g) + eps;
-pEconomicResults('Reserve market revenues [M€]',g) =    pRevReserve  (g) + eps;
-pEconomicResults('Reserve market costs    [M€]',g) =  - pReserveCost (g) + eps;
-pEconomicResults('O&M costs               [M€]',g) =  - pOMCost      (g) + eps;
-pEconomicResults('Investment costs        [M€]',g) =  - pInvCost     (g) + eps;
-pEconomicResults('RES quota payments/cost [M€]',g) =    pRevRESQuota (g) + eps;
-pEconomicResults('Firm capacity payments  [M€]',g) =    pFirmCapPay  (g) + eps;
-pEconomicResults('Total profits           [M€]',g) =    pTotalProfits(g) + eps;
-
-$offFold
-
-$onFold // RoCoF results -------------------------------------------------------
-
-pRoCoF_k   (rp,k,t)$[pEnableRoCoF] = [vCommit.L(rp,k,t )*pMaxProd(t)/sum[tt,vCommit.L(rp,k,tt )* pMaxProd(tt)]
-                                                                  ]$[sum[tt,vCommit.L(rp,k,tt )* pMaxProd(tt)]>0];
-
-pRoCoF_k   (rp,k,v)$[pEnableRoCoF] = [vGenP.L(rp,k,v) / sum[gi(vv,i), pMaxProd(vv)*pResProfile(rp,k,i,vv)*[vGenInvest.L(vv)+pExisUnits(vv)] ]
-                                                     ]$[sum[gi(vv,i), pMaxProd(vv)*pResProfile(rp,k,i,vv)*[vGenInvest.L(vv)+pExisUnits(vv)] ]>0];
-
-pRoCoF_SG_M(rp,k  )$[pEnableRoCoF] = sum[t,2*pInertiaConst(t)*                 pRoCoF_k(rp,k,t)] ;
-pRoCoF_VI_M(rp,k  )$[pEnableRoCoF] = sum[v,2*pInertiaConst(v)* vGenInvest.L(v)*pRoCoF_k(rp,k,v)] ;
-
-pActualSysInertia(k,rp) $[pEnableRoCoF] =[[
-   +pRoCoF_SG_M(rp,k) * sum[t      ,pMaxProd(t)*vCommit.L       (rp,k,t)                                    ]
-   +pRoCoF_VI_M(rp,k) * sum[gi(v,i),pMaxProd(v)*vGenInvest.L    (     v)*pResProfile(rp,k,i,v)              ]
-   +pRoCoF_VI_M(rp,k) * sum[gi(v,i),pMaxProd(v)*                         pResProfile(rp,k,i,v)*pExisUnits(v)]
-                          ]
-                         /
-                          [
-   +sum[t      ,pMaxProd(t)*vCommit.L    (rp,k,t)                                    ]
-   +sum[gi(v,i),pMaxProd(v)*vGenInvest.L (     v)*pResProfile(rp,k,i,v)              ]
-   +sum[gi(v,i),pMaxProd(v)*                      pResProfile(rp,k,i,v)*pExisUnits(v)]
-                          ]]$[[
-   +sum[t      ,pMaxProd(t)*vCommit.L    (rp,k,t)                                    ]
-   +sum[gi(v,i),pMaxProd(v)*vGenInvest.L (     v)*pResProfile(rp,k,i,v)              ]
-   +sum[gi(v,i),pMaxProd(v)*                      pResProfile(rp,k,i,v)*pExisUnits(v)]
-                          ]>0]
-;
-
-$offFold
-
-$onFold // DSM results ---------------------------------------------------------
-
-pResultDSM(i,sec,'Up  ',rp,k) = vDSM_Up.l  (rp,k,i,sec) + eps;
-pResultDSM(i,sec,'Down',rp,k) = vDSM_Dn.l  (rp,k,i,sec) + eps;
-pResultDSM(i,seg,'Shed',rp,k) = vDSM_Shed.l(rp,k,i,seg) + eps;
-
-$offFold
-
-$onFold // H2 results ----------------------------------------------------------
-$ifThenE.H2 (%pEnableH2%=1)
-pH2price (h2sec,k,h2i,rp) $[rpk(rp,k) and pEnableH2] = eH2_Balance.m(rp,k,h2i,h2sec) * 1e3 / [pWeight_rp(rp)*pWeight_k(k)] + eps ;
-pH2Prod  (h2g  ,k,    rp) $[rpk(rp,k) and pEnableH2] = vH2Prod.l    (rp,k,h2g      ) * 1e3                                 + eps ;
-pH2Cons  (h2g  ,k,    rp) $[rpk(rp,k) and pEnableH2] = vH2Consump.l (rp,k,h2g      ) * 1e3                                 + eps ;
-pH2NS    (h2sec,k,h2i,rp) $[rpk(rp,k) and pEnableH2] = vH2NS.l      (rp,k,h2i,h2sec) * 1e3                                 + eps ;
-pH2Invest(h2g  ,'MW'    ) $[              pEnableH2] = vH2Invest.l  (h2g           ) * 1e3 *  pH2MaxCons(h2g)              + eps ;
-
-pSummary('Levelized cost of H2                 [€/kg ]') $[pEnableH2 and sum[(rpk(rp,k),h2u      )  , pWeight_rp(rp)*pWeight_k(k)                           * vH2Prod.l   (rp,k,h2u)]] =
-                                                                      [+ sum[           h2u         ,                             pH2InvestCost(h2u)        * vH2Invest.l (     h2u)]
-                                                                       + sum[           h2u         ,                             pH2OMVarCost (h2u)        * vH2Invest.l (     h2u)]
-                                                                       + sum[(rpk(rp,k),h2gi(h2g,i)),                             pMC          (    rp,k,i) * vH2Consump.l(rp,k,h2g)]] * 1e3
-                                                                       / sum[(rpk(rp,k),h2u        ), pWeight_rp(rp)*pWeight_k(k)                           * vH2Prod.l   (rp,k,h2u)]
-                                                                       + eps ;
-$endIf.H2
-
-option pSummary:2:0:1; display pSummary;
-
-$offFold
-
-
-*-------------------------------------------------------------------------------
-*                       Export results to Excel file
-*-------------------------------------------------------------------------------
-$onFold // Export results to Excel file ----------------------------------------
-
-* Create a results folder for execution if it doesn't exist yet
-$if not dexist "%scenarioFolder%/results" $call 'mkdir "%scenarioFolder%/results"'
-
-* Copy .gms code & .lst file and delete old results
-$ifThen.OS not %system.fileSys% == UNIX
-* Commands for Windows
-execute 'copy "LEGO.gms" "%scenarioFolder%/results/LEGO.gms"'
-execute 'copy "LEGO.lst" "%scenarioFolder%/results/LEGO.lst"'
-$if exist "%scenarioFolder%/results/results.xlsx" execute 'del "%scenarioFolder%\results\results.xlsx"'
-$elseIf.OS     %system.fileSys% == UNIX
-* Commands for UNIX
-execute 'cp   "LEGO.gms" "%scenarioFolder%/results/LEGO.gms"'
-execute 'cp   "LEGO.lst" "%scenarioFolder%/results/LEGO.lst"'
-$if exist "%scenarioFolder%/results/results.xlsx" execute 'rm "%scenarioFolder%/results/results.xlsx"'
-
-$endIf.OS
-
-* gdx with all information
-execute_unload   '%scenarioFolder%/results/LEGO_results.gdx';
-
-$onFold // Bare minimum output -------------------------------------------------
-if (pOutput=3,
-embeddedCode Connect:
-- GAMSReader:
-    symbols:
-      - name: pSummary
-      - name: pTecProd
-      - name: pGenInvest
-      - name: pTraInvest
-      - name: pH2Invest
-      - name: pTecProdSum
-- ExcelWriter:
-    file: %scenarioFolder%/results/results.xlsx
-    valueSubstitutions: {
-            "EPS": 0
-    }
-    symbols:
-      - name: pSummary
-        range: Summary!a1
-        columnDimension: 0
-      - name: pTecProd
-        range: TotalEn!a1
-        columnDimension: 2
-      - name: pGenInvest
-        range: GenInvest!a1
-        columnDimension: 1
-      - name: pTraInvest
-        range: TranInvest!a1
-        columnDimension: 1
-      - name: pH2Invest
-        range: H2Invest!a1
-        columnDimension: 1
-      - name: pTecProdSum
-        range: TotalEnSum!a1
-        columnDimension: 1
-endEmbeddedCode
-);
-$offFold
-
-$onFold // Reduced output ------------------------------------------------------
-if (pOutput=2,
-embeddedCode Connect:
-- GAMSReader:
-    symbols:
-      - name: pSummary
-      - name: pTecProd
-      - name: pGenInvest
-      - name: pTraInvest
-      - name: pH2Invest
-      - name: pTecProdSum
-      - name: pGenP
-      - name: pStIntra
-      - name: pStLevel
-      - name: pSRMC
-      - name: pLineP
-      - name: pEconomicResults
-      - name: pChrP
-      - name: pH2price
-      - name: pH2Prod
-      - name: pH2Cons
-      - name: pH2NS
-      - name: pTecProdhours
-      - name: pTecProdRP
-      - name: pCurtP_k
-      - name: pCurtP_rp
-      - name: pLineP_Perc
-      - name: pSpillag
-- ExcelWriter:
-    file: %scenarioFolder%/results/results.xlsx
-    valueSubstitutions: {
-            "EPS": 0
-    }
-    symbols:
-      - name: pSummary
-        range: Summary!a1
-        columnDimension: 0
-      - name: pTecProd
-        range: TotalEn!a1
-        columnDimension: 2
-      - name: pGenInvest
-        range: GenInvest!a1
-        columnDimension: 1
-      - name: pTraInvest
-        range: TranInvest!a1
-        columnDimension: 1
-      - name: pH2Invest
-        range: H2Invest!a1
-        columnDimension: 1
-      - name: pTecProdSum
-        range: TotalEnSum!a1
-        columnDimension: 1
-      - name: pGenP
-        range: GenP!a1
-        columnDimension: 1
-      - name: pStIntra
-        range: StIntra!a1
-        columnDimension: 2
-      - name: pStLevel
-        range: StLevel!a1
-        columnDimension: 1
-      - name: pSRMC
-        range: MC!a1
-        columnDimension: 1
-      - name: pLineP
-        range: pLineP!a1
-        columnDimension: 1
-      - name: pEconomicResults
-        range: Profits!a1
-        columnDimension: 1
-      - name: pChrP
-        range: Charge!a1
-        columnDimension: 1
-      - name: pH2price
-        range: H2price!a1
-        columnDimension: 2
-      - name: pH2Prod
-        range: H2Prod!a1
-        columnDimension: 1
-      - name: pH2Cons
-        range: H2Cons!a1
-        columnDimension: 1
-      - name: pH2NS
-        range: H2ns!a1
-        columnDimension: 2
-      - name: pTecProdhours
-        range: TotalEnhours!a1
-        columnDimension: 1
-      - name: pTecProdRP
-        range: TotalEnrp!a1
-        columnDimension: 1
-      - name: pCurtP_k
-        range: Curtail_k!a1
-        columnDimension: 1
-      - name: pCurtP_rp
-        range: Curtail_rp!a1
-        columnDimension: 1
-      - name: pLineP_Perc
-        range: LineP_Perc!a1
-        columnDimension: 1
-      - name: pSpillag
-        range: Spillag!a1
-        columnDimension: 1
-endEmbeddedCode
-);
-$offFold
-
-$onFold // All output ----------------------------------------------------------
-if (pOutput=1,
-embeddedCode Connect:
-- GAMSReader:
-    symbols:
-      - name: pSummary
-      - name: pTecProd
-      - name: pGenInvest
-      - name: pTraInvest
-      - name: pH2Invest
-      - name: pTecProdSum
-      - name: pGenP
-      - name: pStIntra
-      - name: pStLevel
-      - name: pSRMC
-      - name: pLineP
-      - name: pEconomicResults
-      - name: pChrP
-      - name: pH2price
-      - name: pH2Prod
-      - name: pH2Cons
-      - name: pH2NS
-      - name: pTecProdhours
-      - name: pTecProdRP
-      - name: pCurtP_k
-      - name: pCurtP_rp
-      - name: pLineP_Perc
-      - name: pSpillag
-      - name: pCommit
-      - name: pLineQ
-      - name: pVoltage
-      - name: pGenQ
-      - name: pTheta
-      - name: pBusRes
-      - name: pResulCDSF
-      - name: pInertDual
-      - name: pResultDSM
-      - name: pActualSysInertia
-- ExcelWriter:
-    file: %scenarioFolder%/results/results.xlsx
-    valueSubstitutions: {
-            "EPS": 0
-    }
-    symbols:
-      - name: pSummary
-        range: Summary!a1
-        columnDimension: 0
-      - name: pTecProd
-        range: TotalEn!a1
-        columnDimension: 2
-      - name: pGenInvest
-        range: GenInvest!a1
-        columnDimension: 1
-      - name: pTraInvest
-        range: TranInvest!a1
-        columnDimension: 1
-      - name: pH2Invest
-        range: H2Invest!a1
-        columnDimension: 1
-      - name: pTecProdSum
-        range: TotalEnSum!a1
-        columnDimension: 1
-      - name: pGenP
-        range: GenP!a1
-        columnDimension: 1
-      - name: pStIntra
-        range: StIntra!a1
-        columnDimension: 2
-      - name: pStLevel
-        range: StLevel!a1
-        columnDimension: 1
-      - name: pSRMC
-        range: MC!a1
-        columnDimension: 1
-      - name: pLineP
-        range: pLineP!a1
-        columnDimension: 1
-      - name: pEconomicResults
-        range: Profits!a1
-        columnDimension: 1
-      - name: pChrP
-        range: Charge!a1
-        columnDimension: 1
-      - name: pH2price
-        range: H2price!a1
-        columnDimension: 2
-      - name: pH2Prod
-        range: H2Prod!a1
-        columnDimension: 1
-      - name: pH2Cons
-        range: H2Cons!a1
-        columnDimension: 1
-      - name: pH2NS
-        range: H2ns!a1
-        columnDimension: 2
-      - name: pTecProdhours
-        range: TotalEnhours!a1
-        columnDimension: 1
-      - name: pTecProdRP
-        range: TotalEnrp!a1
-        columnDimension: 1
-      - name: pCurtP_k
-        range: Curtail_k!a1
-        columnDimension: 1
-      - name: pCurtP_rp
-        range: Curtail_rp!a1
-        columnDimension: 1
-      - name: pLineP_Perc
-        range: LineP_Perc!a1
-        columnDimension: 1
-      - name: pSpillag
-        range: Spillag!a1
-        columnDimension: 1
-      - name: pCommit
-        range: UC!a1
-        columnDimension: 1
-      - name: pLineQ
-        range: LineQ!a1
-        columnDimension: 1
-      - name: pVoltage
-        range: Volt!a1
-        columnDimension: 2
-      - name: pGenQ
-        range: GenQ!a1
-        columnDimension: 1
-      - name: pTheta
-        range: Angle!a1
-        columnDimension: 2
-      - name: pBusRes
-        range: BusRes!a1
-        columnDimension: 1
-      - name: pResulCDSF
-        range: CDSF!a1
-        columnDimension: 1
-      - name: pInertDual
-        range: InertDual!a1
-        columnDimension: 1
-      - name: pResultDSM
-        range: DSM!a1
-        columnDimension: 3
-      - name: pActualSysInertia
-        range: RoCoF!a1
-        columnDimension: 1
-endEmbeddedCode
-);
-$offFold
-
-$offFold
-
-
-*-------------------------------------------------------------------------------
-*                         Saving UC decisions
-*-------------------------------------------------------------------------------
-$onFold // Saving UC decisions -------------------------------------------------
-if(%BatchUpdate%=1,
-   execute_unload '%scenarioFolder%/results/UC_tmp.gdx' pCommit pStLvMW;
-elseif(card(p)>card(k)),
-   execute_unload '%scenarioFolder%/results/UC.gdx' pCommit pStLvMW;
-);
-
-$OnListing
-
-$offFold
+**-------------------------------------------------------------------------------
+**             Calculating ex post parameters for results
+**-------------------------------------------------------------------------------
+*$onFold // Summary -------------------------------------------------------------
+*pSummary('----------- MODEL STATISTICS -----------    ') = eps ;
+*pSummary('Obj Func Model                       [M€   ]') = LEGO.objVal  + eps ;
+*pSummary('CAPEX (GEP, TEP, H2GEP)              [M€   ]') = + sum[ga(g    ), pInvestCost  (g    )* vGenInvest.l (g    )]
+*                                                           + sum[lc(i,j,c), pFixedCost   (i,j,c)* vLineInvest.l(i,j,c)]
+*$ifThenE.H2 (%pEnableH2%=1)
+*                                                           + sum[h2u      , pH2InvestCost(h2u  )* vH2Invest.l  (h2u  )] $[pEnableH2]
+*$endIf.H2
+*                                                           + eps;
+*pSummary('OPEX                                 [M€   ]') = vTotalVCost.l
+*                                                           - sum[ga(g    ), pInvestCost  (g    )* vGenInvest.l (g    )]
+*                                                           - sum[lc(i,j,c), pFixedCost   (i,j,c)* vLineInvest.l(i,j,c)]
+*$ifThenE.H2 (%pEnableH2%=1)
+*                                                           - sum[h2u      , pH2InvestCost(h2u  )* vH2Invest.l  (h2u  )] $[pEnableH2]
+*$endIf.H2
+*                                                           - eps;
+*
+*
+*pSummary('CPU Time Model generation            [s    ]') = LEGO.resGen     + eps ;
+*pSummary('CPU Time Model solution              [s    ]') = LEGO.resUsd     + eps ;
+*pSummary('Number of variables                         ') = LEGO.numVar     + eps ;
+*pSummary('Number of discrete variables                ') = LEGO.numDVar    + eps ;
+*pSummary('Number of equations                         ') = LEGO.numEqu     + eps ;
+*pSummary('Number of nonzero elements                  ') = LEGO.numNZ      + eps ;
+*pSummary('Best possible solution for MIP              ') = LEGO.objest     + eps ;
+*pSummary('Results for regret calculation              ') = pRegretCalc     + eps ;
+*pSummary('Network Constraints 1->yes                  ') = pEnableTransNet + eps ;
+*pSummary('1->SOCP , 0->DC                             ') = pEnableSOCP     + eps ;
+*pSummary('1->RoCoF, 0->MinInert                       ') = pEnableRoCoF    + eps ;
+*
+*pSummary('SOCP Mean Error          ') $[not pEnableSOCP] = eps ;
+*pSummary('SOCP Mean Error          ') $[    pEnableSOCP] = sum[(rpk(rp,k),i,j)$isLine(i,j),
+*                                                               + vSOCP_cii.l(rp,k,i  ) * vSOCP_cii.l(rp,k,j  )
+*                                                               - vSOCP_cij.l(rp,k,i,j) * vSOCP_cij.l(rp,k,i,j)
+*                                                               - vSOCP_sij.l(rp,k,i,j) * vSOCP_sij.l(rp,k,i,j)] /
+*                                                           sum[(rpk(rp,k),i,j)$isLine(i,j),
+*                                                               + vSOCP_cii.l(rp,k,i  ) * vSOCP_cii.l(rp,k,j  )];
+*
+*
+*pSummary('------------- POWER SYSTEM -------------    ') = eps ;
+*pSummary('Total  system demand                 [GWh  ]') = sum[(rp,k),pWeight_rp(rp)*pWeight_k(k)*sum[j, pDemandP (rp,k,j)]] ;
+*pSummary('Total  renewable + storage prod.     [GWh  ]') = sum[(rp,k),pWeight_rp(rp)*pWeight_k(k)*[+ sum[gi(r,j), vGenP.L(rp,k,r)]
+*                                                                                                   + sum[gi(s,j), vGenP.L(rp,k,s)]]] + eps;
+*
+*pSummary('Total  renewable curtailment         [GWh  ]') = sum[(rp,k,gi(r,i)),pWeight_rp(rp)*pWeight_k(k)*[pResProfile(rp,k,i,r)*pMaxProd(r)*[vGenInvest.l(r)+pExisUnits(r)] - vGenP.l(rp,k,r)]] + eps ;
+*pSummary('Total  thermal   production          [GWh  ]') = sum[(rp,k),pWeight_rp(rp)*pWeight_k(k)*[+ sum[gi(t,j), vGenP.L(rp,k,t)]]] + eps;
+*pSummary('Actual green     production          [p.u. ]') = pSummary('Total  renewable + storage prod.     [GWh  ]') / pSummary('Total  system demand                 [GWh  ]') + eps;
+*pSummary('Actual thermal   production          [p.u. ]') = pSummary('Total  thermal   production          [GWh  ]') / pSummary('Total  system demand                 [GWh  ]') + eps;
+*
+*pSummary('Total  renewable EAG + storage prod. [GWh  ]') = sum[(rp,k),pWeight_rp(rp)*pWeight_k(k)*[+ sum[gi(r,j), vGenP.L   (rp,k,r)]
+*                                                                                                                   + sum[gi(s,j), vGenP.L   (rp,k,s)]
+*                                                                                                                   + sum[gi(b,j), vGenP.L   (rp,k,b)]
+*                                                                                                                   - sum[gi(s,j), vConsump.L(rp,k,s)]]] + eps;
+*pSummary('Total  thermal   production EAG      [GWh  ]') = sum[(rp,k),pWeight_rp(rp)*pWeight_k(k)*[+ sum[gi(t,j), vGenP.L(rp,k,t)]
+*                                                                                                   - sum[gi(b,j), vGenP.L(rp,k,b)]]] + eps;
+*
+*pSummary('Actual green     production EAG      [p.u. ]') = pSummary('Total  thermal   production EAG      [GWh  ]') / pSummary('Total  system demand                 [GWh  ]') + eps;
+*pSummary('Actual thermal   production EAG      [p.u. ]') = pSummary('Total  thermal   production EAG      [GWh  ]') / pSummary('Total  system demand                 [GWh  ]') + eps;
+*
+*pSummary('Thermal            Investment        [GW   ]') = sum[t        , vGenInvest.l (t    ) * pMaxProd(t    )] + eps;
+*pSummary('Renewable          Investment        [GW   ]') = sum[r        , vGenInvest.l (r    ) * pMaxProd(r    )] + eps;
+*pSummary('Storage            Investment        [GW   ]') = sum[s        , vGenInvest.l (s    ) * pMaxProd(s    )] + eps;
+*pSummary('Transmission lines Investment        [GW   ]') = sum[lc(i,j,c), vLineInvest.l(i,j,c) * pPmax   (i,j,c)] + eps;
+*pSummary('Energy non-supplied                  [GWh  ]') = sum[(rp,k),pWeight_rp(rp)*pWeight_k(k)*sum[j          , vPNS.l (rp,k,j        )]] + eps;
+*
+*$ifThenE.H2 (%pEnableH2%=1)
+*pSummary('----------- HYDROGEN SYSTEM ------------    ') = eps ;
+*pSummary('H2 non-supplied                      [t    ]') = sum[(rp,k),pWeight_rp(rp)*pWeight_k(k)*sum[(h2i,h2sec), vH2NS.l(rp,k,h2i,h2sec)]] + eps;
+*$endIf.H2
+*pSummary('------------ CO2 EMISSIONS -------------    ') = eps ;
+*pSummary('Budget CO2 emissions                 [MtCO2]') = pCO2Budget + eps ;
+*pSummary('Actual CO2 emissions                 [MtCO2]') = sum[(rpk(rp,k),t), pWeight_rp(rp)*pWeight_k(k)*pCO2Emis(t)
+*                                                               *[+(pStartupCons     (t)*vStartup.l(rp,k,t  ))
+*                                                                 +(pInterVarCons    (t)*vCommit.l (rp,k,t  ))
+*                                                                 +(pSlopeVarFuelCons(t)*vGenP.l   (rp,k,t  ))]]$[pEnableCO2]
+*                                                           + eps;
+*pSummary('CO2-target overshoot                 [MtCO2]') = vCO2Overshoot.l + eps;
+*pSummary('--------------- POLICIES ---------------    ') = eps ;
+*pSummary('Cost renewable quota                 [€/MWh]')$[not pEnableGreenNatBal]  = - eCleanProdLimThermal.m  * 1e3 + eps;
+*pSummary('Cost renewable quota                 [€/MWh]')$[    pEnableGreenNatBal]  =   eCleanProdNatBal.m      * 1e3 + eps;
+*pSummary('Payment firm capacity                [€/MW ]')$[    pMinFirmCap ]        =   eFirmCapCon.m           * 1e3 + eps;
+*
+*$offFold
+*
+*$onFold // Investment Results --------------------------------------------------
+*
+*pGenInvest (tec      ,'[MW]  ') = sum[gtec(ga(g),tec), pMaxProd(    g)*vGenInvest.l (    g)] * 1e3 + eps ;
+*pGenInvest (tec      ,'[MVar]') = sum[gtec(ga(g),tec), pMaxGenQ(    g)*vGenInvest.l (    g)] * 1e3 + eps ;
+*pTraInvest (lc(i,j,c),'[MW]'  ) =                      pPmax   (i,j,c)*vLineInvest.l(i,j,c)  * 1e3 + eps ;
+*
+*$offFold
+*
+*$onFold // Operating Dispatch Results ------------------------------------------
+*
+*pCommit  (p,t    ) = sum[hindex(p,rpk(rp,k)), vCommit.l (rp,k,t)    ]   + eps ;
+*pGenP    (p,ga(g)) = sum[hindex(p,rpk(rp,k)), vGenP.l   (rp,k,g)*1e3]   + eps ;
+*pGenQ    (p,ga(g)) = sum[hindex(p,rpk(rp,k)), vGenQ.l   (rp,k,g)*1e3]   + eps ;
+*pChrP    (p,   s ) = sum[hindex(p,rpk(rp,k)), vConsump.l(rp,k,s)*1e3]   + eps ;
+*pCurtP_k (rp,k,r ) = sum[   gi(r,i)         ,[pResProfile(rp,k,i,r)*pMaxProd(r)*[vGenInvest.l(r)+pExisUnits(r)] - vGenP.l(rp,k,r)]*1e3] + eps ;
+*pCurtP_rp(rp,  r ) = sum[(k,gi(r,i))        ,[pResProfile(rp,k,i,r)*pMaxProd(r)*[vGenInvest.l(r)+pExisUnits(r)] - vGenP.l(rp,k,r)]*1e3] + eps ;
+*pSpillag (p,ga(g)) = sum[hindex(p,rpk(rp,k)), vSpillag.l (rp,k,g)*1e3]  + eps ;
+*
+*pStIntra (k,s,rp) $[rpk(rp,k) and [card(rp)=1]                      ] = vStIntraRes.l(rp,k,s) / [pMaxProd(s)*[vGenInvest.l(s)+pExisUnits(s)]*pE2PRatio(s) + 1e-6] + eps ;
+*pStIntra (k,s,rp) $[rpk(rp,k) and [card(rp)>1] and [not pIsHydro(s)]] = vStIntraRes.l(rp,k,s) / [pMaxProd(s)*[vGenInvest.l(s)+pExisUnits(s)]*pE2PRatio(s) + 1e-6] + eps ;
+*
+*pStLevel (p,s   ) $[[card(rp)=1]                      ] = sum[hindex   (p,rpk(rp,k)) , pStIntra(k,s,rp)]    ;
+*pStLevel (p,s   ) $[[card(rp)>1] and [not pIsHydro(s)]] = sum[hindex   (p,rpk(rp,k)) , pStIntra(k,s,rp)]    ;
+*pStLevel (p,s   ) $[[card(rp)>1] and [    pIsHydro(s)]] = vStInterRes.l(p   ,s) / [pMaxProd(s)*[vGenInvest.l(s)+pExisUnits(s)]*pE2PRatio(s) + 1e-6] + eps ;
+*
+*pStLvMW  (p,s   ) $[[card(rp)=1] and [    pIsHydro(s)] and [mod(ord(p),pMovWindow)=0]] = sum[hindex(p,rpk(rp,k)), vStIntraRes.l(rp,k,s)] + eps ;
+*pStLvMW  (p,s   ) $[[card(rp)>1] and [    pIsHydro(s)] and [mod(ord(p),pMovWindow)=0]] =                          vStInterRes.l( p  ,s)  + eps ;
+*
+*pLineP(k,i,j,c,rp) $[rpk(rp,k) and la(i,j,c) and not pEnableTransNet                    ] =                               eps ;
+*pLineP(k,i,j,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet                    ] =  vLineP.l(rp,k,i,j,c) * 1e3 + eps ;
+*pLineP(k,j,i,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet and not pEnableSOCP] = -vLineP.l(rp,k,i,j,c) * 1e3 + eps ;
+*pLineP(k,j,i,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet and     pEnableSOCP] =  vLineP.l(rp,k,j,i,c) * 1e3 + eps ;
+*pLineQ(k,i,j,c,rp) $[rpk(rp,k) and la(i,j,c) and not pEnableTransNet                    ] =                               eps ;
+*pLineQ(k,i,j,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet and not pEnableSOCP] =                               eps ;
+*pLineQ(k,i,j,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet and     pEnableSOCP] =  vLineQ.l(rp,k,i,j,c) * 1e3 + eps ;
+*pLineQ(k,j,i,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet and     pEnableSOCP] =  vLineQ.l(rp,k,j,i,c) * 1e3 + eps ;
+*
+*pLineP_Perc(k,i,j,c,rp) $[rpk(rp,k) and la(i,j,c) and not pEnableTransNet                    ] =                                      eps ;
+*pLineP_Perc(k,i,j,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet                    ] =  vLineP.l(rp,k,i,j,c)/pPmax(i,j,c) + eps ;
+*pLineP_Perc(k,j,i,c,rp) $[rpk(rp,k) and la(i,j,c) and     pEnableTransNet and not pEnableSOCP] = -vLineP.l(rp,k,i,j,c)/pPmax(i,j,c) + eps ;
+*
+*
+*pTecProd (i,tec         ,'Total [GWh]'  )                    =  sum[(rpk(rp,k),ga(g))$[gtec(g,tec) and gi(g,i)], pWeight_rp(rp)*pWeight_k(k)* vGenP.l    (rp,k,g    )               ] + eps ;
+*pTecProd (i,'Sto_Charge','Total [GWh]'  )                    = -sum[(rpk(rp,k),   s )$[                gi(s,i)], pWeight_rp(rp)*pWeight_k(k)* vConsump.l (rp,k,s    )               ] + eps ;
+*pTecProd (i,'ENS'       ,'Total [GWh]'  )                    =  sum[ rpk(rp,k)                                 , pWeight_rp(rp)*pWeight_k(k)* vPNS.l     (rp,k,i    )               ] + eps ;
+*pTecProd (i,'P_Demand'  ,'Total [GWh]'  )                    = -sum[ rpk(rp,k)                                 , pWeight_rp(rp)*pWeight_k(k)* pDemandP   (rp,k,i    )               ] + eps ;
+*pTecProd (i,'P_DSM_Shed','Total [GWh]'  ) $[pEnableDSMPower] =  sum[(rpk(rp,k),seg)                            , pWeight_rp(rp)*pWeight_k(k)* vDSM_Shed.l(rp,k,i,seg)               ] + eps ;
+*pTecProd (i,'P_NetFlo'  ,'Total [GWh]'  )                    = -sum[(rpk(rp,k),j,c  )$[la (i,j,c)             ], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,i,j,c)               ]
+*                                                               +sum[(rpk(rp,k),j,c  )$[la (j,i,c)             ], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,j,i,c)               ] + eps ;
+*pTecProd (i,'P_NetFlo'  ,'Total [GWh]'  ) $[pEnableSOCP]     = -sum[(rpk(rp,k),j,c  )$[la (i,j,c)             ], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,i,j,c)               ]
+*                                                               -sum[(rpk(rp,k),j,c  )$[la (j,i,c)             ], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,i,j,c)               ] + eps ;
+*                                                             
+*pTecProd (i,tec         ,'Total [GVarh]') $[pEnableSOCP]     =  sum[(rpk(rp,k),ga(g))$[gtec(g,tec) and gi(g,i)], pWeight_rp(rp)*pWeight_k(k)* vGenQ.l    (rp,k,g    )               ] + eps ;
+*pTecProd (i,'QNS'       ,'Total [GVarh]') $[pEnableSOCP]     =  sum[ rpk(rp,k)                                 , pWeight_rp(rp)*pWeight_k(k)* vPNS.l     (rp,k,i    )*pRatioDemQP(i)] + eps ;
+*pTecProd (i,'Q_Demand'  ,'Total [GVarh]') $[pEnableSOCP]     = -sum[ rpk(rp,k)                                 , pWeight_rp(rp)*pWeight_k(k)* pDemandQ   (rp,k,i    )*pEnableSOCP   ] + eps ;
+*pTecProd (i,'Q_NetFlo'  ,'Total [GVarh]') $[pEnableSOCP]     = -sum[(rpk(rp,k),j,c  )$[la (i,j,c)             ], pWeight_rp(rp)*pWeight_k(k)* vLineQ.l   (rp,k,i,j,c)               ]
+*                                                               -sum[(rpk(rp,k),j,c  )$[la (j,i,c)             ], pWeight_rp(rp)*pWeight_k(k)* vLineQ.l   (rp,k,i,j,c)               ] + eps ;
+*pTecProd (i,'Q_DSM_Shed','Total [GVarh]') $[pEnableSOCP
+*                                        and pEnableDSMPower] =  sum[(rpk(rp,k),seg)                            , pWeight_rp(rp)*pWeight_k(k)* vDSM_Shed.l(rp,k,i,seg)*pRatioDemQP(i)] + eps ;
+*                                            
+*pTecProdSum (tec         ,'Total [GWh]') =  sum[i                                                 , pTecProd (i,tec         ,'Total [GWh]')]                                      + eps ;
+*pTecProdSum ('Sto_Charge','Total [GWh]') =  sum[i                                                 , pTecProd (i,'Sto_Charge','Total [GWh]')]                                      + eps ;
+**pTecProdSum ('Imports'   ,'Total [GWh]') = -sum[(rpk(rp,k),i,j,c)$[lbz (i,j,c) and rpkexp(rp,k,j)], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,i,j,c)]                         + eps ;
+**pTecProdSum ('Exports'   ,'Total [GWh]') = -sum[(rpk(rp,k),i,j,c)$[lbz (i,j,c) and rpkimp(rp,k,j)], pWeight_rp(rp)*pWeight_k(k)* vLineP.l   (rp,k,i,j,c)]                         + eps ;
+*
+*display pTecProdSum;
+*
+*pTecProdHours(p   , tec         )        =  sum[(hindex(p,rpk(rp,k)),ga(g))$[gtec(g,tec) ]   , vGenP.l    (rp,k,g    )] + eps ;
+*pTecProdHours(p   ,'Demand'     )        = -sum[(hindex(p,rpk(rp,k)),i)                      , pDemandP   (rp,k,i    )] + eps ;
+*pTecProdHours(p   ,'Sto_Charge' )        = -sum[(hindex(p,rpk(rp,k)),s)                      , vConsump.l (rp,k,s    )] + eps ;
+**pTecProdHours(p   ,'Imports'    )        = -sum[(hindex(p,rpk(rp,k)),i,j,c)$[rpkexp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
+**pTecProdHours(p   ,'Exports'    )        = -sum[(hindex(p,rpk(rp,k)),i,j,c)$[rpkimp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
+*
+*display pTecProdHours;                     
+*
+*pTecProdRP   (rp,k, tec         )        =  sum[g$[gtec(g,tec)]          , vGenP.l    (rp,k,g    )] + eps ;
+*pTecProdRP   (rp,k,'Demand'     )        = -sum[i                        , pDemandP   (rp,k,i    )] + eps ;
+*pTecProdRP   (rp,k,'Sto_Charge' )        = -sum[s                        , vConsump.l (rp,k,s    )] + eps ;
+**pTecProdRP   (rp,k,'Imports'    )        = -sum[(i,j,c)$[rpkexp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
+**pTecProdRP   (rp,k,'Exports'    )        = -sum[(i,j,c)$[rpkimp(rp,k,j)] , vLineP.l   (rp,k,i,j,c)] + eps ;
+*
+*display pTecProdRP;
+*
+*pVoltage(k,i,rp)$[rpk(rp,k) and not pEnableTransNet                    ] = 1                         + eps ;
+*pVoltage(k,i,rp)$[rpk(rp,k) and     pEnableTransNet and not pEnableSOCP] = 1                         + eps ;
+*pVoltage(k,i,rp)$[rpk(rp,k) and     pEnableTransNet and     pEnableSOCP] = sqrt[vSOCP_cii.l(rp,k,i)] + eps ;
+*
+*pTheta  (k,i,rp)$[rpk(rp,k) and not pEnableTransNet] =                             eps ;
+*pTheta  (k,i,rp)$[rpk(rp,k) and     pEnableTransNet] = vTheta.l(rp,k,i) * 180/pi + eps ;
+*
+*pBusRes (k,i,rp,'Qs','[Mvar]') $[rpk(rp,k) and pBusB(i)] = - [sqr[pVoltage(k,i,rp)] * pBusB(i) * pSBase] * 1e3 + eps ;
+*pBusRes (k,i,rp,'Ps','[MW]'  ) $[rpk(rp,k) and pBusG(i)] = + [sqr[pVoltage(k,i,rp)] * pBusG(i) * pSBase] * 1e3 + eps ;
+*
+*pResulCDSF('obj. fun. cycle aging costs [M$]',s)$[not pIsHydro(s)] =
+* sum[(rpk(rp,k),a), pWeight_rp(rp)*pWeight_k(k)*pCDSF_Cost(s,a)*vCDSF_dis.l(rp,k,s,a)] + eps
+*;
+*
+*pCDSF_delta (p,s) = 0 ;
+*pCDSF_delta (p,s)        $[pDisEffic(s)*pMaxProd(s)*[vGenInvest.l(s)+pExisUnits(s)]*pE2PRatio(s)]
+*     = pGenP(p,s) * 1E-3 /[pDisEffic(s)*pMaxProd(s)*[vGenInvest.l(s)+pExisUnits(s)]*pE2PRatio(s)]
+*     + pCDSF_delta (p-1,s)$[ord(p)>1]
+*;
+*pResulCDSF('Annual life loss from cycling [%]',s)$[not pIsHydro(s)] =
+*  sum[p, pCDSF_alpha(s)*rPower[pCDSF_delta (p,s),pCDSF_beta(s)]] + eps;
+*;
+*
+*pResulCDSF('Annual prorated cycle aging cost [M€]',s)$[not pIsHydro(s)] =
+*  pReplaceCost(s) *[pMaxProd(s)*[vGenInvest.l(s)+pExisUnits(s)] * pE2PRatio(s)] *
+*  pResulCDSF('Annual life loss from cycling [%]',s)
+*;
+*
+*pResulCDSF('Battery life expectancy [year]',s)$[not pIsHydro(s) and pShelfLife(s)] =
+** assuming proportional annual self life loss
+*  1 /[1/pShelfLife(s) + pResulCDSF('Annual life loss from cycling [%]',s)]
+*;
+*
+*$offFold
+*
+*$onFold // Economic Results Calculation ----------------------------------------
+*
+** electricity prices [€/MWh]
+*pSRMC(p,i)$[not pEnableTransNet                    ] = sum[hindex(p,rpk(rp,k)), eSN_BalanceP.m  (rp,k,i) * 1e3 / [pWeight_rp(rp)*pWeight_k(k)]] + eps ;
+*pSRMC(p,i)$[    pEnableTransNet and not pEnableSOCP] = sum[hindex(p,rpk(rp,k)), eDC_BalanceP.m  (rp,k,i) * 1e3 / [pWeight_rp(rp)*pWeight_k(k)]] + eps ;
+*pSRMC(p,i)$[    pEnableTransNet and     pEnableSOCP] = sum[hindex(p,rpk(rp,k)), eSOCP_BalanceP.m(rp,k,i) * 1e3 / [pWeight_rp(rp)*pWeight_k(k)]] + eps ;
+*
+** electricity prices in rp and k [M€/GW]
+*pMC(rp,k,i)$[not pEnableTransNet                                      ] = eSN_BalanceP.m  (rp,k,i) + eps ;
+*pMC(rp,k,i)$[    pEnableTransNet and not pEnableSOCP and not pEnableZP] = eDC_BalanceP.m  (rp,k,i) + eps ;
+*pMC(rp,k,i)$[    pEnableTransNet and     pEnableSOCP                  ] = eSOCP_BalanceP.m(rp,k,i) + eps ;
+*
+*$onFold // Ex-post calculation Zonal Pricing -----------------------------------
+*
+*$ifThenE.ZonalPricing (%pEnablePower%=1)and(%pEnableZP%=1)
+** zonal prices in rp and k [€/MWh]
+*pZonalPriceRP(rp,k,za(z))$[pEnableZP] =                          eZP_BalanceP.m  (rp,k,z) * 1e3 / [pWeight_rp(rp)*pWeight_k(k)]  + eps ;
+** zonal prices per hour [€/MWhW]
+*pZonalPrice  (p,za(z)   )$[pEnableZP] = sum[hindex(p,rpk(rp,k)), eZP_BalanceP.m  (rp,k,z) * 1e3 / [pWeight_rp(rp)*pWeight_k(k)]] + eps ;
+*$endIf.ZonalPricing
+*
+*$offFold
+*
+** dual variables of inertia constraints
+*pInertDual(k,rp) $[rpk(rp,k) and     pEnableRoCoF] = eRoCoF_SyEq1.m(rp,k) * 1e6 + eps ;
+*pInertDual(k,rp) $[rpk(rp,k) and not pEnableRoCoF] = eMinInertia.m (rp,k) * 1e6 + eps ;
+*
+** new calculations for economic results (revenues, costs, profits, etc)
+*pRevSpot (g)$[not pEnableTransNet                    ]  = + sum[(rpk(rp,k)), vGenP.l   (rp,k,g) * sum[i$gi(g,i), eSN_BalanceP.m(rp,k,i)]];
+*pRevSpot (g)$[    pEnableTransNet and not pEnableSOCP]  = + sum[(rpk(rp,k)), vGenP.l   (rp,k,g) * sum[i$gi(g,i), eDC_BalanceP.m(rp,k,i)]];
+*pRevSpot (g)$[    pEnableTransNet and     pEnableSOCP]  = + sum[(rpk(rp,k)), vGenP.l   (rp,k,g) * sum[i$gi(g,i), eSOCP_BalanceP.m(rp,k,i)]];
+*
+** only storage units can buy energy on spot market
+*pCostSpot (s)$[not pEnableTransNet                    ] = + sum[(rpk(rp,k)), vConsump.l(rp,k,s) * sum[i$gi(s,i), eSN_BalanceP.m(rp,k,i)]];
+*pCostSpot (s)$[    pEnableTransNet and not pEnableSOCP] = + sum[(rpk(rp,k)), vConsump.l(rp,k,s) * sum[i$gi(s,i), eDC_BalanceP.m(rp,k,i)]];
+*pCostSpot (s)$[    pEnableTransNet and     pEnableSOCP] = + sum[(rpk(rp,k)), vConsump.l(rp,k,s) * sum[i$gi(s,i), eSOCP_BalanceP.m(rp,k,i)]];
+*
+*
+*pRevReserve (g)   = + sum[(rpk(rp,k)), v2ndResUP.l(rp,k,g) * e2ReserveUp.m(rp,k)]
+*                    + sum[(rpk(rp,k)), v2ndResDW.l(rp,k,g) * e2ReserveDw.m(rp,k)];
+*
+*pReserveCost(s)   = + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pOMVarCost   (s)  *
+*                                                    p2ndResUpCost     * v2ndResUP.l(rp,k,s)]
+*                    + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pOMVarCost   (s)  *
+*                                                    p2ndResDwCost     * v2ndResDW.l(rp,k,s)] ;
+*pReserveCost(t)   = + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pSlopeVarCost(t) *
+*                                                    p2ndResUpCost  * v2ndResUP.l(rp,k,t)]
+*                    + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pSlopeVarCost(t)  *
+*                                                    p2ndResDwCost     * v2ndResDW.l(rp,k,t)] ;
+*
+** calculation of pRevRESQuota with hourly eCleanProdLimThermal constraint
+*pRevRESQuota(t)$[pMinGreenProd and not pEnableGreenNatBal] = eCleanProdLimThermal.m  * sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k) * vGenP.l(rp,k,t)] ;
+*
+** calculation of pRevRESQuota with national balance eCleanProdNatBal constraint
+*pRevRESQuota(b)$[pMinGreenProd and pEnableGreenNatBal] =  eCleanProdNatBal.m  * sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k) *  vGenP.l(rp,k,b)] ;
+*pRevRESQuota(r)$[pMinGreenProd and pEnableGreenNatBal] =  eCleanProdNatBal.m  * sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k) *  vGenP.l(rp,k,r)] ;
+*pRevRESQuota(s)$[pMinGreenProd and pEnableGreenNatBal] =  eCleanProdNatBal.m  * sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k) * [vGenP.l(rp,k,s) - vConsump.l(rp,k,s  )]] ;
+*
+*pFirmCapPay (g)$[pMinFirmCap] = eFirmCapCon.m * pFirmCapCoef(g)* pMaxProd(g)*[vGenInvest.l(g)+pExisUnits(g)];
+*
+*pInvCost(g)$ga(g) = pInvestCost(g)* vGenInvest.l(g);
+*pOMCost       (s) = + sum[(rpk(rp,k)),             pWeight_rp(rp)*pWeight_k(k)*pOMVarCost(s  )*vGenP.l    (rp,k,s  )]
+*                    + sum[(rpk(rp,k),a)$[cdsf(s)], pWeight_rp(rp)*pWeight_k(k)*pCDSF_Cost(s,a)*vCDSF_dis.l(rp,k,s,a)] ;
+*pOMCost       (r) = + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pOMVarCost   (r) * vGenP.l    (rp,k,r)] ;
+*pOMCost       (t) = + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pSlopeVarCost(t) * vGenP.l    (rp,k,t)]
+*                    + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pStartupCost (t) * vStartup.l (rp,k,t)]
+*                    + sum[(rpk(rp,k)), pWeight_rp(rp)*pWeight_k(k)*pInterVarCost(t) * vCommit.l  (rp,k,t)] ;
+*
+*pTotalProfits (g) =   pRevSpot    (g)
+*                    - pCostSpot   (g)
+*                    + pRevReserve (g)
+*                    - pReserveCost(g)
+*                    + pFirmCapPay (g)
+*                    + pRevRESQuota(g)
+*                    - pInvCost    (g)
+*                    - pOMCost     (g)
+*;
+*
+*pEconomicResults('Spot market revenues    [M€]',g) =    pRevSpot     (g) + eps;
+*pEconomicResults('Spot market costs       [M€]',g) =  - pCostSpot    (g) + eps;
+*pEconomicResults('Reserve market revenues [M€]',g) =    pRevReserve  (g) + eps;
+*pEconomicResults('Reserve market costs    [M€]',g) =  - pReserveCost (g) + eps;
+*pEconomicResults('O&M costs               [M€]',g) =  - pOMCost      (g) + eps;
+*pEconomicResults('Investment costs        [M€]',g) =  - pInvCost     (g) + eps;
+*pEconomicResults('RES quota payments/cost [M€]',g) =    pRevRESQuota (g) + eps;
+*pEconomicResults('Firm capacity payments  [M€]',g) =    pFirmCapPay  (g) + eps;
+*pEconomicResults('Total profits           [M€]',g) =    pTotalProfits(g) + eps;
+*
+*$offFold
+*
+*$onFold // RoCoF results -------------------------------------------------------
+*
+*pRoCoF_k   (rp,k,t)$[pEnableRoCoF] = [vCommit.L(rp,k,t )*pMaxProd(t)/sum[tt,vCommit.L(rp,k,tt )* pMaxProd(tt)]
+*                                                                  ]$[sum[tt,vCommit.L(rp,k,tt )* pMaxProd(tt)]>0];
+*
+*pRoCoF_k   (rp,k,v)$[pEnableRoCoF] = [vGenP.L(rp,k,v) / sum[gi(vv,i), pMaxProd(vv)*pResProfile(rp,k,i,vv)*[vGenInvest.L(vv)+pExisUnits(vv)] ]
+*                                                     ]$[sum[gi(vv,i), pMaxProd(vv)*pResProfile(rp,k,i,vv)*[vGenInvest.L(vv)+pExisUnits(vv)] ]>0];
+*
+*pRoCoF_SG_M(rp,k  )$[pEnableRoCoF] = sum[t,2*pInertiaConst(t)*                 pRoCoF_k(rp,k,t)] ;
+*pRoCoF_VI_M(rp,k  )$[pEnableRoCoF] = sum[v,2*pInertiaConst(v)* vGenInvest.L(v)*pRoCoF_k(rp,k,v)] ;
+*
+*pActualSysInertia(k,rp) $[pEnableRoCoF] =[[
+*   +pRoCoF_SG_M(rp,k) * sum[t      ,pMaxProd(t)*vCommit.L       (rp,k,t)                                    ]
+*   +pRoCoF_VI_M(rp,k) * sum[gi(v,i),pMaxProd(v)*vGenInvest.L    (     v)*pResProfile(rp,k,i,v)              ]
+*   +pRoCoF_VI_M(rp,k) * sum[gi(v,i),pMaxProd(v)*                         pResProfile(rp,k,i,v)*pExisUnits(v)]
+*                          ]
+*                         /
+*                          [
+*   +sum[t      ,pMaxProd(t)*vCommit.L    (rp,k,t)                                    ]
+*   +sum[gi(v,i),pMaxProd(v)*vGenInvest.L (     v)*pResProfile(rp,k,i,v)              ]
+*   +sum[gi(v,i),pMaxProd(v)*                      pResProfile(rp,k,i,v)*pExisUnits(v)]
+*                          ]]$[[
+*   +sum[t      ,pMaxProd(t)*vCommit.L    (rp,k,t)                                    ]
+*   +sum[gi(v,i),pMaxProd(v)*vGenInvest.L (     v)*pResProfile(rp,k,i,v)              ]
+*   +sum[gi(v,i),pMaxProd(v)*                      pResProfile(rp,k,i,v)*pExisUnits(v)]
+*                          ]>0]
+*;
+*
+*$offFold
+*
+*$onFold // DSM results ---------------------------------------------------------
+*
+*pResultDSM(i,sec,'Up  ',rp,k) = vDSM_Up.l  (rp,k,i,sec) + eps;
+*pResultDSM(i,sec,'Down',rp,k) = vDSM_Dn.l  (rp,k,i,sec) + eps;
+*pResultDSM(i,seg,'Shed',rp,k) = vDSM_Shed.l(rp,k,i,seg) + eps;
+*
+*$offFold
+*
+*$onFold // H2 results ----------------------------------------------------------
+*$ifThenE.H2 (%pEnableH2%=1)
+*pH2price (h2sec,k,h2i,rp) $[rpk(rp,k) and pEnableH2] = eH2_Balance.m(rp,k,h2i,h2sec) * 1e3 / [pWeight_rp(rp)*pWeight_k(k)] + eps ;
+*pH2Prod  (h2g  ,k,    rp) $[rpk(rp,k) and pEnableH2] = vH2Prod.l    (rp,k,h2g      ) * 1e3                                 + eps ;
+*pH2Cons  (h2g  ,k,    rp) $[rpk(rp,k) and pEnableH2] = vH2Consump.l (rp,k,h2g      ) * 1e3                                 + eps ;
+*pH2NS    (h2sec,k,h2i,rp) $[rpk(rp,k) and pEnableH2] = vH2NS.l      (rp,k,h2i,h2sec) * 1e3                                 + eps ;
+*pH2Invest(h2g  ,'MW'    ) $[              pEnableH2] = vH2Invest.l  (h2g           ) * 1e3 *  pH2MaxCons(h2g)              + eps ;
+*
+*pSummary('Levelized cost of H2                 [€/kg ]') $[pEnableH2 and sum[(rpk(rp,k),h2u      )  , pWeight_rp(rp)*pWeight_k(k)                           * vH2Prod.l   (rp,k,h2u)]] =
+*                                                                      [+ sum[           h2u         ,                             pH2InvestCost(h2u)        * vH2Invest.l (     h2u)]
+*                                                                       + sum[           h2u         ,                             pH2OMVarCost (h2u)        * vH2Invest.l (     h2u)]
+*                                                                       + sum[(rpk(rp,k),h2gi(h2g,i)),                             pMC          (    rp,k,i) * vH2Consump.l(rp,k,h2g)]] * 1e3
+*                                                                       / sum[(rpk(rp,k),h2u        ), pWeight_rp(rp)*pWeight_k(k)                           * vH2Prod.l   (rp,k,h2u)]
+*                                                                       + eps ;
+*$endIf.H2
+*
+*option pSummary:2:0:1; display pSummary;
+*
+*$offFold
+*
+*
+**-------------------------------------------------------------------------------
+**                       Export results to Excel file
+**-------------------------------------------------------------------------------
+*$onFold // Export results to Excel file ----------------------------------------
+*
+** Create a results folder for execution if it doesn't exist yet
+*$if not dexist "%scenarioFolder%/results" $call 'mkdir "%scenarioFolder%/results"'
+*
+** Copy .gms code & .lst file and delete old results
+*$ifThen.OS not %system.fileSys% == UNIX
+** Commands for Windows
+*execute 'copy "LEGO.gms" "%scenarioFolder%/results/LEGO.gms"'
+*execute 'copy "LEGO.lst" "%scenarioFolder%/results/LEGO.lst"'
+*$if exist "%scenarioFolder%/results/results.xlsx" execute 'del "%scenarioFolder%\results\results.xlsx"'
+*$elseIf.OS     %system.fileSys% == UNIX
+** Commands for UNIX
+*execute 'cp   "LEGO.gms" "%scenarioFolder%/results/LEGO.gms"'
+*execute 'cp   "LEGO.lst" "%scenarioFolder%/results/LEGO.lst"'
+*$if exist "%scenarioFolder%/results/results.xlsx" execute 'rm "%scenarioFolder%/results/results.xlsx"'
+*
+*$endIf.OS
+*
+** gdx with all information
+*execute_unload   '%scenarioFolder%/results/LEGO_results.gdx';
+*
+*$onFold // Bare minimum output -------------------------------------------------
+*if (pOutput=3,
+*embeddedCode Connect:
+*- GAMSReader:
+*    symbols:
+*      - name: pSummary
+*      - name: pTecProd
+*      - name: pGenInvest
+*      - name: pTraInvest
+*      - name: pH2Invest
+*      - name: pTecProdSum
+*- ExcelWriter:
+*    file: %scenarioFolder%/results/results.xlsx
+*    valueSubstitutions: {
+*            "EPS": 0
+*    }
+*    symbols:
+*      - name: pSummary
+*        range: Summary!a1
+*        columnDimension: 0
+*      - name: pTecProd
+*        range: TotalEn!a1
+*        columnDimension: 2
+*      - name: pGenInvest
+*        range: GenInvest!a1
+*        columnDimension: 1
+*      - name: pTraInvest
+*        range: TranInvest!a1
+*        columnDimension: 1
+*      - name: pH2Invest
+*        range: H2Invest!a1
+*        columnDimension: 1
+*      - name: pTecProdSum
+*        range: TotalEnSum!a1
+*        columnDimension: 1
+*endEmbeddedCode
+*);
+*$offFold
+*
+*$onFold // Reduced output ------------------------------------------------------
+*if (pOutput=2,
+*embeddedCode Connect:
+*- GAMSReader:
+*    symbols:
+*      - name: pSummary
+*      - name: pTecProd
+*      - name: pGenInvest
+*      - name: pTraInvest
+*      - name: pH2Invest
+*      - name: pTecProdSum
+*      - name: pGenP
+*      - name: pStIntra
+*      - name: pStLevel
+*      - name: pSRMC
+*      - name: pLineP
+*      - name: pEconomicResults
+*      - name: pChrP
+*      - name: pH2price
+*      - name: pH2Prod
+*      - name: pH2Cons
+*      - name: pH2NS
+*      - name: pTecProdhours
+*      - name: pTecProdRP
+*      - name: pCurtP_k
+*      - name: pCurtP_rp
+*      - name: pLineP_Perc
+*      - name: pSpillag
+*- ExcelWriter:
+*    file: %scenarioFolder%/results/results.xlsx
+*    valueSubstitutions: {
+*            "EPS": 0
+*    }
+*    symbols:
+*      - name: pSummary
+*        range: Summary!a1
+*        columnDimension: 0
+*      - name: pTecProd
+*        range: TotalEn!a1
+*        columnDimension: 2
+*      - name: pGenInvest
+*        range: GenInvest!a1
+*        columnDimension: 1
+*      - name: pTraInvest
+*        range: TranInvest!a1
+*        columnDimension: 1
+*      - name: pH2Invest
+*        range: H2Invest!a1
+*        columnDimension: 1
+*      - name: pTecProdSum
+*        range: TotalEnSum!a1
+*        columnDimension: 1
+*      - name: pGenP
+*        range: GenP!a1
+*        columnDimension: 1
+*      - name: pStIntra
+*        range: StIntra!a1
+*        columnDimension: 2
+*      - name: pStLevel
+*        range: StLevel!a1
+*        columnDimension: 1
+*      - name: pSRMC
+*        range: MC!a1
+*        columnDimension: 1
+*      - name: pLineP
+*        range: pLineP!a1
+*        columnDimension: 1
+*      - name: pEconomicResults
+*        range: Profits!a1
+*        columnDimension: 1
+*      - name: pChrP
+*        range: Charge!a1
+*        columnDimension: 1
+*      - name: pH2price
+*        range: H2price!a1
+*        columnDimension: 2
+*      - name: pH2Prod
+*        range: H2Prod!a1
+*        columnDimension: 1
+*      - name: pH2Cons
+*        range: H2Cons!a1
+*        columnDimension: 1
+*      - name: pH2NS
+*        range: H2ns!a1
+*        columnDimension: 2
+*      - name: pTecProdhours
+*        range: TotalEnhours!a1
+*        columnDimension: 1
+*      - name: pTecProdRP
+*        range: TotalEnrp!a1
+*        columnDimension: 1
+*      - name: pCurtP_k
+*        range: Curtail_k!a1
+*        columnDimension: 1
+*      - name: pCurtP_rp
+*        range: Curtail_rp!a1
+*        columnDimension: 1
+*      - name: pLineP_Perc
+*        range: LineP_Perc!a1
+*        columnDimension: 1
+*      - name: pSpillag
+*        range: Spillag!a1
+*        columnDimension: 1
+*endEmbeddedCode
+*);
+*$offFold
+*
+*$onFold // All output ----------------------------------------------------------
+*if (pOutput=1,
+*embeddedCode Connect:
+*- GAMSReader:
+*    symbols:
+*      - name: pSummary
+*      - name: pTecProd
+*      - name: pGenInvest
+*      - name: pTraInvest
+*      - name: pH2Invest
+*      - name: pTecProdSum
+*      - name: pGenP
+*      - name: pStIntra
+*      - name: pStLevel
+*      - name: pSRMC
+*      - name: pLineP
+*      - name: pEconomicResults
+*      - name: pChrP
+*      - name: pH2price
+*      - name: pH2Prod
+*      - name: pH2Cons
+*      - name: pH2NS
+*      - name: pTecProdhours
+*      - name: pTecProdRP
+*      - name: pCurtP_k
+*      - name: pCurtP_rp
+*      - name: pLineP_Perc
+*      - name: pSpillag
+*      - name: pCommit
+*      - name: pLineQ
+*      - name: pVoltage
+*      - name: pGenQ
+*      - name: pTheta
+*      - name: pBusRes
+*      - name: pResulCDSF
+*      - name: pInertDual
+*      - name: pResultDSM
+*      - name: pActualSysInertia
+*- ExcelWriter:
+*    file: %scenarioFolder%/results/results.xlsx
+*    valueSubstitutions: {
+*            "EPS": 0
+*    }
+*    symbols:
+*      - name: pSummary
+*        range: Summary!a1
+*        columnDimension: 0
+*      - name: pTecProd
+*        range: TotalEn!a1
+*        columnDimension: 2
+*      - name: pGenInvest
+*        range: GenInvest!a1
+*        columnDimension: 1
+*      - name: pTraInvest
+*        range: TranInvest!a1
+*        columnDimension: 1
+*      - name: pH2Invest
+*        range: H2Invest!a1
+*        columnDimension: 1
+*      - name: pTecProdSum
+*        range: TotalEnSum!a1
+*        columnDimension: 1
+*      - name: pGenP
+*        range: GenP!a1
+*        columnDimension: 1
+*      - name: pStIntra
+*        range: StIntra!a1
+*        columnDimension: 2
+*      - name: pStLevel
+*        range: StLevel!a1
+*        columnDimension: 1
+*      - name: pSRMC
+*        range: MC!a1
+*        columnDimension: 1
+*      - name: pLineP
+*        range: pLineP!a1
+*        columnDimension: 1
+*      - name: pEconomicResults
+*        range: Profits!a1
+*        columnDimension: 1
+*      - name: pChrP
+*        range: Charge!a1
+*        columnDimension: 1
+*      - name: pH2price
+*        range: H2price!a1
+*        columnDimension: 2
+*      - name: pH2Prod
+*        range: H2Prod!a1
+*        columnDimension: 1
+*      - name: pH2Cons
+*        range: H2Cons!a1
+*        columnDimension: 1
+*      - name: pH2NS
+*        range: H2ns!a1
+*        columnDimension: 2
+*      - name: pTecProdhours
+*        range: TotalEnhours!a1
+*        columnDimension: 1
+*      - name: pTecProdRP
+*        range: TotalEnrp!a1
+*        columnDimension: 1
+*      - name: pCurtP_k
+*        range: Curtail_k!a1
+*        columnDimension: 1
+*      - name: pCurtP_rp
+*        range: Curtail_rp!a1
+*        columnDimension: 1
+*      - name: pLineP_Perc
+*        range: LineP_Perc!a1
+*        columnDimension: 1
+*      - name: pSpillag
+*        range: Spillag!a1
+*        columnDimension: 1
+*      - name: pCommit
+*        range: UC!a1
+*        columnDimension: 1
+*      - name: pLineQ
+*        range: LineQ!a1
+*        columnDimension: 1
+*      - name: pVoltage
+*        range: Volt!a1
+*        columnDimension: 2
+*      - name: pGenQ
+*        range: GenQ!a1
+*        columnDimension: 1
+*      - name: pTheta
+*        range: Angle!a1
+*        columnDimension: 2
+*      - name: pBusRes
+*        range: BusRes!a1
+*        columnDimension: 1
+*      - name: pResulCDSF
+*        range: CDSF!a1
+*        columnDimension: 1
+*      - name: pInertDual
+*        range: InertDual!a1
+*        columnDimension: 1
+*      - name: pResultDSM
+*        range: DSM!a1
+*        columnDimension: 3
+*      - name: pActualSysInertia
+*        range: RoCoF!a1
+*        columnDimension: 1
+*endEmbeddedCode
+*);
+*$offFold
+*
+*$offFold
+*
+*
+**-------------------------------------------------------------------------------
+**                         Saving UC decisions
+**-------------------------------------------------------------------------------
+*$onFold // Saving UC decisions -------------------------------------------------
+*if(%BatchUpdate%=1,
+*   execute_unload '%scenarioFolder%/results/UC_tmp.gdx' pCommit pStLvMW;
+*elseif(card(p)>card(k)),
+*   execute_unload '%scenarioFolder%/results/UC.gdx' pCommit pStLvMW;
+*);
+*
+*$OnListing
+*
+*$offFold

@@ -21,9 +21,9 @@ printer = Printer.getInstance()
 scenario_folder = "data/example/"
 
 # Select which parts are executed
-execute_gams = False
+execute_gams = True
 execute_pyomo = True
-solve_pyomo = True  # Note: GAMS always solves if it's executed in current setup
+solve_pyomo = False  # Note: GAMS always solves if it's executed in current setup
 comparison_mps = True  # Compare MPS files?
 check_vars = True
 check_constraints = True
@@ -44,7 +44,7 @@ constraints_to_enforce_from2 = [""]
 
 if execute_gams:
     gams_console_log_path = "LEGO-GAMS/gams_console.log"
-    gams_path = "C:/GAMS/48/gams.exe"
+    gams_path = "C:/GAMS/49/gams.exe"
     lego_path = "LEGO.gms"
     max_runtime_in_seconds = 60
 
@@ -126,7 +126,7 @@ if execute_pyomo:
                 print("Solver terminated with condition:", results.solver.termination_condition)
 
 if comparison_mps:
-    compare_mps("model.mps", True, "data/mps-archive/model-feac8422246633f43b3c98cf402798ca07a7109b.mps", True, check_vars=check_vars, check_constraints=check_constraints, print_additional_information=print_additional_information,
+    compare_mps("model.mps", True, "LEGO-GAMS/LEGO-GAMS.mps", False, check_vars=check_vars, check_constraints=check_constraints, print_additional_information=print_additional_information,
                 constraints_to_skip_from1=constraints_to_skip_from1, constraints_to_keep_from1=constraints_to_keep_from1, coefficients_to_skip_from1=coefficients_to_skip_from1,
                 constraints_to_skip_from2=constraints_to_skip_from2, constraints_to_keep_from2=constraints_to_keep_from2, coefficients_to_skip_from2=coefficients_to_skip_from2, constraints_to_enforce_from2=constraints_to_enforce_from2)
 
