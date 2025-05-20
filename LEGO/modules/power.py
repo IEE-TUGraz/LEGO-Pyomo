@@ -475,7 +475,7 @@ def add_constraints(lego: LEGO):
     # Active Power flow limits for candidate lines c
 
     def eDC_LimCanLine1_rule(model, rp, k, i, j, c):
-        match lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"]:
+        match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
             case "DC-OPF" | "TP" | "SN":
                 return model.vLineP[rp, k, i, j, c] / model.pPmax[i, j, c] + model.vLineInvest[i, j, c] >= 0
             case 'SOCP':
@@ -484,7 +484,7 @@ def add_constraints(lego: LEGO):
     lego.model.eDC_LimCanLine1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, doc="Power flow limit standart direction for candidate lines (for DC-OPF)", rule=eDC_LimCanLine1_rule)
    
     def eDC_LimCanLine2_rule(model, rp, k, i, j, c):
-        match lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"]:
+        match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
             case "DC-OPF" | "TP" | "SN":
                 return model.vLineP[rp, k, i, j, c] / model.pPmax[i, j, c] - model.vLineInvest[i, j, c] <= 0
             case 'SOCP':
