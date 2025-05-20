@@ -26,6 +26,11 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.addToParameter("pMaxInvest", lego.cs.dPower_Storage['MaxInvest'])
     lego.addToParameter("pEnabInv", lego.cs.dPower_Storage['EnableInvest'])
     lego.addToParameter("pInvestCost", lego.cs.dPower_Storage['InvestCostEUR'])
+    qmax = lego.cs.dPower_Storage['Qmax'].fillna(0)
+    qmin = lego.cs.dPower_Storage['Qmin'].fillna(0)
+    lego.addToParameter('pMaxGenQ', qmax)
+    lego.addToParameter('pMinGenQ', qmin)
+
 
     # Variables
     lego.model.bChargeDisCharge = pyo.Var(lego.model.storageUnits, lego.model.rp, lego.model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
