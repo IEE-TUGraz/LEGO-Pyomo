@@ -132,9 +132,6 @@ class LEGO:
         if optimizer is None:
             optimizer = pyo.SolverFactory("gurobi")
 
-            if self.cs.dGlobal_Parameters["pEnableRMIP"]:
-                TransformationFactory('core.relax_integer_vars').apply_to(self.model)  # Relaxes all integer variables to continuous variables
-
         start_time = time.time()
         results = optimizer.solve(self.model)
         stop_time = time.time()
@@ -257,6 +254,9 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
         model.first_stage_objective += importExport.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
         model.first_stage_objective += softLineLoadLimits.add_constraints(model, cs)
+
+    if cs.dGlobal_Parameters["pEnableRMIP"]:
+        TransformationFactory('core.relax_integer_vars').apply_to(model)  # Relaxes all integer variables to continuous variables
 
     return model
 
