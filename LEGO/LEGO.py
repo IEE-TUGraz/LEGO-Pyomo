@@ -36,7 +36,7 @@ class LEGO:
 
         return self.model, self.timings["model_building"]
 
-    def execute_extensive_form(self) -> (pyo.Model, float):
+    def execute_extensive_form(self) -> (pyo.Model, float, float):
         """
         Executes the extensive form algorithm on the model.
         :return: The model and the time taken to execute the extensive form algorithm
@@ -59,9 +59,9 @@ class LEGO:
         for (var_name, var_val) in variables.items():
             print(var_name, var_val)
 
-        return ef.ef, stop_time - start_time
+        return ef.ef, stop_time - start_time, objval
 
-    def execute_benders(self) -> (pyo.Model, float):
+    def execute_benders(self) -> (pyo.Model, float, float):
         """
         Executes the Benders decomposition algorithm on the model.
         :return: The model and the time taken to execute the Benders algorithm
@@ -82,6 +82,36 @@ class LEGO:
         stop_time = time.time()
 
         variables = ls.gather_var_values_to_rank0()
+        for ((scen_name, var_name), var_value) in variables.items():
+            print(scen_name, var_name, var_value)
+
+        return None, stop_time - start_time, objval
+
+    def execute_progressive_hedging(self) -> (pyo.Model, float):
+        """
+        Executes the Progressive Hedging algorithm on the model.
+        :return: The model and the time taken to execute
+        """
+        from mpisppy.opt.ph import PH
+
+        scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
+        options = {
+            "solver_name": "gurobi",
+            "PHIterLimit": 50,
+            "defaultPHrho": 10,
+            "convthresh": 1e-7,
+            "verbose": False,
+            "display_progress": True,
+            "display_timing": True,
+            "iter0_solver_options": dict(),
+            "iterk_solver_options": dict(),
+        }
+        start_time = time.time()
+        ph = PH(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
+        result = ph.ph_main()
+        stop_time = time.time()
+
+        variables = ph.gather_var_values_to_rank0()
         for ((scen_name, var_name), var_value) in variables.items():
             print(scen_name, var_name, var_value)
 

@@ -30,6 +30,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
             return max(model.pImpExpValue[rp, k, hub], -model.pHubConnectionPmaxExport[hub, i]), 0
 
     model.vImpExp = pyo.Var(model.rp, model.k, model.hubConnections, doc='Import/Export at hub connection', bounds=vImpExp_bounds)
+    second_stage_variables += [model.vImpExp]
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
