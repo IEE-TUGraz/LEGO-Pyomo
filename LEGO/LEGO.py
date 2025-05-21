@@ -53,11 +53,10 @@ class LEGO:
         result = ef.solve_extensive_form()
         stop_time = time.time()
         objval = ef.get_objective_value()
-        print(f"{objval:.1f}")
 
-        variables = ef.get_root_solution()
-        for (var_name, var_val) in variables.items():
-            print(var_name, var_val)
+        # variables = ef.get_root_solution()
+        # for (var_name, var_val) in variables.items():
+        # print(var_name, var_val)
 
         return ef.ef, stop_time - start_time, objval
 
@@ -81,11 +80,16 @@ class LEGO:
         result = ls.lshaped_algorithm()
         stop_time = time.time()
 
-        variables = ls.gather_var_values_to_rank0()
-        for ((scen_name, var_name), var_value) in variables.items():
-            print(scen_name, var_name, var_value)
+        # variables = ls.gather_var_values_to_rank0()
+        # for ((scen_name, var_name), var_value) in variables.items():
+        #   print(scen_name, var_name, var_value)
 
-        return None, stop_time - start_time, objval
+        lower_bound = result.json_repn()['Problem'][0]['Lower bound']
+        upper_bound = result.json_repn()['Problem'][0]['Upper bound']
+        printer.warning(f"Lower bound: {lower_bound:.2f}, Upper bound: {upper_bound:.2f}, spread: {upper_bound - lower_bound:.2f} | {(upper_bound - lower_bound) / upper_bound * 100:.2f}%)")
+        printer.warning(f"Reporting lower bound as objective value, please check if this is correct")
+
+        return None, stop_time - start_time, lower_bound
 
     def execute_progressive_hedging(self) -> (pyo.Model, float):
         """
@@ -111,9 +115,9 @@ class LEGO:
         result = ph.ph_main()
         stop_time = time.time()
 
-        variables = ph.gather_var_values_to_rank0()
-        for ((scen_name, var_name), var_value) in variables.items():
-            print(scen_name, var_name, var_value)
+        # variables = ph.gather_var_values_to_rank0()
+        # for ((scen_name, var_name), var_value) in variables.items():
+        #   print(scen_name, var_name, var_value)
 
         return None, stop_time - start_time
 

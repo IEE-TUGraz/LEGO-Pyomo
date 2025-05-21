@@ -33,7 +33,7 @@ def modelSelection(string: str) -> str:
 parser = argparse.ArgumentParser(description="Compares two given models using the MPS format", formatter_class=RichHelpFormatter)
 parser.add_argument("scenarioFolder", default="data/exampleStochastic", type=str, nargs="?", help="Path to folder containing data for LEGO model")
 parser.add_argument("model1", default="pyomoSimpleSolve", type=modelSelection, nargs="?", help="Path to first model to compare (can be a .mps file or 'gams', 'pyomoSimpleSolve', 'pyomoSimpleNoSolve', 'pyomoExtensive', 'pyomoBenders' or 'pyomoProgressiveHedging')")
-parser.add_argument("model2", default="data/mps-archive/model-feac8422246633f43b3c98cf402798ca07a7109b.mps", type=modelSelection, nargs="?", help="Path to second model to compare (can be a .mps file or 'gams', 'pyomoSimpleSolve', 'pyomoSimpleNoSolve', 'pyomoExtensive', 'pyomoBenders' or 'pyomoProgressiveHedging')")
+parser.add_argument("model2", default="pyomoExtensive", type=modelSelection, nargs="?", help="Path to second model to compare (can be a .mps file or 'gams', 'pyomoSimpleSolve', 'pyomoSimpleNoSolve', 'pyomoExtensive', 'pyomoBenders' or 'pyomoProgressiveHedging')")
 
 parser.add_argument("--constraintSkipModel1", default=[], nargs='+', help="Constraints to skip from model 1 (either fill this or constraintKeepModel1)")
 parser.add_argument("--constraintKeepModel1", default=[], nargs='+', help="Constraints to keep from model 1 (either fill this or constraintSkipModel1)")
@@ -164,10 +164,7 @@ def execute_progressive_hedging(args: argparse.Namespace) -> (str, float):
     return None, obj_val
 
 
-########################################################################################################################
-# Re-run with GAMS
-########################################################################################################################
-
+printer.information(f"--------- Working on model 1: '{args.model1}' ---------")
 match args.model1:
     case "gams":
         model1_path, objective_value_1 = execute_gams(args)
@@ -186,6 +183,7 @@ match args.model1:
     case _:
         raise ValueError(f"Selection for Model 1 is not valid: '{args.model1}'")
 
+printer.information(f"--------- Working on model 2: '{args.model2}' ---------")
 match args.model2:
     case "gams":
         model2_path, objective_value_2 = execute_gams(args)
@@ -204,15 +202,18 @@ match args.model2:
     case _:
         raise ValueError(f"Selection for Model 2 is not valid: '{args.model2}'")
 
-printer.information(f"Model 1: {args.model1} - {model1_path} - Objective value: {objective_value_1}")
-printer.information(f"Model 2: {args.model2} - {model2_path} - Objective value: {objective_value_2}")
+printer.information("--------- Comparing models ---------")
+printer.information(f"Model 1: '{args.model1}' - {model1_path} - Objective value: {objective_value_1}")
+printer.information(f"Model 2: '{args.model2}' - {model2_path} - Objective value: {objective_value_2}")
 
 if objective_value_1 != -1 and objective_value_2 != -1:
     printer.information(f"Objective difference : {objective_value_1 - objective_value_2:.2f} | {100 * (objective_value_1 - objective_value_2) / objective_value_2:.2f}%")
 
 if not args.skipComparisonOverall:
     if model1_path is not None and model2_path is not None:
-        compare_mps(model1_path, args.model1 != "gams", model2_path, args.model2 != "gams", check_vars=not args.skipVariableComparison, check_constraints=not args.skipConstraintComparison, print_additional_information=args.printAdditionalInformation,
+        compare_mps(model1_path, args.model1 != "gams", args.model2.startswith("pyomoSimple") and not args.model1.startswith("pyomoSimple") and args.model1 != "gams",
+                    model2_path, args.model2 != "gams", args.model1.startswith("pyomoSimple") and not args.model2.startswith("pyomoSimple") and args.model2 != "gams",
+                    check_vars=not args.skipVariableComparison, check_constraints=not args.skipConstraintComparison, print_additional_information=args.printAdditionalInformation,
                     constraints_to_skip_from1=args.constraintSkipModel1, constraints_to_keep_from1=args.constraintKeepModel1, coefficients_to_skip_from1=args.coefficientsSkipModel1,
                     constraints_to_skip_from2=args.constraintSkipModel2, constraints_to_keep_from2=args.constraintKeepModel2, coefficients_to_skip_from2=args.coefficientsSkipModel2, constraints_to_enforce_from2=args.constraintEnforceModel2)
     else:

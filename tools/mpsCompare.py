@@ -414,7 +414,9 @@ def compare_objectives(objective1, objective2, precision: float = 1e-12) -> dict
     return {"perfect": counter_perfect_matches, "partial": len(partial_matches), "missing in model 1": len(coefficients_missing_in_model1), "missing in model 2": len(coefficients_missing_in_model2)}
 
 
-def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bool, check_vars=True, check_constraints=True, print_additional_information=False,
+def compare_mps(file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix: bool,
+                file2, file2_isPyomoFormat: bool, file2_removeScenarioPrefix: bool,
+                check_vars=True, check_constraints=True, print_additional_information=False,
                 constraints_to_skip_from1=None, constraints_to_keep_from1=None, coefficients_to_skip_from1=None,
                 constraints_to_skip_from2=None, constraints_to_keep_from2=None, coefficients_to_skip_from2=None, constraints_to_enforce_from2=None):
     # Safety before more expensive operations start
@@ -445,6 +447,11 @@ def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bo
     if check_vars:
         vars1 = {(normalize_variable_name(v.name) if file1_isPyomoFormat else v.name, v.lowBound, v.upBound) for v in model1[1].variables() if v.name not in coefficients_to_skip_from1}
         vars2 = {(normalize_variable_name(v.name) if file2_isPyomoFormat else v.name, v.lowBound, v.upBound) for v in model2[1].variables() if v.name not in coefficients_to_skip_from2}
+
+        if file1_removeScenarioPrefix:
+            vars1 = {(v[0].replace("ScenarioA.", ""), v[1], v[2]) for v in vars1}
+        if file2_removeScenarioPrefix:
+            vars2 = {(v[0].replace("ScenarioA.", ""), v[1], v[2]) for v in vars2}
 
         comparison_results['variables'], vars_fixed_to_zero = compare_variables(vars1, vars2)
         coefficients_to_skip_from1.extend(vars_fixed_to_zero)  # Add variables that are fixed to 0 to the list of coefficients to skip
