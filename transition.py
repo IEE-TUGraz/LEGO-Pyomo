@@ -6,9 +6,9 @@ from pyomo.core import NameLabeler
 from pyomo.util.infeasible import log_infeasible_constraints
 
 from InOutModule.CaseStudy import CaseStudy
+from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO
 from tools.mpsCompare import compare_mps
-from InOutModule.printer import Printer
 
 ########################################################################################################################
 # Setup
@@ -23,6 +23,7 @@ scenario_folder = "data/example/"
 # Select which parts are executed
 execute_gams = False
 execute_pyomo = True
+pyomo_method = "simple"  # simple, extensive or benders
 solve_pyomo = True  # Note: GAMS always solves if it's executed in current setup
 comparison_mps = True  # Compare MPS files?
 check_vars = True
@@ -96,37 +97,54 @@ if execute_pyomo:
     cs = CaseStudy(scenario_folder, do_not_merge_single_node_buses=True)
     cs.dPower_Network['pTecRepr'] = 'DC-OPF'
 
-    lego = LEGO(cs)
+    start = time.time()
+    # Have file-path with YYMMDD-HHMMSS
+    mps_file_path = f"model-{time.strftime('%y%m%d-%H%M%S')}.mps"
 
     #####################################################################################################################
     # Evaluation
     #####################################################################################################################
 
-    model, timing = lego.build_model()
-    printer.information(f"Building LEGO model took {timing:.2f} seconds")
-    model.write("model.mps", io_options={'labeler': NameLabeler()})
+    match pyomo_method:
+        case "extensive":
+            lego = LEGO(cs)
+            model, timing = lego.execute_extensive_form()
+            printer.information(f"Executing extensive form took {timing:.2f} seconds")
+            model.write(mps_file_path, io_options={'labeler': NameLabeler()})
+        case "benders":
+            lego = LEGO(cs)
+            model, timing = lego.execute_benders()
+            printer.information(f"Executing Benders decomposition took {timing:.2f} seconds")
+            # model.write(mps_file_path, io_options={'labeler': NameLabeler()}) # TODO: Check how to write MPS file for Benders decomposition
+            if comparison_mps:
+                raise NotImplementedError("Comparison of MPS files for Benders decomposition is not implemented yet")
+        case "simple":
+            lego = LEGO(cs.filter_scenario("ScenarioA"))
+            model, timing = lego.build_model()
+            printer.information(f"Building LEGO model took {timing:.2f} seconds")
+            model.write(mps_file_path, io_options={'labeler': NameLabeler()})
 
-    if solve_pyomo:  # Solve LEGO model?
-        results, timing = lego.solve_model()
-        match results.solver.termination_condition:
-            case pyo.TerminationCondition.optimal:
-                printer.information(f"Optimal solution found after {timing:.2f} seconds")
-                if "objective_value_gams" in locals():  # If GAMS has been executed and solved, compare objective values
-                    digits = max(len(f"{pyo.value(model.objective):.4f}"), len(f"{objective_value_gams:.4f}"))
-                    printer.information(f"Objective value Pyomo: {pyo.value(model.objective):>{digits}.4f}")
-                    printer.information(f"Objective value GAMS : {objective_value_gams:>{digits}.4f}")
-                    printer.information(f"Objective difference : {pyo.value(model.objective) - objective_value_gams:>{digits}.4f} | {100 * (pyo.value(model.objective) - objective_value_gams) / objective_value_gams:.2f}%")
-                else:
-                    printer.information(f"Objective value Pyomo: {pyo.value(model.objective):.4f}")
+            if solve_pyomo:  # Solve LEGO model?
+                results, timing = lego.solve_model()
+                match results.solver.termination_condition:
+                    case pyo.TerminationCondition.optimal:
+                        printer.information(f"Optimal solution found after {timing:.2f} seconds")
+                        if "objective_value_gams" in locals():  # If GAMS has been executed and solved, compare objective values
+                            digits = max(len(f"{pyo.value(model.objective):.4f}"), len(f"{objective_value_gams:.4f}"))
+                            printer.information(f"Objective value Pyomo: {pyo.value(model.objective):>{digits}.4f}")
+                            printer.information(f"Objective value GAMS : {objective_value_gams:>{digits}.4f}")
+                            printer.information(f"Objective difference : {pyo.value(model.objective) - objective_value_gams:>{digits}.4f} | {100 * (pyo.value(model.objective) - objective_value_gams) / objective_value_gams:.2f}%")
+                        else:
+                            printer.information(f"Objective value Pyomo: {pyo.value(model.objective):.4f}")
 
-            case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
-                print(f"ERROR: Model is {results.solver.termination_condition}, logging infeasible constraints:")
-                log_infeasible_constraints(model)
-            case _:
-                print("Solver terminated with condition:", results.solver.termination_condition)
+                    case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
+                        print(f"ERROR: Model is {results.solver.termination_condition}, logging infeasible constraints:")
+                        log_infeasible_constraints(model)
+                    case _:
+                        print("Solver terminated with condition:", results.solver.termination_condition)
 
 if comparison_mps:
-    compare_mps("model.mps", True, "data/mps-archive/model-feac8422246633f43b3c98cf402798ca07a7109b.mps", True, check_vars=check_vars, check_constraints=check_constraints, print_additional_information=print_additional_information,
+    compare_mps(mps_file_path, True, "data/mps-archive/model-feac8422246633f43b3c98cf402798ca07a7109b.mps", True, check_vars=check_vars, check_constraints=check_constraints, print_additional_information=print_additional_information,
                 constraints_to_skip_from1=constraints_to_skip_from1, constraints_to_keep_from1=constraints_to_keep_from1, coefficients_to_skip_from1=coefficients_to_skip_from1,
                 constraints_to_skip_from2=constraints_to_skip_from2, constraints_to_keep_from2=constraints_to_keep_from2, coefficients_to_skip_from2=coefficients_to_skip_from2, constraints_to_enforce_from2=constraints_to_enforce_from2)
 

@@ -4,8 +4,12 @@ from InOutModule.CaseStudy import CaseStudy
 from LEGO import LEGO, LEGOUtilities
 
 
-@LEGOUtilities.addToExecutionLog
-def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
+@LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
+def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> (list[pyo.Var], list[pyo.Var]):
+    # Lists for defining stochastic behavior. First stage variables are common for all scenarios, second stage variables are scenario-specific.
+    first_stage_variables = []
+    second_stage_variables = []
+
     # Sets
     storageUnits = cs.dPower_Storage.index.tolist()
     model.storageUnits = pyo.Set(doc='Storage units', initialize=storageUnits)
@@ -30,10 +34,13 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
 
     # Variables
     model.bChargeDisCharge = pyo.Var(model.storageUnits, model.rp, model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
+    second_stage_variables += [model.bChargeDisCharge]
 
     model.vConsump = pyo.Var(model.rp, model.k, model.storageUnits, doc='Charging of storage unit g', bounds=lambda model, rp, k, g: (0, model.pMaxCons[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g]))))
+    second_stage_variables += [model.vConsump]
 
     model.vStIntraRes = pyo.Var(model.rp, model.k, model.storageUnits, doc='Intra-reserve of storage unit g', bounds=(None, None))
+    second_stage_variables += [model.vStIntraRes]
     for rp in model.rp:
         for k in model.k:
             for g in model.storageUnits:
@@ -41,6 +48,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
                 model.vStIntraRes[rp, k, g].setlb(model.pE2PRatio[g] * model.pMinReserve[g] * model.pMaxProd[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
 
     model.vStInterRes = pyo.Var(model.p, model.storageUnits, doc='Inter-reserve of storage unit g', bounds=(None, None))
+    second_stage_variables += [model.vStInterRes]
     for p in model.p:
         for g in model.storageUnits:
             if model.p.ord(p) == len(model.p):
@@ -52,8 +60,11 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
                 model.vStInterRes[p, g].setub(model.pE2PRatio[g] * model.pMaxProd[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
                 model.vStInterRes[p, g].setlb(model.pE2PRatio[g] * model.pMinReserve[g] * model.pMaxProd[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
 
+    # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
+    return first_stage_variables, second_stage_variables
 
-@LEGOUtilities.checkExecutionLog([add_element_definitions_and_bounds])
+
+@LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # TODO: Check if we should add Hydro here as well
 
@@ -134,3 +145,13 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                 for g in model.storageUnits:
                     if (g, i) in model.gi:
                         model.eDC_BalanceP_expr[rp, k, i] -= model.vConsump[rp, k, g]
+
+    # OBJECTIVE FUNCTION ADJUSTMENT(S)
+    first_stage_objective = 0.0
+    second_stage_objective = 0.0
+
+    # No additional objective expressions for storage units (already handled in "power" module)
+
+    # Adjust objective and return first_stage_objective expression
+    model.objective.expr += first_stage_objective + second_stage_objective
+    return first_stage_objective

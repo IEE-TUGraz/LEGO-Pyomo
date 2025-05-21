@@ -6,8 +6,12 @@ from InOutModule.CaseStudy import CaseStudy
 from LEGO import LEGOUtilities, LEGO
 
 
-@LEGOUtilities.addToExecutionLog
-def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
+@LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
+def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> (list[pyo.Var], list[pyo.Var]):
+    # Lists for defining stochastic behavior. First stage variables are common for all scenarios, second stage variables are scenario-specific.
+    first_stage_variables = []
+    second_stage_variables = []
+
     # Sets
     model.i = pyo.Set(doc='Buses', initialize=cs.dPower_BusInfo.index.tolist())
 
@@ -99,7 +103,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
 
     # Variables
     model.vTheta = pyo.Var(model.rp, model.k, model.i, doc='Angle of bus i', bounds=(-cs.dPower_Parameters["pMaxAngleDCOPF"], cs.dPower_Parameters["pMaxAngleDCOPF"]))  # TODO: Discuss impact on runtime etc.(based on discussion with Prof. Renner)
+    second_stage_variables += [model.vTheta]
     model.vAngle = pyo.Var(model.rp, model.k, model.la, doc='Angle phase shifting transformer')
+    second_stage_variables += [model.vAngle]
     for i, j, c in model.la:
         if model.pAngle[i, j, c] == 0:
             model.vAngle[:, :, i, j, c].fix(0)
@@ -108,10 +114,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
             model.vAngle[:, :, i, j, c].setlb(-model.pAngle[i, j, c])
 
     model.vLineInvest = pyo.Var(model.la, doc='Transmission line investment', domain=pyo.Binary)
+    first_stage_variables += [model.vLineInvest]
     for i, j, c in model.le:
         model.vLineInvest[i, j, c].fix(0)  # Set existing lines to not investable
 
     model.vGenInvest = pyo.Var(model.g, doc="Integer generation investment", bounds=lambda model, g: (0, model.pMaxInvest[g] * model.pEnabInv[g]))
+    first_stage_variables += [model.vGenInvest]
 
     # For each DC-OPF "island", set node with highest demand as slack node
     dDCOPFIslands = pd.DataFrame(index=cs.dPower_BusInfo.index, columns=[cs.dPower_BusInfo.index], data=False)
@@ -141,7 +149,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
         model.vTheta[:, :, slack_node].fix(0)
 
     model.vPNS = pyo.Var(model.rp, model.k, model.i, doc='Slack variable power not served', bounds=lambda model, rp, k, i: (0, model.pDemandP[rp, k, i]))
+    second_stage_variables += [model.vPNS]
     model.vEPS = pyo.Var(model.rp, model.k, model.i, doc='Slack variable excess power served', bounds=(0, None))
+    second_stage_variables += [model.vEPS]
 
     # Used to relax vCommit, vStartup and vShutdown in the first timesteps of each representative period
     # Required when using Markov-Chains to connect the timesteps of the representative periods - since fractions of the binary variables (which are present due to the transition-probabilities) are otherwise not possible
@@ -152,12 +162,17 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
             return pyo.Binary
 
     model.vGenP = pyo.Var(model.rp, model.k, model.g, doc='Power output of generator g', bounds=lambda model, rp, k, g: (0, model.pMaxProd[g] * (model.pExisUnits[g] + model.pMaxInvest[g] * model.pEnabInv[g])))
+    second_stage_variables += [model.vGenP]
 
     if cs.dPower_Parameters["pEnableThermalGen"]:
         model.vCommit = pyo.Var(model.rp, model.k, model.thermalGenerators, doc='Unit commitment of generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, max(model.pMinUpTime[t], model.pMinDownTime[t])) if cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov" else pyo.Binary)
+        second_stage_variables += [model.vCommit]
         model.vStartup = pyo.Var(model.rp, model.k, model.thermalGenerators, doc='Start-up of thermal generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, model.pMinDownTime[t]) if cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov" else pyo.Binary)
+        second_stage_variables += [model.vStartup]
         model.vShutdown = pyo.Var(model.rp, model.k, model.thermalGenerators, doc='Shut-down of thermal generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, model.pMinUpTime[t]) if cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov" else pyo.Binary)
+        second_stage_variables += [model.vShutdown]
         model.vGenP1 = pyo.Var(model.rp, model.k, model.thermalGenerators, doc='Power output of generator g above minimum production', bounds=lambda model, rp, k, g: (0, (model.pMaxProd[g] - model.pMinProd[g]) * (model.pExisUnits[g] + model.pMaxInvest[g] * model.pEnabInv[g])))
+        second_stage_variables += [model.vGenP1]
 
     if cs.dPower_Parameters["pEnableRoR"]:
         for g in model.rorGenerators:
@@ -172,6 +187,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
                     model.vGenP[rp, k, g].setub((model.pMaxProd[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])) * cs.dPower_VRESProfiles.loc[rp, k, g]['value']))
 
     model.vLineP = pyo.Var(model.rp, model.k, model.la, doc='Power flow from bus i to j', bounds=(None, None))
+    second_stage_variables += [model.vLineP]
     for (i, j, c) in model.la:
         match cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
             case "DC-OPF" | "TP":
@@ -183,8 +199,11 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
                 raise ValueError(f"Technical representation '{cs.dPower_Network.loc[i, j]["pTecRepr"]}' "
                                  f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
 
+    # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
+    return first_stage_variables, second_stage_variables
 
-@LEGOUtilities.checkExecutionLog([add_element_definitions_and_bounds])
+
+@LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # Power balance for nodes
     def eDC_BalanceP_rule(model, rp, k, i):
@@ -375,11 +394,15 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     model.eMinDownTime = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Minimum down time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=lambda m, rp, k, t: eMinDownTime_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
 
-    # Objective function
-    model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=sum(sum(model.vPNS[rp, k, :]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost for rp in model.rp for k in model.k) +  # Power not served
-                                                                                                               sum(sum(model.vEPS[rp, k, :]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost * 2 for rp in model.rp for k in model.k) +  # Excess power served
-                                                                                                               sum(model.vStartup[rp, k, t] * model.pStartupCost[t] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for t in model.thermalGenerators) +  # Startup cost of thermal generators
-                                                                                                               sum(model.vCommit[rp, k, t] * model.pInterVarCost[t] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for t in model.thermalGenerators) +  # Commit cost of thermal generators
-                                                                                                               sum(model.vGenP[rp, k, g] * model.pOMVarCost[g] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for g in model.g) +  # Production cost of generators
-                                                                                                               sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
-                                                                                                               sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
+    # OBJECTIVE FUNCTION ADJUSTMENT(S)
+    first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
+                             sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
+    second_stage_objective = (sum(sum(model.vPNS[rp, k, :]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost for rp in model.rp for k in model.k) +  # Power not served
+                              sum(sum(model.vEPS[rp, k, :]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost * 2 for rp in model.rp for k in model.k) +  # Excess power served
+                              sum(model.vStartup[rp, k, t] * model.pStartupCost[t] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for t in model.thermalGenerators) +  # Startup cost of thermal generators
+                              sum(model.vCommit[rp, k, t] * model.pInterVarCost[t] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for t in model.thermalGenerators) +  # Commit cost of thermal generators
+                              sum(model.vGenP[rp, k, g] * model.pOMVarCost[g] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for g in model.g))  # Production cost of generators
+
+    # Adjust objective and return first_stage_objective expression
+    model.objective.expr += first_stage_objective + second_stage_objective
+    return first_stage_objective

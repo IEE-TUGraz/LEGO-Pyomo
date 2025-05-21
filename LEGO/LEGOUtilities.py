@@ -97,7 +97,7 @@ execution_safety_dict = {}
 
 
 # Decorator to check that function has not been executed and add it to executionSafetyList
-def addToExecutionLog(func):
+def safetyCheck_AddElementDefinitionsAndBounds(func):
     @functools.wraps(func)  # Preserve the original function's name
     def wrapper(*args, **kwargs):
         # Check that function has not already been executed and add it to dictionary
@@ -109,8 +109,30 @@ def addToExecutionLog(func):
         else:
             raise RuntimeError(f"Function {fullFuncName} has already been executed, current execution log: {execution_safety_list}")
 
+        # Store variable list before the call
+        variables = set(args[0].component_objects(pyo.Var, active=True))
+
         # Call the function
-        func(*args, **kwargs)
+        first_stage_variables, second_stage_variables = func(*args, **kwargs)
+
+        # Make sure that all new variables are assigned either to first_stage or second_stage
+        new_variables = set(args[0].component_objects(pyo.Var, active=True)) - variables
+
+        for var in first_stage_variables:
+            if var not in new_variables:
+                raise ValueError(f"Variable {var} was assigned to first_stage but has not been added to the model")
+            new_variables.remove(var)
+
+        for var in second_stage_variables:
+            if var not in new_variables:
+                raise ValueError(f"Variable {var} was assigned to second_stage but has not been added to the model")
+            new_variables.remove(var)
+
+        if len(new_variables) > 0:
+            raise ValueError(f"Some variables were added with function '{fullFuncName}' but are neither assigned to first_stage nor second_stage.\nPlease check: {[str(v) for v in new_variables]}")
+
+        # Return first stage variables
+        return first_stage_variables
 
     return wrapper
 
@@ -118,7 +140,7 @@ def addToExecutionLog(func):
 # Decorator to check that all required functions have been executed before executing the function
 # Also checks that the function has not already been executed
 # required_functions: List of function names that need to have been executed before this function (without the file path)
-def checkExecutionLog(required_functions: list[typing.Callable]):
+def safetyCheck_addConstraints(required_functions: list[typing.Callable]):
     def decorator(func):
         @functools.wraps(func)  # Preserve the original function's name
         def wrapper(*args, **kwargs):
@@ -147,7 +169,9 @@ def checkExecutionLog(required_functions: list[typing.Callable]):
                 execution_safety_list.append(fullFuncName)  # Add function to execution list
 
                 # Call the function
-                func(*args, **kwargs)
+                first_stage_objective = func(*args, **kwargs)
+
+                return first_stage_objective
 
         return wrapper
 

@@ -4,8 +4,12 @@ from InOutModule.CaseStudy import CaseStudy
 from LEGO import LEGOUtilities
 
 
-@LEGOUtilities.addToExecutionLog
-def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
+@LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
+def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> (list[pyo.Var], list[pyo.Var]):
+    # Lists for defining stochastic behavior. First stage variables are common for all scenarios, second stage variables are scenario-specific.
+    first_stage_variables = []
+    second_stage_variables = []
+
     # Sets
     model.hubs = pyo.Set(doc='Import/Export hubs', initialize=cs.dPower_ImpExpHubs.index.unique(level=0))
     model.hubConnections = pyo.Set(doc='Nodes connected to hub', initialize=cs.dPower_ImpExpHubs.index, within=model.hubs * model.i)
@@ -27,8 +31,11 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
 
     model.vImpExp = pyo.Var(model.rp, model.k, model.hubConnections, doc='Import/Export at hub connection', bounds=vImpExp_bounds)
 
+    # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
+    return first_stage_variables, second_stage_variables
 
-@LEGOUtilities.checkExecutionLog([add_element_definitions_and_bounds])
+
+@LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # Enforce ImpFix/ImpMax and ExpFix/ExpMax
     def eImpExp_rule(model, rp, k, hub):
@@ -55,5 +62,12 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             for hub, i in model.hubConnections:
                 model.eDC_BalanceP_expr[rp, k, i] += model.vImpExp[rp, k, hub, i]
 
+    # OBJECTIVE FUNCTION ADJUSTMENT(S)
+    first_stage_objective = 0.0
+
     # Add import/export cost/revenues to total cost
-    model.objective.expr += sum(model.vImpExp[rp, k, hub, i] * model.pImpExpPrice[rp, k, hub] for rp in model.rp for k in model.k for hub, i in model.hubConnections)
+    second_stage_objective = sum(model.vImpExp[rp, k, hub, i] * model.pImpExpPrice[rp, k, hub] for rp in model.rp for k in model.k for hub, i in model.hubConnections)
+
+    # Adjust objective and return first_stage_objective expression
+    model.objective.expr += first_stage_objective + second_stage_objective
+    return first_stage_objective

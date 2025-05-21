@@ -4,8 +4,12 @@ from InOutModule.CaseStudy import CaseStudy
 from LEGO import LEGO, LEGOUtilities
 
 
-@LEGOUtilities.addToExecutionLog
-def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
+@LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
+def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> (list[pyo.Var], list[pyo.Var]):
+    # Lists for defining stochastic behavior. First stage variables are common for all scenarios, second stage variables are scenario-specific.
+    first_stage_variables = []
+    second_stage_variables = []
+
     # Sets
     model.secondReserveGenerators = pyo.Set(doc="Second reserve providing generators", within=model.g)
     if hasattr(model, "thermalGenerators"):
@@ -15,7 +19,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
 
     # Variables
     model.v2ndResUP = pyo.Var(model.rp, model.k, model.secondReserveGenerators, doc="2nd reserve up allocation [GW]", bounds=(0, None))
+    second_stage_variables += [model.v2ndResUP]
     model.v2ndResDW = pyo.Var(model.rp, model.k, model.secondReserveGenerators, doc="2nd reserve down allocation [GW]", bounds=(0, None))
+    second_stage_variables += [model.v2ndResDW]
 
     if hasattr(model, "thermalGenerators"):
         model.eUCMinOut = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc="Output limit of a committed unit", rule=lambda model, rp, k, t: model.vGenP1[rp, k, t] - model.v2ndResDW[rp, k, t] >= 0)
@@ -35,8 +41,11 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy):
     model.p2ndResUpCost = pyo.Param(initialize=cs.dPower_Parameters["p2ndResUpCost"], doc="2nd reserve up cost [$/GW]")
     model.p2ndResDWCost = pyo.Param(initialize=cs.dPower_Parameters["p2ndResDWCost"], doc="2nd reserve down cost [$/GW]")
 
+    # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
+    return first_stage_variables, second_stage_variables
 
-@LEGOUtilities.checkExecutionLog([add_element_definitions_and_bounds])
+
+@LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def e2ReserveUp_rule(model, rp, k):  # TODO: Check if we need to multiply with ExisUnite or InvestedUnits here
         return ((sum(model.v2ndResUP[rp, k, t] for t in model.thermalGenerators) if hasattr(model, "thermalGenerators") else 0) +
@@ -81,11 +90,19 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     model.eStMaxIntraRes_expr[rp, k, s] += model.v2ndResDW[rp, k, s] + model.v2ndResDW[rp, model.k.prevw(k), s] * model.pWeight_k[k]
                     model.eStMinIntraRes_expr[rp, k, s] -= model.v2ndResUP[rp, k, s] + model.v2ndResUP[rp, model.k.prevw(k), s] * model.pWeight_k[k]
 
+    # OBJECTIVE FUNCTION ADJUSTMENT(S)
+    first_stage_objective = 0.0
+    second_stage_objective = 0.0
+
     # Add 2nd reserve cost to objective
     if hasattr(model, "thermalGenerators"):
-        model.objective.expr += sum(model.v2ndResUP[rp, k, t] * model.pOMVarCost[t] * model.p2ndResUpCost * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for t in model.thermalGenerators)
-        model.objective.expr += sum(model.v2ndResDW[rp, k, t] * model.pOMVarCost[t] * model.p2ndResDWCost * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for t in model.thermalGenerators)
+        second_stage_objective += sum(model.v2ndResUP[rp, k, t] * model.pOMVarCost[t] * model.p2ndResUpCost * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for t in model.thermalGenerators)
+        second_stage_objective += sum(model.v2ndResDW[rp, k, t] * model.pOMVarCost[t] * model.p2ndResDWCost * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for t in model.thermalGenerators)
 
     if hasattr(model, "storageUnits"):
-        model.objective.expr += sum(model.v2ndResUP[rp, k, s] * model.pOMVarCost[s] * model.p2ndResUpCost * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for s in model.storageUnits)
-        model.objective.expr += sum(model.v2ndResDW[rp, k, s] * model.pOMVarCost[s] * model.p2ndResDWCost * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for s in model.storageUnits)
+        second_stage_objective += sum(model.v2ndResUP[rp, k, s] * model.pOMVarCost[s] * model.p2ndResUpCost * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for s in model.storageUnits)
+        second_stage_objective += sum(model.v2ndResDW[rp, k, s] * model.pOMVarCost[s] * model.p2ndResDWCost * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for s in model.storageUnits)
+
+    # Adjust objective and return first_stage_objective expression
+    model.objective.expr += first_stage_objective + second_stage_objective
+    return first_stage_objective

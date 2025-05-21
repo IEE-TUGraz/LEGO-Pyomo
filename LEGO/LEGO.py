@@ -1,4 +1,5 @@
 import copy
+import os
 import time
 import typing
 
@@ -34,6 +35,57 @@ class LEGO:
         self.results = None
 
         return self.model, self.timings["model_building"]
+
+    def execute_extensive_form(self) -> (pyo.Model, float):
+        """
+        Executes the extensive form algorithm on the model.
+        :return: The model and the time taken to execute the extensive form algorithm
+        """
+        from mpisppy.opt.ef import ExtensiveForm
+
+        scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
+        options = {
+            "solver": "gurobi"
+        }
+
+        start_time = time.time()
+        ef = ExtensiveForm(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
+        result = ef.solve_extensive_form()
+        stop_time = time.time()
+        objval = ef.get_objective_value()
+        print(f"{objval:.1f}")
+
+        variables = ef.get_root_solution()
+        for (var_name, var_val) in variables.items():
+            print(var_name, var_val)
+
+        return ef.ef, stop_time - start_time
+
+    def execute_benders(self) -> (pyo.Model, float):
+        """
+        Executes the Benders decomposition algorithm on the model.
+        :return: The model and the time taken to execute the Benders algorithm
+        """
+        from mpisppy.opt.lshaped import LShapedMethod
+
+        scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
+        options = {
+            "root_solver": "gurobi",
+            "sp_solver": "gurobi",
+            "sp_solver_options": {"threads": os.cpu_count() - 1},  # Use all but one CPU core
+            # "valid_eta_lb": None,  # TODO: Check how to set bounds dynamically
+            "max_iter": 1000,
+        }
+        start_time = time.time()
+        ls = LShapedMethod(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
+        result = ls.lshaped_algorithm()
+        stop_time = time.time()
+
+        variables = ls.gather_var_values_to_rank0()
+        for ((scen_name, var_name), var_value) in variables.items():
+            print(scen_name, var_name, var_value)
+
+        return None, stop_time - start_time
 
     # Returns the objective value of this model (either overall or within the zone of interest)
     def get_objective_value(self, zoi: bool):
@@ -121,6 +173,20 @@ def build_from_clone_with_fixed_results(model_to_be_cloned: pyo.Model, model_wit
     return LEGO(model=model_new)
 
 
+def _scenario_creator(scenario_name: str, full_case_study: CaseStudy) -> pyo.ConcreteModel:
+    """
+    Creates a scenario based on the given scenario name. Used for mpi-sppy.
+    :param scenario_name: Name of the scenario to create
+    :return: A pyomo ConcreteModel object for the given scenario
+    """
+    import mpisppy.utils.sputils as sputils
+
+    model = _build_model(full_case_study.filter_scenario(scenario_name))
+    sputils.attach_root_node(model, model.first_stage_objective, model.first_stage_varlist)
+    model._mpisppy_probability = sum(full_case_study.dGlobal_Scenarios.loc[:, "relativeWeight"]) / full_case_study.dGlobal_Scenarios.loc[scenario_name, "relativeWeight"]
+    return model
+
+
 def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     """
     Builds a pyomo ConcreteModel based on the given CaseStudy object.
@@ -128,30 +194,35 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     :return: A pyomo ConcreteModel object
     """
     model = pyo.ConcreteModel()
+    model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=0.0)  # Initialize objective function
+
+    # Initialize first_stage variables and objective required for stochasticity
+    model.first_stage_varlist = []
+    model.first_stage_objective = 0.0
 
     # Element definitions
-    power.add_element_definitions_and_bounds(model, cs)
+    model.first_stage_varlist += power.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableStorage"]:
-        storage.add_element_definitions_and_bounds(model, cs)
-    secondReserve.add_element_definitions_and_bounds(model, cs)
+        model.first_stage_varlist += storage.add_element_definitions_and_bounds(model, cs)
+    model.first_stage_varlist += secondReserve.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnablePowerImportExport"]:
-        importExport.add_element_definitions_and_bounds(model, cs)
+        model.first_stage_varlist += importExport.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
-        softLineLoadLimits.add_element_definitions_and_bounds(model, cs)
+        model.first_stage_varlist += softLineLoadLimits.add_element_definitions_and_bounds(model, cs)
 
     # Helper Sets for zone of interest
     model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=cs.dPower_BusInfo.loc[cs.dPower_BusInfo["zoi"] == 1].index.tolist(), within=model.i)
     model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=[g for g in model.g for i in model.i if (g, i) in model.gi], within=model.g)
 
     # Add constraints
-    power.add_constraints(model, cs)
+    model.first_stage_objective += power.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableStorage"]:
-        storage.add_constraints(model, cs)
-    secondReserve.add_constraints(model, cs)
+        model.first_stage_objective += storage.add_constraints(model, cs)
+    model.first_stage_objective += secondReserve.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnablePowerImportExport"]:
-        importExport.add_constraints(model, cs)
+        model.first_stage_objective += importExport.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
-        softLineLoadLimits.add_constraints(model, cs)
+        model.first_stage_objective += softLineLoadLimits.add_constraints(model, cs)
 
     return model
 
