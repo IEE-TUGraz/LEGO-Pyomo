@@ -1,5 +1,5 @@
 $Title Low-carbon Electricity Generation Optimization (LEGO) model
-
+*Test
 $OnText
 
 Developed by
@@ -469,12 +469,12 @@ $offFold
 $onFold // Define tables and helper sets ---------------------------------------
 
 Sets
-    tThermalGenColumns   /ExisUnits, MaxProd, MinProd, RampUp, RampDw, Qmax, Qmin, InertiaConst, FuelCost, SlopeVarCost, InterVarCost, OMVarCost, StartupCost, EFOR, EnableInvest, InvestCost, FirmCapCoef, CO2Emis, Aux /
+    tThermalGenColumns   /ExisUnits, MaxProd, MinProd, RampUp, RampDw, MinUpTime, MinDownTime, Qmax, Qmin, InertiaConst, FuelCost, Efficiency, CommitConsumption, OMVarCost, StartupConsumption, EFOR, EnableInvest, InvestCost, FirmCapCoef, CO2Emis, YearCom, YearDecom, lat, long, dataPackage, dataSource/
     tStorageColumns      /ExisUnits, MaxProd, MinProd, MaxCons, DisEffic, ChEffic, Qmax, Qmin, InertiaConst, MinReserve, IniReserve, IsHydro, OMVarCost, EnableInvest, MaxInvest, InvestCostPerMW, InvestCostPerMWh, Ene2PowRatio, ReplaceCost, ShelfLife, FirmCapCoef, CDSF_alpha, CDSF_beta /
     tRenewableColumns    /ExisUnits, MaxProd, EnableInvest, MaxInvest, InvestCost, OMVarCost, FirmCapCoef, Qmax, Qmin, InertiaConst/
     tFACTSColumns        /ExisUnits, Qmax, Qmin, EnableInvest, MaxInvest, InvestCost/
-    tNetworkColumns      /InService, R , X , Bc, TapAngle, TapRatio, Pmax, FixedCost, FxChargeRate/
-    tBusInfoColumns      /BaseVolt, maxVolt, minVolt, Bs, Gs, PowerFactor/
+    tNetworkColumns      /pRLine, pXline, pBcline, pAngle, pRatio, pPmax, pEnableInvest, pFOMCost, pInvestCost, InService/
+    tBusInfoColumns      /pBusBaseV, pBusMaxV, pBusMinV, pBusB, pBusG, pBus_pf/
     tImpExpDataColumns   /Import, Export, Price/
     tDSMprofileColumns   /Shift/
     tDSMshedColumns      /ShedPercentage, ShedPenalty/
@@ -1329,6 +1329,7 @@ $onEmbeddedCode Connect:
 - PythonCode:
     code: |
         import pandas as pd
+        import numpy as np
         
         filePath = r"%scenarioFolder%/Power_Network.xlsx"
         xls = pd.ExcelFile(filePath)
@@ -1338,13 +1339,17 @@ $onEmbeddedCode Connect:
         tNetwork = next((x for x in gamsParameters if x.name == "tNetwork"), None)
 
         df = xls.parse(skiprows=[0, 1, 2, 4, 5, 6])
-        
+
         # Drop rows where "excl"-Column is filled, only keep empty ones
         df = df[pd.isna(df['excl'])]
         
         # Drop all columns starting from given column (and all to the right of it)
         df = df.drop(columns=df.columns[df.columns.get_loc("pTecRepr"):], axis=1)
-        
+
+        # Add (now obsolete) columns from old file format
+
+        df["InService"] = 1 
+            
         # Replace empty cells with 0
         df = df.infer_objects(copy=False).fillna(0)
         
@@ -1580,6 +1585,7 @@ $onEmbeddedCode Connect:
     symbols: all
 
 $offEmbeddedCode
+
 $if not errorFree $abort 'Error reading Gas_H2_Demand.xlsx';
 $offFold
 
@@ -2970,8 +2976,8 @@ $endIf.H2Assignments
 * network subsets
 if(card(i) =1, pEnableTransNet = 0)                                               ;
 la    (i,j,c) $[    tNetwork(i,j,c,'InService')              ] = yes              ;
-lc    (i,j,c) $[    tNetwork(i,j,c,'FixedCost') and la(i,j,c)] = yes              ;
-le    (i,j,c) $[not tNetwork(i,j,c,'FixedCost') and la(i,j,c)] = yes              ;
+lc    (i,j,c) $[    tNetwork(i,j,c,'pInvestCost') and la(i,j,c)] = yes              ;
+le    (i,j,c) $[not tNetwork(i,j,c,'pInvestCost') and la(i,j,c)] = yes              ;
 isLc  (i,j  )                                                  = sum[c,lc(i,j,c)] ;
 isLe  (i,j  )                                                  = sum[c,le(i,j,c)] ;
 isLine(i,j  )                                                  = sum[c,le(i,j,c)] ;
@@ -3012,13 +3018,13 @@ pRampUp           (t) = tThermalGen(t,'RampUp'      ) * 1e-3                ;
 pRampDw           (t) = tThermalGen(t,'RampDw'      ) * 1e-3                ;
 pMaxGenQ          (t) = tThermalGen(t,'Qmax'        ) * 1e-3 ;
 pMinGenQ          (t) = tThermalGen(t,'Qmin'        ) * 1e-3 ;
-pSlopeVarCost     (t) = tThermalGen(t,'OMVarCost'   ) * 1e-3 +
-                        tThermalGen(t,'SlopeVarCost') * 1e-3 * tThermalGen(t,'FuelCost') ;
-pInterVarCost     (t) = tThermalGen(t,'InterVarCost') * 1e-6 * tThermalGen(t,'FuelCost') ;
-pStartupCost      (t) = tThermalGen(t,'StartupCost' ) * 1e-6 * tThermalGen(t,'FuelCost') ;
-pSlopeVarFuelCons (t) = tThermalGen(t,'SlopeVarCost') * 1e-3 * pkWh_Mcal ;
-pInterVarCons     (t) = tThermalGen(t,'InterVarCost') * 1e-6 * pkWh_Mcal ;
-pStartupCons      (t) = tThermalGen(t,'StartupCost' ) * 1e-6 * pkWh_Mcal ;
+pSlopeVarCost     (t) = (tThermalGen(t,'OMVarCost'   ) * 1e-3 +
+                        tThermalGen(t,'FuelCost')) /  (tThermalGen(t,'Efficiency')) * 1e-3;
+pInterVarCost     (t) = tThermalGen(t,'CommitConsumption') * 1e-6 * tThermalGen(t,'FuelCost') ;
+pStartupCost      (t) = tThermalGen(t,'StartupConsumption' ) * 1e-6 * tThermalGen(t,'FuelCost') ;
+pSlopeVarFuelCons (t) = tThermalGen(t,'Efficiency') * 1e-3 ;
+pInterVarCons     (t) = tThermalGen(t,'CommitConsumption') * 1e-6 ;
+pStartupCons      (t) = tThermalGen(t,'StartupConsumption' ) * 1e-6 ;
 pInvestCost       (t) = tThermalGen(t,'InvestCost'  ) * 1e-3 *
                         pMaxProd   (t               ) ;
 pFirmCapCoef      (t) = tThermalGen(t,'FirmCapCoef' ) ;
@@ -3103,25 +3109,24 @@ pFirmCapCoef (r) = tRenewable (r,'FirmCapCoef' )        ;
 *Network parameters
 pMaxAngleDiff = pMaxAngleDiff                * pi/180 ;
 pSBase        = pSBase                       * 1e-3   ;
-pRline    (la)= tNetwork (la,'R'           )          ;
-pXline    (la)= tNetwork (la,'X'           )          ;
-pPmax     (la)= tNetwork (la,'Pmax'        ) * 1e-3   ;
-pQmax     (la)= tNetwork (la,'Pmax'        ) * 1e-3   ; //assumption: it is equal to active limit
-pBcline   (la)= tNetwork (la,'Bc'          )          ;
-pAngle    (la)= tNetwork (la,'TapAngle'    ) * pi/180 ;
-pRatio    (la)= tNetwork (la,'TapRatio'    )          ;
-pFixedCost(la)= tNetwork (la,'FixedCost'   ) *
-                tNetwork (la,'FxChargeRate')          ;
+pRline    (la)= tNetwork (la,'pRline'           )         ;
+pXline    (la)= tNetwork (la,'pXLine'           )          ;
+pPmax     (la)= tNetwork (la,'pPmax'        ) * 1e-3   ;
+pQmax     (la)= tNetwork (la,'pPmax'        ) * 1e-3   ; //assumption: it is equal to active limit
+pBcline   (la)= tNetwork (la,'pBcline'          )          ;
+pAngle    (la)= tNetwork (la,'pAngle'    ) * pi/180 ;
+pRatio    (la)= tNetwork (la,'pRatio'    )          ;
+pFixedCost(la)= tNetwork (la,'pInvestCost')          ;
 pBline    (la)= -pXline  (la)/[sqr[pRline(la)]+sqr[pXline(la)]] ;
 pGline    (la)=  pRline  (la)/[sqr[pRline(la)]+sqr[pXline(la)]] ;
 
 *Bus parameters
-pBusBaseV  (i) = tBusInfo(i,'BaseVolt'   ) ;
-pBusMaxV   (i) = tBusInfo(i,'maxVolt'    ) ;
-pBusMinV   (i) = tBusInfo(i,'minVolt'    ) ;
-pBusB      (i) = tBusInfo(i,'Bs'         ) ;
-pBusG      (i) = tBusInfo(i,'Gs'         ) ;
-pBus_pf    (i) = tBusInfo(i,'PowerFactor') ;
+pBusBaseV  (i) = tBusInfo(i,'pBusBaseV'   ) ;
+pBusMaxV   (i) = tBusInfo(i,'pBusMaxV'    ) ;
+pBusMinV   (i) = tBusInfo(i,'pBusMinV'    ) ;
+pBusB      (i) = tBusInfo(i,'pBusB'         ) ;
+pBusG      (i) = tBusInfo(i,'pBusG'         ) ;
+pBus_pf    (i) = tBusInfo(i,'pBus_pf') ;
 pRatioDemQP(i) = tan(arccos(pBus_pf(i))  ) ;
 
 * FACTS for reactive power enery
