@@ -65,7 +65,7 @@ def markov_summand(rp_set: pyo.Set, rp_target: str, from_target_to_others: bool,
         if transition_matrix.at[i, j] > 0:  # Only consider transitions with a probability > 0
             summand += transition_matrix.at[i, j] * relevant_variable[rp, k, *other_indices]
             safety_check += transition_matrix.at[i, j]
-    if safety_check != 1:
+    if abs(safety_check - 1) > 1e-9:
         raise ValueError(f"Transition matrix is not correctly defined - sum of transition probabilities for representative period {rp_target} is not 1 (but {safety_check})")
     return summand
 
