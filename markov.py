@@ -203,7 +203,9 @@ if __name__ == "__main__":
 
     for folder in args.caseStudyFolder.split(","):
         try:
-            folder_name = os.path.basename(os.path.normpath(args.caseStudyFolder))
+            if not folder.endswith("/"):
+                folder += "/"
+            folder_name = os.path.basename(os.path.normpath(folder))
             printer.set_logfile(f"markov-{folder_name}.log")
             printer.information(f"Loading case study from '{folder}'")
             printer.information(f"Logfile: '{printer.get_logfile()}'")
@@ -217,8 +219,9 @@ if __name__ == "__main__":
                 plot_unit_commitment(unit_commitment_result_file, folder, 6 * 24, 1)
         except Exception as e:
             printer.error(f"Exception while executing case study '{folder}': {e}")
-            printer.error(f"Continuing with next case study")
             if args.debug:
                 raise e
+            else:
+                printer.error(f"Continuing with next case study")
 
     printer.success("Done")
