@@ -1,21 +1,127 @@
+import cplex
 import re
 import typing
 from collections import OrderedDict
-
-from pulp import LpProblem
 
 from tools.printer import Printer
 
 printer = Printer.getInstance()
 printer.set_width(240)
 
+# # Might be needed for full symmetry to compare quadratic objectives in the future
+# from collections import defaultdict
+#
+# def symmetrize_quadratic(obj_quad_raw):
+#     obj_quad = defaultdict(float)
+#     for (i, j), coeff in obj_quad_raw.items():
+#         obj_quad[tuple(sorted((i, j)))] += coeff if i == j else coeff / 2
+#     return dict(obj_quad)
 
-def normalize_variable_name(string: str) -> str:
-    # Replace first _ with ( and last _ with )
-    string = string.replace("_", "(", 1)
-    string = string[::-1].replace("_", ")", 1)[::-1]
+def load_mps(filepath):
 
-    return string
+    model = cplex.Cplex()
+    model.set_results_stream(None)  # suppress CPLEX output
+    model.set_log_stream(None)
+    model.set_warning_stream(None)
+    model.set_error_stream(None)
+    model.read(filepath)
+
+    return model
+
+def get_model_data(model):
+    var_names = model.variables.get_names()
+    lower_bounds = model.variables.get_lower_bounds()
+    upper_bounds = model.variables.get_upper_bounds()
+
+    obj_linear = dict(zip(var_names, model.objective.get_linear()))
+    obj_quadratic = {
+        (var_names[i], var_names[j]): coeff
+        for i, j, coeff in model.objective.get_quadratic()
+    }
+    obj_sense = model.objective.sense
+
+    constraint_names_linear = model.linear_constraints.get_names()
+    rhs_linear = dict(zip(constraint_names_linear, model.linear_constraints.get_rhs()))
+    lin_sense = dict(zip(constraint_names_linear, model.linear_constraints.get_senses()))
+    matrix_linear = {
+        constraint_names_linear[i]: {
+            var_names[ind]: val
+            for ind, val in zip(model.linear_constraints.get_rows(i).ind,
+                                model.linear_constraints.get_rows(i).val)
+        }
+        for i in range(model.linear_constraints.get_num())
+    }
+
+    constraint_names_quadratic = model.quadratic_constraints.get_names()
+    rhs_quadratic = dict(zip(constraint_names_quadratic, model.quadratic_constraints.get_rhs()))
+    quad_sense = {name: "E" for name in constraint_names_quadratic}
+    matrix_quadratic = {
+        constraint_names_quadratic[i]: {
+            (var_names[ind1], var_names[ind2]): val
+            for ind1, ind2, val in zip(
+                model.quadratic_constraints.get_quadratic_components(i).ind1,
+                model.quadratic_constraints.get_quadratic_components(i).ind2,
+                model.quadratic_constraints.get_quadratic_components(i).val
+            )
+        }
+        for i in range(model.quadratic_constraints.get_num())
+    }
+
+    data = {
+        "variables": var_names,
+        "bounds": {
+            "lower": lower_bounds,
+            "upper": upper_bounds,
+        },
+        "obj": {
+            "linear": obj_linear,
+            "quadratic": obj_quadratic,
+            "sense": obj_sense,
+        },
+        "matrix": {
+            "linear": matrix_linear,
+            "quadratic": matrix_quadratic,
+        },
+        "rhs": {
+            "linear": rhs_linear,
+            "quadratic": rhs_quadratic,
+        },
+        "sense": {
+            "linear": lin_sense,
+            "quadratic": quad_sense,
+        },
+    }
+
+    return data
+
+def get_fixed_zero_variables(data, precision: float = 1e-12) -> list[str]:
+    """
+    Return a list of normalized variable names that are fixed to zero
+    (lower bound == upper bound == 0, within given precision).
+    """
+    var_names = data["variables"]
+    lower_bounds = data["bounds"]["lower"]
+    upper_bounds = data["bounds"]["upper"]
+
+    fixed_to_zero = []
+    for var in var_names:
+        lb = lower_bounds.get(var, None)
+        ub = upper_bounds.get(var, None)
+        if lb == ub == 0 or (lb is not None and ub is not None and abs(lb) < precision and abs(ub) < precision):
+            norm_var = normalize_variable_names(str(var))
+            fixed_to_zero.append(norm_var)
+
+    return fixed_to_zero
+
+
+def normalize_variable_names(var_name: str) -> str:
+    """
+    Normalize a single variable name and return both the normalized
+    name and the original. Automatically casts to string if needed.
+    """
+    var_name = var_name.replace('[', '(').replace(']', ')')
+    normalized_var = var_name
+    return normalized_var
 
 
 # Normalize constraints by
@@ -123,6 +229,21 @@ def normalize_constraints(model, constraints_to_skip: list[str] = None, constrai
 
 
 def sort_indices(coefficient: str) -> str:
+    """
+    Sorts and organizes the indices within a coefficient string in alphabetical order.
+
+    This function extracts the index group from a given coefficient string in the
+    format `coefficient[index1,index2,...]`, sorts all indices alphabetically,
+    and returns the modified coefficient string. If no indices are found, it simply
+    returns the input coefficient string in an adjusted format. If multiple index
+    groups are detected, an error is raised.
+
+    :param coefficient: The input coefficient string with indices to be sorted.
+    :type coefficient: str
+    :raises ValueError: If the input coefficient contains more than one index group.
+    :return: A string representing the coefficient with its indices sorted alphabetically.
+    :rtype: str
+    """
     regex_result = re.findall(r"(\w*)\[([^]]*)", coefficient)
     indices_groups = regex_result[0] if len(regex_result) > 0 else [""]  # No indices found
     if len(indices_groups) > 2:
@@ -436,8 +557,8 @@ def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bo
             constraints_to_skip_from2 = None
 
     # Load MPS files
-    model1 = LpProblem.fromMPS(file1)
-    model2 = LpProblem.fromMPS(file2)
+    model1 = get_model_data(load_mps(file1)) # Pyomo data
+    model2 = get_model_data(load_mps(file2)) # GAMS data
 
     comparison_results = {}
 
