@@ -99,14 +99,15 @@ def get_fixed_zero_variables(data, precision: float = 1e-12) -> list[str]:
     Return a list of normalized variable names that are fixed to zero
     (lower bound == upper bound == 0, within given precision).
     """
-    var_names = data["variables"]
-    lower_bounds = data["bounds"]["lower"]
-    upper_bounds = data["bounds"]["upper"]
+    var_names = data["variables"]              # list of variable names
+    lower_bounds = data["bounds"]["lower"]     # list of lower bounds (matching var_names order)
+    upper_bounds = data["bounds"]["upper"]     # list of upper bounds (matching var_names order)
 
     fixed_to_zero = []
-    for var in var_names:
-        lb = lower_bounds.get(var, None)
-        ub = upper_bounds.get(var, None)
+    for i, var in enumerate(var_names):
+        lb = lower_bounds[i] if i < len(lower_bounds) else None
+        ub = upper_bounds[i] if i < len(upper_bounds) else None
+
         if lb == ub == 0 or (lb is not None and ub is not None and abs(lb) < precision and abs(ub) < precision):
             norm_var = normalize_variable_names(str(var))
             fixed_to_zero.append(norm_var)
@@ -390,33 +391,35 @@ def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], c
 
 
 # Compare two lists of variables where coefficients are already normalized
-# Returns a list of variables that are fixed to 0 and missing in the second list
-def compare_variables(vars1, vars2, precision: float = 1e-12) -> (dict[str, int], list[str]):
+# Returns a list of variables that are missing in the second list
+def compare_variables(vars1, vars2, vars_fixed_to_zero=None, precision: float = 1e-12) -> dict[str, int]:
     counter = 0
     counter_perfect_total = 0
     counter_partial_total = 0
     counter_missing1_total = 0
     counter_missing2_total = 0
+    vars_fixed_to_zero = set(vars_fixed_to_zero or [])
+
     vars2 = vars2.copy()
-    vars_fixed_to_zero = []  # Variables that are fixed to 0, so if they are missing it is ok
+
     for v in vars1:
         found = False
         bounds_differ = False
         for v2 in vars2:
-            if v[0] == v2[0]:
+            if v[0] == v2[0]:  # We see if the variable names match
                 found = True
-                if v[1] is None or v2[1] is None:
-                    if v[1] != v2[1]:
+                if v[1] is None or v2[1] is None: # If one of the bounds is None, we compare if the other one is also none
+                    if v[1] != v2[1]:   # If one bound is None and the other is not, they differ
                         bounds_differ = True
                         break
-                elif v[1] == 0:
+                elif v[1] == 0: # If the lower bound is 0, we check if the other lower bound is sufficiently small
                     if abs(v2[1]) > precision:
                         bounds_differ = True
                         break
-                elif abs((v[1] - v2[1]) / v[1]) > precision:
+                elif abs((v[1] - v2[1]) / v[1]) > precision: # If the first lower bound is not 0 or None we check if the relative difference is within the precision
                     bounds_differ = True
                     break
-
+                # Same for upper bounds
                 if v[2] is None or v2[2] is None:
                     if v[2] != v2[2]:
                         bounds_differ = True
@@ -428,19 +431,19 @@ def compare_variables(vars1, vars2, precision: float = 1e-12) -> (dict[str, int]
                 elif abs((v[2] - v2[2]) / v[2]) > precision:
                     bounds_differ = True
                     break
-                break  # Found a match so we can break
-        if not found:
-            if v[1] == 0 and v[2] == 0:  # Variable is missing, but is fixed to 0, so that's ok
+                break  # Found a match, exit inner loop
+
+        if not found: # If a variable is not found in model 2
+            if v[0] in vars_fixed_to_zero: # If the variable is fixed to zero, we can ignore it
                 counter += 1
-                vars_fixed_to_zero.append(v[0])
             else:
-                if counter > 0:
+                if counter > 0: # If we have counted some perfect matches, we print them
                     printer.success(f"{counter} variables matched perfectly")
                     counter_perfect_total += counter
                     counter = 0
                 counter_missing2_total += 1
-                printer.warning(f"Variable not found in model2: {v}")
-        elif bounds_differ:
+                printer.warning(f"Variable not found in model2: {v}") # Print variable that is missing in model 2
+        elif bounds_differ: # If the variable is found but the bounds differ
             vars2.remove(v2)
             if counter > 0:
                 printer.success(f"{counter} variables matched perfectly")
@@ -451,22 +454,35 @@ def compare_variables(vars1, vars2, precision: float = 1e-12) -> (dict[str, int]
         else:
             counter += 1
             vars2.remove(v2)
+
         if counter > 0 and counter % 500 == 0:
             printer.information(f"{counter} variables matched perfectly, continue to count...")
+
     if counter > 0:
         printer.success(f"{counter} variables matched perfectly")
 
-    if len(vars2) > 0:
-        printer.error(f"Variables missing in model 1: {', '.join([v[0] for v in vars2])}", hard_wrap_chars=f"[... {len(vars2)} total]")
+    if len(vars2) > 0: # If there are still variables left in model 2 that were not found in model 1
+        printer.error(
+            f"Variables missing in model 1: {', '.join([v[0] for v in vars2])}",
+            hard_wrap_chars=f"[... {len(vars2)} total]"
+        )
         counter_missing1_total += len(vars2)
 
-    vars_fixed_to_zero = [sort_indices(v.replace("(", "[").replace(")", "]")) for v in vars_fixed_to_zero]  # Adjust indexing-style and sort indices alphabetically
-    if len(vars_fixed_to_zero) > 0:
-        printer.information(f"Variables missing in list2, but fixed to 0: {', '.join(vars_fixed_to_zero)}", hard_wrap_chars=f"[... {len(vars_fixed_to_zero)} total]")
+    if vars_fixed_to_zero:
+        info_list = [sort_indices(v.replace("(", "[").replace(")", "]")) for v in vars_fixed_to_zero]
+        printer.information(
+            f"Variables missing in list2, but fixed to 0: {', '.join(info_list)}",
+            hard_wrap_chars=f"[... {len(info_list)} total]"
+        )
 
     counter_perfect_total += counter
 
-    return {"perfect": counter_perfect_total, "partial": counter_partial_total, "missing in model 1": counter_missing1_total, "missing in model 2": counter_missing2_total}, vars_fixed_to_zero
+    return {
+        "perfect": counter_perfect_total,
+        "partial": counter_partial_total,
+        "missing in model 1": counter_missing1_total,
+        "missing in model 2": counter_missing2_total
+    }
 
 
 def normalize_objective(model, coefficients_to_skip: list[str] = None) -> dict[str, float]:
@@ -564,11 +580,21 @@ def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bo
 
     # Variables
     if check_vars:
-        vars1 = {(normalize_variable_name(v.name) if file1_isPyomoFormat else v.name, v.lowBound, v.upBound) for v in model1[1].variables() if v.name not in coefficients_to_skip_from1}
-        vars2 = {(normalize_variable_name(v.name) if file2_isPyomoFormat else v.name, v.lowBound, v.upBound) for v in model2[1].variables() if v.name not in coefficients_to_skip_from2}
+        vars1 = set(
+            (normalize_variable_names(var), model1["bounds"]["lower"][i], model1["bounds"]["upper"][i])
+            for i, var in enumerate(model1["variables"])
+        )
+        vars2 = set(
+            (normalize_variable_names(var), model2["bounds"]["lower"][i], model2["bounds"]["upper"][i])
+            for i, var in enumerate(model2["variables"])
+        )
 
-        comparison_results['variables'], vars_fixed_to_zero = compare_variables(vars1, vars2)
-        coefficients_to_skip_from1.extend(vars_fixed_to_zero)  # Add variables that are fixed to 0 to the list of coefficients to skip
+        vars_fixed_to_zero = get_fixed_zero_variables(model1) # Only the Pyomo model writes fixed to zero variables, GAMS doesn't write them at all, so those can be ignored
+
+        comparison_results["variables"] = compare_variables(
+            vars1, vars2, vars_fixed_to_zero=vars_fixed_to_zero
+        )
+
 
     # Constraints
     if check_constraints:
