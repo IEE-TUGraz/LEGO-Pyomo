@@ -94,25 +94,34 @@ def get_model_data(model):
 
     return data
 
-def get_fixed_zero_variables(data, precision: float = 1e-12) -> list[str]:
+def get_fixed_zero_variables(
+    data,
+    precision: float = 1e-12,
+    coefficients_to_skip: list[str] | None = None,
+) -> list[str]:
     """
-    Return a list of normalized variable names that are fixed to zero
-    (lower bound == upper bound == 0, within given precision).
+    Return a list of *normalised* names that are fixed to zero
+    (lb == ub == 0, within precision) and do **not** match any
+    substring in `coefficients_to_skip`.
     """
-    var_names = data["variables"]              # list of variable names
-    lower_bounds = data["bounds"]["lower"]     # list of lower bounds (matching var_names order)
-    upper_bounds = data["bounds"]["upper"]     # list of upper bounds (matching var_names order)
+    coefficients_to_skip = coefficients_to_skip or []
 
     fixed_to_zero = []
-    for i, var in enumerate(var_names):
-        lb = lower_bounds[i] if i < len(lower_bounds) else None
-        ub = upper_bounds[i] if i < len(upper_bounds) else None
+    for i, var in enumerate(data["variables"]):
+        lb = data["bounds"]["lower"][i]
+        ub = data["bounds"]["upper"][i]
 
-        if lb == ub == 0 or (lb is not None and ub is not None and abs(lb) < precision and abs(ub) < precision):
-            norm_var = normalize_variable_names(str(var))
-            fixed_to_zero.append(norm_var)
+        if (lb == ub == 0) or (
+            lb is not None and ub is not None and
+            abs(lb) < precision and abs(ub) < precision
+        ):
+            norm = normalize_variable_names(str(var))
+            if any(s in norm for s in coefficients_to_skip):
+                continue
+            fixed_to_zero.append(norm)
 
     return fixed_to_zero
+
 
 
 def normalize_variable_names(var_name: str) -> str:
@@ -486,56 +495,42 @@ def compare_variables(vars1, vars2, vars_fixed_to_zero=None, precision: float = 
 
 
 def normalize_objective(
-        model_data,
-        vars_fixed_to_zero: set[str] = None,
-        coefficients_to_skip: list[str] = None,
-        zero_tol: float = 1e-15
+    model_data,
+    vars_fixed_to_zero: set[str] | None = None,
+    coefficients_to_skip: list[str] | None = None,
+    zero_tol: float = 1e-15,
 ) -> dict[str, float]:
     """
-    Normalize the linear objective coefficients in a CPLEX model dictionary. This function processes
-    the provided model representation, skipping certain coefficients based on user-defined
-    criteria, and excludes variables fixed to zero. It creates a normalized mapping of the
-    objective function for further analysis.
-
-    :param model_data: A dictionary representing the model data which includes the linear objective
-        coefficients.
-    :param coefficients_to_skip: A list of substrings; any variable containing these substrings will
-        not be included in the normalized objective. Defaults to None.
-    :param vars_fixed_to_zero: A set of variable names that are fixed to zero and should be skipped
-        in the normalization process. Defaults to an empty set.
-    :param zero_tol: A tolerance value; coefficients with an absolute value equal to or less than this
-        threshold are ignored. Defaults to 1e-15.
-    :return: A dictionary where keys are the normalized variable names, and values are their corresponding
-        objective coefficients derived from the input model data.
+    Build a dict {normalised-var-name: coeff} while
+    • dropping vars fixed to zero
+    • dropping vars whose name contains any substring in `coefficients_to_skip`
+    • dropping coefficients whose magnitude ≤ zero_tol
     """
-    if coefficients_to_skip is None:
-        coefficients_to_skip = []
-    if vars_fixed_to_zero is None:
-        vars_fixed_to_zero = set()
+    vars_fixed_to_zero = vars_fixed_to_zero or set()
+    coefficients_to_skip = coefficients_to_skip or []
 
-    normalized_objective_lin = {}
-    skipped_vars = []
+    norm_obj = {}
+    skipped = []
 
-    for original_obj_name_linear, value in model_data["obj"]["linear"].items():
-        obj_name_lin_clean = normalize_variable_names(original_obj_name_linear)
-        sorted_obj_name_lin = sort_indices(obj_name_lin_clean)
-        # Skip if variable is fixed to zero
-        if obj_name_lin_clean in vars_fixed_to_zero:
-            skipped_vars.append(original_obj_name_linear)
+    for raw_name, val in model_data["obj"]["linear"].items():
+        if abs(val) <= zero_tol:
             continue
 
-        normalized_objective_lin[sorted_obj_name_lin] = value
+        norm_name = normalize_variable_names(raw_name)
+        if any(substr in norm_name for substr in coefficients_to_skip):
+            skipped.append(raw_name)
+            continue
+        if norm_name in vars_fixed_to_zero:
+            skipped.append(raw_name)
+            continue
 
-    if skipped_vars:
-        max_preview = 10
-        print(f"Skipping {len(skipped_vars)} fixed-to-zero variables for coefficients.")
-        print("Examples:")
-        for var in skipped_vars[:max_preview]:
-            print(f"  {var}")
-        if len(skipped_vars) > max_preview:
-            print(f"  ... and {len(skipped_vars) - max_preview} more.")
+        norm_obj[sort_indices(norm_name)] = val
 
-    return normalized_objective_lin
+    # optional debug print …
+    # if skipped: print(f"Skipped {len(skipped)} vars in objective (0-fixed or substring match)")
+
+    return norm_obj
+
 
 def compare_objectives(objective1, objective2, precision: float = 1e-12) -> dict[str, int]:
     objective2 = objective2.copy()
@@ -615,14 +610,19 @@ def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bo
 
     # Variables
     if check_vars:
-        vars1 = set(
-            (normalize_variable_names(var), model1["bounds"]["lower"][i], model1["bounds"]["upper"][i])
-            for i, var in enumerate(model1["variables"])
-        )
-        vars2 = set(
-            (normalize_variable_names(var), model2["bounds"]["lower"][i], model2["bounds"]["upper"][i])
-            for i, var in enumerate(model2["variables"])
-        )
+        vars1 = set()
+        for i, var in enumerate(model1["variables"]):
+            norm_var = normalize_variable_names(var)
+            if coefficients_to_skip_from1 and any(skip in norm_var for skip in coefficients_to_skip_from1):
+                continue
+            vars1.add((norm_var, model1["bounds"]["lower"][i], model1["bounds"]["upper"][i]))
+
+        vars2 = set()
+        for i, var in enumerate(model2["variables"]):
+            norm_var = normalize_variable_names(var)
+            if coefficients_to_skip_from2 and any(skip in norm_var for skip in coefficients_to_skip_from2):
+                continue
+            vars2.add((norm_var, model2["bounds"]["lower"][i], model2["bounds"]["upper"][i]))
 
         vars_fixed_to_zero = get_fixed_zero_variables(model1) # Only the Pyomo model writes fixed to zero variables, GAMS doesn't write them at all, so those can be ignored
 

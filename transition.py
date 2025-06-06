@@ -35,7 +35,7 @@ coefficients_to_skip_from1 = ['vGenQ','vLineQ']
 
 constraints_to_skip_from2 = []
 constraints_to_keep_from2 = []
-coefficients_to_skip_from2 = ['vGenQ','vLineQ']
+coefficients_to_skip_from2 = []
 constraints_to_enforce_from2 = []
 
 ########################################################################################################################
