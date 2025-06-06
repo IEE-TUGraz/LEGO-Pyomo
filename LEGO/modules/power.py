@@ -202,7 +202,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
             lego.model.vLineInvest[i, j, c].fix(0)  # Set existing lines to not investable
 
     lego.model.vGenInvest = pyo.Var(lego.model.g, doc="Integer generation investment", bounds=lambda model, g: (0, model.pMaxInvest[g] * model.pEnabInv[g]))
-    
+
     # SOCP Variables
     if lego.cs.dPower_Parameters["pEnableSOCP"]:
         lego.model.vSOCP_cii = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, domain=pyo.Reals)  # Angle of bus i used in the AC-OPF instead of vTheta

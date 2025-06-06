@@ -228,33 +228,33 @@ def normalize_constraints(model, constraints_to_skip: list[str] = None, constrai
 
     return constraints
 
-
 def sort_indices(coefficient: str) -> str:
     """
     Sorts and organizes the indices within a coefficient string in alphabetical order.
 
-    This function extracts the index group from a given coefficient string in the
-    format `coefficient[index1,index2,...]`, sorts all indices alphabetically,
-    and returns the modified coefficient string. If no indices are found, it simply
-    returns the input coefficient string in an adjusted format. If multiple index
-    groups are detected, an error is raised.
+    If the coefficient string does not contain indices (i.e., it doesn't match the
+    pattern `name(index1,index2,...)`), the original string is returned unchanged.
 
-    :param coefficient: The input coefficient string with indices to be sorted.
+    :param coefficient: The input coefficient string with optional indices.
     :type coefficient: str
-    :raises ValueError: If the input coefficient contains more than one index group.
-    :return: A string representing the coefficient with its indices sorted alphabetically.
+    :return: A string with sorted indices, or the original string if no indices are present.
     :rtype: str
     """
-    regex_result = re.findall(r"(\w*)\[([^]]*)", coefficient)
-    indices_groups = regex_result[0] if len(regex_result) > 0 else [""]  # No indices found
-    if len(indices_groups) > 2:
+    regex_result = re.findall(r"(\w+)\(([^)]*)\)", coefficient)
+
+    # If no match found, return the original string
+    if not regex_result:
+        return coefficient
+
+    if len(regex_result) > 1:
         raise ValueError(f"More than one index group found in {coefficient}")
-    if len(indices_groups) == 1:  # No indices found
-        indices = ""
-    else:
-        indices = ",".join(sorted([i.strip() for i in indices_groups[1].split(",")]))  # Sort indices alphabetically
-    sorted_coefficient = f"{indices_groups[0]}[{indices}]"
-    return sorted_coefficient
+
+    name, indices_str = regex_result[0]
+    if not indices_str.strip():
+        return coefficient  # No indices, return original
+
+    indices = sorted(i.strip() for i in indices_str.split(",") if i.strip())
+    return f"{name}[{','.join(indices)}]"
 
 
 # Sort constraints by number of coefficients
@@ -485,28 +485,57 @@ def compare_variables(vars1, vars2, vars_fixed_to_zero=None, precision: float = 
     }
 
 
-def normalize_objective(model, coefficients_to_skip: list[str] = None) -> dict[str, float]:
+def normalize_objective(
+        model_data,
+        vars_fixed_to_zero: set[str] = None,
+        coefficients_to_skip: list[str] = None,
+        zero_tol: float = 1e-15
+) -> dict[str, float]:
+    """
+    Normalize the linear objective coefficients in a CPLEX model dictionary. This function processes
+    the provided model representation, skipping certain coefficients based on user-defined
+    criteria, and excludes variables fixed to zero. It creates a normalized mapping of the
+    objective function for further analysis.
+
+    :param model_data: A dictionary representing the model data which includes the linear objective
+        coefficients.
+    :param coefficients_to_skip: A list of substrings; any variable containing these substrings will
+        not be included in the normalized objective. Defaults to None.
+    :param vars_fixed_to_zero: A set of variable names that are fixed to zero and should be skipped
+        in the normalization process. Defaults to an empty set.
+    :param zero_tol: A tolerance value; coefficients with an absolute value equal to or less than this
+        threshold are ignored. Defaults to 1e-15.
+    :return: A dictionary where keys are the normalized variable names, and values are their corresponding
+        objective coefficients derived from the input model data.
+    """
     if coefficients_to_skip is None:
         coefficients_to_skip = []
+    if vars_fixed_to_zero is None:
+        vars_fixed_to_zero = set()
 
-    normalized_objective = {}
+    normalized_objective_lin = {}
+    skipped_vars = []
 
-    original_names = {str(b): a.replace("(", "[").replace(")", "]") for a, b in model[0].items()}
-
-    for name, value in model[1].objective.items():
-        skip_coefficient = False
-        for c in coefficients_to_skip:
-            if c in original_names[str(name)]:
-                skip_coefficient = True
-                break
-        if skip_coefficient:
+    for original_obj_name_linear, value in model_data["obj"]["linear"].items():
+        obj_name_lin_clean = normalize_variable_names(original_obj_name_linear)
+        sorted_obj_name_lin = sort_indices(obj_name_lin_clean)
+        # Skip if variable is fixed to zero
+        if obj_name_lin_clean in vars_fixed_to_zero:
+            skipped_vars.append(original_obj_name_linear)
             continue
 
-        sorted_name = sort_indices(original_names[str(name)])
-        normalized_objective[sorted_name] = value
+        normalized_objective_lin[sorted_obj_name_lin] = value
 
-    return normalized_objective
+    if skipped_vars:
+        max_preview = 10
+        print(f"Skipping {len(skipped_vars)} fixed-to-zero variables for coefficients.")
+        print("Examples:")
+        for var in skipped_vars[:max_preview]:
+            print(f"  {var}")
+        if len(skipped_vars) > max_preview:
+            print(f"  ... and {len(skipped_vars) - max_preview} more.")
 
+    return normalized_objective_lin
 
 def compare_objectives(objective1, objective2, precision: float = 1e-12) -> dict[str, int]:
     objective2 = objective2.copy()
@@ -517,40 +546,46 @@ def compare_objectives(objective1, objective2, precision: float = 1e-12) -> dict
 
     for name1, value1 in objective1.items():
         found = False
-        for name2, value2 in objective2.items():
-            if name1 == name2:
-                if abs((value1 - value2) / value1) > precision:
-                    partial_matches.append(f"{name1}: {value1} != {value2}")
-                else:
-                    counter_perfect_matches += 1
-                    if counter_perfect_matches % 500 == 0:
-                        printer.information(f"{counter_perfect_matches} coefficients matched perfectly, continue to count...")
-                objective2.pop(name2)
-                found = True
-                break
+        if name1 in objective2:
+            value2 = objective2[name1]
+            rel_diff = abs((value1 - value2) / value1) if value1 != 0 else abs(value2)
+            if rel_diff > precision:
+                partial_matches.append(f"{name1}: {value1} != {value2}")
+            else:
+                counter_perfect_matches += 1
+                if counter_perfect_matches % 500 == 0:
+                    print(f"{counter_perfect_matches} coefficients matched perfectly...")
+
+            del objective2[name1]
+            found = True
+
         if not found:
             coefficients_missing_in_model2.append(f"{name1}: {value1}")
 
     for name2, value2 in objective2.items():
         coefficients_missing_in_model1.append(f"{name2}: {value2}")
 
-    printer.success(f"{counter_perfect_matches} coefficients of objective matched perfectly")
-    if len(partial_matches) > 0:
-        printer.error(f"Partial matches found:")
-        for match in partial_matches:
-            printer.warning(f"Partial: {match}", prefix="")
-    if len(coefficients_missing_in_model1) > 0:
-        printer.error(f"Coefficients missing in model1:")
-        for missing in coefficients_missing_in_model1:
-            printer.warning(f"Missing in 1: {missing}", prefix="")
-    if len(coefficients_missing_in_model2) > 0:
-        printer.error(f"Coefficients missing in model2:")
-        for missing in coefficients_missing_in_model2:
-            printer.warning(f"Missing in 2: {missing}", prefix="")
+    # Summary logging
+    print(f"[✔] {counter_perfect_matches} objective coefficients matched perfectly.")
+    if partial_matches:
+        print("[⚠] Partial mismatches found:")
+        for entry in partial_matches:
+            print(f"    • {entry}")
+    if coefficients_missing_in_model1:
+        print("[✘] Coefficients missing in model 1:")
+        for entry in coefficients_missing_in_model1:
+            print(f"    • {entry}")
+    if coefficients_missing_in_model2:
+        print("[✘] Coefficients missing in model 2:")
+        for entry in coefficients_missing_in_model2:
+            print(f"    • {entry}")
 
-    return {"perfect": counter_perfect_matches, "partial": len(partial_matches), "missing in model 1": len(coefficients_missing_in_model1), "missing in model 2": len(coefficients_missing_in_model2)}
-
-
+    return {
+        "perfect": counter_perfect_matches,
+        "partial": len(partial_matches),
+        "missing in model 1": len(coefficients_missing_in_model1),
+        "missing in model 2": len(coefficients_missing_in_model2)
+    }
 def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bool, check_vars=True, check_constraints=True, print_additional_information=False,
                 constraints_to_skip_from1=None, constraints_to_keep_from1=None, coefficients_to_skip_from1=None,
                 constraints_to_skip_from2=None, constraints_to_keep_from2=None, coefficients_to_skip_from2=None, constraints_to_enforce_from2=None):
@@ -613,8 +648,9 @@ def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bo
         comparison_results['constraints'] = compare_constraints(constraints1, constraints2, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
 
     # Objective
-    objective1 = normalize_objective(model1, coefficients_to_skip=coefficients_to_skip_from1)
-    objective2 = normalize_objective(model2, coefficients_to_skip=coefficients_to_skip_from2)
+    vars_fixed_to_zero = get_fixed_zero_variables(model1)
+    objective1 = normalize_objective(model1, vars_fixed_to_zero = vars_fixed_to_zero, coefficients_to_skip=coefficients_to_skip_from1)
+    objective2 = normalize_objective(model2, vars_fixed_to_zero = vars_fixed_to_zero,coefficients_to_skip=coefficients_to_skip_from2)
     comparison_results['coefficients of objective'] = compare_objectives(objective1, objective2)
 
     # Print results
