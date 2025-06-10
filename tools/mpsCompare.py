@@ -181,7 +181,7 @@ def normalize_constraints(
         if constraints_to_keep and not any(keep in name for keep in constraints_to_keep):
             continue
 
-        # Normalize constraint name (optional cleanup)
+        # Remove prefixes and suffixes
         for prefix in ["c_e_", "c_l_", "c_u_"]:
             if name.startswith(prefix):
                 name = name[len(prefix):]
@@ -212,15 +212,20 @@ def normalize_constraints(
 
             normalized_var = normalize_variable_names(var)
             sorted_var = sort_indices(normalized_var)
+
             normalized_coeffs[sorted_var] = val * scale
 
         if not normalized_coeffs and adjusted_rhs == 0.0:
             continue  # skip zero-only constraints
 
-        normalized_coeffs = OrderedDict(sorted(normalized_coeffs.items()))
-        constraints[name] = normalized_coeffs
-        normalized_rhs[name] = adjusted_rhs
-        normalized_sense[name] = symbol
+        normalized_coeffs = OrderedDict(
+            sorted((normalize_variable_names(k), v) for k, v in normalized_coeffs.items())
+        )
+        normalized_name = normalize_variable_names(name)
+        constraints[normalized_name] = normalized_coeffs
+        # Store normalized RHS and sense but not needed right now
+        normalized_rhs[normalized_name] = adjusted_rhs
+        normalized_sense[normalized_name] = symbol
 
     return constraints, normalized_rhs, normalized_sense
 
@@ -250,7 +255,7 @@ def sort_indices(coefficient: str) -> str:
         return coefficient  # No indices, return original
 
     indices = sorted(i.strip() for i in indices_str.split(",") if i.strip())
-    return f"{name}[{','.join(indices)}]"
+    return f"{name}({','.join(indices)})"
 
 
 # Sort constraints by number of coefficients
@@ -291,7 +296,7 @@ def compare_constraints(
     """
 
     # Remove coefficients for variables fixed to zero
-    def remove_fixed_zero_vars(constraints):
+    def remove_zero_variables_from_constraints(constraints):
         cleaned = {}
         for cname, coeffs in constraints.items():
             new_coeffs = OrderedDict(
@@ -300,20 +305,21 @@ def compare_constraints(
             cleaned[cname] = new_coeffs
         return cleaned
 
-    cleaned_constraints1_raw = remove_fixed_zero_vars(constraints1)
-    cleaned_constraints2_raw = remove_fixed_zero_vars(constraints2)
+    cleaned_constraints1_raw = remove_zero_variables_from_constraints(constraints1)
+    cleaned_constraints2_raw = remove_zero_variables_from_constraints(constraints2)
 
     removed1 = [k for k, v in cleaned_constraints1_raw.items() if len(v) == 0]
     removed2 = [k for k, v in cleaned_constraints2_raw.items() if len(v) == 0]
 
-    print(f"Removed {len(removed1)} constraints from Pyomo Model after eliminating fixed-to-zero vars.")
-    print(f"Removed {len(removed2)} constraints from GAMS Model after eliminating fixed-to-zero vars.")
+    printer.information(f"Removed {len(removed1)} constraints of 0 length from Pyomo Model after eliminating fixed-to-zero vars.")
+    printer.information(f"Removed {len(removed2)} constraints of 0 length from GAMS Model after eliminating fixed-to-zero vars.")
 
     cleaned_constraints1 = {k: v for k, v in cleaned_constraints1_raw.items() if len(v) > 0}
     cleaned_constraints2 = {k: v for k, v in cleaned_constraints2_raw.items() if len(v) > 0}
 
     constraint_dicts1 = sort_constraints(cleaned_constraints1)
     constraint_dicts2 = sort_constraints(cleaned_constraints2)
+
 
     counter_perfect_total = 0
     counter_partial_total = 0
@@ -386,7 +392,7 @@ def compare_constraints(
                     break
 
             if not matched:
-                counter_missing1_total += 1
+                counter_missing2_total += 1
                 if print_additional_information:
                     print(f"No match for constraint: {cname1}")
 
@@ -657,7 +663,6 @@ def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bo
 
     # Constraints
     if check_constraints:
-        vars_fixed_to_zero = get_fixed_zero_variables(model1)
         # If any of enforce is in skip, raise error
         if constraints_to_skip_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)):
             raise ValueError(f"constraints_to_skip_from2 contains elements of constraints_to_enforce_from2: {set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)}")
@@ -666,9 +671,14 @@ def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bo
         if constraints_to_keep_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).intersection(constraints_to_keep_from2)):
             raise ValueError(f"constraints_to_keep_from2 is missing elements of constraints_to_enforce_from2: {set(constraints_to_keep_from2).difference(constraints_to_enforce_from2)}")
 
-        constraints1 = normalize_constraints(model1, constraints_to_skip=constraints_to_skip_from1, constraints_to_keep=constraints_to_keep_from1, coefficients_to_skip=coefficients_to_skip_from1)
-        constraints2 = normalize_constraints(model2, constraints_to_skip=constraints_to_skip_from2, constraints_to_keep=constraints_to_keep_from2, coefficients_to_skip=coefficients_to_skip_from2)
+        constraints1, _, _ = normalize_constraints(model1, constraints_to_skip=constraints_to_skip_from1, constraints_to_keep=constraints_to_keep_from1, coefficients_to_skip=coefficients_to_skip_from1)
+        constraints2, _, _ = normalize_constraints(model2, constraints_to_skip=constraints_to_skip_from2, constraints_to_keep=constraints_to_keep_from2, coefficients_to_skip=coefficients_to_skip_from2)
 
+        vars_fixed_to_zero_raw = get_fixed_zero_variables(model1)
+        vars_fixed_to_zero = {
+            sort_indices(normalize_variable_names(str(v)))
+            for v in vars_fixed_to_zero_raw
+        }
         # Check if constraints are the same
         comparison_results['constraints'] = compare_constraints(constraints1, constraints2,vars_fixed_to_zero =vars_fixed_to_zero, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
 

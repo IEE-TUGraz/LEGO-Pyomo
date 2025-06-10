@@ -21,15 +21,15 @@ printer = Printer.getInstance()
 scenario_folder = "data/example/"
 
 # Select which parts are executed
-execute_gams = True
-execute_pyomo = True
+execute_gams = False
+execute_pyomo = False
 solve_pyomo = True # Note: GAMS always solves if it's executed in the current setup as otherwise it won't create an MPS file
 comparison_mps = True  # Compare MPS files?
-check_vars = False
+check_vars = True
 check_constraints = True
-print_additional_information = False
+print_additional_information = True
 
-constraints_to_skip_from1 = []
+constraints_to_skip_from1 = ['eSOCP_QMaxOut','eSOCP_QMinOut1','eSOCP_BalanceQ']
 constraints_to_keep_from1 = []
 coefficients_to_skip_from1 = ['vGenQ','vLineQ']
 
