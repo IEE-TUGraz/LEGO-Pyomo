@@ -138,104 +138,91 @@ def normalize_variable_names(var_name: str) -> str:
 # 1. Replacing all names with actual names in the model
 # 2. Sorting the constraint by name
 # 3. Normalizing all factors based on the constant
-def normalize_constraints(model, constraints_to_skip: list[str] = None, constraints_to_keep: list[str] = None, coefficients_to_skip: list[str] = None) -> typing.Dict[str, OrderedDict[str, str]]:
-    original_names = {str(b): a.replace("(", "[").replace(")", "]") for a, b in model[0].items()}
-    constraints = {}
+def normalize_constraints(
+    data,
+    constraints_to_skip: list[str] = None,
+    constraints_to_keep: list[str] = None,
+    coefficients_to_skip: list[str] = None,
+) -> typing.Tuple[dict[str, OrderedDict[str, float]], dict[str, float], dict[str, str]]:
+    """
+    Normalize linear constraints:
+    - Filters constraints and coefficients
+    - Converts all RHS to ±1 (if non-zero), adjusts coefficients accordingly
+    - Flips inequality direction if RHS is negative
+    - Sorts variables in constraints
 
-    # Sanity checks
-    # If skip and keep are set, raise error
+    Returns:
+        constraints: {normalized_constraint_name: OrderedDict of {normalized_variable_name: coeff}}
+        rhs: {normalized_constraint_name: float}
+        sense: {normalized_constraint_name: "<=", ">=", "="}
+    """
+    from collections import OrderedDict
+
+    constraints_to_skip = constraints_to_skip or []
+    constraints_to_keep = constraints_to_keep or []
+    coefficients_to_skip = coefficients_to_skip or []
+
     if constraints_to_skip and constraints_to_keep:
         raise ValueError("constraints_to_skip and constraints_to_keep cannot be set at the same time")
 
-    constraints_to_skip = [] if constraints_to_skip is None else constraints_to_skip
-    constraints_to_keep = [] if constraints_to_keep is None else constraints_to_keep
-    coefficients_to_skip = [] if coefficients_to_skip is None else coefficients_to_skip
+    sense_map = {"L": "<=", "G": ">=", "E": "="}
+    reverse_sense = {"<=": ">=", ">=": "<=", "=": "="}
 
-    # Loop through all constraints
-    for name, constraint in model[1].constraints.items():
+    constraints = OrderedDict()
+    normalized_rhs = {}
+    normalized_sense = {}
 
-        # Skip constraint if it contains any of the strings in constraints_to_skip
-        skip_constraint = False
-        for c in constraints_to_skip:
-            if c in name:
-                skip_constraint = True
-                break
-        if skip_constraint:
+    for orig_name, coeffs in data["matrix"]["linear"].items():
+        name = orig_name
+
+        # Skip or keep
+        if any(skip in name for skip in constraints_to_skip):
+            continue
+        if constraints_to_keep and not any(keep in name for keep in constraints_to_keep):
             continue
 
-        # Only continue with constraints from constraints_to_keep (if it is set)
-        if constraints_to_keep:
-            keep_constraint = False
-            for c in constraints_to_keep:
-                if c in name:
-                    keep_constraint = True
-                    break
-            if not keep_constraint:
-                continue
+        # Normalize constraint name (optional cleanup)
+        for prefix in ["c_e_", "c_l_", "c_u_"]:
+            if name.startswith(prefix):
+                name = name[len(prefix):]
+        if name.endswith("_"):
+            name = name[:-1]
+        if "_" in name:
+            parts = name.rsplit("_", 1)
+            if parts[1].isdigit():
+                name = f"{parts[0]}({parts[1]})"
 
-        original_constraint_dict = constraint.toDict()
-        result_constraint_dict = {}
+        rhs = data["rhs"]["linear"].get(orig_name, 0.0)
+        sense_code = data["sense"]["linear"].get(orig_name, "E")
+        symbol = sense_map.get(sense_code, sense_code)
 
-        # Try to fix name of constraints for pyomo mps-export
-        if "c_e_" in name:
-            name = (name.replace("c_e_", "")[:-2] + ")")
-        if "c_l_" in name:
-            name = (name.replace("c_l_", "")[:-2] + ")")
-        if "c_u_" in name:
-            name = (name.replace("c_u_", "")[:-2] + ")")
-
-        name = "(".join(name.rsplit("_", 1))
-
-        # Replace name & normalize factors by constant
-        constant = original_constraint_dict['constant']
-        for coefficient in original_constraint_dict['coefficients']:
-            if original_names[coefficient['name']] in result_constraint_dict:
-                raise ValueError(f"Coefficient {original_names[coefficient['name']]} found twice in constraint {name}.\n"
-                                 f"Full constraint: {constraint}")
-
-            sorted_coefficient = sort_indices(original_names[coefficient['name']])  # Sort indices alphabetically
-
-            # Skip coefficient if it is in coefficients_to_skip
-            if sorted_coefficient in coefficients_to_skip:
-                continue
-
-            if constant != 0:
-                result_constraint_dict[sorted_coefficient] = coefficient['value'] / constant
-            else:
-                result_constraint_dict[sorted_coefficient] = coefficient['value']
-
-        # Skip constraints without coefficients (which can happen due to coefficients_to_skip)
-        if len(result_constraint_dict) == 0:
-            continue
-
-        # Create result dictionary
-        orderedDict = OrderedDict()
-
-        # Add sense as human-readable string (it is either '<=' [-1], '=' [0], or '>=' [1]) and adjust if constant is negative
-        if 'sense' in orderedDict:
-            raise ValueError("'sense' already in orderedDict")
-        match original_constraint_dict['sense']:
-            case -1:
-                orderedDict['sense'] = '<=' if constant >= 0 else '>='
-            case 0:
-                orderedDict['sense'] = '='
-            case 1:
-                orderedDict['sense'] = '>=' if constant >= 0 else '<='
-
-        # Add constant to the dictionary (as 1 because we divided all factors by the constant (unless it's 0 to begin with))
-        if 'constant' in orderedDict:
-            raise ValueError("'constant' already in orderedDict")
-        if constant != 0:
-            orderedDict['constant'] = 1
+        if rhs == 0.0:
+            scale = 1.0
+            adjusted_rhs = 0.0
         else:
-            orderedDict['constant'] = 0
+            scale = 1.0 / abs(rhs)
+            adjusted_rhs = 1.0
+            if rhs < 0:
+                symbol = reverse_sense[symbol]
 
-        # Add sorted coefficients to the dictionary
-        orderedDict.update(sorted(result_constraint_dict.items()))
+        normalized_coeffs = OrderedDict()
+        for var, val in coeffs.items():
+            if any(skip in var for skip in coefficients_to_skip):
+                continue
 
-        constraints[name] = orderedDict
+            normalized_var = normalize_variable_names(var)
+            sorted_var = sort_indices(normalized_var)
+            normalized_coeffs[sorted_var] = val * scale
 
-    return constraints
+        if not normalized_coeffs and adjusted_rhs == 0.0:
+            continue  # skip zero-only constraints
+
+        normalized_coeffs = OrderedDict(sorted(normalized_coeffs.items()))
+        constraints[name] = normalized_coeffs
+        normalized_rhs[name] = adjusted_rhs
+        normalized_sense[name] = symbol
+
+    return constraints, normalized_rhs, normalized_sense
 
 def sort_indices(coefficient: str) -> str:
     """
@@ -281,122 +268,159 @@ def sort_constraints(constraints: typing.Dict[str, OrderedDict[str, str]]) -> Or
     return OrderedDict(sorted(constraint_dicts.items()))
 
 
-# Compare two lists of constraints where coefficients are already normalized (i.e. sorted by name and all factors are divided by the constant)
-def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], constraints2: typing.Dict[str, OrderedDict[str, str]], precision: float = 1e-12,
-                        constraints_to_enforce_from2: list[str] = None, print_additional_information=False) -> dict[str, int]:
-    # Sort constraints by number of coefficients
-    constraint_dicts1 = sort_constraints(constraints=constraints1)
-    constraint_dicts2 = sort_constraints(constraints=constraints2)
+# Compare two lists of constraints where coefficients are already normalized (i.e. sorted by length and all factors are divided by the constant)
+def compare_constraints(
+    constraints1: dict[str, OrderedDict[str, float]],
+    constraints2: dict[str, OrderedDict[str, float]],
+    vars_fixed_to_zero: set[str],
+    precision: float = 1e-12,
+    constraints_to_enforce_from2: list[str] = None,
+    print_additional_information: bool = False,
+) -> dict[str, int]:
+    """
+    Compare two sets of normalized constraints, optionally filtering out
+    variables fixed to zero and enforcing specific constraints to be present.
+
+    :param constraints1: Constraints from model 1
+    :param constraints2: Constraints from model 2
+    :param vars_fixed_to_zero: Set of variable names to eliminate from constraints
+    :param precision: Threshold for comparing floating-point values
+    :param constraints_to_enforce_from2: List of constraint name substrings that must be present in model 2
+    :param print_additional_information: Flag to print detailed debug info
+    :return: Dictionary with counts of perfect, partial, and missing matches
+    """
+
+    # Remove coefficients for variables fixed to zero
+    def remove_fixed_zero_vars(constraints):
+        cleaned = {}
+        for cname, coeffs in constraints.items():
+            new_coeffs = OrderedDict(
+                (var, val) for var, val in coeffs.items() if var not in vars_fixed_to_zero
+            )
+            cleaned[cname] = new_coeffs
+        return cleaned
+
+    cleaned_constraints1_raw = remove_fixed_zero_vars(constraints1)
+    cleaned_constraints2_raw = remove_fixed_zero_vars(constraints2)
+
+    removed1 = [k for k, v in cleaned_constraints1_raw.items() if len(v) == 0]
+    removed2 = [k for k, v in cleaned_constraints2_raw.items() if len(v) == 0]
+
+    print(f"Removed {len(removed1)} constraints from Pyomo Model after eliminating fixed-to-zero vars.")
+    print(f"Removed {len(removed2)} constraints from GAMS Model after eliminating fixed-to-zero vars.")
+
+    cleaned_constraints1 = {k: v for k, v in cleaned_constraints1_raw.items() if len(v) > 0}
+    cleaned_constraints2 = {k: v for k, v in cleaned_constraints2_raw.items() if len(v) > 0}
+
+    constraint_dicts1 = sort_constraints(cleaned_constraints1)
+    constraint_dicts2 = sort_constraints(cleaned_constraints2)
 
     counter_perfect_total = 0
     counter_partial_total = 0
     counter_missing1_total = 0
     counter_missing2_total = 0
 
-    # Loop through all constraints in first list and for each through all constraints in the second list
-    counter_perfectly_matched_constraints = 0
-    for length, constraint_dict1 in constraint_dicts1.items():
+    for length, group1 in constraint_dicts1.items():
         if length not in constraint_dicts2:
-            if counter_perfectly_matched_constraints > 0:
-                printer.success(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
-                counter_perfect_total += counter_perfectly_matched_constraints
-                counter_perfectly_matched_constraints = 0
-            printer.error(f"No constraints of length {length} in second model, skipping comparison for {len(constraint_dict1)} constraints, e.g. {list(constraint_dict1.keys())[0]}", hard_wrap_chars="[...]")
-            counter_missing2_total += len(constraint_dict1)
+            counter_missing2_total += len(group1)
+            if print_additional_information:
+                print(f"No constraints of length {length} in model 2; skipping {len(group1)} constraints.")
             continue
 
-        for constraint_name1, constraint1 in constraint_dict1.items():
-            status = "Potential match"
-            for constraint_name2, constraint2 in constraint_dicts2[length].items():
+        group2 = constraint_dicts2[length]
+        matched_in_group2 = set()
+
+        for cname1, c1 in group1.items():
+            # Skip constraints that are all zero (i.e., no coefficients left after removing fixed-to-zero vars)
+            if all(abs(v) < precision for v in c1.values()):
+                continue
+
+            matched = False
+            for cname2, c2 in group2.items():
+                if cname2 in matched_in_group2:
+                    continue
+                if all(abs(v) < precision for v in c2.values()):
+                    continue
+                if set(c1.keys()) != set(c2.keys()):
+                    continue
+
+                coefficients_off_by_minus_one = 0
+                partial_mismatches1 = {}
+                partial_mismatches2 = {}
                 status = "Potential match"
 
-                partial_match_coefficients1 = {}
-                partial_match_coefficients2 = {}
-                coefficients_off_by_minus_one = 0  # Counter for coefficients that differ by a factor of -1
-                for coefficient_name1, coefficient_value1 in constraint1.items():
-                    if coefficient_name1 not in constraint2:
-                        status = "Coefficient name mismatch"
-                        break
-
-                    if ((isinstance(coefficient_value1, int) or isinstance(coefficient_value1, float)) and
-                            (isinstance(constraint2[coefficient_name1], int) or isinstance(constraint2[coefficient_name1], float))):  # If both values are numeric
-                        coefficient_value1 = float(coefficient_value1)
-                        coefficient_value2 = float(constraint2[coefficient_name1])
-                        if coefficient_value1 == 0:
-                            if abs(coefficient_value2) > precision:  # If coefficient_value1 == 0, check if coefficient_value2 is sufficiently small
-                                status = "Coefficient values differ"
-                                partial_match_coefficients1[coefficient_name1] = coefficient_value1
-                                partial_match_coefficients2[coefficient_name1] = coefficient_value2
-                        elif abs((coefficient_value1 - coefficient_value2) / coefficient_value1) > precision:
-                            if abs(((coefficient_value1 * -1) - coefficient_value2) / coefficient_value1) <= precision:  # Check if it's just a sign difference
+                for var in c1.keys():
+                    val1, val2 = float(c1[var]), float(c2[var])
+                    #
+                    if abs(val1) < precision:
+                        if abs(val2) > precision:
+                            status = "Coefficient values differ"
+                            partial_mismatches1[var] = val1
+                            partial_mismatches2[var] = val2
+                            break
+                    else:
+                        rel_diff = abs((val1 - val2) / val1)
+                        if rel_diff > precision:
+                            rel_diff_sign_flip = abs(((val1 * -1) - val2) / val1)
+                            if rel_diff_sign_flip <= precision:
                                 coefficients_off_by_minus_one += 1
-                            status = "Coefficient values differ"
-                            partial_match_coefficients1[coefficient_name1] = coefficient_value1
-                            partial_match_coefficients2[coefficient_name1] = coefficient_value2
-                    else:  # If one or both values are not numeric, check equality
-                        if coefficient_value1 != constraint2[coefficient_name1]:
-                            status = "Coefficient values differ"
-                            partial_match_coefficients1[coefficient_name1] = coefficient_value1
-                            partial_match_coefficients2[coefficient_name1] = constraint2[coefficient_name1]
+                            else:
+                                status = "Coefficient values differ"
+                                partial_mismatches1[var] = val1
+                                partial_mismatches2[var] = val2
+                                break
 
-                match status:
-                    case "Potential match":
-                        status = "Perfect match"
-                        counter_perfectly_matched_constraints += 1
-                        if print_additional_information:
-                            printer.information(f"Perfect match found for constraint {constraint_name1}: {constraint1}")
-                        constraint_dicts2[length].pop(constraint_name2)
-                        break
-                    case "Coefficient values differ":
-                        # Check if all coefficients only differ by a factor of -1 and the sense is opposite -> Then they are equivalent
-                        if (coefficients_off_by_minus_one == len(constraint1) - 2 and  # -2 because we have the constant and the sense
-                                ((constraint1['sense'] == '>=' and constraint2['sense'] == '<=') or
-                                 (constraint1['sense'] == '<=' and constraint2['sense'] == '>=') or
-                                 (constraint1['sense'] == '=' and constraint2['sense'] == '='))):
-                            status = "Perfect match"
-                            counter_perfectly_matched_constraints += 1
-                            if print_additional_information:
-                                printer.information(f"Perfect match (differing by factor -1) found for constraint {constraint_name1}: \nmodel1: {constraint1}\n model2: {constraint2}")
-                        else:
-                            if counter_perfectly_matched_constraints > 0:
-                                printer.success(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
-                                counter_perfect_total += counter_perfectly_matched_constraints
-                                counter_perfectly_matched_constraints = 0
-                            printer.warning(f"Found partial match (factors differ by more than {precision * 100}%):")
-                            printer.information(f"model1 {constraint_name1}: {partial_match_coefficients1}", hard_wrap_chars="[...]")
-                            printer.information(f"model2 {constraint_name2}: {partial_match_coefficients2}", hard_wrap_chars="[...]")
-                            counter_partial_total += 1
-                        constraint_dicts2[length].pop(constraint_name2)
-                        break
-                    case "Coefficient name mismatch":
-                        continue
-                    case _:
-                        raise ValueError("Unknown status")
+                if status == "Potential match":
+                    matched = True
+                    counter_perfect_total += 1
+                    matched_in_group2.add(cname2)
+                    break
+                elif status == "Coefficient values differ":
+                    matched = True
+                    counter_partial_total += 1
+                    matched_in_group2.add(cname2)
+                    if print_additional_information:
+                        print(f"Partial mismatch: {cname1} vs {cname2}")
+                        print(f"  Model1 coefficients: {partial_mismatches1}")
+                        print(f"  Model2 coefficients: {partial_mismatches2}")
+                    break
 
-            if status != "Perfect match" and status != "Coefficient values differ":
-                if counter_perfectly_matched_constraints > 0:
-                    printer.success(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
-                    counter_perfect_total += counter_perfectly_matched_constraints
-                    counter_perfectly_matched_constraints = 0
-                printer.error(f"No match for {constraint_name1}: {constraint1}", hard_wrap_chars=f"[... {len(constraint1)} total]")
+            if not matched:
                 counter_missing1_total += 1
+                if print_additional_information:
+                    print(f"No match for constraint: {cname1}")
 
-            if counter_perfectly_matched_constraints > 0 and counter_perfectly_matched_constraints % 500 == 0:
-                printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly, continue to count...")
+        unmatched_2 = len(group2) - len(matched_in_group2)
+        counter_missing2_total += unmatched_2
+        if unmatched_2 > 0 and print_additional_information:
+            print(f"{unmatched_2} constraints in model 2 unmatched for length {length}")
 
-    if counter_perfectly_matched_constraints > 0:
-        printer.success(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
-        counter_perfect_total += counter_perfectly_matched_constraints
+    extra_lengths_in_model2 = set(constraint_dicts2.keys()) - set(constraint_dicts1.keys())
+    for length in extra_lengths_in_model2:
+        unmatched_group = {
+            name: coeffs for name, coeffs in constraint_dicts2[length].items()
+            if not all(abs(v) < precision for v in coeffs.values())
+        }
+        num_unmatched = len(unmatched_group)
+        counter_missing1_total += num_unmatched
+        if num_unmatched > 0 and print_additional_information:
+            print(f"{num_unmatched} constraints in model 2 of length {length} missing in model 1.")
 
-    if constraints_to_enforce_from2 is not None:
-        for enforced_constraint_name in constraints_to_enforce_from2:
-            for length, constraint_dict2 in constraint_dicts2.items():
-                for constraint_name2, constraint2 in constraint_dict2.items():
-                    if enforced_constraint_name in constraint_name2:
-                        printer.error(f"Missing enforced constraint {constraint_name2}: {constraint2}", hard_wrap_chars=f"[... {len(constraint2)} total]")
-                        counter_missing1_total += 1
+    if constraints_to_enforce_from2:
+        for enforced_name in constraints_to_enforce_from2:
+            found = any(enforced_name in c_name for group in constraint_dicts2.values() for c_name in group.keys())
+            if not found:
+                counter_missing1_total += 1
+                if print_additional_information:
+                    print(f"Enforced constraint missing in model 2: {enforced_name}")
 
-    return {"perfect": counter_perfect_total, "partial": counter_partial_total, "missing in model 1": counter_missing1_total, "missing in model 2": counter_missing2_total}
+    return {
+        "perfect": counter_perfect_total,
+        "partial": counter_partial_total,
+        "missing in model 1": counter_missing1_total,
+        "missing in model 2": counter_missing2_total,
+    }
+
 
 
 # Compare two lists of variables where coefficients are already normalized
@@ -633,6 +657,7 @@ def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bo
 
     # Constraints
     if check_constraints:
+        vars_fixed_to_zero = get_fixed_zero_variables(model1)
         # If any of enforce is in skip, raise error
         if constraints_to_skip_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)):
             raise ValueError(f"constraints_to_skip_from2 contains elements of constraints_to_enforce_from2: {set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)}")
@@ -645,7 +670,7 @@ def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bo
         constraints2 = normalize_constraints(model2, constraints_to_skip=constraints_to_skip_from2, constraints_to_keep=constraints_to_keep_from2, coefficients_to_skip=coefficients_to_skip_from2)
 
         # Check if constraints are the same
-        comparison_results['constraints'] = compare_constraints(constraints1, constraints2, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
+        comparison_results['constraints'] = compare_constraints(constraints1, constraints2,vars_fixed_to_zero =vars_fixed_to_zero, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
 
     # Objective
     vars_fixed_to_zero = get_fixed_zero_variables(model1)
