@@ -23,11 +23,12 @@ scenario_folder = "data/example/"
 # Select which parts are executed
 execute_gams = False
 execute_pyomo = False
-solve_pyomo = True # Note: GAMS always solves if it's executed in the current setup as otherwise it won't create an MPS file
+solve_pyomo = False # Note: GAMS always solves if it's executed in the current setup as otherwise it won't create an MPS file
 comparison_mps = True  # Compare MPS files?
-check_vars = True
+check_vars = False
 check_constraints = True
-print_additional_information = True
+check_quadratic_constraints = True
+print_additional_information = False
 
 constraints_to_skip_from1 = ['eSOCP_QMaxOut','eSOCP_QMinOut1','eSOCP_BalanceQ']
 constraints_to_keep_from1 = []
@@ -126,7 +127,7 @@ if execute_pyomo:
                 print("Solver terminated with condition:", results.solver.termination_condition)
 
 if comparison_mps:
-    compare_mps("model.mps", True, "LEGO-GAMS/LEGO-GAMS.mps", False, check_vars=check_vars, check_constraints=check_constraints, print_additional_information=print_additional_information,
+    compare_mps("model.mps", True, "LEGO-GAMS/LEGO-GAMS.mps", False, check_vars=check_vars, check_constraints=check_constraints, check_quadratic_constraints =check_quadratic_constraints, print_additional_information=print_additional_information,
                 constraints_to_skip_from1=constraints_to_skip_from1, constraints_to_keep_from1=constraints_to_keep_from1, coefficients_to_skip_from1=coefficients_to_skip_from1,
                 constraints_to_skip_from2=constraints_to_skip_from2, constraints_to_keep_from2=constraints_to_keep_from2, coefficients_to_skip_from2=coefficients_to_skip_from2, constraints_to_enforce_from2=constraints_to_enforce_from2)
 

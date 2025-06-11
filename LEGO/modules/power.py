@@ -276,7 +276,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     if lego.cs.dPower_Parameters["pEnableSOCP"]:
             lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.la_full, doc='Power flow from bus i to j', bounds=(None, None))
             for (i, j, c) in lego.model.la:
-                lego.model.vLineP[:, :, (i, jfeUC), c].setlb(-lego.model.pPmax[i, j, c])
+                lego.model.vLineP[:, :, (i, j), c].setlb(-lego.model.pPmax[i, j, c])
                 lego.model.vLineP[:, :, (i, j), c].setub(lego.model.pPmax[i, j, c])
             for (i, j, c) in lego.model.la_reverse:
                 lego.model.vLineP[:, :, (i, j), c].setlb(-lego.model.pPmax[j, i, c])
