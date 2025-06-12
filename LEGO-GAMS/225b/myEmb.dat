@@ -1,0 +1,43 @@
+- GAMSReader:
+    symbols:
+      - name: gtec_thermal_gen
+      - name: gtec_storage_ror_storageunits
+      - name: gtec_storage_ror_run_of_river
+      - name: gtec_vres
+      - name: gtec_five
+      - name: gi_help_thermal_gen
+      - name: gi_help_storage_storage_units
+      - name: gi_help_storage_run_of_river
+      - name: gi_help_vres
+      - name: gi_help_facts
+
+- PythonCode:
+    code: |
+        # merge gtec_thermal_gen .. gtec_5  'gtec'
+        g1 = list() if connect.container.data["gtec_thermal_gen"].records is None else connect.container.data["gtec_thermal_gen"].records.values.tolist()
+        g2 = list() if connect.container.data["gtec_storage_ror_storageunits"].records is None else connect.container.data["gtec_storage_ror_storageunits"].records.values.tolist()
+        g3 = list() if connect.container.data["gtec_storage_ror_run_of_river"].records is None else connect.container.data["gtec_storage_ror_run_of_river"].records.values.tolist()
+        g4 = list() if connect.container.data["gtec_vres"].records is None else connect.container.data["gtec_vres"].records.values.tolist()
+        g5 = list() if connect.container.data["gtec_five"].records is None else connect.container.data["gtec_five"].records.values.tolist()
+        
+        gtec = g1 + g2 + g3 + g4 + g5
+        gtec = list(set([(g,tec) for [g,tec,_] in gtec]))
+        connect.container.addSet('gtec', ['g','tec'], records=gtec)
+
+        gi_help_thermal_gen = list() if connect.container.data["gi_help_thermal_gen"].records is None else connect.container.data["gi_help_thermal_gen"].records.values.tolist()
+        gi_help_thermal_gen = [(g,i) for (g,_,i,_) in gi_help_thermal_gen]
+        gi_help_storage_storage_units = list() if connect.container.data["gi_help_storage_storage_units"].records is None else connect.container.data["gi_help_storage_storage_units"].records.values.tolist()
+        gi_help_storage_storage_units = [(g,i) for (g,_,i,_) in gi_help_storage_storage_units]
+        gi_help_storage_run_of_river = list() if connect.container.data["gi_help_storage_run_of_river"].records is None else connect.container.data["gi_help_storage_run_of_river"].records.values.tolist()
+        gi_help_storage_run_of_river = [(g,i) for (g,_,i,_) in gi_help_storage_run_of_river]
+        gi_help_vres = list() if connect.container.data["gi_help_vres"].records is None else connect.container.data["gi_help_vres"].records.values.tolist()
+        gi_help_vres = [(g,i) for (g,_,i,_) in gi_help_vres]
+        gi_help_facts = list() if connect.container.data["gi_help_facts"].records is None else connect.container.data["gi_help_facts"].records.values.tolist()
+        gi_help_facts = [(g,i) for (g,_,i,_) in gi_help_facts]
+
+        gi = list(set(gi_help_thermal_gen + gi_help_storage_storage_units + gi_help_storage_run_of_river + gi_help_vres + gi_help_facts))
+        connect.container.addSet('gi', ['g','i'], records=gi)
+        
+- GAMSWriter:
+    symbols: all
+

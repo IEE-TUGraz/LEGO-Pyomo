@@ -676,19 +676,23 @@ def compare_variables(vars1, vars2, vars_fixed_to_zero=None, precision: float = 
     if counter > 0:
         printer.success(f"{counter} variables matched perfectly")
 
-    if len(vars2) > 0: # If there are still variables left in GAMS Model that were not found in Pyomo Model
+    if len(vars2) > 0:  # If there are still variables left in GAMS Model that were not found in Pyomo Model
         if print_additional_information:
+            missing_var_names = [v[0] for v in vars2]
+            formatted_var_list = ", ".join(missing_var_names)
             printer.error(
-                f"Variables missing in Pyomo model: {', '.join([v[0] for v in vars2])}",
-                hard_wrap_chars=f"[... {len(vars2)} total]"
-        )
+                f"Variables missing in Pyomo model ({len(vars2)} total): {formatted_var_list}"
+            )
+
         counter_missing1_total += len(vars2)
 
     if vars_fixed_to_zero:
-        info_list = [sort_indices(v.replace("(", "[").replace(")", "]")) for v in vars_fixed_to_zero]
+        info_list = [str(v) for v in vars_fixed_to_zero]
+        preview = ", ".join(info_list[:5])
+        total = len(info_list)
         printer.information(
-            f"Variables missing in GAMS model, but fixed to 0: {', '.join(info_list)}",
-            hard_wrap_chars=f"[... {len(info_list)} total]"
+            f"Variables missing in GAMS model, but fixed to 0: {preview}"
+            + (f", ... [{total} total]" if total > 5 else "")
         )
 
     counter_perfect_total += counter
@@ -814,7 +818,7 @@ def compare_objectives(objective1, objective2, precision: float = 1e-12) -> dict
     }
 
 
-def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bool, check_vars=True, check_constraints=True, check_quadratic_constraints = True, print_additional_information=False,
+def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bool, check_vars=True, check_constraints=True, check_quadratic_constraints = True, check_objectives = True, print_additional_information=False,
                 constraints_to_skip_from1=None, constraints_to_keep_from1=None, coefficients_to_skip_from1=None,
                 constraints_to_skip_from2=None, constraints_to_keep_from2=None, coefficients_to_skip_from2=None, constraints_to_enforce_from2=None):
     # Safety before more expensive operations start
@@ -905,22 +909,23 @@ def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bo
         # Check if constraints are the same
         comparison_results['quadratic_constraints'] = compare_quadratic_constraints(quad_constraints1, quad_constraints2,vars_fixed_to_zero =vars_fixed_to_zero, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
     # Objective
-    vars_fixed_to_zero = get_fixed_zero_variables(model1)
+    if check_objectives:
+        vars_fixed_to_zero = get_fixed_zero_variables(model1)
 
-    objective1, quad_objective1 = normalize_objective(
-        model1,
-        vars_fixed_to_zero=vars_fixed_to_zero,
-        coefficients_to_skip=coefficients_to_skip_from1
-    )
+        objective1, quad_objective1 = normalize_objective(
+            model1,
+            vars_fixed_to_zero=vars_fixed_to_zero,
+            coefficients_to_skip=coefficients_to_skip_from1
+        )
 
-    objective2, quad_objective2 = normalize_objective(
-        model2,
-        vars_fixed_to_zero=vars_fixed_to_zero,
-        coefficients_to_skip=coefficients_to_skip_from2
-    )
+        objective2, quad_objective2 = normalize_objective(
+            model2,
+            vars_fixed_to_zero=vars_fixed_to_zero,
+            coefficients_to_skip=coefficients_to_skip_from2
+        )
 
-    comparison_results['coefficients of objective'] = compare_objectives(objective1, objective2)
-    comparison_results['quadratic coefficients of objective'] = compare_objectives(quad_objective1, quad_objective2)
+        comparison_results['coefficients of objective'] = compare_objectives(objective1, objective2)
+        comparison_results['quadratic coefficients of objective'] = compare_objectives(quad_objective1, quad_objective2)
 
     # Print results
     printer.information("\n   ---------   \n\nResults of MPS Comparison:")

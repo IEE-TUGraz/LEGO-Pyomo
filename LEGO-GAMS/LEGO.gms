@@ -3386,7 +3386,7 @@ elseif(pEnableRMIP=0 and pRegretCalc=1),
 if(pEnableSOCP,
    vTheta.fx (rpk(rp,k),is ) = 0 ;
    isLine(i,j) = sum[c,le(i,j,c)+lc(i,j,c)$vLineInvest.l(i,j,c)];
-   pDelVolAng(rpk(rp,k),i,j) $[isLine(i,j)] =  arctan2[vSOCP_sij.l(rp,k,i,j), vSOCP_cij.l(rp,k,i,j)] ;
+   pDelVolAng(rpk(rp,k),i,j) $[isLine(i,j)] =  arctan2[vSOCP_sij.l(rp,k,i,j), vSOCP_cij.l(rp,k,i,j)+1e-6] ;
    pEnableDummyModel = 1
    solve mDummy min vDummyOf using lp;  // in order to find vTheta values
    pEnableDummyModel = 0

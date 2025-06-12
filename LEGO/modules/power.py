@@ -41,39 +41,41 @@ def add_element_definitions_and_bounds(lego: LEGO):
                 for (i, j, c) in original_set:
                     reverse.append((j, i, c))
                 return reverse
-            
+
+            # Create set of all reverse lines
             lego.model.la_reverse = pyo.Set(
                 doc='Reverse lines (la)',
                 initialize=lambda model: make_reverse_set(model.la),
                 within=lego.model.i * lego.model.i * lego.model.c
             ) 
-
+            # Create set of all lines including reverse lines
             lego.model.la_full = pyo.Set(
                 initialize=lambda m: set(m.la) | set(m.la_reverse),
                 within=lego.model.i * lego.model.i * lego.model.c
             )
-
+            # Create sets for existing reverse lines
             lego.model.le_reverse = pyo.Set(
                 doc='Reverse lines (le)',
                 initialize=lambda model: make_reverse_set(model.le),
                 within=lego.model.la_reverse
             )
-
+            # Create set of all existing lines including reverse lines
             lego.model.le_full = pyo.Set(
                 initialize=lambda m: set(m.le) | set(m.le_reverse),
                 within=lego.model.la_full
             )
-
+            # Create sets for candidate reverse lines
             lego.model.lc_reverse = pyo.Set(
                 doc='Reverse lines (lc)',
                 initialize=lambda model: make_reverse_set(model.lc),
                 within=lego.model.la_reverse
             )
-
+            # Create set of all candidate lines including reverse lines
             lego.model.lc_full = pyo.Set(
                 initialize=lambda m: set(m.lc) | set(m.lc_reverse),
                 within=lego.model.la_full
             )
+            print('candidate lines:')
     lego.model.g = pyo.Set(doc='Generators')
     lego.model.gi = pyo.Set(doc='Generator g connected to bus i', within=lego.model.g * lego.model.i)
 
@@ -109,8 +111,6 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.pMinProd = pyo.Param(lego.model.g, doc='Minimum production of generator g')
     lego.model.pExisUnits = pyo.Param(lego.model.g, doc='Existing units of generator g')
     lego.model.pMaxGenQ = pyo.Param(lego.model.g, doc='Maximum reactive production of generator g')
-
-  
     lego.model.pMinGenQ = pyo.Param(lego.model.g, doc='Minimum reactive production of generator g')
 
     if lego.cs.dPower_Parameters["pEnableThermalGen"]:
@@ -121,12 +121,8 @@ def add_element_definitions_and_bounds(lego: LEGO):
         lego.addToParameter("pMaxProd", lego.cs.dPower_ThermalGen['MaxProd'])
         lego.addToParameter("pMinProd", lego.cs.dPower_ThermalGen['MinProd'])
         lego.addToParameter("pExisUnits", lego.cs.dPower_ThermalGen['ExisUnits'])
-        
-       
-        qmax = lego.cs.dPower_ThermalGen['Qmax'].fillna(0)
-        qmin = lego.cs.dPower_ThermalGen['Qmin'].fillna(0)
-        lego.addToParameter('pMaxGenQ', qmax)
-        lego.addToParameter('pMinGenQ', qmin)
+        lego.addToParameter('pMaxGenQ',1e-3 * lego.cs.dPower_ThermalGen['Qmax'].fillna(0))  # Convert from MVar to kVar
+        lego.addToParameter('pMinGenQ', 1e-3 * lego.cs.dPower_ThermalGen['Qmin'].fillna(0)) # Convert from MVar to kVar
 
         lego.model.pInterVarCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['pInterVarCostEUR'], doc='Inter-variable cost of thermal generator g')
         lego.model.pStartupCost = pyo.Param(lego.model.thermalGenerators, initialize=lego.cs.dPower_ThermalGen['pStartupCostEUR'], doc='Startup cost of thermal generator g')
@@ -143,6 +139,8 @@ def add_element_definitions_and_bounds(lego: LEGO):
         lego.addToParameter("pMaxProd", lego.cs.dPower_RoR['MaxProd'])
         lego.addToParameter("pMinProd", lego.cs.dPower_RoR['MinProd'])
         lego.addToParameter("pExisUnits", lego.cs.dPower_RoR['ExisUnits'])
+        lego.addToParameter('pMaxGenQ',1e-3 * lego.cs.dPower_RoR['Qmax'].fillna(0))  # Convert from MVar to kVar
+        lego.addToParameter('pMinGenQ', 1e-3 * lego.cs.dPower_RoR['Qmin'].fillna(0)) # Convert from MVar to kVar
 
     if lego.cs.dPower_Parameters["pEnableVRES"]:
         lego.addToParameter("pOMVarCost", lego.cs.dPower_VRES['OMVarCost'])
@@ -152,6 +150,8 @@ def add_element_definitions_and_bounds(lego: LEGO):
         lego.addToParameter("pMaxProd", lego.cs.dPower_VRES['MaxProd'])
         lego.addToParameter("pMinProd", lego.cs.dPower_VRES['MinProd'])
         lego.addToParameter("pExisUnits", lego.cs.dPower_VRES['ExisUnits'])
+        lego.addToParameter('pMaxGenQ', 1e-3 * lego.cs.dPower_VRES['Qmax'].fillna(0))  # Convert from MVar to kVar
+        lego.addToParameter('pMinGenQ', 1e-3 * lego.cs.dPower_VRES['Qmin'].fillna(0))  # Convert from MVar to kVar
 
     lego.model.pXline = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network['pXline'], doc='Reactance of line la')
     lego.model.pBusG = pyo.Param(lego.model.i, initialize=lego.cs.dPower_BusInfo['pBusG'], doc = 'Conductance of bus i')
@@ -162,7 +162,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.model.pAngle = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network['pAngle'] * np.pi / 180, doc='Transformer angle shift')
     lego.model.pRatio = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network['pRatio'], doc='Transformer ratio')
     lego.model.pPmax = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network['pPmax'], doc='Maximum power flow on line la')
-    lego.model.pQmax = pyo.Param(lego.model.la, initialize=lambda model, i, j, c: model.pPmax[i, j, c] * 1e-3, doc='Maximum reactive power flow on line la')
+    lego.model.pQmax = pyo.Param(lego.model.la, initialize=lambda model, i, j, c: model.pPmax[i, j, c], doc='Maximum reactive power flow on line la') # It is asumed that Qmax is ident to Pmax
     lego.model.pFixedCost = pyo.Param(lego.model.la, initialize=lego.cs.dPower_Network['pInvestCost'], doc='Fixed cost when investing in line la')  # TODO: Think about renaming this parameter (something related to 'investment cost')
     lego.model.pSBase = pyo.Param(initialize=lego.cs.dPower_Parameters['pSBase'], doc='Base power')
     lego.model.pBigM_Flow = pyo.Param(initialize=1e3, doc="Big M for power flow")
@@ -205,14 +205,67 @@ def add_element_definitions_and_bounds(lego: LEGO):
 
     # SOCP Variables
     if lego.cs.dPower_Parameters["pEnableSOCP"]:
-        lego.model.vSOCP_cii = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, domain=pyo.Reals)  # Angle of bus i used in the AC-OPF instead of vTheta
+        lego.model.vSOCP_cii = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, domain=pyo.Reals)
+        for rp in lego.model.rp:
+            for k in lego.model.k:
+                for i in lego.model.i:
+                    lego.model.vSOCP_cii[rp, k, i].setub((lego.model.pBusMaxV[i] ** 2) )  # Set upper bound for cii
+                    lego.model.vSOCP_cii[rp, k, i].setlb((lego.model.pBusMinV[i] ** 2))
+
         lego.model.vSOCP_cij = pyo.Var(lego.model.rp, lego.model.k, lego.model.la_full, domain=pyo.Reals)  # cij = (vi^real* vj^real) + vi^imag*vj^imag)
+        for (i, j, c) in lego.model.le:
+            for rp in lego.model.rp:
+                for k in lego.model.k:
+                    for i in lego.model.i:
+                        lego.model.vSOCP_cij[rp, k, i].setub((lego.model.pBusMaxV[i] ** 2) )
+                        lego.model.vSOCP_cij[rp, k, i].setlb(max(lego.model.pBusMinV[i] ** 2, 0.1) ) # Set lower bound to at least 0.1 to avoid numerical issues
+
         lego.model.vSOCP_sij = pyo.Var(lego.model.rp, lego.model.k, lego.model.la_full, domain=pyo.Reals)  # sij = (vi^real* vj^imag) - vi^re*vj^imag))
+        for (i, j, c) in lego.model.le:
+            for rp in lego.model.rp:
+                for k in lego.model.k:
+                    for i in lego.model.i:
+                        lego.model.vSOCP_sij[rp, k, i].setub((lego.model.pBusMaxV[i] ** 2) )
+                        lego.model.vSOCP_sij[rp, k, i].setlb((-lego.model.pBusMinV[i] ** 2) )
+
         lego.model.vLineQ = pyo.Var(lego.model.rp, lego.model.k, lego.model.la_full, domain=pyo.Reals) # Reactive power flow from bus i to j
+        for (i, j, c) in lego.model.le:
+            for rp in lego.model.rp:
+                for k in lego.model.k:
+                    lego.model.vLineQ[rp, k, i, j, c].setlb(-lego.model.pQmax[i, j, c])
+                    lego.model.vLineQ[rp, k, i, j, c].setub(lego.model.pQmax[i, j, c])
+        # Set bounds for reversed direction (la_reverse)
+        for (i, j, c) in lego.model.le_reverse:
+            for rp in lego.model.rp:
+                for k in lego.model.k:
+                    lego.model.vLineQ[rp, k, (i, j), c].setlb(-lego.model.pPmax[j, i, c])
+                    lego.model.vLineQ[rp, k, (i, j), c].setub(lego.model.pPmax[j, i, c])
+
         lego.model.vSOCP_IndicConnecNodes = pyo.Var(lego.model.lc_full, domain=pyo.Binary)  # Indicator variable for connected nodes
+        lego.model.vGenQ = pyo.Var(lego.model.rp, lego.model.k, lego.model.g, doc='Reactive power output of generator g', domain=pyo.Reals)
+
+
         if lego.cs.dPower_Parameters["pEnableThermalGen"]:
-            lego.model.vGenQ = pyo.Var(lego.model.rp, lego.model.k, lego.model.thermalGenerators, domain = pyo.Reals, doc='Reactive power output of generator g')
-    
+            for g in lego.model.thermalGenerators:
+                for rp in lego.model.rp:
+                    for k in lego.model.k:
+                        lego.model.vGenQ[rp, k, g].setlb(lego.model.pMinGenQ[g])
+                        lego.model.vGenQ[rp, k, g].setub(lego.model.pMaxGenQ[g])
+
+        if lego.cs.dPower_Parameters["pEnableRoR"]:
+            for g in lego.model.rorGenerators:
+                for rp in lego.model.rp:
+                    for k in lego.model.k:
+                        lego.model.vGenQ[rp, k, g].setlb(lego.model.pMinGenQ[g])
+                        lego.model.vGenQ[rp, k, g].setub(lego.model.pMaxGenQ[g])
+
+        if lego.cs.dPower_Parameters["pEnableVRES"]:
+            for g in lego.model.vresGenerators:
+                for rp in lego.model.rp:
+                    for k in lego.model.k:
+                        lego.model.vGenQ[rp, k, g].setlb(lego.model.pMinGenQ[g])
+                        lego.model.vGenQ[rp, k, g].setub(lego.model.pMaxGenQ[g])
+
     # For each DC-OPF "island", set node with highest demand as slack node
     dDCOPFIslands = pd.DataFrame(index=lego.cs.dPower_BusInfo.index, columns=[lego.cs.dPower_BusInfo.index], data=False)
 
@@ -273,14 +326,15 @@ def add_element_definitions_and_bounds(lego: LEGO):
                 for k in lego.model.k:
                     lego.model.vGenP[rp, k, g].setub((lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])) * lego.cs.dPower_VRESProfiles.loc[rp, k, g]['Capacity']))
     
-    if lego.cs.dPower_Parameters["pEnableSOCP"]:
+    if lego.cs.dPower_Parameters["pEnableSOCP"]: #Bound sonly apply in forward direction for existing and candidate lines
             lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.la_full, doc='Power flow from bus i to j', bounds=(None, None))
             for (i, j, c) in lego.model.la:
-                lego.model.vLineP[:, :, (i, j), c].setlb(-lego.model.pPmax[i, j, c])
-                lego.model.vLineP[:, :, (i, j), c].setub(lego.model.pPmax[i, j, c])
-            for (i, j, c) in lego.model.la_reverse:
-                lego.model.vLineP[:, :, (i, j), c].setlb(-lego.model.pPmax[j, i, c])
-                lego.model.vLineP[:, :, (i, j), c].setub(lego.model.pPmax[j, i, c])
+                for rp in lego.model.rp:
+                    for k in lego.model.k:
+                        lego.model.vLineP[rp, k, i, j, c].setlb(-lego.model.pPmax[i, j, c])
+                        lego.model.vLineP[rp, k, i, j, c].setub(lego.model.pPmax[i, j, c])
+
+
     else:
         lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, doc='Power flow from bus i to j', bounds=(None, None))
         for (i, j, c) in lego.model.la:
@@ -298,21 +352,22 @@ def add_element_definitions_and_bounds(lego: LEGO):
 def add_constraints(lego: LEGO):
     # Power balance for nodes DC ann SOCP
     def eDC_BalanceP_rule(model, rp, k, i):
-        if not lego.cs.dPower_Parameters["pEnableSOCP"]:
+        if lego.cs.dPower_Parameters["pEnableSOCP"]:
+            return (sum(model.vGenP[rp, k, g] for g in model.g if (g, i) in model.gi)  # Production of generators at bus i
+                    - sum(model.vLineP[rp, k, e] for e in model.la_full if (e[0] == i))  # Power flow from bus i to bus j
+                    - sum(model.vLineP[rp, k, e] for e in model.la_full if (e[1] == i))  # Power flow from bus j to bus i
+                    - model.vSOCP_cii[rp, k, i] * model.pBusG[i] * model.pSBase
+                    - model.pDemandP[rp, k, i]  # Demand at bus i
+                    + model.vPNS[rp, k, i]  # Slack variable for demand not served
+                    - model.vEPS[rp, k, i])  # Slack variable for overproduction
+        else:
             return (sum(model.vGenP[rp, k, g] for g in model.g if (g, i) in model.gi) -  # Production of generators at bus i
                     sum(model.vLineP[rp, k, e] for e in model.la if (e[0] == i)) +  # Power flow from bus i to bus j
                     sum(model.vLineP[rp, k, e] for e in model.la if (e[1] == i)) -  # Power flow from bus j to bus i
                     model.pDemandP[rp, k, i] +  # Demand at bus i
                     model.vPNS[rp, k, i] -  # Slack variable for demand not served
                     model.vEPS[rp, k, i])  # Slack variable for overproduction
-        else:
-            return (sum(model.vGenP[rp, k, g] for g in model.g if (g, i) in model.gi)  # Production of generators at bus i
-                    - sum(model.vLineP[rp, k, e] for e in model.la if (e[0] == i)) # Power flow from bus i to bus j
-                    - sum(model.vLineP[rp, k, e] for e in model.la if (e[1] == i)) # Power flow from bus j to bus i
-                    - model.vSOCP_cii[rp, k, i] * model.pBusG[i] * model.pSBase
-                    - model.pDemandP[rp, k, i]  # Demand at bus i
-                    + model.vPNS[rp, k, i]   # Slack variable for demand not served
-                    - model.vEPS[rp, k, i])  # Slack variable for overproduction
+
 
     # Note: eDC_BalanceP_expr is defined as expression to enable later adding coefficients to the constraint (e.g., for import/export)
     lego.model.eDC_BalanceP_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.i, rule=eDC_BalanceP_rule)
@@ -320,9 +375,9 @@ def add_constraints(lego: LEGO):
     
 
     def eSOCP_BalanceQ_rule(model, rp, k, i):
-        return (sum(model.vGenQ[rp, k, g] for g in model.thermalGenerators if (g, i) in model.gi)  # Production of generators at bus i
-                - sum(model.vLineQ[rp, k, e] for e in model.la if (e[0] == i)) # Power flow from bus i to bus j
-                - sum(model.vLineQ[rp, k, e] for e in model.la if (e[1] == i)) # Power flow from bus j to bus i
+        return (sum(model.vGenQ[rp, k, g] for g in model.g if (g, i) in model.gi)  # Production of generators at bus i
+                - sum(model.vLineQ[rp, k, e] for e in model.la_full if (e[0] == i)) # Power flow from bus i to bus j
+                - sum(model.vLineQ[rp, k, e] for e in model.la_full if (e[1] == i)) # Power flow from bus j to bus i
                 + model.vSOCP_cii[rp, k, i] * model.pBusB[i] * model.pSBase
                 - model.pDemandQ[rp, k, i]  # Demand at bus i
                 + model.vPNS[rp, k, i] * model.pRatioDemQP[i]  # Slack variable for demand not served
@@ -331,14 +386,15 @@ def add_constraints(lego: LEGO):
     if lego.cs.dPower_Parameters["pEnableSOCP"]:
         lego.model.eSOCP_BalanceQ_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.i, rule=eSOCP_BalanceQ_rule)    
         lego.model.eSOCP_BalanceQ = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.i, doc='Reactive power balance for each bus (SOCP)', rule=lambda model, rp, k, i: lego.model.eSOCP_BalanceQ_expr[rp, k, i] == 0)
-        
+
     def eDC_ExiLinePij_rule(model, rp, k, i, j, c):
         match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
             case "DC-OPF":
                 return model.vLineP[rp, k, i, j, c] == (model.vTheta[rp, k, i] - model.vTheta[rp, k, j] + model.vAngle[rp, k, i, j, c]) * model.pSBase / (model.pXline[i, j, c] * model.pRatio[i, j, c])
             case "TP" | "SN" | "SOCP":
                 return pyo.Constraint.Skip
-            
+            case _:
+                raise ValueError(f"Unsupported pTecRepr: {lego.cs.dPower_Network.loc[i, j, c]['pTecRepr']}")
     lego.model.eDC_ExiLinePij = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le, doc="Power flow existing lines (for DC-OPF)", rule=eDC_ExiLinePij_rule)
 
     def eDC_CanLinePij1_rule(model, rp, k, i, j, c):
@@ -352,7 +408,8 @@ def add_constraints(lego: LEGO):
                 )
             case "TP" | "SN" | "SOCP":
                 return pyo.Constraint.Skip
-            
+            case _:
+                raise ValueError(f"Unsupported pTecRepr: {lego.cs.dPower_Network.loc[i, j, c]['pTecRepr']}")
     lego.model.eDC_CanLinePij1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, doc="Power flow candidate lines (for DC-OPF)", rule=eDC_CanLinePij1_rule)   
 
     def eDC_CanLinePij2_rule(model, rp, k, i, j, c):
@@ -366,10 +423,11 @@ def add_constraints(lego: LEGO):
                 )
             case "TP" | "SN" | "SOCP":
                 return pyo.Constraint.Skip
-
+            case _:
+                raise ValueError(f"Unsupported pTecRepr: {lego.cs.dPower_Network.loc[i, j, c]['pTecRepr']}")
     lego.model.eDC_CanLinePij2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc, doc="Power flow candidate lines (for DC-OPF)", rule=eDC_CanLinePij2_rule)
 
-    # Reactiv power limits
+    # Reactive power limits
 
     def eSOCP_QMaxOut_rule(model, rp, k, g): 
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
@@ -385,7 +443,7 @@ def add_constraints(lego: LEGO):
     def eSOCP_QMinOut1_rule(model, rp, k, g): 
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             if model.pMaxGenQ[g] >= 0:
-                return (model.vGenQ[rp, k, g] / model.pMinGenQ[g] >= model.vCommit[rp, k, g])
+                return model.vGenQ[rp, k, g] / model.pMinGenQ[g] >= model.vCommit[rp, k, g]
             else:
                 return pyo.Constraint.Skip
         else: 
@@ -396,7 +454,7 @@ def add_constraints(lego: LEGO):
     def eSOCP_QMinOut2_rule(model, rp, k, g): 
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             if model.pMaxGenQ[g] <= 0:
-                return (model.vGenQ[rp, k, g] / model.pMinGenQ[g] <= model.vCommit[rp, k, g])
+                return  model.vGenQ[rp, k, g] / model.pMinGenQ[g] <= model.vCommit[rp, k, g]
             else:
                 return pyo.Constraint.Skip
         else: 

@@ -26,10 +26,8 @@ def add_element_definitions_and_bounds(lego: LEGO):
     lego.addToParameter("pMaxInvest", lego.cs.dPower_Storage['MaxInvest'])
     lego.addToParameter("pEnabInv", lego.cs.dPower_Storage['EnableInvest'])
     lego.addToParameter("pInvestCost", lego.cs.dPower_Storage['InvestCostEUR'])
-    qmax = lego.cs.dPower_Storage['Qmax'].fillna(0)
-    qmin = lego.cs.dPower_Storage['Qmin'].fillna(0)
-    lego.addToParameter('pMaxGenQ', qmax)
-    lego.addToParameter('pMinGenQ', qmin)
+    lego.addToParameter('pMaxGenQ', lego.cs.dPower_Storage['Qmax'].fillna(0))
+    lego.addToParameter('pMinGenQ', lego.cs.dPower_Storage['Qmin'].fillna(0))
 
 
     # Variables
@@ -56,6 +54,12 @@ def add_element_definitions_and_bounds(lego: LEGO):
                 lego.model.vStInterRes[p, g].setub(lego.model.pE2PRatio[g] * lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
                 lego.model.vStInterRes[p, g].setlb(lego.model.pE2PRatio[g] * lego.model.pMinReserve[g] * lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])))
 
+    if lego.cs.dPower_Parameters["pEnableSOCP"]:
+        for g in lego.model.storageUnits:
+            for rp in lego.model.rp:
+                for k in lego.model.k:
+                    lego.model.vGenQ[rp, k, g].setlb(lego.model.pMinGenQ[g])
+                    lego.model.vGenQ[rp, k, g].setub(lego.model.pMaxGenQ[g])
 
 @LEGOUtilities.checkExecutionLog([add_element_definitions_and_bounds])
 def add_constraints(lego: LEGO):
