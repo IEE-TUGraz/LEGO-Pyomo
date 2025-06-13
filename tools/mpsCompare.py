@@ -23,8 +23,11 @@ def get_model_data(model):
     var_names = model.variables.get_names()
     lower_bounds = model.variables.get_lower_bounds()
     upper_bounds = model.variables.get_upper_bounds()
-
+    # values = model.solution.get_values() # Only works if the model can be solved
+    # var_values = dict(zip(var_names, values))
+    # print(var_values)
     obj_linear = dict(zip(var_names, model.objective.get_linear()))
+
     obj_quadratic = {
         (var_names[i], var_names[j]): coeff
         for i, j, coeff in model.objective.get_quadratic()
@@ -425,7 +428,7 @@ def compare_linear_constraints(
 
                 for var in c1.keys():
                     val1, val2 = float(c1[var]), float(c2[var])
-                    #
+
                     if abs(val1) < precision:
                         if abs(val2) > precision:
                             status = "Coefficient values differ"
@@ -465,9 +468,17 @@ def compare_linear_constraints(
                     print(f"No match for constraint: {cname1}")
 
         unmatched_2 = len(group2) - len(matched_in_group2)
-        counter_missing2_total += unmatched_2
+        counter_missing1_total += unmatched_2
+
         if unmatched_2 > 0 and print_additional_information:
-            print(f"{unmatched_2} constraints in GAMS Model unmatched for length {length}")
+            print(f"{unmatched_2} constraints of length {length} in GAMS Model unmatched for in Pyomo" )
+
+            # Print missing constraint names or keys
+            missing_constraints = [key for key in group2 if key not in matched_in_group2]
+            print("Example unmatched constraints of GAMS missing in Pyomo:")
+            for key in missing_constraints[:10]:
+
+                print(f"  - {key}")
 
     extra_lengths_in_model2 = set(constraint_dicts2.keys()) - set(constraint_dicts1.keys())
     for length in extra_lengths_in_model2:

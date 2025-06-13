@@ -22,11 +22,11 @@ scenario_folder = "data/example/"
 
 # Select which parts are executed
 execute_gams = False
-execute_pyomo = False
+execute_pyomo = True
 solve_pyomo = False # Note: GAMS always solves if it's executed in the current setup as otherwise it won't create an MPS file
 comparison_mps = True  # Compare MPS files?
-check_vars = True
-check_constraints = False
+check_vars = False
+check_constraints = True
 check_quadratic_constraints = False
 check_objectives = False
 print_additional_information = True
