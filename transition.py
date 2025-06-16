@@ -21,14 +21,14 @@ printer = Printer.getInstance()
 scenario_folder = "data/example/"
 
 # Select which parts are executed
-execute_gams = False
+execute_gams = True
 execute_pyomo = True
-solve_pyomo = False # Note: GAMS always solves if it's executed in the current setup as otherwise it won't create an MPS file
+solve_pyomo = True # Note: GAMS always solves if it's executed in the current setup as otherwise it won't create an MPS file
 comparison_mps = True  # Compare MPS files?
 check_vars = True
-check_constraints = False
-check_quadratic_constraints = False
-check_objectives = False
+check_constraints = True
+check_quadratic_constraints = True
+check_objectives = True
 print_additional_information = True
 
 constraints_to_skip_from1 = []
@@ -37,7 +37,7 @@ coefficients_to_skip_from1 = []
 
 constraints_to_skip_from2 = []
 constraints_to_keep_from2 = []
-coefficients_to_skip_from2 = []
+coefficients_to_skip_from2 = ['constobj']
 constraints_to_enforce_from2 = []
 
 ########################################################################################################################

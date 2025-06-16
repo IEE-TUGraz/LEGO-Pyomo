@@ -199,15 +199,20 @@ def normalize_constraints(
             if rhs < 0:
                 symbol = reverse_sense[symbol]
 
+
         normalized_coeffs = OrderedDict()
         for var, val in coeffs.items():
             if any(skip in var for skip in coefficients_to_skip):
                 continue
 
             normalized_var = normalize_variable_names(var)
-            sorted_var = sort_indices(normalized_var)
 
-            normalized_coeffs[sorted_var] = val * scale
+            sorted_var = sort_indices(normalized_var)
+            normal_var = val * scale
+            if rhs < 0:
+                normal_var *= -1  # Flip variable if RHS is negative
+
+            normalized_coeffs[sorted_var] = normal_var
 
         normalized_coeffs = OrderedDict(
             sorted((normalize_variable_names(k), v) for k, v in normalized_coeffs.items())
@@ -383,7 +388,12 @@ def compare_linear_constraints(
     removed2 = [k for k, v in cleaned_constraints2_raw.items() if len(v) == 0]
 
     printer.information(f"Removed {len(removed1)} constraints of 0 length from Pyomo Model after eliminating fixed-to-zero vars.")
+    if len(removed1) > 0:
+        printer.information("Example constraints removed from Pyomo Model: " + ", ".join(removed1[:5]))
+
     printer.information(f"Removed {len(removed2)} constraints of 0 length from GAMS Model after eliminating fixed-to-zero vars.")
+    if len(removed2) > 0:
+        printer.information("Example constraints removed from GAMS Model: " + ", ".join(removed2[:5]))
 
     cleaned_constraints1 = {k: v for k, v in cleaned_constraints1_raw.items() if len(v) > 0}
     cleaned_constraints2 = {k: v for k, v in cleaned_constraints2_raw.items() if len(v) > 0}
@@ -476,7 +486,7 @@ def compare_linear_constraints(
             # Print missing constraint names or keys
             missing_constraints = [key for key in group2 if key not in matched_in_group2]
             print("Example unmatched constraints of GAMS missing in Pyomo:")
-            for key in missing_constraints[:10]:
+            for key in missing_constraints[:50]:
 
                 print(f"  - {key}")
 
