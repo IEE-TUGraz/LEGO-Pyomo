@@ -47,7 +47,19 @@ def add_element_definitions_and_bounds(lego: LEGO):
                 doc='Reverse lines (la)',
                 initialize=lambda model: make_reverse_set(model.la),
                 within=lego.model.i * lego.model.i * lego.model.c
+            )
+            # Create set of all lines without the circuit dependency(needed for SOCP variables)
+            lego.model.la_no_c =pyo.Set(
+                doc='All lines without circuit dependency (la_no_c)',
+                initialize=lambda model: {(i, j) for (i, j, c) in model.la},
+                dimen=2,
+                within=lego.model.i * lego.model.i
             ) 
+            lego.model.la_no_c =pyo.Set(
+                doc='All lines without circuit dependency (la_no_c)',
+                initialize=lambda model: {(i, j) for (i, j, c) in model.la},
+                within=lego.model.i * lego.model.i
+            )
             # Create set of all lines including reverse lines
             lego.model.la_full = pyo.Set(
                 initialize=lambda m: set(m.la) | set(m.la_reverse),
@@ -213,21 +225,21 @@ def add_element_definitions_and_bounds(lego: LEGO):
                     lego.model.vSOCP_cii[rp, k, i].setlb(round(lego.model.pBusMinV[i] ** 2,4))
 
 
-        lego.model.vSOCP_cij = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, domain=pyo.Reals, bounds=(0,None))  # cij = (vi^real* vj^real) + vi^imag*vj^imag), Lower bounds for vSOCP_cij need to always be at least 0
+        lego.model.vSOCP_cij = pyo.Var(lego.model.rp, lego.model.k, lego.model.la_no_c, domain=pyo.Reals, bounds=(0,None))  # cij = (vi^real* vj^real) + vi^imag*vj^imag), Lower bounds for vSOCP_cij need to always be at least 0
         for (i, j, c) in lego.model.le:
             for rp in lego.model.rp:
                 for k in lego.model.k:
-                    if (rp, k, i, j, c) in lego.model.vSOCP_cij:
-                        lego.model.vSOCP_cij[rp, k, i, j, c].setub(round(lego.model.pBusMaxV[i] ** 2,4))
-                        lego.model.vSOCP_cij[rp, k, i, j, c].setlb(round(max(lego.model.pBusMinV[i] ** 2, 0.1),4))
+                    if (rp, k, i, j) in lego.model.vSOCP_cij:
+                        lego.model.vSOCP_cij[rp, k, i, j].setub(round(lego.model.pBusMaxV[i] ** 2,4))
+                        lego.model.vSOCP_cij[rp, k, i, j].setlb(round(max(lego.model.pBusMinV[i] ** 2, 0.1),4))
 
-        lego.model.vSOCP_sij = pyo.Var(lego.model.rp, lego.model.k, lego.model.la, domain=pyo.Reals)  # sij = (vi^real* vj^imag) - vi^re*vj^imag))
+        lego.model.vSOCP_sij = pyo.Var(lego.model.rp, lego.model.k, lego.model.la_no_c, domain=pyo.Reals)  # sij = (vi^real* vj^imag) - vi^re*vj^imag))
         for (i, j, c) in lego.model.le:
             for rp in lego.model.rp:
                 for k in lego.model.k:
-                    if (rp, k, i, j, c) in lego.model.vSOCP_cij:
-                        lego.model.vSOCP_sij[rp, k, i, j, c].setub(round(lego.model.pBusMaxV[i] ** 2,4))
-                        lego.model.vSOCP_sij[rp, k, i, j, c].setlb(round(-lego.model.pBusMaxV[i] ** 2,4))
+                    if (rp, k, i, j) in lego.model.vSOCP_sij:
+                        lego.model.vSOCP_sij[rp, k, i, j].setub(round(lego.model.pBusMaxV[i] ** 2,4))
+                        lego.model.vSOCP_sij[rp, k, i, j].setlb(round(-lego.model.pBusMaxV[i] ** 2,4))
 
         lego.model.vLineQ = pyo.Var(lego.model.rp, lego.model.k, lego.model.la_full, domain=pyo.Reals) # Reactive power flow from bus i to j
         for (i, j, c) in lego.model.le:
@@ -242,7 +254,8 @@ def add_element_definitions_and_bounds(lego: LEGO):
                     lego.model.vLineQ[rp, k, (i, j), c].setlb(-lego.model.pPmax[j, i, c])
                     lego.model.vLineQ[rp, k, (i, j), c].setub(lego.model.pPmax[j, i, c])
 
-        lego.model.vSOCP_IndicConnecNodes = pyo.Var(lego.model.lc_full, domain=pyo.Binary)  # Indicator variable for connected nodes
+        lego.model.vSOCP_IndicConnecNodes = pyo.Var({(i, j) for (i, j, c) in lego.model.lc},domain=pyo.Binary)
+
         lego.model.vGenQ = pyo.Var(lego.model.rp, lego.model.k, lego.model.g, doc='Reactive power output of generator g', domain=pyo.Reals)
 
 
@@ -497,8 +510,8 @@ def add_constraints(lego: LEGO):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             return ( model.vLineP[rp, k, i, j, c] == model.pSBase * (
                 + model.pGline[i, j, c] * model.vSOCP_cii[rp, k, i] /  pyo.sqrt(model.pRatio[i, j, c])
-                - (1/model.pRatio[i, j, c]) * (model.pGline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j, c]
-                - (1/model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * - model.vSOCP_sij[rp, k, i, j, c])
+                - (1/model.pRatio[i, j, c]) * (model.pGline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j]
+                - (1/model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * - model.vSOCP_sij[rp, k, i, j])
             )
         else:
             return pyo.Constraint.Skip
@@ -510,8 +523,8 @@ def add_constraints(lego: LEGO):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             return( model.vLineP[rp, k, i, j, c] == model.pSBase * (
                 + (model.pGline[j, i, c] * model.vSOCP_cii[rp, k, i])
-                - (1/model.pRatio[j, i, c]) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, j, i, c]
-                - (1/model.pRatio[j, i, c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, j, i, c])
+                - (1/model.pRatio[j, i, c]) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, j, i]
+                - (1/model.pRatio[j, i, c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, j, i])
             )
         else:
             return pyo.Constraint.Skip
@@ -523,8 +536,8 @@ def add_constraints(lego: LEGO):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             return ( model.vLineQ[rp, k, i, j, c] == model.pSBase * (
                 - model.vSOCP_cii[rp, k, i] * (model.pBline[i, j, c] + model.pBcline[i, j, c]/2) / pyo.sqrt(model.pRatio[i, j, c])
-                - (1/model.pRatio[i, j, c]) * (model.pGline[i ,j ,c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j, c]
-                + (1/model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j, c])
+                - (1/model.pRatio[i, j, c]) * (model.pGline[i ,j ,c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j]
+                + (1/model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j])
             )
         else:
             return pyo.Constraint.Skip
@@ -535,8 +548,8 @@ def add_constraints(lego: LEGO):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             return ( model.vLineQ[rp, k, i, j, c] == model.pSBase * (
                 - model.vSOCP_cii[rp, k, i] * (model.pBline[j, i, c] + model.pBcline[j, i, c]/2)
-                - (1/model.pRatio[j, i, c]) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, j, i, c]
-                + (1/model.pRatio[j, i, c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, j, i, c])
+                - (1/model.pRatio[j, i, c]) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, j, i]
+                + (1/model.pRatio[j, i, c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, j, i])
             )
         else:
             return pyo.Constraint.Skip
@@ -571,8 +584,8 @@ def add_constraints(lego: LEGO):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             return( model.vLineP[rp, k, i, j, c] >= model.pSBase * (
                 + model.pGline[i, j, c] * model.vSOCP_cii[rp, k, i] / pyo.sqrt(model.pRatio[i, j, c])
-                - (1 / model.pRatio[i, j, c]) * (model.pGline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j, c]
-                - (1 / model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j, c])
+                - (1 / model.pRatio[i, j, c]) * (model.pGline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j]
+                - (1 / model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j])
                 - model.pBigM_Flow* (1-model.vLineInvest[i, j, c])
                 )
         else:
@@ -584,8 +597,8 @@ def add_constraints(lego: LEGO):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             return( model.vLineP[rp, k, i, j, c] <= model.pSBase * (
                 + model.pGline[i, j, c] * model.vSOCP_cii[rp, k, i] / pyo.sqrt(model.pRatio[i, j, c])
-                - (1 / model.pRatio[i, j, c]) * (model.pGline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j, c]
-                - (1 / model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j, c])
+                - (1 / model.pRatio[i, j, c]) * (model.pGline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j]
+                - (1 / model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j])
                 + model.pBigM_Flow * (1-model.vLineInvest[i, j, c])
                 )
         else:
@@ -598,8 +611,8 @@ def add_constraints(lego: LEGO):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             return( model.vLineP[rp, k, i, j, c] >= model.pSBase * (
                 + model.pGline[j, i, c] * model.vSOCP_cii[rp, k, i]
-                - (1 / model.pRatio[j, i, c]) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, j, i, c]
-                - (1 / model.pRatio[j, i, c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, j, i, c])
+                - (1 / model.pRatio[j, i, c]) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, j, i]
+                - (1 / model.pRatio[j, i, c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, j, i])
                 - model.pBigM_Flow * (1-model.vLineInvest[j, i, c])
                 )
         else:
@@ -611,8 +624,8 @@ def add_constraints(lego: LEGO):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             return( model.vLineP[rp, k, i, j, c] <= model.pSBase * (
                 + model.pGline[j, i, c] * model.vSOCP_cii[rp, k, i]
-                - (1 / model.pRatio[j, i, c]) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, j, i, c]
-                - (1 / model.pRatio[j, i, c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, j, i, c])
+                - (1 / model.pRatio[j, i, c]) * (model.pGline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, j, i]
+                - (1 / model.pRatio[j, i, c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, j, i])
                 + model.pBigM_Flow * (1-model.vLineInvest[j, i, c])
                 )
         else:
@@ -625,8 +638,8 @@ def add_constraints(lego: LEGO):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             return ( model.vLineQ[rp, k, i, j, c] >= model.pSBase * (
                 - model.vSOCP_cii[rp, k, i] * (model.pBline[i, j, c] + model.pBcline[i, j, c]/2) / pyo.sqrt(model.pRatio[i, j, c])
-                - (1/model.pRatio[i, j, c]) * (model.pGline[i ,j ,c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j, c]
-                + (1/model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j, c])
+                - (1/model.pRatio[i, j, c]) * (model.pGline[i ,j ,c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j]
+                + (1/model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j])
                 - model.pBigM_Flow * (1-model.vLineInvest[i, j, c])
             )
         else:
@@ -638,8 +651,8 @@ def add_constraints(lego: LEGO):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             return ( model.vLineQ[rp, k, i, j, c] <= model.pSBase * (
                 - model.vSOCP_cii[rp, k, i] * (model.pBline[i, j, c] + model.pBcline[i, j, c]/2) / pyo.sqrt(model.pRatio[i, j, c])
-                - (1/model.pRatio[i, j, c]) * (model.pGline[i ,j ,c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j, c]
-                + (1/model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j, c])
+                - (1/model.pRatio[i, j, c]) * (model.pGline[i ,j ,c] * pyo.cos(model.pAngle[i, j, c]) - model.pBline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * -model.vSOCP_sij[rp, k, i, j]
+                + (1/model.pRatio[i, j, c]) * (model.pBline[i, j, c] * pyo.cos(model.pAngle[i, j, c]) + model.pGline[i, j, c] * pyo.sin(model.pAngle[i, j, c])) * model.vSOCP_cij[rp, k, i, j])
                 + model.pBigM_Flow * (1-model.vLineInvest[i, j, c])
             )
         else:
@@ -651,8 +664,8 @@ def add_constraints(lego: LEGO):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             return ( model.vLineQ[rp, k, i, j, c] >= model.pSBase * (
                 - model.vSOCP_cii[rp, k, i] * (model.pBline[j, i, c] + model.pBcline[j, i, c]/2)
-                - (1/model.pRatio[j, i ,c]) * (model.pGline[j, i ,c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, j, i, c]
-                + (1/model.pRatio[j, i ,c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, j, i, c])
+                - (1/model.pRatio[j, i ,c]) * (model.pGline[j, i ,c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, j, i]
+                + (1/model.pRatio[j, i ,c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, j, i])
                 - model.pBigM_Flow * (1-model.vLineInvest[j, i, c])
             )
         else:
@@ -664,8 +677,8 @@ def add_constraints(lego: LEGO):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
                 return ( model.vLineQ[rp, k, i, j, c] <= model.pSBase * (
                     - model.vSOCP_cii[rp, k, i] * (model.pBline[j, i, c] + model.pBcline[j, i, c]/2)
-                    - (1/model.pRatio[j, i ,c]) * (model.pGline[j, i ,c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, j, i, c]
-                    + (1/model.pRatio[j, i ,c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, j, i, c])
+                    - (1/model.pRatio[j, i ,c]) * (model.pGline[j, i ,c] * pyo.cos(model.pAngle[j, i, c]) + model.pBline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_sij[rp, k, j, i]
+                    + (1/model.pRatio[j, i ,c]) * (model.pBline[j, i, c] * pyo.cos(model.pAngle[j, i, c]) - model.pGline[j, i, c] * pyo.sin(model.pAngle[j, i, c])) * model.vSOCP_cij[rp, k, j, i])
                     + model.pBigM_Flow * (1-model.vLineInvest[j, i, c]) 
                 )
         else:
@@ -746,9 +759,9 @@ def add_constraints(lego: LEGO):
     def eSOCP_ExiLine_rule(model, rp, k, i, j, c):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             if (i, j, c) in lego.model.le:
-                return (model.vSOCP_cij[rp, k, i, j, c]**2 + model.vSOCP_sij[rp, k, i, j, c] **2 <= model.vSOCP_cii[rp, k, i]* model.vSOCP_cii[rp, k, j])
+                return (model.vSOCP_cij[rp, k, i, j]**2 + model.vSOCP_sij[rp, k, i, j] **2 <= model.vSOCP_cii[rp, k, i]* model.vSOCP_cii[rp, k, j])
             elif (i, j, c) in lego.model.le_reverse:
-                return (model.vSOCP_cij[rp, k, j, i, c]**2 + model.vSOCP_sij[rp, k, j, i, c] **2 <= model.vSOCP_cii[rp, k, i]* model.vSOCP_cii[rp, k, j])
+                return (model.vSOCP_cij[rp, k, j, i]**2 + model.vSOCP_sij[rp, k, j, i] **2 <= model.vSOCP_cii[rp, k, i]* model.vSOCP_cii[rp, k, j])
         return pyo.Constraint.Skip
     if lego.cs.dPower_Parameters["pEnableSOCP"]:
         lego.model.eSOCP_ExiLine = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le_full, doc="SCOP constraints for existing lines (for AC-OPF) original set" , rule=eSOCP_ExiLine_rule)
@@ -765,13 +778,13 @@ def add_constraints(lego: LEGO):
                     (i, j, c) in lego.model.le):
                     return pyo.Constraint.Skip
                 return (
-                    model.vSOCP_cij[rp, k, i, j, c] ** 2 + model.vSOCP_sij[rp, k, i, j, c] ** 2 <= model.vSOCP_cii[rp, k, i] * model.vSOCP_cii[rp, k, j])
+                    model.vSOCP_cij[rp, k, i, j] ** 2 + model.vSOCP_sij[rp, k, i, j] ** 2 <= model.vSOCP_cii[rp, k, i] * model.vSOCP_cii[rp, k, j])
             elif (i, j, c) in lego.model.lc_reverse:
                 if (lego.first_circuit_map.get((j, i)) != c_str or
                     (i, j, c) in lego.model.le_reverse):
                     return pyo.Constraint.Skip
                 return (
-                    model.vSOCP_cij[rp, k, j, i, c] ** 2 + model.vSOCP_sij[rp, k, j, i, c] ** 2 <= model.vSOCP_cii[rp, k, i] * model.vSOCP_cii[rp, k, j])
+                    model.vSOCP_cij[rp, k, j, i] ** 2 + model.vSOCP_sij[rp, k, j, i] ** 2 <= model.vSOCP_cii[rp, k, i] * model.vSOCP_cii[rp, k, j])
         return pyo.Constraint.Skip
     if lego.cs.dPower_Parameters["pEnableSOCP"]:   
         lego.model.eSOCP_CanLine = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_CanLine_rule)
@@ -787,13 +800,13 @@ def add_constraints(lego: LEGO):
                     (i, j, c) not in lego.model.le):
                     return pyo.Constraint.Skip
                 return(
-                    model.vSOCP_cij[rp, k, i, j, c] <= model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c])
+                    model.vSOCP_cij[rp, k, i, j] <= model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j])
             elif (i, j, c) in lego.model.lc_reverse:
                 if (lego.first_circuit_map.get((j, i)) != c_str or
                     (i, j, c) not in lego.model.le_reverse):
                     return pyo.Constraint.Skip
                 return (
-                    model.vSOCP_cij[rp, k, j, i, c] <= model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c])
+                    model.vSOCP_cij[rp, k, j, i] <= model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j])
         return pyo.Constraint.Skip
     if lego.cs.dPower_Parameters["pEnableSOCP"]:
         lego.model.eSOCP_CanLine_cij = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="SOCP constraint for candidate lines (only if in le)",rule=eSOCP_CanLine_cij_rule) 
@@ -808,13 +821,13 @@ def add_constraints(lego: LEGO):
                     (i, j, c) not in lego.model.le):
                     return pyo.Constraint.Skip
                 return (
-                    model.vSOCP_sij[rp, k, i, j, c] <= model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c])
+                    model.vSOCP_sij[rp, k, i, j] <= model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j])
             elif (i, j, c) in lego.model.lc_reverse:
                 if (lego.first_circuit_map.get((j, i)) != c_str or
                     (i, j, c) not in lego.model.le_reverse):
                     return pyo.Constraint.Skip
                 return (
-                    model.vSOCP_sij[rp, k, j, i, c] <= model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c])
+                    model.vSOCP_sij[rp, k, j, i] <= model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j])
         return pyo.Constraint.Skip
     if lego.cs.dPower_Parameters["pEnableSOCP"]:
         lego.model.eSOCP_CanLine_sij1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc,doc="SOCP constraint for candidate lines (only if in le)",rule=eSOCP_CanLine_sij1_rule)
@@ -829,13 +842,13 @@ def add_constraints(lego: LEGO):
                     (i, j, c) not in lego.model.le):
                     return pyo.Constraint.Skip
                 return (
-                    model.vSOCP_sij[rp, k, i, j, c] >= -model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c])
+                    model.vSOCP_sij[rp, k, i, j] >= -model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j])
             elif (i, j, c) in lego.model.lc_reverse:
                 if (lego.first_circuit_map.get((j, i)) != c_str or
                     (i, j, c) not in lego.model.le_reverse):
                     return pyo.Constraint.Skip
                 return (
-                    model.vSOCP_sij[rp, k, j, i, c] >= -model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j, c])
+                    model.vSOCP_sij[rp, k, j, i] >= -model.pBigM_SOCP * model.vSOCP_IndicConnecNodes[i, j])
         return pyo.Constraint.Skip
     if lego.cs.dPower_Parameters["pEnableSOCP"]:
         lego.model.eSOCP_CanLine_sij2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="SOCP constraint for candidate lines (only if in le)",rule=eSOCP_CanLine_sij2_rule)
@@ -876,13 +889,13 @@ def add_constraints(lego: LEGO):
                     (i, j, c) in lego.model.le):
                     return pyo.Constraint.Skip
                 return (
-                    model.vSOCP_IndicConnecNodes[i, j, c] == model.vLineInvest[i, j, c])
+                    model.vSOCP_IndicConnecNodes[i, j] == model.vLineInvest[i, j, c])
             elif (i, j, c) in lego.model.lc_reverse:
                 if (lego.first_circuit_map.get((j, i)) != c_str or
                     (i, j, c) not in lego.model.le):
                     return pyo.Constraint.Skip
                 return (
-                    model.vSOCP_IndicConnecNodes[i, j, c] == model.vLineInvest[j, i, c])
+                    model.vSOCP_IndicConnecNodes[i, j] == model.vLineInvest[j, i, c])
         return pyo.Constraint.Skip
     if lego.cs.dPower_Parameters["pEnableSOCP"]:    
         lego.model.eSOCP_IndicConnecNodes2 = pyo.Constraint(lego.model.lc, doc="SOCP constraint for candidate lines (only if not in le)",rule=eSOCP_IndicConnecNodes2_rule)
@@ -896,13 +909,13 @@ def add_constraints(lego: LEGO):
                     (i, j, c) in lego.model.le):
                     return pyo.Constraint.Skip
                 return (
-                    model.vSOCP_cij[rp, k, i, j, c] <= pyo.sqrt(model.pBusMaxV[i]) + model.pBigM_SOCP * (1 -  model.vSOCP_IndicConnecNodes[i, j, c]))
+                    model.vSOCP_cij[rp, k, i, j] <= pyo.sqrt(model.pBusMaxV[i]) + model.pBigM_SOCP * (1 -  model.vSOCP_IndicConnecNodes[i, j]))
             elif (i, j, c) in lego.model.lc_reverse:
                 if (lego.first_circuit_map.get((j, i)) != c_str or
                     (i, j, c) in lego.model.le_reverse):
                     return pyo.Constraint.Skip
                 return (
-                    model.vSOCP_cij[rp, k, j, i, c] <= pyo.sqrt(model.pBusMaxV[i]) + model.pBigM_SOCP * (1 -  model.vSOCP_IndicConnecNodes[i, j, c]))
+                    model.vSOCP_cij[rp, k, j, i] <= pyo.sqrt(model.pBusMaxV[i]) + model.pBigM_SOCP * (1 -  model.vSOCP_IndicConnecNodes[j, i]))
         return pyo.Constraint.Skip
     if lego.cs.dPower_Parameters["pEnableSOCP"]:
         lego.model.eSOCP_CanLineCijUpLim = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="Limits for SOCP variables lines (only if not in le)",rule=eSOCP_CanLineCijUpLim_rule)
@@ -915,13 +928,13 @@ def add_constraints(lego: LEGO):
                         (i, j, c) in lego.model.le):
                         return pyo.Constraint.Skip
                     return (
-                        model.vSOCP_cij[rp, k, i, j, c] >= pyo.sqrt(model.pBusMaxV[i]) - model.pBigM_SOCP * (1 -  model.vSOCP_IndicConnecNodes[i, j, c]))
+                        model.vSOCP_cij[rp, k, i, j] >= pyo.sqrt(model.pBusMaxV[i]) - model.pBigM_SOCP * (1 -  model.vSOCP_IndicConnecNodes[i, j]))
                 elif (i, j, c) in lego.model.lc_reverse:
                     if (lego.first_circuit_map.get((j, i)) != c_str or
                         (i, j, c) in lego.model.le_reverse):
                         return pyo.Constraint.Skip
                     return (
-                        model.vSOCP_cij[rp, k, j, i, c] >= pyo.sqrt(model.pBusMaxV[i]) - model.pBigM_SOCP * (1 -  model.vSOCP_IndicConnecNodes[i, j, c]))
+                        model.vSOCP_cij[rp, k, j, i] >= pyo.sqrt(model.pBusMaxV[i]) - model.pBigM_SOCP * (1 -  model.vSOCP_IndicConnecNodes[j, i]))
             return pyo.Constraint.Skip
     if lego.cs.dPower_Parameters["pEnableSOCP"]:
         lego.model.eSOCP_CanLineCijLoLim= pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="Limits for SOCP variables (only if not in le)",rule=eSOCP_CanLineCijLoLim_rule)
@@ -934,13 +947,13 @@ def add_constraints(lego: LEGO):
                     (i, j, c) in lego.model.le):
                     return pyo.Constraint.Skip
                 return (
-                model.vSOCP_sij[rp, k, i, j, c] <= pyo.sqrt(model.pBusMaxV[i]) + model.pBigM_SOCP * (1 - model.vSOCP_IndicConnecNodes[i, j, c]))
+                model.vSOCP_sij[rp, k, i, j] <= pyo.sqrt(model.pBusMaxV[i]) + model.pBigM_SOCP * (1 - model.vSOCP_IndicConnecNodes[i, j]))
             elif (i, j, c) in lego.model.lc_reverse:
                 if (lego.first_circuit_map.get((j, i)) != c_str or
                     (i, j, c) in lego.model.le_reverse):
                     return pyo.Constraint.Skip
             return (
-                model.vSOCP_sij[rp, k, j, i, c] <= pyo.sqrt(model.pBusMaxV[i]) + model.pBigM_SOCP * (1 - model.vSOCP_IndicConnecNodes[i, j, c]))
+                model.vSOCP_sij[rp, k, j, i] <= pyo.sqrt(model.pBusMaxV[i]) + model.pBigM_SOCP * (1 - model.vSOCP_IndicConnecNodes[j, i]))
         return pyo.Constraint.Skip
     if lego.cs.dPower_Parameters["pEnableSOCP"]:
         lego.model.eSOCP_CanLineSijUpLim = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="Limits for SOCP variables (only if not in le)",rule=eSOCP_CanLineSijUpLim_rule)
@@ -953,13 +966,13 @@ def add_constraints(lego: LEGO):
                     (i, j, c) in lego.model.le):
                     return pyo.Constraint.Skip
                 return (
-                    model.vSOCP_sij[rp, k, i, j, c] >= -pyo.sqrt(model.pBusMaxV[i]) - model.pBigM_SOCP * (1 - model.vSOCP_IndicConnecNodes[i, j, c]))
+                    model.vSOCP_sij[rp, k, i, j] >= -pyo.sqrt(model.pBusMaxV[i]) - model.pBigM_SOCP * (1 - model.vSOCP_IndicConnecNodes[i, j]))
             elif (i, j, c) in lego.model.lc_reverse:
                 if (lego.first_circuit_map.get((j, i)) != c_str or
                     (i, j, c) in lego.model.le_reverse):
                     return pyo.Constraint.Skip
                 return (
-                    model.vSOCP_sij[rp, k, j, i, c] >= -pyo.sqrt(model.pBusMaxV[i]) - model.pBigM_SOCP * (1 - model.vSOCP_IndicConnecNodes[i, j, c]))
+                    model.vSOCP_sij[rp, k, j, i] >= -pyo.sqrt(model.pBusMaxV[i]) - model.pBigM_SOCP * (1 - model.vSOCP_IndicConnecNodes[j, i]))
         return pyo.Constraint.Skip
     if lego.cs.dPower_Parameters["pEnableSOCP"]:
         lego.model.eSOCP_CanLineSijLoLim = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full,doc="Limits for SOCP variables (only if not in le)",rule=eSOCP_CanLineSijLoLim_rule)
@@ -971,9 +984,9 @@ def add_constraints(lego: LEGO):
     def eSOCP_ExiLineAngDif1_rule(model, rp, k, i, j, c):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             if (i, j, c) in lego.model.le:
-                return model.vSOCP_sij[rp, k, i, j, c] <= model.vSOCP_cij[rp, k, i, j, c] * pyo.tan(model.pMaxAngleDiff)
+                return model.vSOCP_sij[rp, k, i, j] <= model.vSOCP_cij[rp, k, i, j] * pyo.tan(model.pMaxAngleDiff)
             elif (j, i, c) in lego.model.le_reverse:
-                return model.vSOCP_sij[rp, k, j, i, c] <= model.vSOCP_cij[rp, k, j, i, c] * pyo.tan(model.pMaxAngleDiff)
+                return model.vSOCP_sij[rp, k, j, i] <= model.vSOCP_cij[rp, k, j, i] * pyo.tan(model.pMaxAngleDiff)
         return pyo.Constraint.Skip
     
     if lego.cs.dPower_Parameters["pEnableSOCP"]:
@@ -982,9 +995,9 @@ def add_constraints(lego: LEGO):
     def eSOCP_ExiLineAngDif2_rule(model, rp, k, i, j, c):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
             if (i, j, c) in lego.model.le:
-                return model.vSOCP_sij[rp, k, i, j, c] >= -model.vSOCP_cij[rp, k, i, j, c] * pyo.tan(model.pMaxAngleDiff)
+                return model.vSOCP_sij[rp, k, i, j] >= -model.vSOCP_cij[rp, k, i, j] * pyo.tan(model.pMaxAngleDiff)
             elif (j, i, c) in lego.model.le_reverse:
-                return model.vSOCP_sij[rp, k, j, i, c] >= -model.vSOCP_cij[rp, k, j, i, c] * pyo.tan(model.pMaxAngleDiff)
+                return model.vSOCP_sij[rp, k, j, i] >= -model.vSOCP_cij[rp, k, j, i] * pyo.tan(model.pMaxAngleDiff)
         return pyo.Constraint.Skip
     
     if lego.cs.dPower_Parameters["pEnableSOCP"]: 
@@ -999,12 +1012,12 @@ def add_constraints(lego: LEGO):
                 if (lego.first_circuit_map.get((i, j)) != c_str or
                     (i, j, c) in lego.model.le):
                     return pyo.Constraint.Skip
-                return model.vSOCP_sij[rp, k, i, j, c] <= model.vSOCP_cij[rp, k, i, j, c] * pyo.tan(model.pMaxAngleDiff) + model.pBigM_Flow * (1-model.vSOCP_IndicConnecNodes[i, j, c])
+                return model.vSOCP_sij[rp, k, i, j] <= model.vSOCP_cij[rp, k, i, j] * pyo.tan(model.pMaxAngleDiff) + model.pBigM_Flow * (1-model.vSOCP_IndicConnecNodes[i, j])
             elif (j, i, c) in lego.model.lc_reverse:
                 if (lego.first_circuit_map.get((j, i)) != c_str or
                     (i, j, c) in lego.model.le_reverse):
                     return pyo.Constraint.Skip
-                return model.vSOCP_sij[rp, k, j, i, c] <= model.vSOCP_cij[rp, k, j, i, c] * pyo.tan(model.pMaxAngleDiff) + model.pBigM_Flow * (1-model.vSOCP_IndicConnecNodes[i, j, c])
+                return model.vSOCP_sij[rp, k, j, i] <= model.vSOCP_cij[rp, k, j, i] * pyo.tan(model.pMaxAngleDiff) + model.pBigM_Flow * (1-model.vSOCP_IndicConnecNodes[i, j])
             return pyo.Constraint.Skip
         return pyo.Constraint.Skip
     
@@ -1018,12 +1031,12 @@ def add_constraints(lego: LEGO):
                 if (lego.first_circuit_map.get((i, j)) != c_str or
                     (i, j, c) in lego.model.le):
                     return pyo.Constraint.Skip
-                return model.vSOCP_sij[rp, k, i, j, c] >= - model.vSOCP_cij[rp, k, i, j, c] * pyo.tan(model.pMaxAngleDiff) - model.pBigM_Flow * (1-model.vSOCP_IndicConnecNodes[i, j, c])
+                return model.vSOCP_sij[rp, k, i, j] >= - model.vSOCP_cij[rp, k, i, j] * pyo.tan(model.pMaxAngleDiff) - model.pBigM_Flow * (1-model.vSOCP_IndicConnecNodes[i, j])
             elif (j, i, c) in lego.model.lc_reverse:
                 if (lego.first_circuit_map.get((j, i)) != c_str or
                     (i, j, c) in lego.model.le_reverse):
                     return pyo.Constraint.Skip
-                return model.vSOCP_sij[rp, k, j, i, c] >= - model.vSOCP_cij[rp, k, j, i, c] * pyo.tan(model.pMaxAngleDiff) - model.pBigM_Flow * (1-model.vSOCP_IndicConnecNodes[i, j, c])
+                return model.vSOCP_sij[rp, k, j, i] >= - model.vSOCP_cij[rp, k, j, i] * pyo.tan(model.pMaxAngleDiff) - model.pBigM_Flow * (1-model.vSOCP_IndicConnecNodes[i, j])
             return pyo.Constraint.Skip
         return pyo.Constraint.Skip
     
