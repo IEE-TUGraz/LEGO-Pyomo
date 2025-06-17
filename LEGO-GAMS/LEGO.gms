@@ -3363,7 +3363,7 @@ $if not exist "./UC.gdx" pCommit(p,t)=0                       ;
 $if not exist "./UC.gdx" pStLvMW(p,s)=0                       ;
 $if     exist "./UC.gdx" execute_load 'UC.gdx' pCommit pStLvMW;
 
-option solver = Cplex;
+option solver = Gurobi;
 
 * solve depending on options
 if    (pEnableRMIP=1 and pRegretCalc=0,

@@ -48,7 +48,7 @@ results, timing = lego.solve_model()
 printer.information(f"Solving LEGO model took {timing:.2f} seconds")
 
 logger = logging.getLogger('pyomo.util.infeasible')
-logger.setLevel(logging.WARNING)  
+logger.setLevel(logging.INFO)
 
 # Ensure there is a handler attached
 if not logger.handlers:
@@ -61,6 +61,6 @@ match results.solver.termination_condition:
         printer.success(f"Optimal solution: {pyo.value(model.objective):.4f}")
     case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
         printer.error(f"Model returned as {results.solver.termination_condition}, logging infeasible constraints:")
-        log_infeasible_constraints(model)
+        log_infeasible_constraints(model, log_expression= False)
     case _:
         printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")

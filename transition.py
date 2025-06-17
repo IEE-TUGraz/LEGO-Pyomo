@@ -29,7 +29,7 @@ check_vars = True
 check_constraints = True
 check_quadratic_constraints = True
 check_objectives = True
-print_additional_information = True
+print_additional_information = False
 
 constraints_to_skip_from1 = []
 constraints_to_keep_from1 = []
@@ -83,12 +83,15 @@ if execute_gams:
         timing = stop_time - start_time
         printer.information(f"Executing GAMS took {timing:.2f} seconds")
 
-        with open("LEGO-Gams/gams_console.log", "r") as file:
+        with open("LEGO-GAMS/gams_console.log", "r") as file:
             for line in file:
-                if "Objective:" in line:
-                    objective_value_gams = float(line.split()[-1])
-                    printer.information(f"Objective value: {objective_value_gams}")
-                    break
+                if "optimal objective" in line.lower():
+                    try:
+                        objective_value_gams = float(line.strip().split()[-1])
+                        printer.information(f"Objective value GAMS: {objective_value_gams}")
+                        break
+                    except ValueError:
+                        continue
 
 ########################################################################################################################
 # Data input from case study
