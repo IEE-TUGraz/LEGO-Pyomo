@@ -36,7 +36,7 @@ class LEGO:
 
         return self.model, self.timings["model_building"]
 
-    def execute_extensive_form(self) -> (pyo.Model, float, float):
+    def execute_extensive_form(self, optimizer=None) -> (pyo.Model, float, float):
         """
         Executes the extensive form algorithm on the model.
         :return: The model and the time taken to execute the extensive form algorithm
@@ -45,7 +45,7 @@ class LEGO:
 
         scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
         options = {
-            "solver": "gurobi"
+            "solver": "highs" if optimizer is None else optimizer
         }
 
         start_time = time.time()
@@ -129,8 +129,7 @@ class LEGO:
         if not already_solved_ok and self.results is not None:
             raise RuntimeError("Model already solved, please set already_solved_ok to True if that's intentional")
 
-        if optimizer is None:
-            optimizer = pyo.SolverFactory("gurobi")
+        optimizer = pyo.SolverFactory("highs" if optimizer is None else optimizer)
 
         start_time = time.time()
         results = optimizer.solve(self.model)
