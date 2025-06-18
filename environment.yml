@@ -19,4 +19,4 @@ dependencies:
   - pip:
       - pulp==3.1.1
       - mpi-sppy==0.12.1  # https://doi.org/10.1007/s12532-023-00247-3
-      - -e InOutModule
+      - -e InOutModule  # Editable install for InOutModule (submodule of this repository)

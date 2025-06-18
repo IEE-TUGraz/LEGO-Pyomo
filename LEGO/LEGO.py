@@ -1,4 +1,5 @@
 import copy
+import enum
 import os
 import time
 import typing
@@ -12,6 +13,16 @@ from InOutModule.printer import Printer
 from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits
 
 printer = Printer.getInstance()
+
+
+class ModelType(enum.Enum):
+    """
+    Enum-like class to represent the type of model.
+    """
+    DETERMINISTIC = "deterministic"
+    EXTENSIVE_FORM = "extensive_form"
+    BENDERS = "benders"
+    PROGRESSIVE_HEDGING = "progressive_hedging"
 
 
 class LEGO:
@@ -36,109 +47,100 @@ class LEGO:
 
         return self.model, self.timings["model_building"]
 
-    def execute_extensive_form(self, optimizer=None) -> (pyo.Model, float, float):
-        """
-        Executes the extensive form algorithm on the model.
-        :return: The model and the time taken to execute the extensive form algorithm
-        """
-        from mpisppy.opt.ef import ExtensiveForm
-
-        scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
-        options = {
-            "solver": "highs" if optimizer is None else optimizer
-        }
-
-        start_time = time.time()
-        ef = ExtensiveForm(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
-        result = ef.solve_extensive_form()
-        stop_time = time.time()
-        objval = ef.get_objective_value()
-
-        # variables = ef.get_root_solution()
-        # for (var_name, var_val) in variables.items():
-        # print(var_name, var_val)
-
-        return ef.ef, stop_time - start_time, objval
-
-    def execute_benders(self) -> (pyo.Model, float, float):
-        """
-        Executes the Benders decomposition algorithm on the model.
-        :return: The model and the time taken to execute the Benders algorithm
-        """
-        from mpisppy.opt.lshaped import LShapedMethod
-
-        scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
-        options = {
-            "root_solver": "gurobi",
-            "sp_solver": "gurobi",
-            "sp_solver_options": {"threads": os.cpu_count() - 1},  # Use all but one CPU core
-            # "valid_eta_lb": None,  # TODO: Check how to set bounds dynamically
-            "max_iter": 1000,
-        }
-        start_time = time.time()
-        ls = LShapedMethod(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
-        result = ls.lshaped_algorithm()
-        stop_time = time.time()
-
-        # variables = ls.gather_var_values_to_rank0()
-        # for ((scen_name, var_name), var_value) in variables.items():
-        #   print(scen_name, var_name, var_value)
-
-        lower_bound = result.json_repn()['Problem'][0]['Lower bound']
-        upper_bound = result.json_repn()['Problem'][0]['Upper bound']
-        printer.warning(f"Lower bound: {lower_bound:.2f}, Upper bound: {upper_bound:.2f}, spread: {upper_bound - lower_bound:.2f} | {(upper_bound - lower_bound) / upper_bound * 100:.2f}%)")
-        printer.warning(f"Reporting lower bound as objective value, please check if this is correct")
-
-        return None, stop_time - start_time, lower_bound
-
-    def execute_progressive_hedging(self) -> (pyo.Model, float):
-        """
-        Executes the Progressive Hedging algorithm on the model.
-        :return: The model and the time taken to execute
-        """
-        from mpisppy.opt.ph import PH
-
-        scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
-        options = {
-            "solver_name": "gurobi",
-            "PHIterLimit": 50,
-            "defaultPHrho": 10,
-            "convthresh": 1e-7,
-            "verbose": False,
-            "display_progress": True,
-            "display_timing": True,
-            "iter0_solver_options": dict(),
-            "iterk_solver_options": dict(),
-        }
-        start_time = time.time()
-        ph = PH(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
-        result = ph.ph_main()
-        stop_time = time.time()
-
-        # variables = ph.gather_var_values_to_rank0()
-        # for ((scen_name, var_name), var_value) in variables.items():
-        #   print(scen_name, var_name, var_value)
-
-        return None, stop_time - start_time
-
     # Returns the objective value of this model (either overall or within the zone of interest)
     def get_objective_value(self, zoi: bool):
         return get_objective_value(self.model, zoi)
 
-    def solve_model(self, optimizer=None, already_solved_ok=False) -> {pyomo.opt.results.results_.SolverResults, float}:
+    def solve_model(self, model_type: ModelType = ModelType.DETERMINISTIC, optimizer_name="highs", already_solved_ok=False) -> (pyomo.opt.results.results_.SolverResults, float, float):
         if not already_solved_ok and self.results is not None:
             raise RuntimeError("Model already solved, please set already_solved_ok to True if that's intentional")
 
-        optimizer = pyo.SolverFactory("highs" if optimizer is None else optimizer)
-
         start_time = time.time()
-        results = optimizer.solve(self.model)
+        match model_type:
+            case ModelType.DETERMINISTIC:
+                optimizer = pyo.SolverFactory(optimizer_name)
+                results = optimizer.solve(self.model)
+                objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+            case ModelType.EXTENSIVE_FORM:
+                from mpisppy.opt.ef import ExtensiveForm
+
+                scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
+                options = {
+                    "solver": optimizer_name
+                }
+
+                start_time = time.time()
+                ef = ExtensiveForm(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
+                results = ef.solve_extensive_form()
+                stop_time = time.time()
+                objective_value = ef.get_objective_value() if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+
+                # variables = ef.get_root_solution()
+                # for (var_name, var_val) in variables.items():
+                # print(var_name, var_val)
+            case ModelType.BENDERS:
+                printer.warning("Benders decomposition NOT FULLY TESTED YET, MIGHT HAVE SOME ISSUES OR BUGS!")
+                from mpisppy.opt.lshaped import LShapedMethod
+
+                scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
+                options = {
+                    "root_solver": optimizer_name,
+                    "sp_solver": optimizer_name,
+                    "sp_solver_options": {"threads": os.cpu_count() - 1},  # Use all but one CPU core
+                    # "valid_eta_lb": None,  # TODO: Check how to set bounds dynamically
+                    "max_iter": 1000,
+                }
+                start_time = time.time()
+                ls = LShapedMethod(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
+                results = ls.lshaped_algorithm()
+                stop_time = time.time()
+
+                objective_value = pyo.value(ls.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+
+                # variables = ls.gather_var_values_to_rank0()
+                # for ((scen_name, var_name), var_value) in variables.items():
+                #   print(scen_name, var_name, var_value)
+
+                lower_bound = results.json_repn()['Problem'][0]['Lower bound']
+                upper_bound = results.json_repn()['Problem'][0]['Upper bound']
+                printer.warning(f"Lower bound: {lower_bound:.2f}, Upper bound: {upper_bound:.2f}, spread: {upper_bound - lower_bound:.2f} | {(upper_bound - lower_bound) / upper_bound * 100:.2f}%)")
+                printer.warning(f"Reporting lower bound as objective value, please check if this is correct")
+
+            case ModelType.PROGRESSIVE_HEDGING:
+                printer.warning("Progressive Hedging NOT FULLY TESTED YET, MIGHT HAVE SOME ISSUES OR BUGS!")
+                from mpisppy.opt.ph import PH
+
+                scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
+                options = {
+                    "solver_name": optimizer_name,
+                    "PHIterLimit": 50,
+                    "defaultPHrho": 10,
+                    "convthresh": 1e-7,
+                    "verbose": False,
+                    "display_progress": True,
+                    "display_timing": True,
+                    "iter0_solver_options": dict(),
+                    "iterk_solver_options": dict(),
+                }
+                start_time = time.time()
+                ph = PH(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
+                results = ph.ph_main()
+                stop_time = time.time()
+
+                objective_value = pyo.value(ph.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+
+                # variables = ph.gather_var_values_to_rank0()
+                # for ((scen_name, var_name), var_value) in variables.items():
+                #   print(scen_name, var_name, var_value)
+            case _:
+                raise RuntimeError(f"Model type {model_type} not implemented yet")
+
         stop_time = time.time()
 
         self.timings["model_solving"] = stop_time - start_time
         self.results = results
 
-        return results, self.timings["model_solving"]
+        return results, self.timings["model_solving"], objective_value
 
     def get_number_of_variables(self, dont_multiply_by_indices=False) -> int:
         # Check if pyomo-implementation is the same as this "manual" one

@@ -418,7 +418,7 @@ def compare_mps(file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix: bo
                 file2, file2_isPyomoFormat: bool, file2_removeScenarioPrefix: bool,
                 check_vars=True, check_constraints=True, print_additional_information=False,
                 constraints_to_skip_from1=None, constraints_to_keep_from1=None, coefficients_to_skip_from1=None,
-                constraints_to_skip_from2=None, constraints_to_keep_from2=None, coefficients_to_skip_from2=None, constraints_to_enforce_from2=None):
+                constraints_to_skip_from2=None, constraints_to_keep_from2=None, coefficients_to_skip_from2=None, constraints_to_enforce_from2=None) -> bool:
     # Safety before more expensive operations start
     if check_constraints:
         # If any of enforce is in skip, raise error
@@ -517,3 +517,7 @@ def compare_mps(file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix: bo
 
     if all_perfect:
         printer.success("All checks passed, no missing or partially matching elements found!")
+        return True
+    else:
+        printer.error("Some checks failed, see above for details!")
+        return False
