@@ -115,7 +115,10 @@ def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | p
             mps_path = f"pyomo-{model_type}-{time.strftime('%y%m%d-%H%M%S')}.mps" if model_type in [ModelTypeForComparison.DETERMINISTIC, ModelTypeForComparison.EXTENSIVE_FORM] else None
             cs = CaseStudy(data_path, do_not_merge_single_node_buses=True)
             lego = LEGO(cs)
-            model, timing = lego.build_model()
+            if model_type in [ModelTypeForComparison.DETERMINISTIC, ModelTypeForComparison.EXTENSIVE_FORM]:
+                model, timing = lego.build_model(model_type=LEGOModelType(model_type.value))
+            else:
+                raise ValueError(f"Model type '{model_type}' is not supported for building a model directly, this is done using implicitly within 'solve_model'.")
             printer.information(f"Building LEGO model took {timing:.2f} seconds")
 
             # Write MPS file
@@ -231,13 +234,14 @@ def compareModels(model_type1: ModelTypeForComparison, folder_path1: str | pathl
                 printer.error(f"Model 1 path is None, will not compare models")
             if mps_path2 is None:
                 printer.error(f"Model 2 path is None, will not compare models")
-            mps_equal = False
+            mps_equal = True
     else:
         printer.information("Skipping overall comparison of MPS files as requested")
-        mps_equal = False
+        mps_equal = True
 
-    if mps_equal and (objective_value1 - objective_value2) / objective_value2 > 0.01:
-        printer.warning(f"Models are equal, but objective values differ by more than 1%: {objective_value1} vs {objective_value2}")
+    if mps_equal and (objective_value1 - objective_value2) / objective_value2 > 0.001:
+        printer.error(f"Models are equal, but objective values differ by more than 0.1%: {objective_value1} vs {objective_value2}")
+        mps_equal = False
 
     return mps_equal
 

@@ -31,19 +31,40 @@ class LEGO:
         self.model: typing.Optional[pyo.Model] = model
         self.results: typing.Optional[pyomo.opt.results.results_.SolverResults] = results
         self.timings = {"model_building": -1.0, "model_solving": -1.0}
+        self.optimizer_name = None
+        self._extensive_form = None  # Used for the ExtensiveForm model type, not used in other model types
 
-    def build_model(self, already_existing_ok=False) -> (pyo.Model, float):
+    def build_model(self, already_existing_ok: bool = False, model_type: ModelType = ModelType.DETERMINISTIC, optimizer_name: str = None) -> (pyo.Model, float):
         if not already_existing_ok and self.model is not None:
             raise RuntimeError("Model already exists, please set already_existing_ok to True if that's intentional")
 
         start_time = time.time()
-        model = _build_model(self.cs)
-        self.model = model
+        match model_type:
+            case ModelType.DETERMINISTIC:
+                model = _build_model(self.cs)
+                self.model = model
+            case ModelType.EXTENSIVE_FORM:
+                from mpisppy.opt.ef import ExtensiveForm
+
+                scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
+                if optimizer_name is None:
+                    optimizer_name = "highs"  # Has to be set before building, otherwise the ExtensiveForm will not work correctly
+                options = {
+                    "solver": "highs" if optimizer_name is None else optimizer_name,
+                }
+                ef = ExtensiveForm(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
+                self._extensive_form = ef
+                self.model = ef.ef
+            case ModelType.BENDERS | ModelType.PROGRESSIVE_HEDGING:
+                raise RuntimeError(f"Model type {model_type} can not be built seperately, it is built using the 'solve_model' method")
+            case _:
+                raise RuntimeError(f"Model type {model_type} not implemented (yet?)")
 
         stop_time = time.time()
         self.timings["model_building"] = stop_time - start_time
         self.timings["model_solving"] = -1.0
         self.results = None
+        self.optimizer_name = optimizer_name
 
         return self.model, self.timings["model_building"]
 
@@ -62,20 +83,14 @@ class LEGO:
                 results = optimizer.solve(self.model)
                 objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
             case ModelType.EXTENSIVE_FORM:
-                from mpisppy.opt.ef import ExtensiveForm
-
-                scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
-                options = {
-                    "solver": optimizer_name
-                }
-
+                if optimizer_name != self.optimizer_name:
+                    raise RuntimeError(f"Optimizer name {optimizer_name} does not match the one used to build the model ({self.optimizer_name}), please use the same optimizer name when solving using the 'ExtensiveForm' model type")
                 start_time = time.time()
-                ef = ExtensiveForm(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
-                results = ef.solve_extensive_form()
+                results = self._extensive_form.solve_extensive_form()
                 stop_time = time.time()
-                objective_value = ef.get_objective_value() if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+                objective_value = self._extensive_form.get_objective_value() if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
 
-                # variables = ef.get_root_solution()
+                # variables = self.model.get_root_solution()
                 # for (var_name, var_val) in variables.items():
                 # print(var_name, var_val)
             case ModelType.BENDERS:
