@@ -3,6 +3,7 @@ import enum
 import logging
 import pathlib
 import time
+import warnings
 from typing import Optional
 
 import pyomo.environ as pyo
@@ -117,9 +118,9 @@ def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | p
             lego = LEGO(cs)
             if model_type in [ModelTypeForComparison.DETERMINISTIC, ModelTypeForComparison.EXTENSIVE_FORM]:
                 model, timing = lego.build_model(model_type=LEGOModelType(model_type.value))
+                printer.information(f"Building LEGO model took {timing:.2f} seconds")
             else:
-                raise ValueError(f"Model type '{model_type}' is not supported for building a model directly, this is done using implicitly within 'solve_model'.")
-            printer.information(f"Building LEGO model took {timing:.2f} seconds")
+                printer.warning(f"Model type '{model_type}' is not supported for building a model directly, this is done using implicitly within 'solve_model'.")
 
             # Write MPS file
             if mps_path is not None:

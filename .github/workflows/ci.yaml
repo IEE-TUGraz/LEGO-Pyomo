@@ -16,7 +16,7 @@ jobs:
       matrix:
         os: [ ubuntu-latest, windows-latest, macos-latest ]
         isMainBranch:
-        - ${{ contains(github.ref, 'main') }}  # Check if the branch is main
+          - ${{ contains(github.ref, 'main') }}  # Check if the branch is main
         exclude:
           - isMainBranch: false
             os: windows-latest  # Exclude Windows for non-main branches
@@ -35,6 +35,8 @@ jobs:
 
       - name: Set up Conda environment
         uses: conda-incubator/setup-miniconda@v3.2.0
+        env:
+          CC: mpicXX
         with:
           environment-file: environment.yml
           activate-environment: LEGO-Pyomo_env

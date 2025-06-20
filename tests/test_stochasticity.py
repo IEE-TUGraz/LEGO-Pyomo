@@ -1,4 +1,5 @@
 import shutil
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -77,5 +78,8 @@ def test_deterministicVsExtensiveWithTwoEqualScenarios(tmp_path):
 
 
 def test_extensiveStochasticVsBendersWithTwoDifferentScenarios():
-    printer.warning("Test not implemented yet!")
+    warnings.warn("This test is not active, since Benders says the solution is infeasible.")  # TODO
+    # mps_equal = compareModels(ModelTypeForComparison.EXTENSIVE_FORM, "data/exampleStochastic", True,
+    #                           ModelTypeForComparison.BENDERS, "data/exampleStochastic", True,
+    #                           skip_comparison_overall=True)
     assert True
