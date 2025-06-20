@@ -3,7 +3,6 @@ import enum
 import logging
 import pathlib
 import time
-import warnings
 from typing import Optional
 
 import pyomo.environ as pyo
@@ -225,8 +224,8 @@ def compareModels(model_type1: ModelTypeForComparison, folder_path1: str | pathl
 
     if not skip_comparison_overall:
         if mps_path1 is not None and mps_path2 is not None:
-            mps_equal = compare_mps(mps_path1, model_type1 != ModelTypeForComparison.GAMS, model_type2 == ModelTypeForComparison.DETERMINISTIC and not (model_type1 == ModelTypeForComparison.DETERMINISTIC or model_type1 == ModelTypeForComparison.GAMS),
-                                    mps_path2, model_type2 != ModelTypeForComparison.GAMS, model_type1 == ModelTypeForComparison.DETERMINISTIC and not (model_type2 == ModelTypeForComparison.DETERMINISTIC or model_type2 == ModelTypeForComparison.GAMS),
+            mps_equal = compare_mps(file1=mps_path1, file1_isPyomoFormat=model_type1 != ModelTypeForComparison.GAMS, file1_removeScenarioPrefix=model_type2 == ModelTypeForComparison.DETERMINISTIC and not (model_type1 == ModelTypeForComparison.DETERMINISTIC or model_type1 == ModelTypeForComparison.GAMS),
+                                    file2=mps_path2, file2_isPyomoFormat=model_type2 != ModelTypeForComparison.GAMS, file2_removeScenarioPrefix=model_type1 == ModelTypeForComparison.DETERMINISTIC and not (model_type2 == ModelTypeForComparison.DETERMINISTIC or model_type2 == ModelTypeForComparison.GAMS),
                                     check_vars=not skip_variable_comparison, check_constraints=not skip_constraint_comparison, print_additional_information=print_additional_information,
                                     constraints_to_skip_from1=constraint_skip_model1, constraints_to_keep_from1=constraint_keep_model1, coefficients_to_skip_from1=coefficients_skip_model1,
                                     constraints_to_skip_from2=constraint_skip_model2, constraints_to_keep_from2=constraint_keep_model2, coefficients_to_skip_from2=coefficients_skip_model2, constraints_to_enforce_from2=constraint_enforce_model2)
