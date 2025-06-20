@@ -1,4 +1,5 @@
 import argparse
+import logging
 import os
 import time
 
@@ -7,10 +8,14 @@ from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
 from InOutModule.CaseStudy import CaseStudy
-from LEGO.LEGO import LEGO
 from InOutModule.printer import Printer
+from LEGO.LEGO import LEGO
 
 printer = Printer.getInstance()
+
+# Set up logging so that infeasible constraints are logged by pyomo
+logger = logging.getLogger("pyomo")
+logger.setLevel("INFO")
 
 # Parse command line arguments and automatically check for correct usage
 parser = argparse.ArgumentParser(description="Starts LEGO for given case study", formatter_class=RichHelpFormatter)
