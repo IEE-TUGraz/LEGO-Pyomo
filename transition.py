@@ -29,7 +29,7 @@ check_vars = True
 check_constraints = True
 check_quadratic_constraints = True
 check_objectives = True
-print_additional_information = False
+print_additional_information = True
 
 constraints_to_skip_from1 = []
 constraints_to_keep_from1 = []
