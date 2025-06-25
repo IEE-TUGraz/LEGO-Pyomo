@@ -6,7 +6,7 @@ import logging
 import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
-
+from InOutModule import ExcelWriter
 from InOutModule.CaseStudy import CaseStudy
 from LEGO.LEGO import LEGO
 from tools.printer import Printer
@@ -64,3 +64,5 @@ match results.solver.termination_condition:
         log_infeasible_constraints(model, log_expression= False)
     case _:
         printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
+
+ExcelWriter.model_to_excel(model, "model.xlsx")

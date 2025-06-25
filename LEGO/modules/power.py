@@ -380,7 +380,9 @@ def add_element_definitions_and_bounds(lego: LEGO):
             for rp in lego.model.rp:
                 for k in lego.model.k:
                     lego.model.vGenP[rp, k, g].setub((lego.model.pMaxProd[g] * (lego.model.pExisUnits[g] + (lego.model.pMaxInvest[g] * lego.model.pEnabInv[g])) * lego.cs.dPower_VRESProfiles.loc[rp, k, g]['Capacity']))
-    
+
+
+
     if lego.cs.dPower_Parameters["pEnableSOCP"]: #Bound sonly apply in forward direction for existing and candidate lines
             lego.model.vLineP = pyo.Var(lego.model.rp, lego.model.k, lego.model.la_full, doc='Power flow from bus i to j', bounds=(None, None))
             for (i, j, c) in lego.model.la:
@@ -1062,11 +1064,11 @@ def add_constraints(lego: LEGO):
     #lego.model.eSOCP_QMaxOut.deactivate()
     #lego.model.eSOCP_QMinOut1.deactivate()
     #lego.model.eSOCP_QMinOut2.deactivate()
-    #lego.model.eSOCP_BalanceQ.deactivate() # This one together with the eSOCP_ExiLineQij/Qji leads to infeasibility
+    #lego.model.eSOCP_BalanceQ.deactivate()
     #lego.model.eSOCP_ExiLinePij.deactivate()
     #lego.model.eSOCP_ExiLinePji.deactivate()
-    #lego.model.eSOCP_ExiLineQij.deactivate() # This one leads to infeasibility
-    #lego.model.eSOCP_ExiLineQji.deactivate() # This one leads to infeasibility
+    #lego.model.eSOCP_ExiLineQij.deactivate()
+    #lego.model.eSOCP_ExiLineQji.deactivate()
     # lego.model.eSOCP_CanLinePij1.deactivate()
     # lego.model.eSOCP_CanLinePij2.deactivate()
     # lego.model.eSOCP_CanLinePji1.deactivate()

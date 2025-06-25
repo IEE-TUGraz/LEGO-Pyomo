@@ -10,7 +10,6 @@ from InOutModule.CaseStudy import CaseStudy
 from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits, SOCP
 from tools.printer import Printer
 
-
 printer = Printer.getInstance()
 
 
@@ -74,16 +73,16 @@ class LEGO:
         if optimizer is None:
             optimizer = pyo.SolverFactory("gurobi")
 
-            if self.cs.dGlobal_Parameters["pEnableRMIP"]:
-                TransformationFactory('core.relax_integer_vars').apply_to(self.model)  # Relaxes all integer variables to continuous variables
+            # Apply RMIP if requested
+        if self.cs.dGlobal_Parameters["pEnableRMIP"]:
+            TransformationFactory('core.relax_integer_vars').apply_to(self.model)
 
         start_time = time.time()
-        results = optimizer.solve(self.model)
+        results = optimizer.solve(self.model, tee=True)
         stop_time = time.time()
 
         self.timings["model_solving"] = stop_time - start_time
         self.results = results
-
         return results, self.timings["model_solving"]
 
     def get_number_of_variables(self, dont_multiply_by_indices=False) -> int:
