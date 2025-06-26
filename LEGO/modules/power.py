@@ -276,18 +276,20 @@ def add_element_definitions_and_bounds(lego: LEGO):
                         lego.model.vSOCP_sij[rp, k, i, j].setub(round(lego.model.pBusMaxV[i] ** 2,4))
                         lego.model.vSOCP_sij[rp, k, i, j].setlb(round(-lego.model.pBusMaxV[i] ** 2,4))
 
+
         lego.model.vLineQ = pyo.Var(lego.model.rp, lego.model.k, lego.model.la_full, domain=pyo.Reals) # Reactive power flow from bus i to j
         for (i, j, c) in lego.model.le:
             for rp in lego.model.rp:
                 for k in lego.model.k:
                     lego.model.vLineQ[rp, k, i, j, c].setlb(-lego.model.pQmax[i, j, c])
                     lego.model.vLineQ[rp, k, i, j, c].setub(lego.model.pQmax[i, j, c])
+
         # Set bounds for reversed direction (la_reverse)
-        for (i, j, c) in lego.model.le_reverse:
-            for rp in lego.model.rp:
-                for k in lego.model.k:
-                    lego.model.vLineQ[rp, k, (i, j), c].setlb(-lego.model.pPmax[j, i, c])
-                    lego.model.vLineQ[rp, k, (i, j), c].setub(lego.model.pPmax[j, i, c])
+        for (j, i, c) in lego.model.le_reverse:
+                for rp in lego.model.rp:
+                    for k in lego.model.k:
+                        lego.model.vLineQ[rp, k, j, i, c].setlb(-lego.model.pQmax[i, j, c])
+                        lego.model.vLineQ[rp, k, j, i, c].setub(lego.model.pQmax[i, j, c])
 
         lego.model.vSOCP_IndicConnecNodes = pyo.Var({(i, j) for (i, j, c) in lego.model.lc},domain=pyo.Binary)
 
@@ -338,11 +340,13 @@ def add_element_definitions_and_bounds(lego: LEGO):
         slack_node = lego.cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
         slack_node = lego.cs.dPower_Parameters["is"]  # TODO: Switch this again to be calculated (fixed to 'is' for compatibility)
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
+
             if i == 0: print("Setting slack nodes for SOCP zones:")
             print(f"SOCP Zone {i:>2} - Slack node: {slack_node}")
             i += 1
             lego.model.vSOCP_cii[:, :, slack_node].fix(pyo.sqrt(lego.cs.dPower_Parameters['pSlackVoltage']))
             lego.model.vTheta[:, :, slack_node].fix(0)
+            print("Fixed voltage magnitude at slack node:", pyo.value(pyo.sqrt(lego.cs.dPower_Parameters['pSlackVoltage'])))
         else:
             if i == 0: print("Setting slack nodes for DC-OPF zones:")
             print(f"DC-OPF Zone {i:>2} - Slack node: {slack_node}")
@@ -410,13 +414,14 @@ def add_constraints(lego: LEGO):
     # Power balance for nodes DC ann SOCP
     def eDC_BalanceP_rule(model, rp, k, i):
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
-            return (sum(model.vGenP[rp, k, g] for g in model.g if (g, i) in model.gi)  # Production of generators at bus i
-                    - sum(model.vLineP[rp, k, e] for e in model.la if (e[0] == i))  # Power flow from bus i to bus j
-                    - sum(model.vLineP[rp, k, e] for e in model.la if (e[1] == i))  # Power flow from bus j to bus i
+            return (
+                    sum(model.vGenP[rp, k, g] for g in model.g if (g, i) in model.gi)  # Gen at bus i
+                    - sum(model.vLineP[rp, k, i, j, c] for (i2, j, c) in model.la_full if i2 == i)  # Only outflows from i
                     - model.vSOCP_cii[rp, k, i] * model.pBusG[i] * model.pSBase
-                    - model.pDemandP[rp, k, i]  # Demand at bus i
-                    + model.vPNS[rp, k, i]  # Slack variable for demand not served
-                    - model.vEPS[rp, k, i])  # Slack variable for overproduction
+                    - model.pDemandP[rp, k, i]
+                    + model.vPNS[rp, k, i]
+                    - model.vEPS[rp, k, i]
+            )
         else:
             return (sum(model.vGenP[rp, k, g] for g in model.g if (g, i) in model.gi) -  # Production of generators at bus i
                     sum(model.vLineP[rp, k, e] for e in model.la if (e[0] == i)) +  # Power flow from bus i to bus j
@@ -427,18 +432,19 @@ def add_constraints(lego: LEGO):
 
 
     # Note: eDC_BalanceP_expr is defined as expression to enable later adding coefficients to the constraint (e.g., for import/export)
-    lego.model.eDC_BalanceP_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.i, rule=eDC_BalanceP_rule)
-    lego.model.eDC_BalanceP = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.i, doc='Power balance constraint for each bus', rule=lambda model, rp, k, i: lego.model.eDC_BalanceP_expr[rp, k, i] == 0)
-    
 
     def eSOCP_BalanceQ_rule(model, rp, k, i):
-        return (sum(model.vGenQ[rp, k, g] for g in model.g if (g, i) in model.gi)  # Production of generators at bus i
-                - sum(model.vLineQ[rp, k, e] for e in model.la if (e[0] == i)) # Power flow from bus i to bus j
-                - sum(model.vLineQ[rp, k, e] for e in model.la if (e[1] == i)) # Power flow from bus j to bus i
+        return (
+                sum(model.vGenQ[rp, k, g] for g in model.g if (g, i) in model.gi)
+                # Only vLineQ where i is the sending end (i → j)
+                - sum(model.vLineQ[rp, k, i, j, c] for (i2, j, c) in model.la_full if i2 == i)
                 + model.vSOCP_cii[rp, k, i] * model.pBusB[i] * model.pSBase
-                - model.pDemandQ[rp, k, i]  # Demand at bus i
-                + model.vPNS[rp, k, i] * model.pRatioDemQP[i]  # Slack variable for demand not served
-                - model.vEPS[rp, k, i] * model.pRatioDemQP[i]) # Slack variable for overproduction
+                - model.pDemandQ[rp, k, i]
+                + model.vPNS[rp, k, i] * model.pRatioDemQP[i]
+                - model.vEPS[rp, k, i] * model.pRatioDemQP[i]
+        )
+    lego.model.eSOCP_BalanceQ_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.i, rule=eSOCP_BalanceQ_rule)
+    lego.model.eSOCP_BalanceQ = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.i, doc='Reactive power balance for each bus (SOCP)', rule=lambda model, rp, k, i: lego.model.eSOCP_BalanceQ_expr[rp, k, i] == 0)
 
     def eDC_ExiLinePij_rule(model, rp, k, i, j, c):
         match lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
@@ -1015,8 +1021,8 @@ def add_constraints(lego: LEGO):
         lego.model.eSOCP_QMaxOut = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc=" max reactive power output of generator unit", rule=eSOCP_QMaxOut_rule)
         lego.model.eSOCP_QMinOut1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc=" min postive reactive power output of generator unit", rule=eSOCP_QMinOut1_rule)
         lego.model.eSOCP_QMinOut2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.thermalGenerators, doc=" min negative reactive power output of generator unit ", rule=eSOCP_QMinOut2_rule)
-        lego.model.eSOCP_BalanceQ_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.i, rule=eSOCP_BalanceQ_rule)
-        lego.model.eSOCP_BalanceQ = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.i, doc='Reactive power balance for each bus (SOCP)', rule=lambda model, rp, k, i: lego.model.eSOCP_BalanceQ_expr[rp, k, i] == 0)
+        lego.model.eDC_BalanceP_expr = pyo.Expression(lego.model.rp, lego.model.k, lego.model.i, rule=eDC_BalanceP_rule)
+        lego.model.eDC_BalanceP = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.i, doc='Power balance constraint for each bus', rule=lambda model, rp, k, i: lego.model.eDC_BalanceP_expr[rp, k, i] == 0)
         lego.model.eSOCP_ExiLinePij = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le, doc=" Active power flow existing lines from i to j (for SOCP)", rule=eSOCP_ExiLinePij_rule)
         lego.model.eSOCP_ExiLinePji = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le, doc="Active power flow existing lines from j to i (for SOCP)", rule=eSOCP_ExiLinePji_rule)
         lego.model.eSOCP_ExiLineQij = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le, rule=eSOCP_ExiLineQij_rule, doc="Reactive power flow existing lines from i to j (for SOCP)")
