@@ -47,6 +47,7 @@ printer.information("Solving LEGO model")
 results, timing = lego.solve_model()
 printer.information(f"Solving LEGO model took {timing:.2f} seconds")
 
+print('Slack note Value', pyo.value(model.vSOCP_cii['rp01', 'k0001', 'Node_1']))
 logger = logging.getLogger('pyomo.util.infeasible')
 logger.setLevel(logging.INFO)
 

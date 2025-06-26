@@ -321,38 +321,35 @@ def add_element_definitions_and_bounds(lego: LEGO):
     dDCOPFIslands = pd.DataFrame(index=lego.cs.dPower_BusInfo.index, columns=[lego.cs.dPower_BusInfo.index], data=False)
 
     for index, entry in lego.cs.dPower_Network.iterrows():
-        if lego.cs.dPower_Network.loc[(index[0], index[1], index[2])]["pTecRepr"] == "DC-OPF":
+        if lego.cs.dPower_Network.loc[(index[0], index[1], index[2])]["pTecRepr"] == "DC-OPF" or "SOCP":
             dDCOPFIslands.loc[index[0], index[1]] = True
             dDCOPFIslands.loc[index[1], index[0]] = True
-
     completed_buses = set()  # Set of buses that have been looked at already
     i = 0
+
     for index, entry in dDCOPFIslands.iterrows():
-        if index in completed_buses or entry[entry == True].empty:  # Skip if bus has already been looked at or has no connections
+        if index in completed_buses or entry[entry == True].empty:
             continue
-
         connected_buses = lego.cs.get_connected_buses(dDCOPFIslands, str(index))
-
         for bus in connected_buses:
             completed_buses.add(bus)
+        completed_buses.add(index)
 
         # Set slack node
         slack_node = lego.cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
         slack_node = lego.cs.dPower_Parameters["is"]  # TODO: Switch this again to be calculated (fixed to 'is' for compatibility)
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
-
             if i == 0: print("Setting slack nodes for SOCP zones:")
-            print(f"SOCP Zone {i:>2} - Slack node: {slack_node}")
             i += 1
             lego.model.vSOCP_cii[:, :, slack_node].fix(pyo.sqrt(lego.cs.dPower_Parameters['pSlackVoltage']))
-            lego.model.vTheta[:, :, slack_node].fix(0)
+            print(f"SOCP {i:>2} - Slack node: {slack_node}")
             print("Fixed voltage magnitude at slack node:", pyo.value(pyo.sqrt(lego.cs.dPower_Parameters['pSlackVoltage'])))
+            lego.model.vTheta[:, :, slack_node].fix(0)
         else:
             if i == 0: print("Setting slack nodes for DC-OPF zones:")
             print(f"DC-OPF Zone {i:>2} - Slack node: {slack_node}")
             i += 1
             lego.model.vTheta[:, :, slack_node].fix(0)
-
 
     lego.model.vPNS = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Slack variable power not served', bounds=lambda model, rp, k, i: (0, model.pDemandP[rp, k, i]))
     lego.model.vEPS = pyo.Var(lego.model.rp, lego.model.k, lego.model.i, doc='Slack variable excess power served', bounds=(0, None))
@@ -521,7 +518,7 @@ def add_constraints(lego: LEGO):
 
     def eSOCP_QMinOut1_rule(model, rp, k, g): 
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
-            if model.pMaxGenQ[g] >= 0:
+            if model.pMinGenQ[g] >= 0:
                 return model.vGenQ[rp, k, g] / model.pMinGenQ[g] >= model.vCommit[rp, k, g]
             else:
                 return pyo.Constraint.Skip
@@ -530,7 +527,7 @@ def add_constraints(lego: LEGO):
 
     def eSOCP_QMinOut2_rule(model, rp, k, g): 
         if lego.cs.dPower_Parameters["pEnableSOCP"]:
-            if model.pMaxGenQ[g] <= 0:
+            if model.pMinGenQ[g] <= 0:
                 return  model.vGenQ[rp, k, g] / model.pMinGenQ[g] <= model.vCommit[rp, k, g]
             else:
                 return pyo.Constraint.Skip
@@ -1067,14 +1064,63 @@ def add_constraints(lego: LEGO):
             lego.model.eSOCP_QMinFACTS = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.facts, doc='min reactive power output of FACTS unit', rule=eSOCP_QMinFACTS_rule)
             lego.model.eSOCP_QMaxFACTS = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.facts, doc='max reactive power output of FACTS unit', rule=eSOCP_QMaxFACTS_rule)
 
-    #lego.model.eSOCP_QMaxOut.deactivate()
+
+
+    # lego.model.vSOCP_sij['rp01', 'k0001', 'Node_1', 'Node_4'].fix(0)
+    # lego.model.vSOCP_sij['rp01', 'k0001', 'Node_1', 'Node_6'].fix(0)
+    # lego.model.vSOCP_sij['rp01','k0001','Node_2','Node_3'].fix(-0.0502779)
+    # lego.model.vSOCP_sij['rp01','k0001','Node_2','Node_6'].fix(-0.0645962)
+    # lego.model.vSOCP_sij['rp01','k0001','Node_3','Node_4'].fix(0.00593706)
+    # lego.model.vSOCP_sij['rp01', 'k0001', 'Node_3', 'Node_6'].fix(0.00768445)
+    # lego.model.vSOCP_sij['rp01', 'k0001', 'Node_4', 'Node_5'].fix(0)
+    # lego.model.vSOCP_sij['rp01','k0001','Node_4','Node_6'].fix(-0.0108786)
+    # lego.model.vSOCP_sij['rp01','k0001','Node_6','Node_7'].fix(-0.00179561)
+    #
+    # lego.model.vSOCP_cii['rp01', 'k0001', 'Node_1'].fix(1)
+    # lego.model.vSOCP_cii['rp01','k0001','Node_2'].fix(1.21)
+    # lego.model.vSOCP_cii['rp01','k0001','Node_3'].fix(1.16522)
+    # lego.model.vSOCP_cii['rp01', 'k0001', 'Node_4'].fix(1.21)
+    # lego.model.vSOCP_cii['rp01','k0001','Node_5'].fix(1.04313)
+    # lego.model.vSOCP_cii['rp01','k0001','Node_6'].fix(1.12218)
+    # lego.model.vSOCP_cii['rp01', 'k0001', 'Node_7'].fix(1.12824)
+    #
+    # lego.model.vSOCP_cij['rp01', 'k0001', 'Node_1', 'Node_4'].fix(0.670921)
+    # lego.model.vSOCP_cij['rp01', 'k0001', 'Node_1', 'Node_6'].fix(0.657579)
+    # lego.model.vSOCP_cij['rp01','k0001','Node_2','Node_3'].fix(1.18633)
+    # lego.model.vSOCP_cij['rp01','k0001','Node_2','Node_6'].fix(1.16347)
+    # lego.model.vSOCP_cij['rp01','k0001','Node_3','Node_4'].fix(1.18738)
+    # lego.model.vSOCP_cij['rp01', 'k0001', 'Node_3', 'Node_6'].fix(1.14347)
+    # lego.model.vSOCP_cij['rp01', 'k0001', 'Node_4', 'Node_5'].fix(0.680759)
+    # lego.model.vSOCP_cij['rp01','k0001','Node_4','Node_6'].fix(1.16521)
+    # lego.model.vSOCP_cij['rp01','k0001','Node_6','Node_7'].fix(1.12521)
+
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_1', 'Node_4', 'c1'].fix(0)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_1', 'Node_6', 'c1'].fix(0)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_2', 'Node_3', 'c1'].fix(0.0522752)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_2', 'Node_6', 'c1'].fix(0.0857078)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_3', 'Node_2', 'c1'].fix(-0.0503305)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_3', 'Node_4', 'c1'].fix(-0.0466141)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_4', 'Node_1', 'c1'].fix(0)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_4', 'Node_3', 'c1'].fix(0.036806)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_4', 'Node_5', 'c1'].fix(0)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_4', 'Node_6', 'c1'].fix(0.0466796)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_5', 'Node_4', 'c1'].fix(0)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_6', 'Node_1', 'c1'].fix(0)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_6', 'Node_2', 'c1'].fix(-0.0812982)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_6', 'Node_3', 'c1'].fix(-0.0425447)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_6', 'Node_4', 'c1'].fix(-0.0612795)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_6', 'Node_7', 'c1'].fix(-0.0116414)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_7', 'Node_6', 'c1'].fix(-0.000496099)
+
+
+    # lego.model.eSOCP_QMaxOut.deactivate()
     #lego.model.eSOCP_QMinOut1.deactivate()
-    #lego.model.eSOCP_QMinOut2.deactivate()
-    #lego.model.eSOCP_BalanceQ.deactivate()
-    #lego.model.eSOCP_ExiLinePij.deactivate()
-    #lego.model.eSOCP_ExiLinePji.deactivate()
-    #lego.model.eSOCP_ExiLineQij.deactivate()
-    #lego.model.eSOCP_ExiLineQji.deactivate()
+    # lego.model.eSOCP_QMinOut2.deactivate()
+    # lego.model.eSOCP_BalanceQ.deactivate()
+    # lego.model.eSOCP_ExiLinePij.deactivate()
+    # lego.model.eSOCP_ExiLinePji.deactivate()
+    # lego.model.eSOCP_ExiLineQij.deactivate()
+    # lego.model.eSOCP_ExiLineQji.deactivate()
     # lego.model.eSOCP_CanLinePij1.deactivate()
     # lego.model.eSOCP_CanLinePij2.deactivate()
     # lego.model.eSOCP_CanLinePji1.deactivate()
