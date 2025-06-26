@@ -83,15 +83,29 @@ if execute_gams:
         timing = stop_time - start_time
         printer.information(f"Executing GAMS took {timing:.2f} seconds")
 
+
         with open("LEGO-GAMS/gams_console.log", "r") as file:
+            objective_value_gams = None
             for line in file:
-                if "optimal objective" in line.lower():
+                line_lower = line.lower()
+
+                # Pattern 1: 'found incumbent of value ...' for MIP models
+                if "found incumbent of value" in line_lower:
                     try:
                         objective_value_gams = float(line.strip().split()[-1])
-                        printer.information(f"Objective value GAMS: {objective_value_gams}")
                         break
                     except ValueError:
                         continue
+
+                # Pattern 2: 'Objective:' for rMIP and LP models
+                elif "Objective:" in line:
+                    objective_value_gams = float(line.split()[-1])
+                    continue
+
+            if objective_value_gams is None:
+                printer.warning("No valid objective value found in GAMS log.")
+            else:
+                printer.information(f"Objective value GAMS: {objective_value_gams}")
 
 ########################################################################################################################
 # Data input from case study

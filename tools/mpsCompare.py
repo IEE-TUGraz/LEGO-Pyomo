@@ -315,22 +315,22 @@ def sort_indices(coefficient: str) -> str:
     :return: A string with sorted indices, or the original string if no indices are present.
     :rtype: str
     """
-    regex_result = re.findall(r"(\w+)\(([^)]*)\)", coefficient)
-
-    # If no match found, return the original string
-    if not regex_result:
-        return coefficient
-
-    if len(regex_result) > 1:
-        raise ValueError(f"More than one index group found in {coefficient}")
-
-    name, indices_str = regex_result[0]
-    if not indices_str.strip():
-        return coefficient  # No indices, return original
-
-    indices = sorted(i.strip() for i in indices_str.split(",") if i.strip())
-    return f"{name}({','.join(indices)})"
-
+    # regex_result = re.findall(r"(\w+)\(([^)]*)\)", coefficient)
+    #
+    # # If no match found, return the original string
+    # if not regex_result:
+    #     return coefficient
+    #
+    # if len(regex_result) > 1:
+    #     raise ValueError(f"More than one index group found in {coefficient}")
+    #
+    # name, indices_str = regex_result[0]
+    # if not indices_str.strip():
+    #     return coefficient  # No indices, return original
+    #
+    # indices = sorted(i.strip() for i in indices_str.split(",") if i.strip())
+    #return f"{name}({','.join(indices)})"
+    return coefficient
 
 # Sort constraints by number of coefficients
 def sort_constraints(constraints: typing.Dict[str, OrderedDict[str, str]]) -> OrderedDict[int, OrderedDict[str, OrderedDict[str, str]]]:

@@ -78,7 +78,7 @@ class LEGO:
             TransformationFactory('core.relax_integer_vars').apply_to(self.model)
 
         start_time = time.time()
-        results = optimizer.solve(self.model, tee=True)
+        results = optimizer.solve(self.model, tee=False)
         stop_time = time.time()
 
         self.timings["model_solving"] = stop_time - start_time
