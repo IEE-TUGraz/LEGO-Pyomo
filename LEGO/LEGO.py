@@ -7,7 +7,7 @@ import pyomo.opt.results.results_
 from pyomo.core import TransformationFactory
 
 from InOutModule.CaseStudy import CaseStudy
-from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits, SOCP
+from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits, Power_SOCP
 from tools.printer import Printer
 
 printer = Printer.getInstance()
@@ -37,8 +37,8 @@ class LEGO:
             importExport.add_element_definitions_and_bounds(self)
         if self.cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
             softLineLoadLimits.add_element_definitions_and_bounds(self)
-        # if self.cs.dPower_Parameters["pEnableSOCP"]:
-        #     SOCP.add_element_definitions_and_bounds(self)
+        if self.cs.dPower_Parameters["pEnableSOCP"]:
+            Power_SOCP.add_element_definitions_and_bounds(self)
         # Helper Sets for zone of interest
         model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=self.cs.dPower_BusInfo.loc[self.cs.dPower_BusInfo["zoi"] == 1].index.tolist(), within=self.model.i)
         model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=[g for g in self.model.g for i in self.model.i if (g, i) in self.model.gi], within=self.model.g)
@@ -53,7 +53,7 @@ class LEGO:
         if self.cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
             softLineLoadLimits.add_constraints(self)
         # if self.cs.dPower_Parameters["pEnableSOCP"]:
-        #     SOCP.add_element_definitions_and_bounds(self)
+        #     Power_SOCP.add_element_definitions_and_bounds(self)
         stop_time = time.time()
         self.timings["model_building"] = stop_time - start_time
         self.timings["model_solving"] = -1.0
