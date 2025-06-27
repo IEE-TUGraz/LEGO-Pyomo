@@ -1,11 +1,23 @@
-# Python files
-data/
-__pycache__/
+# Result files
+results/
 
-# Example output
-examples/output
-*.xlsx
+# Python cache
+__pycache__/
 
 # Temporary files
 ~$*.xlsx
+scratch
 
+# Development environment files
+.idea/
+
+# GAMS-output files (for comparison)
+*.lst
+LEGO*.log*
+*.opt
+*.log
+*.lxi
+*.gsp
+
+# Model files
+*.mps

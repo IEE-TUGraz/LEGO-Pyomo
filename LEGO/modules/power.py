@@ -105,7 +105,12 @@ def add_element_definitions_and_bounds(lego: LEGO):
                 within=lego.model.la_full,
                 dimen=3
             )
-            # Create sets for candidate lines without circuit dependency (needed for SOCP constraints)
+            # Create set of all candidate lines including reverse lines without circuit dependency (needed for SOCP constraints)
+            lego.model.lc_full_no_c = pyo.Set(
+                doc='All Candidate lines without circuit dependency (lc_no_c)',
+                initialize=lambda model: {(i, j) for (i, j, c) in model.lc_full},
+                dimen=2
+            )
             lego.model.lc_no_c = pyo.Set(
                 doc='Candidate lines without circuit dependency (lc_no_c)',
                 initialize=lambda model: {(i, j) for (i, j, c) in model.lc},
@@ -279,7 +284,7 @@ def add_element_definitions_and_bounds(lego: LEGO):
                     lego.model.vLineQ[rp, k, i, j, c].setlb(-lego.model.pQmax[i, j, c])
                     lego.model.vLineQ[rp, k, i, j, c].setub(lego.model.pQmax[i, j, c])
 
-        # Set bounds for reversed direction (le_reverse)
+        # Set bounds for reversed direction (la_reverse)
         for (j, i, c) in lego.model.le_reverse:
                 for rp in lego.model.rp:
                     for k in lego.model.k:
@@ -967,45 +972,46 @@ def add_constraints(lego: LEGO):
 
 
     # Apparent power constraints for existing and candidate lines (Disabled in the LEGO model due to increased solving time) T
-    #  The constraints could not be validated with GAMS. Might need to be redefined
+    # Constraints might need to be redefined for only the le set
+
 
     def eSOCP_ExiLineSLimit_rule(model, rp, k, i, j, c):
-        if  lego.cs.dPower_Parameters["pEnableSOCP"] == 9999:
+        if lego.cs.dPower_Parameters["pEnableSOCP"] == 9999 :
             if (i, j, c) in lego.model.le:
-                return (model.vLineP[rp, k, i, j, c] ** 2
-                        + model.vLineQ[rp, k, i, j, c] ** 2
-                        <= pyo.sqrt(model.pPmax[i, j, c] ** 2
-                        + model.pQmax[i, j, c] ** 2))
-            elif (j, i, c) in lego.model.le:
-                # For the Reverse direction, the rhs should be 0 but this does not work with the solver. If this constraint is to be used, skip the reverse direction (will lead to error in the compare tool)
-                rhs = 1
-            else:
-                return pyo.Constraint.Skip  # Not in le or le_reverse
-
-            return (
+                return (
                     model.vLineP[rp, k, i, j, c] ** 2
                     + model.vLineQ[rp, k, i, j, c] ** 2
-                    <= rhs
-            )
+                    <= pyo.sqrt(model.pPmax[j, i, c] ** 2
+                    + model.pQmax[j, i, c] ** 2))
+            elif (i, j, c) in lego.model.le_reverse:
+                return (
+                    model.vLineP[rp, k, i, j, c] ** 2
+                    + model.vLineQ[rp, k, i, j, c] ** 2
+                    <= pyo.sqrt(model.pPmax[j, i, c] ** 2
+                    + model.pQmax[j, i, c] ** 2))
+            return pyo.Constraint.Skip
         return pyo.Constraint.Skip
 
+
+
+
     def eSOCP_CanLineSLimit_rule(model, rp, k, i, j, c):
-        if lego.cs.dPower_Parameters["pEnableSOCP"]==9999:
+        if lego.cs.dPower_Parameters["pEnableSOCP"] == 9999:
             if (i, j, c) in lego.model.lc:
                 return (
                     model.vLineP[rp, k, i, j, c] ** 2
                     + model.vLineQ[rp, k, i, j, c] ** 2
-                    <= pyo.sqrt(model.pPmax[i, j, c] ** 2
-                    + model.pQmax[i, j, c] ** 2) * model.vLineInvest[i, j, c])
-            elif (j, i, c) in lego.model.lc:
-                # For the Reverse direction, the rhs should be 0 but this does not work with the solver. If this constraint is to be used skip the reverse direction (will lead to error in the compare tool)
-                rhs = 1
-            else:
-                return pyo.Constraint.Skip  # Not in le or le_reverse
-
-            return (model.vLineP[rp, k, i, j, c] ** 2
+                    <= pyo.sqrt(model.pPmax[j, i, c] ** 2
+                    + model.pQmax[j, i, c] ** 2) * model.vlineInvest[i, j, c]
+                )if lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"] == "9999" else pyo.Constraint.Skip
+            elif (i, j, c) in lego.model.lc_reverse:
+                return (
+                    model.vLineP[rp, k, i, j, c] ** 2
                     + model.vLineQ[rp, k, i, j, c] ** 2
-                    <= rhs)
+                    <= pyo.sqrt(model.pPmax[j, i, c] ** 2
+                    + model.pQmax[j, i, c] ** 2) * model.vlineInvest[i, j, c]
+                )if lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"] == "9999" else pyo.Constraint.Skip
+            return pyo.Constraint.Skip
         return pyo.Constraint.Skip
 
     if lego.cs.dPower_Parameters["pEnableSOCP"]:
@@ -1050,13 +1056,104 @@ def add_constraints(lego: LEGO):
         lego.model.eSOCP_CanLineAngDif1 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_no_c, doc="Angle difference upper bounds candidate lines", rule=eSOCP_CanLineAngDif1_rule)
         lego.model.eSOCP_CanLineAngDif2 = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_no_c, doc="Angle difference lowerf bounds candidate lines ", rule=eSOCP_CanLineAngDif2_rule)
 
-        if lego.cs.dPower_Parameters["pEnableSOCP"]: # Not used in the GAMS model as well
+        if lego.cs.dPower_Parameters["pEnableSOCP"] == 99999: # Not used in the GAMS model as well
             lego.model.eSOCP_ExiLineSLimit = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.le_full, doc="Apparent power constraints for existing lines ", rule=eSOCP_ExiLineSLimit_rule)
             lego.model.eSOCP_CanLineSLimit = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.lc_full, doc="Apparent power constraints for existing lines ", rule=eSOCP_CanLineSLimit_rule)
 
         if lego.cs.dPower_Parameters["pEnableSOCP"] == 99999:  # FACTS are not implemented yet
             lego.model.eSOCP_QMinFACTS = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.facts, doc='min reactive power output of FACTS unit', rule=eSOCP_QMinFACTS_rule)
             lego.model.eSOCP_QMaxFACTS = pyo.Constraint(lego.model.rp, lego.model.k, lego.model.facts, doc='max reactive power output of FACTS unit', rule=eSOCP_QMaxFACTS_rule)
+
+
+
+    # lego.model.vSOCP_sij['rp01', 'k0001', 'Node_1', 'Node_4'].fix(0)
+    # lego.model.vSOCP_sij['rp01', 'k0001', 'Node_1', 'Node_6'].fix(0)
+    # lego.model.vSOCP_sij['rp01','k0001','Node_2','Node_3'].fix(-0.0502779)
+    # lego.model.vSOCP_sij['rp01','k0001','Node_2','Node_6'].fix(-0.0645962)
+    # lego.model.vSOCP_sij['rp01','k0001','Node_3','Node_4'].fix(0.00593706)
+    # lego.model.vSOCP_sij['rp01', 'k0001', 'Node_3', 'Node_6'].fix(0.00768445)
+    # lego.model.vSOCP_sij['rp01', 'k0001', 'Node_4', 'Node_5'].fix(0)
+    # lego.model.vSOCP_sij['rp01','k0001','Node_4','Node_6'].fix(-0.0108786)
+    # lego.model.vSOCP_sij['rp01','k0001','Node_6','Node_7'].fix(-0.00179561)
+    #
+    # lego.model.vSOCP_cii['rp01', 'k0001', 'Node_1'].fix(1)
+    # lego.model.vSOCP_cii['rp01','k0001','Node_2'].fix(1.21)
+    # lego.model.vSOCP_cii['rp01','k0001','Node_3'].fix(1.16522)
+    # lego.model.vSOCP_cii['rp01', 'k0001', 'Node_4'].fix(1.21)
+    # lego.model.vSOCP_cii['rp01','k0001','Node_5'].fix(1.04313)
+    # lego.model.vSOCP_cii['rp01','k0001','Node_6'].fix(1.12218)
+    # lego.model.vSOCP_cii['rp01', 'k0001', 'Node_7'].fix(1.12824)
+    #
+    # lego.model.vSOCP_cij['rp01', 'k0001', 'Node_1', 'Node_4'].fix(0.670921)
+    # lego.model.vSOCP_cij['rp01', 'k0001', 'Node_1', 'Node_6'].fix(0.657579)
+    # lego.model.vSOCP_cij['rp01','k0001','Node_2','Node_3'].fix(1.18633)
+    # lego.model.vSOCP_cij['rp01','k0001','Node_2','Node_6'].fix(1.16347)
+    # lego.model.vSOCP_cij['rp01','k0001','Node_3','Node_4'].fix(1.18738)
+    # lego.model.vSOCP_cij['rp01', 'k0001', 'Node_3', 'Node_6'].fix(1.14347)
+    # lego.model.vSOCP_cij['rp01', 'k0001', 'Node_4', 'Node_5'].fix(0.680759)
+    # lego.model.vSOCP_cij['rp01','k0001','Node_4','Node_6'].fix(1.16521)
+    # lego.model.vSOCP_cij['rp01','k0001','Node_6','Node_7'].fix(1.12521)
+
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_1', 'Node_4', 'c1'].fix(0)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_1', 'Node_6', 'c1'].fix(0)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_2', 'Node_3', 'c1'].fix(0.0522752)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_2', 'Node_6', 'c1'].fix(0.0857078)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_3', 'Node_2', 'c1'].fix(-0.0503305)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_3', 'Node_4', 'c1'].fix(-0.0466141)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_4', 'Node_1', 'c1'].fix(0)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_4', 'Node_3', 'c1'].fix(0.036806)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_4', 'Node_5', 'c1'].fix(0)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_4', 'Node_6', 'c1'].fix(0.0466796)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_5', 'Node_4', 'c1'].fix(0)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_6', 'Node_1', 'c1'].fix(0)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_6', 'Node_2', 'c1'].fix(-0.0812982)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_6', 'Node_3', 'c1'].fix(-0.0425447)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_6', 'Node_4', 'c1'].fix(-0.0612795)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_6', 'Node_7', 'c1'].fix(-0.0116414)
+    # lego.model.vLineQ['rp01', 'k0001', 'Node_7', 'Node_6', 'c1'].fix(-0.000496099)
+
+
+    # lego.model.eSOCP_QMaxOut.deactivate()
+    #lego.model.eSOCP_QMinOut1.deactivate()
+    # lego.model.eSOCP_QMinOut2.deactivate()
+    # lego.model.eSOCP_BalanceQ.deactivate()
+    # lego.model.eSOCP_ExiLinePij.deactivate()
+    # lego.model.eSOCP_ExiLinePji.deactivate()
+    # lego.model.eSOCP_ExiLineQij.deactivate()
+    # lego.model.eSOCP_ExiLineQji.deactivate()
+    # lego.model.eSOCP_CanLinePij1.deactivate()
+    # lego.model.eSOCP_CanLinePij2.deactivate()
+    # lego.model.eSOCP_CanLinePji1.deactivate()
+    # lego.model.eSOCP_CanLinePji2.deactivate()
+    # lego.model.eSOCP_CanLineQij1.deactivate()
+    # lego.model.eSOCP_CanLineQij2.deactivate()
+    # lego.model.eSOCP_CanLineQji1.deactivate()
+    # lego.model.eSOCP_CanLineQji2.deactivate()
+    # lego.model.eSOCP_LimCanLinePij1.deactivate()
+    # lego.model.eSOCP_LimCanLinePij2.deactivate()
+    # lego.model.eSOCP_LimCanLinePji1.deactivate()
+    # lego.model.eSOCP_LimCanLinePji2.deactivate()
+    # lego.model.eSOCP_LimCanLineQij1.deactivate()
+    # lego.model.eSOCP_LimCanLineQij2.deactivate()
+    # lego.model.eSOCP_LimCanLineQji1.deactivate()
+    # lego.model.eSOCP_LimCanLineQji2.deactivate()
+    # lego.model.eSOCP_ExiLine.deactivate()
+    # lego.model.eSOCP_CanLine.deactivate()
+    # lego.model.eSOCP_CanLine_cij.deactivate()
+    # lego.model.eSOCP_CanLine_sij1.deactivate()
+    # lego.model.eSOCP_CanLine_sij2.deactivate()
+    # lego.model.eSOCP_IndicConnecNodes1.deactivate()
+    # lego.model.eSOCP_IndicConnecNodes2.deactivate()
+    # lego.model.eSOCP_CanLineCijUpLim.deactivate()
+    # lego.model.eSOCP_CanLineCijLoLim.deactivate()
+    # lego.model.eSOCP_CanLineSijUpLim.deactivate()
+    # lego.model.eSOCP_CanLineSijLoLim.deactivate()
+    # lego.model.eSOCP_ExiLineAngDif1.deactivate()
+    # lego.model.eSOCP_ExiLineAngDif2.deactivate()
+    # lego.model.eSOCP_CanLineAngDif1.deactivate()
+    # lego.model.eSOCP_CanLineAngDif2.deactivate()
+    # lego.model.eSOCP_ExiLineSLimit.deactivate()
+    # lego.model.eSOCP_CanLineSLimit.deactivate()
 
     # Production constraints
 
