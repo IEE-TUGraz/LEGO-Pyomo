@@ -974,44 +974,43 @@ def add_constraints(lego: LEGO):
     # Apparent power constraints for existing and candidate lines (Disabled in the LEGO model due to increased solving time) T
     # Constraints might need to be redefined for only the le set
 
-
     def eSOCP_ExiLineSLimit_rule(model, rp, k, i, j, c):
-        if lego.cs.dPower_Parameters["pEnableSOCP"] == 9999 :
+        if lego.cs.dPower_Parameters["pEnableSOCP"] == 9999:
             if (i, j, c) in lego.model.le:
-                return (
+                return (model.vLineP[rp, k, i, j, c] ** 2
+                        + model.vLineQ[rp, k, i, j, c] ** 2
+                        <= pyo.sqrt(model.pPmax[i, j, c] ** 2
+                                    + model.pQmax[i, j, c] ** 2))
+            elif (j, i, c) in lego.model.le:
+                # For the Reverse direction, the rhs should be 0 but this does not work with the solver. If this constraint is to be used, skip the reverse direction (will lead to error in the compare tool)
+                rhs = 1
+            else:
+                return pyo.Constraint.Skip  # Not in le or le_reverse
+
+            return (
                     model.vLineP[rp, k, i, j, c] ** 2
                     + model.vLineQ[rp, k, i, j, c] ** 2
-                    <= pyo.sqrt(model.pPmax[j, i, c] ** 2
-                    + model.pQmax[j, i, c] ** 2))
-            elif (i, j, c) in lego.model.le_reverse:
-                return (
-                    model.vLineP[rp, k, i, j, c] ** 2
-                    + model.vLineQ[rp, k, i, j, c] ** 2
-                    <= pyo.sqrt(model.pPmax[j, i, c] ** 2
-                    + model.pQmax[j, i, c] ** 2))
-            return pyo.Constraint.Skip
+                    <= rhs
+            )
         return pyo.Constraint.Skip
-
-
-
 
     def eSOCP_CanLineSLimit_rule(model, rp, k, i, j, c):
         if lego.cs.dPower_Parameters["pEnableSOCP"] == 9999:
             if (i, j, c) in lego.model.lc:
                 return (
-                    model.vLineP[rp, k, i, j, c] ** 2
+                        model.vLineP[rp, k, i, j, c] ** 2
+                        + model.vLineQ[rp, k, i, j, c] ** 2
+                        <= pyo.sqrt(model.pPmax[i, j, c] ** 2
+                                    + model.pQmax[i, j, c] ** 2) * model.vLineInvest[i, j, c])
+            elif (j, i, c) in lego.model.lc:
+                # For the Reverse direction, the rhs should be 0 but this does not work with the solver. If this constraint is to be used skip the reverse direction (will lead to error in the compare tool)
+                rhs = 1
+            else:
+                return pyo.Constraint.Skip  # Not in le or le_reverse
+
+            return (model.vLineP[rp, k, i, j, c] ** 2
                     + model.vLineQ[rp, k, i, j, c] ** 2
-                    <= pyo.sqrt(model.pPmax[j, i, c] ** 2
-                    + model.pQmax[j, i, c] ** 2) * model.vlineInvest[i, j, c]
-                )if lego.cs.dPower_Network.loc[i, j, c]["pTecRepr"] == "9999" else pyo.Constraint.Skip
-            elif (i, j, c) in lego.model.lc_reverse:
-                return (
-                    model.vLineP[rp, k, i, j, c] ** 2
-                    + model.vLineQ[rp, k, i, j, c] ** 2
-                    <= pyo.sqrt(model.pPmax[j, i, c] ** 2
-                    + model.pQmax[j, i, c] ** 2) * model.vlineInvest[i, j, c]
-                )if lego.cs.dPower_Network.loc[j, i, c]["pTecRepr"] == "9999" else pyo.Constraint.Skip
-            return pyo.Constraint.Skip
+                    <= rhs)
         return pyo.Constraint.Skip
 
     if lego.cs.dPower_Parameters["pEnableSOCP"]:

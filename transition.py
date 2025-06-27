@@ -27,7 +27,7 @@ solve_pyomo = True # Note: GAMS always solves if it's executed in the current se
 comparison_mps = True  # Compare MPS files?
 check_vars = False
 check_constraints = False
-check_quadratic_constraints = False
+check_quadratic_constraints = True
 check_objectives = False
 print_additional_information = False
 
