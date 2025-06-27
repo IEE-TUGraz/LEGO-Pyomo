@@ -246,14 +246,30 @@ def normalize_quadratic_constraints(data,
     quad_normalized_sense = {}
 
     for quad_orig_name, quad_coeffs in data["matrix"]["quadratic"].items():
+        # Skip filters use original name
+        if any(skip in quad_orig_name for skip in constraints_to_skip):
+            continue
+        if constraints_to_keep and not any(keep in quad_orig_name for keep in constraints_to_keep):
+            continue
+
+        # Extract RHS and sense BEFORE normalization
+        quad_rhs = data['rhs']['quadratic'].get(quad_orig_name, 0.0)
+
+        quad_sense_code = data['sense']["quadratic"].get(quad_orig_name, "E")
+        quad_symbol = sense_map.get(quad_sense_code, quad_sense_code)
+
+        # Compute scaling
+        if quad_rhs == 0:
+            scale = 1.0
+            adjusted_rhs = 0.0
+        else:
+            scale = 1.0 / abs(quad_rhs)
+            adjusted_rhs = 1.0
+            if quad_rhs < 0:
+                quad_symbol = reverse_sense[quad_symbol]
+
+        # Now normalize constraint name
         quad_name = quad_orig_name
-
-        if any(skip in quad_name for skip in constraints_to_skip):
-            continue
-        if constraints_to_keep and not any(keep in quad_name for keep in constraints_to_keep):
-            continue
-
-        # Normalize constraint name
         for prefix in ["c_e_", "c_l_", "c_u_"]:
             if quad_name.startswith(prefix):
                 quad_name = quad_name[len(prefix):]
@@ -263,45 +279,25 @@ def normalize_quadratic_constraints(data,
             parts = quad_name.rsplit("_", 1)
             if parts[1].isdigit():
                 quad_name = f"{parts[0]}({parts[1]})"
+        quad_normalized_name = normalize_variable_names(quad_name)
 
-        quad_rhs = data['rhs']['quadratic'].get(quad_name, 0.0)
-        quad_sense_code = data['sense']["quadratic"].get(quad_name, "E")
-        quad_symbol = sense_map.get(quad_sense_code, quad_sense_code)
-
-        if quad_rhs == 0:
-            scale = 1.0
-            adjusted_rhs = 0.0
-            quad_symbol = quad_symbol
-        else:
-            scale = 1.0 / abs(quad_rhs)
-            adjusted_rhs = 1.0
-            quad_symbol = quad_symbol
-            if quad_rhs < 0:
-                quad_symbol = reverse_sense[quad_symbol]
-
+        # Normalize coefficients
         quad_normalized_coeffs = OrderedDict()
         for (v1, v2), val in quad_coeffs.items():
             if any(skip in v1 for skip in coefficients_to_skip) or any(skip in v2 for skip in coefficients_to_skip):
                 continue
 
-
-            quad_v1_norm = normalize_variable_names(v1)
-            quad_v2_norm= normalize_variable_names(v2)
-            quad_v1_norm = sort_indices(quad_v1_norm)
-            quad_v2_norm = sort_indices(quad_v2_norm)
+            quad_v1_norm = sort_indices(normalize_variable_names(v1))
+            quad_v2_norm = sort_indices(normalize_variable_names(v2))
             key = tuple(sorted((quad_v1_norm, quad_v2_norm)))
-            quad_normalized_coeffs[key] = val * scale
+            quad_normalized_coeffs[key] = quad_normalized_coeffs.get(key, 0.0) + val * scale
 
-
-
-        quad_normalized_name = normalize_variable_names(quad_name)
         quad_constraints[quad_normalized_name] = quad_normalized_coeffs
-
-        # Store normalized RHS and sense but not needed right now
         quad_normalized_rhs[quad_normalized_name] = adjusted_rhs
         quad_normalized_sense[quad_normalized_name] = quad_symbol
 
     return quad_constraints, quad_normalized_rhs, quad_normalized_sense
+
 
 def sort_indices(coefficient: str) -> str:
     """
@@ -595,7 +591,7 @@ def compare_quadratic_constraints(
             if rel_diff > precision:
                 mismatch_found = True
                 if print_additional_information:
-                    print(f"[⚠] Constraint {cname}: {key} -> {val1} ≠ {val2}")
+                    print(f" [⚠] Constraint {cname}: {key} -> {val1} ≠ {val2}")
                 break
 
         if mismatch_found:

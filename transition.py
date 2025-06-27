@@ -25,11 +25,11 @@ execute_gams = True
 execute_pyomo = True
 solve_pyomo = True # Note: GAMS always solves if it's executed in the current setup as otherwise it won't create an MPS file
 comparison_mps = True  # Compare MPS files?
-check_vars = True
-check_constraints = True
-check_quadratic_constraints = True
-check_objectives = True
-print_additional_information = True
+check_vars = False
+check_constraints = False
+check_quadratic_constraints = False
+check_objectives = False
+print_additional_information = False
 
 constraints_to_skip_from1 = []
 constraints_to_keep_from1 = []
@@ -130,11 +130,12 @@ if execute_pyomo:
         match results.solver.termination_condition:
             case pyo.TerminationCondition.optimal:
                 printer.information(f"Optimal solution found after {timing:.2f} seconds")
-                if "objective_value_gams" in locals():  # If GAMS has been executed and solved, compare objective values
+                if "objective_value_gams" in locals() and objective_value_gams is not None:  # If GAMS has been executed and solved, compare objective values
                     digits = max(len(f"{pyo.value(model.objective):.4f}"), len(f"{objective_value_gams:.4f}"))
                     printer.information(f"Objective value Pyomo: {pyo.value(model.objective):>{digits}.4f}")
                     printer.information(f"Objective value GAMS : {objective_value_gams:>{digits}.4f}")
                     printer.information(f"Objective difference : {pyo.value(model.objective) - objective_value_gams:>{digits}.4f} | {100 * (pyo.value(model.objective) - objective_value_gams) / objective_value_gams:.2f}%")
+
                 else:
                     printer.information(f"Objective value Pyomo: {pyo.value(model.objective):.4f}")
 
