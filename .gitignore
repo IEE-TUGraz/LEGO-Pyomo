@@ -21,3 +21,6 @@ LEGO*.log*
 
 # Model files
 *.mps
+
+# Operating system files
+.DS_Store
