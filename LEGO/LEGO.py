@@ -1,4 +1,6 @@
 import copy
+import enum
+import os
 import time
 import typing
 
@@ -7,10 +9,20 @@ import pyomo.opt.results.results_
 from pyomo.core import TransformationFactory
 
 from InOutModule.CaseStudy import CaseStudy
-from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits
 from InOutModule.printer import Printer
+from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits
 
 printer = Printer.getInstance()
+
+
+class ModelType(enum.Enum):
+    """
+    Enum-like class to represent the type of model.
+    """
+    DETERMINISTIC = "deterministic"
+    EXTENSIVE_FORM = "extensive_form"
+    BENDERS = "benders"
+    PROGRESSIVE_HEDGING = "progressive_hedging"
 
 
 class LEGO:
@@ -19,43 +31,40 @@ class LEGO:
         self.model: typing.Optional[pyo.Model] = model
         self.results: typing.Optional[pyomo.opt.results.results_.SolverResults] = results
         self.timings = {"model_building": -1.0, "model_solving": -1.0}
+        self.optimizer_name = None
+        self._extensive_form = None  # Used for the ExtensiveForm model type, not used in other model types
 
-    def build_model(self, already_existing_ok=False) -> (pyo.Model, float):
+    def build_model(self, already_existing_ok: bool = False, model_type: ModelType = ModelType.DETERMINISTIC, optimizer_name: str = None) -> (pyo.Model, float):
         if not already_existing_ok and self.model is not None:
             raise RuntimeError("Model already exists, please set already_existing_ok to True if that's intentional")
 
         start_time = time.time()
-        model = pyo.ConcreteModel()
-        self.model = model
+        match model_type:
+            case ModelType.DETERMINISTIC:
+                model = _build_model(self.cs)
+                self.model = model
+            case ModelType.EXTENSIVE_FORM:
+                from mpisppy.opt.ef import ExtensiveForm
 
-        # Element definitions
-        power.add_element_definitions_and_bounds(self)
-        if self.cs.dPower_Parameters["pEnableStorage"]:
-            storage.add_element_definitions_and_bounds(self)
-        secondReserve.add_element_definitions_and_bounds(self)
-        if self.cs.dPower_Parameters["pEnablePowerImportExport"]:
-            importExport.add_element_definitions_and_bounds(self)
-        if self.cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
-            softLineLoadLimits.add_element_definitions_and_bounds(self)
-
-        # Helper Sets for zone of interest
-        model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=self.cs.dPower_BusInfo.loc[self.cs.dPower_BusInfo["zoi"] == 1].index.tolist(), within=self.model.i)
-        model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=[g for g in self.model.g for i in self.model.i if (g, i) in self.model.gi], within=self.model.g)
-
-        # Add constraints
-        power.add_constraints(self)
-        if self.cs.dPower_Parameters["pEnableStorage"]:
-            storage.add_constraints(self)
-        secondReserve.add_constraints(self)
-        if self.cs.dPower_Parameters["pEnablePowerImportExport"]:
-            importExport.add_constraints(self)
-        if self.cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
-            softLineLoadLimits.add_constraints(self)
+                scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
+                if optimizer_name is None:
+                    optimizer_name = "highs"  # Has to be set before building, otherwise the ExtensiveForm will not work correctly
+                options = {
+                    "solver": "highs" if optimizer_name is None else optimizer_name,
+                }
+                ef = ExtensiveForm(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
+                self._extensive_form = ef
+                self.model = ef.ef
+            case ModelType.BENDERS | ModelType.PROGRESSIVE_HEDGING:
+                raise RuntimeError(f"Model type {model_type} can not be built seperately, it is built using the 'solve_model' method")
+            case _:
+                raise RuntimeError(f"Model type {model_type} not implemented (yet?)")
 
         stop_time = time.time()
         self.timings["model_building"] = stop_time - start_time
         self.timings["model_solving"] = -1.0
         self.results = None
+        self.optimizer_name = optimizer_name
 
         return self.model, self.timings["model_building"]
 
@@ -63,24 +72,90 @@ class LEGO:
     def get_objective_value(self, zoi: bool):
         return get_objective_value(self.model, zoi)
 
-    def solve_model(self, optimizer=None, already_solved_ok=False) -> {pyomo.opt.results.results_.SolverResults, float}:
+    def solve_model(self, model_type: ModelType = ModelType.DETERMINISTIC, optimizer_name="highs", already_solved_ok=False) -> (pyomo.opt.results.results_.SolverResults, float, float):
         if not already_solved_ok and self.results is not None:
             raise RuntimeError("Model already solved, please set already_solved_ok to True if that's intentional")
 
-        if optimizer is None:
-            optimizer = pyo.SolverFactory("gurobi")
-
-            if self.cs.dGlobal_Parameters["pEnableRMIP"]:
-                TransformationFactory('core.relax_integer_vars').apply_to(self.model)  # Relaxes all integer variables to continuous variables
-
         start_time = time.time()
-        results = optimizer.solve(self.model)
+        match model_type:
+            case ModelType.DETERMINISTIC:
+                optimizer = pyo.SolverFactory(optimizer_name)
+                results = optimizer.solve(self.model)
+                objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+            case ModelType.EXTENSIVE_FORM:
+                if optimizer_name != self.optimizer_name:
+                    raise RuntimeError(f"Optimizer name {optimizer_name} does not match the one used to build the model ({self.optimizer_name}), please use the same optimizer name when solving using the 'ExtensiveForm' model type")
+                start_time = time.time()
+                results = self._extensive_form.solve_extensive_form()
+                stop_time = time.time()
+                objective_value = self._extensive_form.get_objective_value() if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+
+                # variables = self.model.get_root_solution()
+                # for (var_name, var_val) in variables.items():
+                # print(var_name, var_val)
+            case ModelType.BENDERS:
+                printer.warning("Benders decomposition NOT FULLY TESTED YET, MIGHT HAVE SOME ISSUES OR BUGS!")
+                from mpisppy.opt.lshaped import LShapedMethod
+
+                scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
+                options = {
+                    "root_solver": optimizer_name,
+                    "sp_solver": optimizer_name,
+                    "sp_solver_options": {"threads": os.cpu_count() - 1},  # Use all but one CPU core
+                    # "valid_eta_lb": None,  # TODO: Check how to set bounds dynamically
+                    "max_iter": 1000,
+                }
+                start_time = time.time()
+                ls = LShapedMethod(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
+                results = ls.lshaped_algorithm()
+                stop_time = time.time()
+
+                objective_value = pyo.value(ls.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+
+                # variables = ls.gather_var_values_to_rank0()
+                # for ((scen_name, var_name), var_value) in variables.items():
+                #   print(scen_name, var_name, var_value)
+
+                lower_bound = results.json_repn()['Problem'][0]['Lower bound']
+                upper_bound = results.json_repn()['Problem'][0]['Upper bound']
+                printer.warning(f"Lower bound: {lower_bound:.2f}, Upper bound: {upper_bound:.2f}, spread: {upper_bound - lower_bound:.2f} | {(upper_bound - lower_bound) / upper_bound * 100:.2f}%)")
+                printer.warning(f"Reporting lower bound as objective value, please check if this is correct")
+
+            case ModelType.PROGRESSIVE_HEDGING:
+                printer.warning("Progressive Hedging NOT FULLY TESTED YET, MIGHT HAVE SOME ISSUES OR BUGS!")
+                from mpisppy.opt.ph import PH
+
+                scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
+                options = {
+                    "solver_name": optimizer_name,
+                    "PHIterLimit": 50,
+                    "defaultPHrho": 10,
+                    "convthresh": 1e-7,
+                    "verbose": False,
+                    "display_progress": True,
+                    "display_timing": True,
+                    "iter0_solver_options": dict(),
+                    "iterk_solver_options": dict(),
+                }
+                start_time = time.time()
+                ph = PH(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
+                results = ph.ph_main()
+                stop_time = time.time()
+
+                objective_value = pyo.value(ph.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+
+                # variables = ph.gather_var_values_to_rank0()
+                # for ((scen_name, var_name), var_value) in variables.items():
+                #   print(scen_name, var_name, var_value)
+            case _:
+                raise RuntimeError(f"Model type {model_type} not implemented yet")
+
         stop_time = time.time()
 
         self.timings["model_solving"] = stop_time - start_time
         self.results = results
 
-        return results, self.timings["model_solving"]
+        return results, self.timings["model_solving"], objective_value
 
     def get_number_of_variables(self, dont_multiply_by_indices=False) -> int:
         # Check if pyomo-implementation is the same as this "manual" one
@@ -100,40 +175,6 @@ class LEGO:
             return len(list(self.model.component_objects(pyo.Constraint, active=True)))
         else:  # Iterate through constraints and sum up each individual constraint
             return sum([len(x) for x in self.model.component_objects(pyo.Constraint, active=True)])
-
-    # Add elements to set
-    def addToSet(self, set_name: str, values: iter):
-        if not hasattr(self.model, set_name):
-            raise RuntimeError(f"Set {set_name} does not exist in model, please add it first")
-        else:
-            for i in values:
-                self.model.component(set_name).add(i)
-
-    # Add values to (unmutable!) parameter by replacing it
-    # Required when updating a parameter with new data (e.g., adding pMaxProd for thermal units and VRES from different data sources
-    # Can also handle creating a parameter for the first time
-    def addToParameter(self, parameter_name: str, values: iter, doc: str = None, indices: list[object] = None, overwrite=False):
-        if not hasattr(self.model, parameter_name):  # Check if parameter exists
-            if not doc:
-                raise RuntimeError(f"Parameter {parameter_name} does not exist in model, but no doc string was provided")
-            elif not indices:
-                raise RuntimeError(f"Parameter {parameter_name} does not exist in model, but no indices were provided")
-            else:
-                self.model.add_component(parameter_name, pyo.Param(*indices, initialize=values, doc=doc, domain=pyo.Reals))  # Add set which is not present yet
-        else:
-            current_values = self.model.component(parameter_name).extract_values()  # Get current values
-            if not doc:
-                doc = self.model.component(parameter_name).doc
-            if not indices:
-                indices = [self.model.component(parameter_name).index_set()]
-            if not overwrite:  # Check if any value would be overwritten
-                for k, v in values.items():
-                    if k in current_values.keys():
-                        raise RuntimeError(f"Value for {k} already exists in parameter {parameter_name}, but overwrite=False")
-
-            self.model.del_component(parameter_name)  # Delete parameter
-            current_values.update(values)  # Update values with new values
-            self.model.add_component(parameter_name, pyo.Param(*indices, initialize=current_values, doc=doc, domain=pyo.Reals))  # Add parameter as new parameter
 
     def copy(self):
         return copy.deepcopy(self)
@@ -177,3 +218,110 @@ def build_from_clone_with_fixed_results(model_to_be_cloned: pyo.Model, model_wit
             new_var[index].fix(pyo.value(var[index].value))
 
     return LEGO(model=model_new)
+
+
+def _scenario_creator(scenario_name: str, full_case_study: CaseStudy) -> pyo.ConcreteModel:
+    """
+    Creates a scenario based on the given scenario name. Used for mpi-sppy.
+    :param scenario_name: Name of the scenario to create
+    :return: A pyomo ConcreteModel object for the given scenario
+    """
+    import mpisppy.utils.sputils as sputils
+
+    model = _build_model(full_case_study.filter_scenario(scenario_name))
+    sputils.attach_root_node(model, model.first_stage_objective, model.first_stage_varlist)
+    model._mpisppy_probability = sum(full_case_study.dGlobal_Scenarios.loc[:, "relativeWeight"]) / full_case_study.dGlobal_Scenarios.loc[scenario_name, "relativeWeight"]
+    return model
+
+
+def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
+    """
+    Builds a pyomo ConcreteModel based on the given CaseStudy object.
+    :param cs: The CaseStudy object to build the model from
+    :return: A pyomo ConcreteModel object
+    """
+    model = pyo.ConcreteModel()
+    model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=0.0)  # Initialize objective function
+
+    # Initialize first_stage variables and objective required for stochasticity
+    model.first_stage_varlist = []
+    model.first_stage_objective = 0.0
+
+    # Element definitions
+    model.first_stage_varlist += power.add_element_definitions_and_bounds(model, cs)
+    if cs.dPower_Parameters["pEnableStorage"]:
+        model.first_stage_varlist += storage.add_element_definitions_and_bounds(model, cs)
+    model.first_stage_varlist += secondReserve.add_element_definitions_and_bounds(model, cs)
+    if cs.dPower_Parameters["pEnablePowerImportExport"]:
+        model.first_stage_varlist += importExport.add_element_definitions_and_bounds(model, cs)
+    if cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
+        model.first_stage_varlist += softLineLoadLimits.add_element_definitions_and_bounds(model, cs)
+
+    # Helper Sets for zone of interest
+    model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=cs.dPower_BusInfo.loc[cs.dPower_BusInfo["zoi"] == 1].index.tolist(), within=model.i)
+    model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=[g for g in model.g for i in model.i if (g, i) in model.gi], within=model.g)
+
+    # Add constraints
+    model.first_stage_objective += power.add_constraints(model, cs)
+    if cs.dPower_Parameters["pEnableStorage"]:
+        model.first_stage_objective += storage.add_constraints(model, cs)
+    model.first_stage_objective += secondReserve.add_constraints(model, cs)
+    if cs.dPower_Parameters["pEnablePowerImportExport"]:
+        model.first_stage_objective += importExport.add_constraints(model, cs)
+    if cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
+        model.first_stage_objective += softLineLoadLimits.add_constraints(model, cs)
+
+    if cs.dGlobal_Parameters["pEnableRMIP"]:
+        TransformationFactory('core.relax_integer_vars').apply_to(model)  # Relaxes all integer variables to continuous variables
+
+    return model
+
+
+def addToSet(model: pyo.ConcreteModel, set_name: str, values: iter) -> None:
+    """
+    Adds values to a set in the model. If the set does not exist, it raises an error.
+    :param model: The model to which the set belongs
+    :param set_name: Name of the set to add values to
+    :param values: Values to add to the set
+    :return: None
+    """
+    if not hasattr(model, set_name):
+        raise RuntimeError(f"Set {set_name} does not exist in model, please add it first")
+    else:
+        for i in values:
+            model.component(set_name).add(i)
+
+
+def addToParameter(model: pyo.ConcreteModel, parameter_name: str, values: iter, doc: str = None, indices: list[object] = None, overwrite=False) -> None:
+    """
+    Adds values to a parameter in the model. If the parameter does not exist, it creates it.
+    If the parameter exists, it updates the values.
+    :param model: The model to which the parameter belongs
+    :param parameter_name: Name of the parameter to add or update
+    :param values: Values to add or update in the parameter
+    :param doc: Documentation string for the parameter
+    :param indices: Indices for the parameter
+    :param overwrite: If True, it overwrites existing values in the parameter
+    :return: None
+    """
+    if not hasattr(model, parameter_name):  # Check if parameter exists
+        if not doc:
+            raise RuntimeError(f"Parameter {parameter_name} does not exist in model, but no doc string was provided")
+        elif not indices:
+            raise RuntimeError(f"Parameter {parameter_name} does not exist in model, but no indices were provided")
+        else:
+            model.add_component(parameter_name, pyo.Param(*indices, initialize=values, doc=doc, domain=pyo.Reals))  # Add set which is not present yet
+    else:
+        current_values = model.component(parameter_name).extract_values()  # Get current values
+        if not doc:
+            doc = model.component(parameter_name).doc
+        if not indices:
+            indices = [model.component(parameter_name).index_set()]
+        if not overwrite:  # Check if any value would be overwritten
+            for k, v in values.items():
+                if k in current_values.keys():
+                    raise RuntimeError(f"Value for {k} already exists in parameter {parameter_name}, but overwrite=False")
+
+        model.del_component(parameter_name)  # Delete parameter
+        current_values.update(values)  # Update values with new values
+        model.add_component(parameter_name, pyo.Param(*indices, initialize=current_values, doc=doc, domain=pyo.Reals))  # Add parameter as new parameter

@@ -1,4 +1,5 @@
 import argparse
+import logging
 import os
 import time
 
@@ -12,6 +13,10 @@ from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO
 
 printer = Printer.getInstance()
+
+# Set up logging so that infeasible constraints are logged by pyomo
+logger = logging.getLogger("pyomo")
+logger.setLevel("INFO")
 
 # Parse command line arguments and automatically check for correct usage
 parser = argparse.ArgumentParser(description="Starts LEGO for given case study", formatter_class=RichHelpFormatter)
@@ -42,7 +47,7 @@ printer.information(f"Building LEGO model took {timing:.2f} seconds")
 
 # Solve LEGO model
 printer.information("Solving LEGO model")
-results, timing = lego.solve_model()
+results, timing, objective_value = lego.solve_model()
 printer.information(f"Solving LEGO model took {timing:.2f} seconds")
 
 match results.solver.termination_condition:
