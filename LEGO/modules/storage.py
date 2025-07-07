@@ -33,8 +33,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     LEGO.addToParameter(model, "pInvestCost", cs.dPower_Storage['InvestCostEUR'])
 
     # Variables
-    model.bChargeDisCharge = pyo.Var(model.storageUnits, model.rp, model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
-    second_stage_variables += [model.bChargeDisCharge]
+    if model.pEnableChDisPower:
+        model.bChargeDisCharge = pyo.Var(model.storageUnits, model.rp, model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
+        second_stage_variables += [model.bChargeDisCharge]
 
     model.vConsump = pyo.Var(model.rp, model.k, model.storageUnits, doc='Charging of storage unit g', bounds=lambda model, rp, k, g: (0, model.pMaxCons[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g]))))
     second_stage_variables += [model.vConsump]
