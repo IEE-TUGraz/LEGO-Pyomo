@@ -31,27 +31,33 @@ class LEGO:
         self.model: typing.Optional[pyo.Model] = model
         self.results: typing.Optional[pyomo.opt.results.results_.SolverResults] = results
         self.timings = {"model_building": -1.0, "model_solving": -1.0}
-        self.optimizer_name = None
+        self.solver_name = None
         self._extensive_form = None  # Used for the ExtensiveForm model type, not used in other model types
 
-    def build_model(self, already_existing_ok: bool = False, model_type: ModelType = ModelType.DETERMINISTIC, optimizer_name: str = None) -> (pyo.Model, float):
+    def build_model(self, already_existing_ok: bool = False, model_type: ModelType = ModelType.DETERMINISTIC, solver_name: str = None) -> (pyo.Model, float):
         if not already_existing_ok and self.model is not None:
             raise RuntimeError("Model already exists, please set already_existing_ok to True if that's intentional")
 
         start_time = time.time()
         match model_type:
             case ModelType.DETERMINISTIC:
+                if solver_name is not None:
+                    printer.warning(f"Solver name {solver_name} provided for 'build_model', but not used when building deterministic model type. Make sure to provide it when solving the model instead.")
                 model = _build_model(self.cs)
                 self.model = model
             case ModelType.EXTENSIVE_FORM:
                 from mpisppy.opt.ef import ExtensiveForm
 
                 scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
-                if optimizer_name is None:
-                    optimizer_name = "highs"  # Has to be set before building, otherwise the ExtensiveForm will not work correctly
+
+                if solver_name is None:
+                    solver_name = self.cs.dGlobal_Parameters["pSolver"]  # Use the solver name from the case study parameters if not provided
+                elif self.cs.dGlobal_Parameters["pSolver"] != solver_name:
+                    printer.warning(f"Solver name {solver_name} does not match the one used in the case study ({self.cs.dGlobal_Parameters['pSolver']}) - using {solver_name}")
                 options = {
-                    "solver": "highs" if optimizer_name is None else optimizer_name,
+                    "solver": solver_name,
                 }
+
                 ef = ExtensiveForm(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
                 self._extensive_form = ef
                 self.model = ef.ef
@@ -64,7 +70,7 @@ class LEGO:
         self.timings["model_building"] = stop_time - start_time
         self.timings["model_solving"] = -1.0
         self.results = None
-        self.optimizer_name = optimizer_name
+        self.solver_name = solver_name
 
         return self.model, self.timings["model_building"]
 
@@ -72,19 +78,24 @@ class LEGO:
     def get_objective_value(self, zoi: bool):
         return get_objective_value(self.model, zoi)
 
-    def solve_model(self, model_type: ModelType = ModelType.DETERMINISTIC, optimizer_name="highs", already_solved_ok=False) -> (pyomo.opt.results.results_.SolverResults, float, float):
+    def solve_model(self, model_type: ModelType = ModelType.DETERMINISTIC, solver_name: str = None, already_solved_ok=False) -> (pyomo.opt.results.results_.SolverResults, float, float):
         if not already_solved_ok and self.results is not None:
             raise RuntimeError("Model already solved, please set already_solved_ok to True if that's intentional")
+
+        if solver_name is None:
+            solver_name = self.cs.dGlobal_Parameters["pSolver"]  # Use the solver name from the case study parameters if not provided
+        elif self.cs.dGlobal_Parameters["pSolver"] != solver_name:
+            printer.warning(f"Solver name {solver_name} does not match the one used in the case study ({self.cs.dGlobal_Parameters['pSolver']}) - using {solver_name}")
 
         start_time = time.time()
         match model_type:
             case ModelType.DETERMINISTIC:
-                optimizer = pyo.SolverFactory(optimizer_name)
+                optimizer = pyo.SolverFactory(solver_name)
                 results = optimizer.solve(self.model)
                 objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
             case ModelType.EXTENSIVE_FORM:
-                if optimizer_name != self.optimizer_name:
-                    raise RuntimeError(f"Optimizer name {optimizer_name} does not match the one used to build the model ({self.optimizer_name}), please use the same optimizer name when solving using the 'ExtensiveForm' model type")
+                if solver_name != self.solver_name:
+                    raise RuntimeError(f"Optimizer name {solver_name} does not match the one used to build the model ({self.solver_name}), please use the same optimizer name when solving using the 'ExtensiveForm' model type")
                 start_time = time.time()
                 results = self._extensive_form.solve_extensive_form()
                 stop_time = time.time()
@@ -99,8 +110,8 @@ class LEGO:
 
                 scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
                 options = {
-                    "root_solver": optimizer_name,
-                    "sp_solver": optimizer_name,
+                    "root_solver": solver_name,
+                    "sp_solver": solver_name,
                     "sp_solver_options": {"threads": os.cpu_count() - 1},  # Use all but one CPU core
                     # "valid_eta_lb": None,  # TODO: Check how to set bounds dynamically
                     "max_iter": 1000,
@@ -127,7 +138,7 @@ class LEGO:
 
                 scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
                 options = {
-                    "solver_name": optimizer_name,
+                    "solver_name": solver_name,
                     "PHIterLimit": 50,
                     "defaultPHrho": 10,
                     "convthresh": 1e-7,

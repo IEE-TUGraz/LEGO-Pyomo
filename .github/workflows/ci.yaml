@@ -27,10 +27,18 @@ jobs:
         with:
           submodules: 'recursive'
 
-      - name: Install MPI
+      - name: Install Open-MPI (for Unix)
+        if: matrix.os != 'windows-latest'
         uses: mpi4py/setup-mpi@v1.3.2
         with:
           mpi: 'openmpi'
+
+
+      - name: Install Microsoft MPI (for Windows)
+        if: matrix.os == 'windows-latest'
+        uses: mpi4py/setup-mpi@v1.3.2
+        with:
+          mpi: 'msmpi'
 
       - name: Set up Conda environment
         uses: conda-incubator/setup-miniconda@v3.2.0
