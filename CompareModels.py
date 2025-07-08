@@ -217,12 +217,17 @@ def compareModels(model_type1: ModelTypeForComparison, folder_path1: str | pathl
     if model_type1 == ModelTypeForComparison.GAMS and not solve_model1:
         printer.information("GAMS model will always be solved, ignoring 'solve_model1' argument")
 
+    if model_type1 == ModelTypeForComparison.MPS_FILE and solve_model1:
+        printer.information("MPS files can not be solved, ignoring 'solve_model1' argument")
+
     mps_path1, objective_value1 = build_and_solve_model(model_type1, folder_path1, solve_model1,
                                                         gams_console_log_path, gams_executable_path, lego_gams_path, max_gams_runtime_in_seconds)
 
     printer.information(f"--------- Working on model2: '{model_type2}' ---------")
     if model_type2 == ModelTypeForComparison.GAMS and not solve_model2:
         printer.information("GAMS model will always be solved, ignoring 'solve_model2' argument")
+    if model_type2 == ModelTypeForComparison.MPS_FILE and solve_model2:
+        printer.information("MPS files can not be solved, ignoring 'solve_model2' argument")
 
     mps_path2, objective_value2 = build_and_solve_model(model_type2, folder_path2, solve_model2,
                                                         gams_console_log_path, gams_executable_path, lego_gams_path, max_gams_runtime_in_seconds)
