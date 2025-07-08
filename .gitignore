@@ -18,9 +18,7 @@ LEGO*.log*
 *.log
 *.lxi
 *.gsp
-
-# Model files
-*.mps
+LEGO-GAMS.mps
 
 # Operating system files
 .DS_Store

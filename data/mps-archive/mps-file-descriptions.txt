@@ -1,0 +1,5 @@
+# Descriptions of MPS files in the archive, one entry per MPS file in the archive is required
+# Empty lines and lines beginning with '#' are ignored
+# Format: <filename> <description>
+
+example-d36490e1746b919fde87c68515303e30e9881305.mps Commit from 08.07.2025, fixed calculation for pSlopeVarCostEUR
