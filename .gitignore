@@ -10,6 +10,7 @@ scratch
 
 # Development environment files
 .idea/
+.vscode/
 
 # GAMS-output files (for comparison)
 *.lst
@@ -21,3 +22,6 @@ LEGO*.log*
 
 # Model files
 *.mps
+
+# Operating system files
+.DS_Store
