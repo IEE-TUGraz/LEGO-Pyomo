@@ -63,7 +63,7 @@ def execute_gams(data_folder: str, gams_console_log_path: str, gams_executable_p
         # Executing with argument string instead of list since GAMS has problems with double-quotes
         printer.information(f"Starting LEGO-GAMS with scenario folder \"{data_folder}\"")
         start_time = time.time()
-        lego_process = subprocess.Popen(f"cd LEGO-GAMS && {gams_executable_path} {lego_gams_path} --scenarioFolder=\"../{data_folder}\"",
+        lego_process = subprocess.Popen(f"cd LEGO-GAMS && {gams_executable_path} {lego_gams_path} --scenarioFolder=\"{data_folder}\"",
                                         stdout=GAMSConsoleLogFile, stderr=subprocess.STDOUT, shell=True)
         try:
             return_value = lego_process.wait(max_gams_runtime_in_seconds)
@@ -132,6 +132,11 @@ def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | p
             if max_gams_runtime_in_seconds is None:
                 max_gams_runtime_in_seconds = 60
                 printer.warning(f"Using default maximum GAMS runtime: {max_gams_runtime_in_seconds} seconds")
+
+            # If data_path is relative path, add "../" to it
+            if not pathlib.Path(data_path).is_absolute():
+                data_path = pathlib.Path("../") / data_path
+
             mps_path, objective_value = execute_gams(data_path, gams_console_log_path, gams_executable_path, lego_gams_path, max_gams_runtime_in_seconds)
         case ModelTypeForComparison.DETERMINISTIC | ModelTypeForComparison.EXTENSIVE_FORM | ModelTypeForComparison.BENDERS | ModelTypeForComparison.PROGRESSIVE_HEDGING:
             mps_path = f"pyomo-{model_type}-{time.strftime('%y%m%d-%H%M%S')}.mps" if model_type in [ModelTypeForComparison.DETERMINISTIC, ModelTypeForComparison.EXTENSIVE_FORM] else None

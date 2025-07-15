@@ -34,17 +34,23 @@ def test_comparisonExampleSOCPAgainstGAMS(tmp_path):
     tmp_path_originalData = str(tmp_path / "originalData")
     shutil.copytree(data_folder, tmp_path_originalData)
 
+    # Switch solver (to enable quadratic constraints)
+    workbook = load_workbook(filename=tmp_path_originalData + "/Global_Parameters.xlsx")
+    sheet = workbook.active
+    sheet["C5"] = "gurobi"  # Set solver
+    workbook.save(filename=tmp_path_originalData + "/Global_Parameters.xlsx")
+
     # Activate SOCP in Power Parameters
     workbook = load_workbook(filename=tmp_path_originalData + "/Power_Parameters.xlsx")
     sheet = workbook.active
-    sheet["37"] = "Yes"  # Enable SOCP
+    sheet["C37"] = "Yes"  # Enable SOCP
     workbook.save(filename=tmp_path_originalData + "/Power_Parameters.xlsx")
 
     # Use SOCP for all lines
     workbook = load_workbook(filename=tmp_path_originalData + "/Power_Network.xlsx")
     sheet = workbook.active
     for i in range(8, sheet.max_row + 1):
-        sheet[f"O{i}"] = "Yes"  # Set all lines to use SOCP
+        sheet[f"O{i}"] = "SOCP"  # Set all lines to use SOCP
     workbook.save(filename=tmp_path_originalData + "/Power_Network.xlsx")
 
     mps_equal = compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_path_originalData, True,
