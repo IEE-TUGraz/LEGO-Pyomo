@@ -8,8 +8,8 @@ from tabulate import tabulate
 
 from LEGO.CaseStudy import CaseStudy
 from LEGO.LEGO import LEGO, build_from_clone_with_fixed_results
-from PyomoResult import model_to_sqlite
-from tools.printer import pprint_var, Printer
+from InOutModule.PyomoResult import model_to_sqlite
+from InOutModule.printer import pprint_zoi_var, Printer
 
 ########################################################################################################################
 # Setup
@@ -119,9 +119,9 @@ for caseName, lego in legoModels:
 
     if print_variable_results:
         print("\nDisplaying Solution\n" + '-' * 60)
-        pprint_var(model.p, model.zoi_g)
-        pprint_var(model.t, model.zoi_i, index_positions=[0, 1])
-        pprint_var(model.delta, model.zoi_i)
+        pprint_zoi_var(model.p, model.zoi_g)
+        pprint_zoi_var(model.vLineP, model.zoi_i, index_positions=[0, 1])
+        pprint_zoi_var(model.vTheta, model.zoi_i)
 
     # Print sum of slack variables
     print("\nSlack Variables\n" + '-' * 60)

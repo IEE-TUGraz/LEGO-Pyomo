@@ -1,17 +1,23 @@
 import argparse
+import logging
 import os
 import time
-import logging
 
 import pyomo.environ as pyo
+from pyomo.core import NameLabeler
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
-from InOutModule import ExcelWriter
+
+from InOutModule import SQLiteWriter, ExcelWriter
 from InOutModule.CaseStudy import CaseStudy
+from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO
-from tools.printer import Printer
 
 printer = Printer.getInstance()
+
+# Set up logging so that infeasible constraints are logged by pyomo
+logger = logging.getLogger("pyomo")
+logger.setLevel("INFO")
 
 # Parse command line arguments and automatically check for correct usage
 parser = argparse.ArgumentParser(description="Starts LEGO for given case study", formatter_class=RichHelpFormatter)
@@ -37,14 +43,14 @@ printer.information(f"Loading case study took {time.time() - start_time:.2f} sec
 
 # Build LEGO model
 printer.information("Building LEGO model")
-#lego.cs.dPower_Demand = lego.cs.dPower_Demand["k" >= 24]
+# lego.cs.dPower_Demand = lego.cs.dPower_Demand["k" >= 24]
 model, timing = lego.build_model()
 # fix solved variables
 printer.information(f"Building LEGO model took {timing:.2f} seconds")
 
 # Solve LEGO model
 printer.information("Solving LEGO model")
-results, timing = lego.solve_model()
+results, timing, objective_value = lego.solve_model()
 printer.information(f"Solving LEGO model took {timing:.2f} seconds")
 
 logger = logging.getLogger('pyomo.util.infeasible')
@@ -61,8 +67,10 @@ match results.solver.termination_condition:
         printer.success(f"Optimal solution: {pyo.value(model.objective):.4f}")
     case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
         printer.error(f"Model returned as {results.solver.termination_condition}, logging infeasible constraints:")
-        log_infeasible_constraints(model, log_expression= False)
+        log_infeasible_constraints(model, log_expression=False)
     case _:
         printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
 
+SQLiteWriter.model_to_sqlite(model, "model.sqlite")
 ExcelWriter.model_to_excel(model, "model.xlsx")
+model.write(model.mps, io_options={'labeler': NameLabeler()})

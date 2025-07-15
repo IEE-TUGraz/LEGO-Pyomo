@@ -3,7 +3,9 @@ import re
 import typing
 from collections import OrderedDict
 
-from tools.printer import Printer
+from pulp import LpProblem
+
+from InOutModule.printer import Printer
 
 printer = Printer.getInstance()
 printer.set_width(240)
@@ -727,6 +729,7 @@ def normalize_objective(
     vars_fixed_to_zero: set[str] | None = None,
     coefficients_to_skip: list[str] | None = None,
     zero_tol: float = 1e-15,
+    remove_scenario_prefix: bool = False
 ) -> tuple[dict, dict]:
     """
     Build a dict {normalised-var-name: coeff} while
@@ -746,6 +749,8 @@ def normalize_objective(
             continue
 
         norm_name = sort_indices(normalize_variable_names(raw_name))
+        if remove_scenario_prefix:
+            norm_name = norm_name.replace("ScenarioA.", "")
         if any(substr in norm_name for substr in coefficients_to_skip):
             skipped.append(raw_name)
             continue
@@ -835,9 +840,11 @@ def compare_objectives(objective1, objective2, precision: float = 1e-12) -> dict
     }
 
 
-def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bool, check_vars=True, check_constraints=True, check_quadratic_constraints = True, check_objectives = True, print_additional_information=False,
+def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix: bool,
+                file2, file2_isPyomoFormat: bool, file2_removeScenarioPrefix: bool,
+                check_vars=True, check_constraints=True, check_quadratic_constraints=True, check_objectives=True,print_additional_information=False,
                 constraints_to_skip_from1=None, constraints_to_keep_from1=None, coefficients_to_skip_from1=None,
-                constraints_to_skip_from2=None, constraints_to_keep_from2=None, coefficients_to_skip_from2=None, constraints_to_enforce_from2=None):
+                constraints_to_skip_from2=None, constraints_to_keep_from2=None, coefficients_to_skip_from2=None, constraints_to_enforce_from2=None) -> bool:
     # Safety before more expensive operations start
     if check_constraints:
         # If any of enforce is in skip, raise error
@@ -879,6 +886,12 @@ def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bo
             vars2.add((norm_var, model2["bounds"]["lower"][i], model2["bounds"]["upper"][i]))
 
         vars_fixed_to_zero = get_fixed_zero_variables(model1) # Only the Pyomo model writes fixed to zero variables, GAMS doesn't write them at all, so those can be ignored
+        if file1_removeScenarioPrefix:
+            vars1 = {(v[0].replace("ScenarioA.", ""), v[1], v[2]) for v in vars1}
+        if file2_removeScenarioPrefix:
+            vars2 = {(v[0].replace("ScenarioA.", ""), v[1], v[2]) for v in vars2}
+
+        coefficients_to_skip_from1.extend(vars_fixed_to_zero)  # Add variables that are fixed to 0 to the list of coefficients to skip
 
         comparison_results["variables"] = compare_variables(
             vars1, vars2, vars_fixed_to_zero=vars_fixed_to_zero,print_additional_information=print_additional_information
@@ -932,13 +945,15 @@ def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bo
         objective1, quad_objective1 = normalize_objective(
             model1,
             vars_fixed_to_zero=vars_fixed_to_zero,
-            coefficients_to_skip=coefficients_to_skip_from1
+            coefficients_to_skip=coefficients_to_skip_from1,
+            remove_scenario_prefix=file1_removeScenarioPrefix
         )
 
         objective2, quad_objective2 = normalize_objective(
             model2,
             vars_fixed_to_zero=vars_fixed_to_zero,
-            coefficients_to_skip=coefficients_to_skip_from2
+            coefficients_to_skip=coefficients_to_skip_from2,
+            remove_scenario_prefix=file2_removeScenarioPrefix
         )
 
         comparison_results['coefficients of objective'] = compare_objectives(objective1, objective2)
@@ -984,3 +999,7 @@ def compare_mps(file1, file1_isPyomoFormat: bool, file2, file2_isPyomoFormat: bo
 
     if all_perfect:
         printer.success("All checks passed, no missing or partially matching elements found!")
+        return True
+    else:
+        printer.error("Some checks failed, see above for details!")
+        return False
