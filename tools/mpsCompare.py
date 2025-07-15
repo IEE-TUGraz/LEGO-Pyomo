@@ -852,10 +852,14 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
         if len(constraints_to_skip_from1) and len(constraints_to_keep_from1):
             printer.warning("Ignoring 'constraints_to_skip_from1' since 'constraints_to_keep_from1' is set!")
             constraints_to_skip_from1 = None
+        elif not file1_isPyomoFormat:
+            coefficients_to_skip_from1 = coefficients_to_skip_from1 + ["constobj"] if coefficients_to_skip_from1 else ["constobj"]
 
         if len(constraints_to_skip_from2) and len(constraints_to_keep_from2):
             printer.warning("Ignoring 'constraints_to_skip_from2' since 'constraints_to_keep_from2' is set!")
             constraints_to_skip_from2 = None
+        elif not file2_isPyomoFormat:
+            coefficients_to_skip_from2 = coefficients_to_skip_from2 + ["constobj"] if coefficients_to_skip_from2 else ["constobj"]
 
     # Load MPS files
     model1 = get_model_data(load_mps(file1))  # Pyomo data

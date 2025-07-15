@@ -103,7 +103,7 @@ def execute_gams(data_folder: str, gams_console_log_path: str, gams_executable_p
                     objective_value_gams = float(line.split()[-1])
                     printer.information(f"Objective value: {objective_value_gams}")
                     return "LEGO-GAMS/model.mps", objective_value_gams
-    return "LEGO-GAMS/model.mps", -1
+    return "LEGO-GAMS/LEGO-GAMS.mps", -1
 
 
 def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | pathlib.Path, solve_model: bool,
@@ -127,7 +127,7 @@ def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | p
                 gams_executable_path = "C:/GAMS/50/gams.exe"
                 printer.warning(f"Using default GAMS executable path: {gams_executable_path}")
             if lego_gams_path is None:
-                lego_gams_path = "LEGO-GAMS/LEGO.gms"
+                lego_gams_path = "../LEGO-GAMS/LEGO.gms"
                 printer.warning(f"Using default LEGO GAMS model path: {lego_gams_path}")
             if max_gams_runtime_in_seconds is None:
                 max_gams_runtime_in_seconds = 60
@@ -297,10 +297,10 @@ if __name__ == "__main__":
     parser.add_argument("--skipConstraintComparison", action="store_true", help="Skip comparison of constraints")
     parser.add_argument("--printAdditionalInformation", action="store_true", help="Print additional information")
 
-    parser.add_argument("--gamsConsoleLogPath", default="LEGO-GAMS/gams_console.log", type=str, help="Path to GAMS console log file")
-    parser.add_argument("--gamsPath", default="C:/GAMS/49/gams.exe", type=str, help="Path to GAMS executable")
-    parser.add_argument("--legoGamsPath", default="LEGO.gms", type=str, help="Path to LEGO GAMS model")
-    parser.add_argument("--maxGamsRuntimeInSeconds", default=60, type=int, help="Maximum runtime in seconds for GAMS model")
+    parser.add_argument("--gamsConsoleLogPath", nargs="?", type=str, help="Path to GAMS console log file")
+    parser.add_argument("--gamsPath", nargs="?", type=str, help="Path to GAMS executable")
+    parser.add_argument("--legoGamsPath", nargs="?", type=str, help="Path to LEGO GAMS model")
+    parser.add_argument("--maxGamsRuntimeInSeconds", nargs="?", type=int, help="Maximum runtime in seconds for GAMS model")
 
     args = parser.parse_args()
 
