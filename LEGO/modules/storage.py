@@ -27,13 +27,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     LEGO.addToParameter(model, "pMinProd", cs.dPower_Storage['MinProd'])
     LEGO.addToParameter(model, "pExisUnits", cs.dPower_Storage['ExisUnits'])
 
-    LEGO.addToParameter(model,"pOMVarCost", cs.dPower_Storage['pOMVarCostEUR'])
-    LEGO.addToParameter(model,"pMaxInvest", cs.dPower_Storage['MaxInvest'])
-    LEGO.addToParameter(model,"pEnabInv", cs.dPower_Storage['EnableInvest'])
-    LEGO.addToParameter(model,"pInvestCost", cs.dPower_Storage['InvestCostEUR'])
-    LEGO.addToParameter(model,'pMaxGenQ', cs.dPower_Storage['Qmax'].fillna(0))
-    LEGO.addToParameter(model,'pMinGenQ', cs.dPower_Storage['Qmin'].fillna(0))
-
+    LEGO.addToParameter(model, "pOMVarCost", cs.dPower_Storage['pOMVarCostEUR'])
+    LEGO.addToParameter(model, "pMaxInvest", cs.dPower_Storage['MaxInvest'])
+    LEGO.addToParameter(model, "pEnabInv", cs.dPower_Storage['EnableInvest'])
+    LEGO.addToParameter(model, "pInvestCost", cs.dPower_Storage['InvestCostEUR'])
+    LEGO.addToParameter(model, 'pMaxGenQ', cs.dPower_Storage['Qmax'].fillna(0))
+    LEGO.addToParameter(model, 'pMinGenQ', cs.dPower_Storage['Qmin'].fillna(0))
 
     # Variables
     if model.pEnableChDisPower:
@@ -70,7 +69,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
                 for k in model.k:
                     model.vGenQ[rp, k, g].setlb(model.pMinGenQ[g])
                     model.vGenQ[rp, k, g].setub(model.pMaxGenQ[g])
-                    
+
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
 

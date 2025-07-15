@@ -180,7 +180,7 @@ def compareModels(model_type1: ModelTypeForComparison, folder_path1: str | pathl
                   skip_comparison_overall: bool = False, skip_variable_comparison: bool = False, skip_constraint_comparison: bool = False,
                   constraint_skip_model1: list[str] = None, constraint_keep_model1: list[str] = None, coefficients_skip_model1: list[str] = None,
                   constraint_skip_model2: list[str] = None, constraint_keep_model2: list[str] = None, coefficients_skip_model2: list[str] = None, constraint_enforce_model2: list[str] = None,
-                  remove_scenario_prefix1:bool=False, remove_scenario_prefix2:bool=False,
+                  remove_scenario_prefix1: bool = False, remove_scenario_prefix2: bool = False,
                   print_additional_information: bool = False,
                   gams_console_log_path: Optional[str] = None, gams_executable_path: Optional[str] = None, lego_gams_path: Optional[str] = None, max_gams_runtime_in_seconds: Optional[int] = None) -> bool:
     """

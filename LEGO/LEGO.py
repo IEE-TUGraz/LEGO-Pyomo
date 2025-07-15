@@ -216,6 +216,7 @@ def get_objective_value(model: pyo.Model, zoi: bool):
 
         return result_zoi
 
+
 # Clone given model and fix specified variables to values from another model
 def build_from_clone_with_fixed_results(model_to_be_cloned: pyo.Model, model_with_fixed_results: pyo.Model, variables_to_fix: list[str]) -> LEGO:
     model_new = model_to_be_cloned.clone()

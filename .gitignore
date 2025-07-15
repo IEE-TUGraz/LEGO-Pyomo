@@ -19,7 +19,7 @@ LEGO*.log*
 *.log
 *.lxi
 *.gsp
-LEGO-GAMS.mps
+*.gdx
 
 # Model files
 *.mps
