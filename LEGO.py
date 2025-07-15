@@ -11,7 +11,7 @@ from rich_argparse import RichHelpFormatter
 from InOutModule import SQLiteWriter, ExcelWriter
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
-from LEGO.LEGO import LEGO
+from LEGO.LEGO import LEGO, ModelType
 
 printer = Printer.getInstance()
 
@@ -32,6 +32,7 @@ def directory_path(string):
 
 
 parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to folder containing data for LEGO model")
+parser.add_argument("modelType", default=ModelType.DETERMINISTIC, type=lambda s: ModelType[s], choices=list(ModelType), nargs="?", help="ModelType of first model")
 args = parser.parse_args()
 
 # Load case study
@@ -43,14 +44,12 @@ printer.information(f"Loading case study took {time.time() - start_time:.2f} sec
 
 # Build LEGO model
 printer.information("Building LEGO model")
-# lego.cs.dPower_Demand = lego.cs.dPower_Demand["k" >= 24]
-model, timing = lego.build_model()
-# fix solved variables
+model, timing = lego.build_model(model_type=args.modelType)
 printer.information(f"Building LEGO model took {timing:.2f} seconds")
 
 # Solve LEGO model
 printer.information("Solving LEGO model")
-results, timing, objective_value = lego.solve_model()
+results, timing, objective_value = lego.solve_model(model_type=args.modelType)
 printer.information(f"Solving LEGO model took {timing:.2f} seconds")
 
 logger = logging.getLogger('pyomo.util.infeasible')
@@ -64,7 +63,13 @@ if not logger.handlers:
 
 match results.solver.termination_condition:
     case pyo.TerminationCondition.optimal:
-        printer.success(f"Optimal solution: {pyo.value(model.objective):.4f}")
+        match args.modelType:
+            case ModelType.DETERMINISTIC:
+                printer.success(f"Optimal solution: {pyo.value(model.objective):.4f}")
+            case ModelType.EXTENSIVE_FORM:
+                printer.success(f"Optimal solution: {lego._extensive_form.get_objective_value():.4f}")
+            case _:
+                printer.warning(f"Model type {args.modelType} not fully tested yet, no objective value reported.")
     case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
         printer.error(f"Model returned as {results.solver.termination_condition}, logging infeasible constraints:")
         log_infeasible_constraints(model, log_expression=False)

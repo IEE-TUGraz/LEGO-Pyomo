@@ -13,14 +13,23 @@ from InOutModule.printer import Printer
 printer = Printer.getInstance()
 
 
-def test_deterministicVsExtensiveWithNoScenarios(tmp_path):
+def test_deterministicVsExtensiveWithNoScenarios():
+    """
+    Test if the MPS files of a deterministic model and an extensive form model with no scenarios are equal.
+    :return: None
+    """
     mps_equal = compareModels(ModelTypeForComparison.DETERMINISTIC, "data/example", True,
-                              ModelTypeForComparison.EXTENSIVE_FORM, "data/example", True)
+                              ModelTypeForComparison.EXTENSIVE_FORM, "data/example", True, remove_scenario_prefix2=True)
 
     assert mps_equal
 
 
 def test_deterministicVsExtensiveWithTwoEqualScenarios(tmp_path):
+    """
+    Test if the MPS files of a deterministic model and an extensive form model with two equal scenarios are equal.
+    :param tmp_path: Temporary path for the test
+    :return: None
+    """
     data_folder = "data/example"
 
     # Copy the data folder to a temporary path
