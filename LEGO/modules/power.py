@@ -394,6 +394,29 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     model.eMinDownTime = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Minimum down time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=lambda m, rp, k, t: eMinDownTime_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
 
+
+
+    # Link implementation
+    model.pPmaxLink = pyo.Param(model.la, initialize=cs.dPower_Links['PmaxLink'], doc='Max Power between HV and LV Node')
+    model.pExpCost = pyo.Param(model.la, initialize=cs.dPower_Links['pExpCost'], doc='Costs of an Link Expansion')
+
+    model.vLinkExpPower = pyo.Var(model.la, doc='Power Expansion of Link', domain=pyo.Binary)
+    first_stage_variables += [model.vLinkExpPower]
+
+    model.vLinkP = pyo.Var(model.rp, model.k, model.la, doc='Power flow from bus HV to LV', bounds=(None, None))
+    second_stage_variables += [model.vLinkP]
+
+#model.pDemandP
+#welche variable sind di VRES gen? model.vGenP[rp, k, r]? was ist r?
+
+    def eDC_PositivLinkExpansion_rule(model, rp, k, i, j, c): #welche index? nur knoten? brauchen das eig nur bei den LV knoten?
+        return model.vLinkExpPower[rp, k, i, j, c]  >= 0
+    
+    def eDC_LinkExpansion_rule(model, rp, k, i, j, c):
+        return model.vLinkP[rp, k, i, j, c]  <=  model.pPmaxLink[rp, k, i, j, c] + model.vLinkExpPower[rp, k, i, j, c]
+    
+    first_stage_objective += model.pExpCost [i, j, c] * model.vLinkExpPower [i, j, c] for i, j, c in model.lc
+
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
                              sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
