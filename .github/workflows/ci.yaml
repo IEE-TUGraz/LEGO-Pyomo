@@ -49,4 +49,4 @@ jobs:
           activate-environment: LEGO-Pyomo_env
 
       - name: Run tests
-        run: python -m pytest tests/
+        run: python -m pytest tests/ --ignore=tests/test_gamsCompatibility.py

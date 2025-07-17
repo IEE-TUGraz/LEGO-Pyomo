@@ -3,4 +3,5 @@
 # Format: <filename> <description>
 
 example-d36490e1746b919fde87c68515303e30e9881305.mps Commit from 08.07.2025, fixed calculation for pSlopeVarCostEUR
+example-SOCP-LEGOGAMS-5cb285a21d6f277891d943d4b036f4b05cad6107.mps Commit from 15.07.2025, reference .mps file from LEGO-GAMS for solving example as SOCP
 exampleStochastic-ExtensiveForm-bb1583fd2cf295e8cadc6b303c385788bf118818.mps Commit from 08.07.2025, first version of the stochastic example solved as extensive form
