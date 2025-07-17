@@ -23,7 +23,7 @@ def test_comparisonAgainstMPS(tmp_path, folder_path, model_type, comparison_mps)
     :return: None
     """
     mps_equal = compareModels(model_type, folder_path, True,
-                              ModelTypeForComparison.MPS_FILE, comparison_mps, False, tmp_folder_path=tmp_path, remove_scenario_prefix2=True, remove_scenario_prefix1=True)
+                              ModelTypeForComparison.MPS_FILE, comparison_mps, False, tmp_folder_path=tmp_path)
 
     assert mps_equal
 

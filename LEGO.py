@@ -78,4 +78,4 @@ match results.solver.termination_condition:
 
 SQLiteWriter.model_to_sqlite(model, "model.sqlite")
 ExcelWriter.model_to_excel(model, "model.xlsx")
-model.write(model.mps, io_options={'labeler': NameLabeler()})
+model.write("model.mps", io_options={'labeler': NameLabeler()})
