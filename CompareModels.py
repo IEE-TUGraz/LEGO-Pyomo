@@ -123,7 +123,10 @@ def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | p
     match model_type:
         case ModelTypeForComparison.GAMS:
             if gams_console_log_path is None:
-                gams_console_log_path = "gams_console.log"
+                if tmp_folder_path is not None:
+                    gams_console_log_path = pathlib.Path(tmp_folder_path) / "gams_console.log"
+                else:
+                    gams_console_log_path = "gams_console.log"
                 printer.warning(f"Using default GAMS console log path: {gams_console_log_path}")
             if gams_executable_path is None:
                 gams_executable_path = "C:/GAMS/50/gams.exe"

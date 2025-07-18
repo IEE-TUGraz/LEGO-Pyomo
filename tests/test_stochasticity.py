@@ -87,9 +87,9 @@ def test_deterministicVsExtensiveWithTwoEqualScenarios(tmp_path):
     assert mps_equal
 
 
-def test_extensiveStochasticVsBendersWithTwoDifferentScenarios():
+def test_extensiveStochasticVsBendersWithTwoDifferentScenarios(tmp_path):
     warnings.warn("This test is not active, since Benders says the solution is infeasible.")  # TODO
     # mps_equal = compareModels(ModelTypeForComparison.EXTENSIVE_FORM, "data/exampleStochastic", True,
-    #                           ModelTypeForComparison.BENDERS, "data/exampleStochastic", True,
-    #                           skip_comparison_overall=True)
-    assert True
+    #                          ModelTypeForComparison.BENDERS, "data/exampleStochastic", True,
+    #                          skip_comparison_overall=True, tmp_folder_path=tmp_path)
+    # assert mps_equal

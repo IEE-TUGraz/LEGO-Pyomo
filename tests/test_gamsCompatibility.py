@@ -15,7 +15,7 @@ def test_comparisonExampleAgainstGAMS(tmp_path):
     :return: None
     """
     mps_equal = compareModels(ModelTypeForComparison.DETERMINISTIC, "data/example", True,
-                              ModelTypeForComparison.GAMS, "data/example", True)
+                              ModelTypeForComparison.GAMS, "data/example", True, tmp_folder_path=tmp_path)
 
     assert mps_equal
 
@@ -52,6 +52,6 @@ def test_comparisonExampleSOCPAgainstGAMS(tmp_path):
     workbook.save(filename=tmp_path_originalData + "/Power_Network.xlsx")
 
     mps_equal = compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_path_originalData, True,
-                              ModelTypeForComparison.GAMS, tmp_path_originalData, True)
+                              ModelTypeForComparison.GAMS, tmp_path_originalData, True, tmp_folder_path=tmp_path)
 
     assert mps_equal
