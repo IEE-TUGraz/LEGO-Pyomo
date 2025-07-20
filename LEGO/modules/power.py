@@ -199,6 +199,18 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
                 raise ValueError(f"Technical representation '{cs.dPower_Network.loc[i, j]["pTecRepr"]}' "
                                  f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
 
+    # Link implementation
+    model.links = pyo.Set(doc='Link lines', initialize=cs.dPower_Links.index.tolist(), within=model.i * model.i * model.c) 
+
+    model.pPmaxLink = pyo.Param(model.links, initialize=cs.dPower_Links['pPmaxLink'], doc='Max Power between HV and LV Node') #Zeile 100
+    model.pExpCost = pyo.Param(model.links, initialize=cs.dPower_Links['pExpCost'], doc='Costs of an Link Expansion')
+
+    model.vLinkExpPower = pyo.Var(model.links, doc='Power Expansion of Link', domain=pyo.Binary) #brauch ich die DC OPF zeilen? Zeile 201
+    first_stage_variables += [model.vLinkExpPower]
+
+    model.vLinkP = pyo.Var(model.rp, model.k, model.links, doc='Power flow from bus HV to LV', bounds=(None, None))#Zeile 201
+    second_stage_variables += [model.vLinkP]
+
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
 
@@ -395,17 +407,6 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     model.eMinDownTime = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Minimum down time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=lambda m, rp, k, t: eMinDownTime_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
 
 
-
-    # Link implementation
-    model.pPmaxLink = pyo.Param(model.la, initialize=cs.dPower_Links['PmaxLink'], doc='Max Power between HV and LV Node')
-    model.pExpCost = pyo.Param(model.la, initialize=cs.dPower_Links['pExpCost'], doc='Costs of an Link Expansion')
-
-    model.vLinkExpPower = pyo.Var(model.la, doc='Power Expansion of Link', domain=pyo.Binary)
-    first_stage_variables += [model.vLinkExpPower]
-
-    model.vLinkP = pyo.Var(model.rp, model.k, model.la, doc='Power flow from bus HV to LV', bounds=(None, None))
-    second_stage_variables += [model.vLinkP]
-
 #model.pDemandP
 #welche variable sind di VRES gen? model.vGenP[rp, k, r]? was ist r?
 
@@ -414,12 +415,11 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     
     def eDC_LinkExpansion_rule(model, rp, k, i, j, c):
         return model.vLinkP[rp, k, i, j, c]  <=  model.pPmaxLink[rp, k, i, j, c] + model.vLinkExpPower[rp, k, i, j, c]
-    
-    first_stage_objective += model.pExpCost [i, j, c] * model.vLinkExpPower [i, j, c] for i, j, c in model.lc
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
-                             sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
+                             sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g) +  # Investment cost of generators
+                             sum(model.pExpCost [i, j, c] * (model.vLinkExpPower [i, j, c]) for i, j, c in model.links))  
     second_stage_objective = (sum(sum(model.vPNS[rp, k, :]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost for rp in model.rp for k in model.k) +  # Power not served
                               sum(sum(model.vEPS[rp, k, :]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost * 2 for rp in model.rp for k in model.k) +  # Excess power served
                               sum(model.vStartup[rp, k, t] * model.pStartupCost[t] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for t in model.thermalGenerators) +  # Startup cost of thermal generators
