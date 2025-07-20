@@ -201,6 +201,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     # Link implementation
     model.links = pyo.Set(doc='Link lines', initialize=cs.dPower_Links.index.tolist(), within=model.i * model.i * model.c) 
+    
 
     model.pPmaxLink = pyo.Param(model.links, initialize=cs.dPower_Links['pPmaxLink'], doc='Max Power between HV and LV Node') #Zeile 100
     model.pExpCost = pyo.Param(model.links, initialize=cs.dPower_Links['pExpCost'], doc='Costs of an Link Expansion')
@@ -210,6 +211,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     model.vLinkP = pyo.Var(model.rp, model.k, model.links, doc='Power flow from bus HV to LV', bounds=(None, None))#Zeile 201
     second_stage_variables += [model.vLinkP]
+
+    model.vLinkCounterP = pyo.Var(model.rp, model.k, model.links, doc='Power flow from bus LV to HV', bounds=(None, None))#Zeile 201
+    second_stage_variables += [model.vLinkCounterP]
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
@@ -409,12 +413,24 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
 #model.pDemandP
 #welche variable sind di VRES gen? model.vGenP[rp, k, r]? was ist r?
+# Link implementation
+
+    def eDC_LinkBalanceP_rule(model, rp, k, i):
+        return (sum(model.vGenP[rp, k, g] for g in model.g if (g, i) in model.gi) -  # Production of generators at bus i
+                sum(model.vLinkP[rp, k, e] for e in model.la if (e[0] == i)) +  # Power flow from bus i to bus j
+                sum(model.vLinkP[rp, k, e] for e in model.la if (e[1] == i)) + # Power flow from bus j to bus i
+                sum(model.vLinkCounterP[rp, k, e] for e in model.la if (e[0] == i)) -  # Power flow from bus i to bus j
+                sum(model.vLinkCounterP[rp, k, e] for e in model.la if (e[1] == i))   # Power flow from bus j to bus i
+                == model.pDemandP[rp, k, i] )  # Demand at bus i
 
     def eDC_PositivLinkExpansion_rule(model, rp, k, i, j, c): #welche index? nur knoten? brauchen das eig nur bei den LV knoten?
         return model.vLinkExpPower[rp, k, i, j, c]  >= 0
     
     def eDC_LinkExpansion_rule(model, rp, k, i, j, c):
         return model.vLinkP[rp, k, i, j, c]  <=  model.pPmaxLink[rp, k, i, j, c] + model.vLinkExpPower[rp, k, i, j, c]
+    
+    def eDC_LinkCounterExpansion_rule(model, rp, k, i, j, c):
+        return model.vLinkCounterP[rp, k, i, j, c]  >=  -(model.pPmaxLink[rp, k, i, j, c] + model.vLinkExpPower[rp, k, i, j, c])
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
