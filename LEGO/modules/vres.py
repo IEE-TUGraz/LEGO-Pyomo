@@ -1,3 +1,4 @@
+import pandas as pd
 import pyomo.environ as pyo
 
 from InOutModule.CaseStudy import CaseStudy
@@ -39,6 +40,13 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
+    def eReMaxProd_rule(model, rp, k, r):
+        capacity = cs.dPower_VRESProfiles.loc[rp, k, r]['value']
+        capacity = capacity.values[0] if isinstance(capacity, pd.Series) else capacity
+        return model.vGenP[rp, k, r] <= model.pMaxProd[r] * (model.vGenInvest[r] + model.pExisUnits[r]) * capacity
+
+    model.eReMaxProd = pyo.Constraint(model.rp, model.k, model.vresGenerators, rule=eReMaxProd_rule)
+
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0
     second_stage_objective = 0.0
