@@ -957,7 +957,9 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
         )
 
         comparison_results['coefficients of objective'] = compare_objectives(objective1, objective2)
-        comparison_results['quadratic coefficients of objective'] = compare_objectives(quad_objective1, quad_objective2)
+        if len(quad_objective1) > 0 or len(quad_objective2) > 0:
+            printer.information("Also comparing quadratic objective coefficients...")
+            comparison_results['quadratic coefficients of objective'] = compare_objectives(quad_objective1, quad_objective2)
 
     # Print results
     printer.information("\n   ---------   \n\nResults of MPS Comparison:")

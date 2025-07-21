@@ -23,9 +23,16 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.le = pyo.Set(doc='Existing lines', initialize=cs.dPower_Network[(cs.dPower_Network["pEnableInvest"] == 0)].index.tolist(), within=model.la)
     model.lc = pyo.Set(doc='Candidate lines', initialize=cs.dPower_Network[(cs.dPower_Network["pEnableInvest"] == 1)].index.tolist(), within=model.la)
 
-    if cs.dPower_Parameters["pEnableSOCP"]:
-        # Helper function getting the first circuit for each (i, j) pair
+    model.g = pyo.Set(doc='Generators')
+    model.gi = pyo.Set(doc='Generator g connected to bus i', within=model.g * model.i)
 
+    model.p = pyo.Set(doc='Periods', initialize=cs.dPower_Hindex.index.get_level_values('p').unique().tolist())
+    model.rp = pyo.Set(doc='Representative periods', initialize=cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
+    model.k = pyo.Set(doc='Timestep within representative period', initialize=cs.dPower_Demand.index.get_level_values('k').unique().tolist())
+    model.hindex = cs.dPower_Hindex.index
+
+    if cs.dPower_Parameters["pEnableSOCP"]:
+        # Helper to get the first circuit for each (i, j) pair
         # Reset index to get (i, j, c) as columns
         df_circuits = cs.dPower_Network.reset_index()
 
@@ -36,12 +43,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         df_circuits["c_order"] = df_circuits["c_str"].map(circuit_order)
 
         # Get the first circuit per (i, j) based on this order
-        first_circuit_map = (
-            df_circuits.sort_values("c_order")
-            .drop_duplicates(subset=["i", "j"])
-            .set_index(["i", "j"])["c"]
-            .to_dict()
-        )
+        first_circuit_map = df_circuits.sort_values("c_order").drop_duplicates(subset=["i", "j"]).set_index(["i", "j"])["c"].to_dict()
 
         # Create a bidirectional version for bidirectional lines in the SOCP formulation
         first_circuit_map_bidir = {}
@@ -56,77 +58,18 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
                 reverse.append((j, i, c))
             return reverse
 
-        # Create set of all reverse lines
-        model.la_reverse = pyo.Set(
-            doc='Reverse lines (la)',
-            initialize=lambda model: make_reverse_set(model.la),
-            dimen=3
-        )
+        model.la_reverse = pyo.Set(doc='Reverse lines for la', initialize=lambda m: make_reverse_set(m.la), dimen=3)
+        model.la_no_c = pyo.Set(doc='All lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.la}, dimen=2)
+        model.la_full = pyo.Set(doc='All lines incl. reverse lines', initialize=lambda m: set(m.la) | set(m.la_reverse), dimen=3)
 
-        # Create set of all lines without the circuit dependency(needed for SOCP variables)
-        model.la_no_c = pyo.Set(
-            doc='All lines without circuit dependency (la_no_c)',
-            initialize=lambda model: {(i, j) for (i, j, c) in model.la},
-            dimen=2
-        )
+        model.le_reverse = pyo.Set(doc='Reverse lines for le', initialize=lambda m: make_reverse_set(m.le), within=model.la_reverse, dimen=3)
+        model.le_full = pyo.Set(doc='Existing lines incl. reverse lines', initialize=lambda m: set(m.le) | set(m.le_reverse), within=model.la_full, dimen=3)
+        model.le_no_c = pyo.Set(doc='Existing lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.le}, dimen=2)
 
-        # Create set of all lines including reverse lines
-        model.la_full = pyo.Set(
-            initialize=lambda m: set(m.la) | set(m.la_reverse),
-            dimen=3
-        )
-
-        # Create sets for existing reverse lines
-        model.le_reverse = pyo.Set(
-            doc='Reverse lines (le)',
-            initialize=lambda model: make_reverse_set(model.le),
-            within=model.la_reverse,
-            dimen=3
-        )
-        # Create set of all existing lines including reverse lines
-        model.le_full = pyo.Set(
-            initialize=lambda m: set(m.le) | set(m.le_reverse),
-            within=model.la_full,
-            dimen=3
-        )
-        # Create sets for existing lines without circuit dependency (needed for SOCP constraints)
-        model.le_no_c = pyo.Set(
-            doc='Existing lines without circuit dependency (le_no_c)',
-            initialize=lambda model: {(i, j) for (i, j, c) in model.le},
-            dimen=2,
-        )
-        # Create sets for candidate reverse lines
-        model.lc_reverse = pyo.Set(
-            doc='Reverse lines (lc)',
-            initialize=lambda model: make_reverse_set(model.lc),
-            within=model.la_reverse,
-            dimen=3
-        )
-        # Create set of all candidate lines including reverse lines
-        model.lc_full = pyo.Set(
-            initialize=lambda m: set(m.lc) | set(m.lc_reverse),
-            within=model.la_full,
-            dimen=3
-        )
-        # Create set of all candidate lines including reverse lines without circuit dependency (needed for SOCP constraints)
-        model.lc_full_no_c = pyo.Set(
-            doc='All Candidate lines without circuit dependency (lc_no_c)',
-            initialize=lambda model: {(i, j) for (i, j, c) in model.lc_full},
-            dimen=2
-        )
-        model.lc_no_c = pyo.Set(
-            doc='Candidate lines without circuit dependency (lc_no_c)',
-            initialize=lambda model: {(i, j) for (i, j, c) in model.lc},
-            dimen=2
-        )
-
-    model.g = pyo.Set(doc='Generators')
-    model.gi = pyo.Set(doc='Generator g connected to bus i', within=model.g * model.i)
-
-    model.p = pyo.Set(doc='Periods', initialize=cs.dPower_Hindex.index.get_level_values('p').unique().tolist())
-    model.rp = pyo.Set(doc='Representative periods', initialize=cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
-    model.k = pyo.Set(doc='Timestep within representative period', initialize=cs.dPower_Demand.index.get_level_values('k').unique().tolist())
-    model.hindex = cs.dPower_Hindex.index
+        model.lc_reverse = pyo.Set(doc='Reverse lines for lc', initialize=lambda m: make_reverse_set(m.lc), within=model.la_reverse, dimen=3)
+        model.lc_full = pyo.Set(doc='Candidate lines incl. reverse lines', initialize=lambda m: set(m.lc) | set(m.lc_reverse), within=model.la_full, dimen=3)
+        model.lc_full_no_c = pyo.Set(doc='Candidate lines incl. reverse lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc_full}, dimen=2)
+        model.lc_no_c = pyo.Set(doc='Candidate lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc}, dimen=2)
 
     # Parameters
     model.pDemandP = pyo.Param(model.rp, model.k, model.i, initialize=cs.dPower_Demand['value'], doc='Demand at bus i in representative period rp and timestep k')
@@ -189,33 +132,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vGenInvest = pyo.Var(model.g, doc="Integer generation investment", bounds=lambda model, g: (0, model.pMaxInvest[g] * model.pEnabInv[g]))
     first_stage_variables += [model.vGenInvest]
 
-    # For each DC-OPF "island", set node with highest demand as slack node
-    dDCOPFIslands = pd.DataFrame(index=cs.dPower_BusInfo.index, columns=[cs.dPower_BusInfo.index], data=False)
-
-    for index, entry in cs.dPower_Network.iterrows():
-        if cs.dPower_Network.loc[(index[0], index[1], index[2])]["pTecRepr"] == "DC-OPF" or "SOCP":
-            dDCOPFIslands.loc[index[0], index[1]] = True
-            dDCOPFIslands.loc[index[1], index[0]] = True
-    completed_buses = set()  # Set of buses that have been looked at already
-    i = 0
-
-    for index, entry in dDCOPFIslands.iterrows():
-        if index in completed_buses or entry[entry == True].empty:
-            continue
-        connected_buses = cs.get_connected_buses(dDCOPFIslands, str(index))
-        for bus in connected_buses:
-            completed_buses.add(bus)
-        completed_buses.add(index)
-
-        # Set slack node
-        if not cs.dPower_Parameters["pEnableSOCP"]:
-            slack_node = cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
-            slack_node = cs.dPower_Parameters["is"]  # TODO: Switch this again to be calculated (fixed to 'is' for compatibility)
-            if i == 0: print("Setting slack nodes for DC-OPF zones:")
-            print(f"DC-OPF Zone {i:>2} - Slack node: {slack_node}")
-            i += 1
-            model.vTheta[:, :, slack_node].fix(0)
-
     model.vPNS = pyo.Var(model.rp, model.k, model.i, doc='Slack variable power not served', bounds=lambda model, rp, k, i: (0, model.pDemandP[rp, k, i]))
     second_stage_variables += [model.vPNS]
     model.vEPS = pyo.Var(model.rp, model.k, model.i, doc='Slack variable excess power served', bounds=(0, None))
@@ -224,104 +140,58 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vGenP = pyo.Var(model.rp, model.k, model.g, doc='Power output of generator g', bounds=lambda model, rp, k, g: (0, model.pMaxProd[g] * (model.pExisUnits[g] + model.pMaxInvest[g] * model.pEnabInv[g])))
     second_stage_variables += [model.vGenP]
 
-    model.vLineP = pyo.Var(model.rp, model.k, model.la, doc='Power flow from bus i to j', bounds=(None, None))
-    if cs.dPower_Parameters["pEnableSOCP"]:  # Bound sonly apply in forward direction for existing and candidate lines
-        model.vLineP = pyo.Var(model.rp, model.k, model.la_full, doc='Power flow from bus i to j', bounds=(None, None))
-        for (i, j, c) in model.la:
-            for rp in model.rp:
-                for k in model.k:
-                    model.vLineP[rp, k, i, j, c].setlb(-model.pPmax[i, j, c])
-                    model.vLineP[rp, k, i, j, c].setub(model.pPmax[i, j, c])
-    else:
-        model.vLineP = pyo.Var(model.rp, model.k, model.la, doc='Power flow from bus i to j', bounds=(None, None))
-        for (i, j, c) in model.la:
-            match cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
-                case "DC-OPF" | "TP":
-                    model.vLineP[:, :, (i, j), c].setlb(-model.pPmax[i, j, c])
-                    model.vLineP[:, :, (i, j), c].setub(model.pPmax[i, j, c])
-                case "SN":
-                    assert False  # "SN" line found, although all "Single Node" buses should be merged
-                case _:
-                    raise ValueError(f"Technical representation '{cs.dPower_Network.loc[i, j]["pTecRepr"]}' "
-                                     f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
+    model.vLineP = pyo.Var(model.rp, model.k, model.la_full if cs.dPower_Parameters["pEnableSOCP"] else model.la, doc='Power flow from bus i to j', bounds=lambda m, rp, k, i, j, c: (-model.pPmax[i, j, c], model.pPmax[i, j, c]) if (i, j, c) in m.la else (None, None))
     second_stage_variables += [model.vLineP]
 
     if cs.dPower_Parameters["pEnableSOCP"]:
-        model.vLineQ = pyo.Var(model.rp, model.k, model.la_full, domain=pyo.Reals, doc="Reactive power flow from bus i to j")
-        for (i, j, c) in model.le:
-            for rp in model.rp:
-                for k in model.k:
-                    model.vLineQ[rp, k, i, j, c].setlb(-model.pQmax[i, j, c])
-                    model.vLineQ[rp, k, i, j, c].setub(model.pQmax[i, j, c])
+        model.vLineQ = pyo.Var(model.rp, model.k, model.la_full, doc="Reactive power flow from bus i to j", bounds=lambda m, rp, k, i, j, c: (-m.pQmax[i, j, c], m.pQmax[i, j, c]) if (i, j, c) in m.le else (-m.pQmax[j, i, c], m.pQmax[j, i, c]) if (i, j, c) in m.le_reverse else (None, None))
         second_stage_variables.append(model.vLineQ)
 
-        model.vSOCP_cii = pyo.Var(model.rp, model.k, model.i, domain=pyo.Reals)
-        for rp in model.rp:
-            for k in model.k:
-                for i in model.i:
-                    model.vSOCP_cii[rp, k, i].setub(round(model.pBusMaxV[i] ** 2, 4))  # Set upper bound for cii
-                    model.vSOCP_cii[rp, k, i].setlb(round(model.pBusMinV[i] ** 2, 4))
+        model.vSOCP_cii = pyo.Var(model.rp, model.k, model.i, bounds=lambda m, rp, k, i: (round(m.pBusMinV[i] ** 2, 4), round(m.pBusMaxV[i] ** 2, 4)))
         second_stage_variables.append(model.vSOCP_cii)
 
-        # For each DC-OPF "island", set node with highest demand as slack node
-        dDCOPFIslands = pd.DataFrame(index=cs.dPower_BusInfo.index, columns=[cs.dPower_BusInfo.index], data=False)
-
-        for index, entry in cs.dPower_Network.iterrows():
-            if cs.dPower_Network.loc[(index[0], index[1], index[2])]["pTecRepr"] == "DC-OPF" or "SOCP":
-                dDCOPFIslands.loc[index[0], index[1]] = True
-                dDCOPFIslands.loc[index[1], index[0]] = True
-        completed_buses = set()  # Set of buses that have been looked at already
-        i = 0
-
-        for index, entry in dDCOPFIslands.iterrows():
-            if index in completed_buses or entry[entry == True].empty:
-                continue
-            connected_buses = cs.get_connected_buses(dDCOPFIslands, str(index))
-            for bus in connected_buses:
-                completed_buses.add(bus)
-            completed_buses.add(index)
-
-            # Set slack node
-            slack_node = cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
-            slack_node = cs.dPower_Parameters["is"]  # TODO: Switch this again to be calculated (fixed to 'is' for compatibility)
-
-            if i == 0: print("Setting slack nodes for SOCP zones:")
-            i += 1
-            model.vSOCP_cii[:, :, slack_node].fix(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage']))
-            print(f"SOCP {i:>2} - Slack node: {slack_node}")
-            print("Fixed voltage magnitude at slack node:", pyo.value(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage'])))
-            model.vTheta[:, :, slack_node].fix(0)
-
-        model.vSOCP_cij = pyo.Var(model.rp, model.k, model.la_no_c, domain=pyo.Reals, bounds=(0, None))  # cij = (vi^real* vj^real) + vi^imag*vj^imag), Lower bounds for vSOCP_cij need to always be at least 0
-        for (i, j, c) in model.le:
-            for rp in model.rp:
-                for k in model.k:
-                    if (rp, k, i, j) in model.vSOCP_cij:
-                        model.vSOCP_cij[rp, k, i, j].setub(round(model.pBusMaxV[i] ** 2, 4))
-                        model.vSOCP_cij[rp, k, i, j].setlb(round(max(model.pBusMinV[i] ** 2, 0.1), 4))
+        # cij = (vi^real* vj^real) + vi^imag*vj^imag), Lower bounds for vSOCP_cij need to always be at least 0
+        model.vSOCP_cij = pyo.Var(model.rp, model.k, model.la_no_c, bounds=lambda m, rp, k, i, j: (round(max(model.pBusMinV[i] ** 2, 0.1), 4), round(model.pBusMaxV[i] ** 2, 4)) if (i, j, c) in m.le else (0, None))
         second_stage_variables.append(model.vSOCP_cij)
 
-        model.vSOCP_sij = pyo.Var(model.rp, model.k, model.la_no_c, domain=pyo.Reals)  # sij = (vi^real* vj^imag) - vi^re*vj^imag))
-        for (i, j, c) in model.le:
-            for rp in model.rp:
-                for k in model.k:
-                    if (rp, k, i, j) in model.vSOCP_sij:
-                        model.vSOCP_sij[rp, k, i, j].setub(round(model.pBusMaxV[i] ** 2, 4))
-                        model.vSOCP_sij[rp, k, i, j].setlb(round(-model.pBusMaxV[i] ** 2, 4))
+        # sij = (vi^real* vj^imag) - vi^re*vj^imag))
+        model.vSOCP_sij = pyo.Var(model.rp, model.k, model.la_no_c, bounds=lambda m, rp, k, i, j: (round(-model.pBusMaxV[i] ** 2, 4), round(model.pBusMaxV[i] ** 2, 4)) if (i, j, c) in m.le else (None, None))
         second_stage_variables.append(model.vSOCP_sij)
-
-        # Set bounds for reversed direction (la_reverse)
-        for (j, i, c) in model.le_reverse:
-            for rp in model.rp:
-                for k in model.k:
-                    model.vLineQ[rp, k, j, i, c].setlb(-model.pQmax[i, j, c])
-                    model.vLineQ[rp, k, j, i, c].setub(model.pQmax[i, j, c])
 
         model.vSOCP_IndicConnecNodes = pyo.Var({(i, j) for (i, j, c) in model.lc}, domain=pyo.Binary)
         second_stage_variables.append(model.vSOCP_IndicConnecNodes)
 
         model.vGenQ = pyo.Var(model.rp, model.k, model.g, doc='Reactive power output of ge', bounds=lambda model, rp, k, g: (model.pMinGenQ[g], model.pMaxGenQ[g]))
         second_stage_variables.append(model.vGenQ)
+
+    # For each DC-OPF/SOCP "island", set node with highest demand as slack node
+    dTechnicalReprIslands = pd.DataFrame(index=cs.dPower_BusInfo.index, columns=[cs.dPower_BusInfo.index], data=False)
+
+    for index, entry in cs.dPower_Network.iterrows():
+        if cs.dPower_Network.loc[(index[0], index[1], index[2])]["pTecRepr"] == "DC-OPF" or "SOCP":
+            dTechnicalReprIslands.loc[index[0], index[1]] = True
+            dTechnicalReprIslands.loc[index[1], index[0]] = True
+    completed_buses = set()  # Set of buses that have been looked at already
+
+    i = 0
+    for index, entry in dTechnicalReprIslands.iterrows():
+        if index in completed_buses or entry[entry == True].empty:
+            continue
+        connected_buses = cs.get_connected_buses(dTechnicalReprIslands, str(index))
+        for bus in connected_buses:
+            completed_buses.add(bus)
+        completed_buses.add(index)
+
+        # Set slack node
+        slack_node = cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
+        slack_node = cs.dPower_Parameters["is"]  # TODO: Switch this again to be calculated (fixed to 'is' for compatibility)
+        if i == 0: print("Setting slack nodes for technical representation islands:")
+        i += 1
+        print(f"Zone {i:>2} - Slack node: {slack_node}")
+        model.vTheta[:, :, slack_node].fix(0)
+        if cs.dPower_Parameters['pEnableSOCP']:
+            print("Fixed voltage magnitude at slack node: ", pyo.value(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage'])))
+            model.vSOCP_cii[:, :, slack_node].fix(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage']))
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
