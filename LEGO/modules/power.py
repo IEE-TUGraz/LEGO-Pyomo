@@ -3,7 +3,7 @@ import pandas as pd
 import pyomo.environ as pyo
 
 from InOutModule.CaseStudy import CaseStudy
-from LEGO import LEGOUtilities, LEGO
+from LEGO import LEGOUtilities
 
 global first_circuit_map, first_circuit_map_bidir  # TODO: Solve this differently
 
@@ -49,7 +49,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
             first_circuit_map_bidir[(i, j)] = c
             first_circuit_map_bidir[(j, i)] = c  # Add reverse direction
 
-    if cs.dPower_Parameters["pEnableSOCP"]:
         # Helper function for creating reverse and bidirectional sets
         def make_reverse_set(original_set):
             reverse = []
@@ -124,21 +123,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.g = pyo.Set(doc='Generators')
     model.gi = pyo.Set(doc='Generator g connected to bus i', within=model.g * model.i)
 
-    if cs.dPower_Parameters["pEnableThermalGen"]:
-        model.thermalGenerators = pyo.Set(doc='Thermal Generators', initialize=cs.dPower_ThermalGen.index.tolist())
-        LEGO.addToSet(model, "g", model.thermalGenerators)
-        LEGO.addToSet(model, "gi", cs.dPower_ThermalGen.reset_index().set_index(['g', 'i']).index)
-
-    if cs.dPower_Parameters["pEnableRoR"]:
-        model.rorGenerators = pyo.Set(doc='Run-of-river generators', initialize=cs.dPower_RoR.index.tolist())
-        LEGO.addToSet(model, "g", model.rorGenerators)
-        LEGO.addToSet(model, "gi", cs.dPower_RoR.reset_index().set_index(['g', 'i']).index)
-
-    if cs.dPower_Parameters["pEnableVRES"]:
-        model.vresGenerators = pyo.Set(doc='Variable renewable energy sources', initialize=cs.dPower_VRES.index.tolist())
-        LEGO.addToSet(model, "g", model.vresGenerators)
-        LEGO.addToSet(model, "gi", cs.dPower_VRES.reset_index().set_index(['g', 'i']).index)
-
     model.p = pyo.Set(doc='Periods', initialize=cs.dPower_Hindex.index.get_level_values('p').unique().tolist())
     model.rp = pyo.Set(doc='Representative periods', initialize=cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
     model.k = pyo.Set(doc='Timestep within representative period', initialize=cs.dPower_Demand.index.get_level_values('k').unique().tolist())
@@ -158,52 +142,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.pMaxGenQ = pyo.Param(model.g, doc='Maximum reactive production of generator g')
     model.pMinGenQ = pyo.Param(model.g, doc='Minimum reactive production of generator g')
 
-    if cs.dPower_Parameters["pEnableThermalGen"]:
-        LEGO.addToParameter(model, "pOMVarCost", cs.dPower_ThermalGen['pSlopeVarCostEUR'])
-        LEGO.addToParameter(model, "pEnabInv", cs.dPower_ThermalGen['EnableInvest'])
-        LEGO.addToParameter(model, "pMaxInvest", cs.dPower_ThermalGen['MaxInvest'])
-        LEGO.addToParameter(model, "pInvestCost", cs.dPower_ThermalGen['InvestCostEUR'])
-        LEGO.addToParameter(model, "pMaxProd", cs.dPower_ThermalGen['MaxProd'])
-        LEGO.addToParameter(model, "pMinProd", cs.dPower_ThermalGen['MinProd'])
-        LEGO.addToParameter(model, "pExisUnits", cs.dPower_ThermalGen['ExisUnits'])
-
-        # Reactive generator power limits for SOCP formulation
-        LEGO.addToParameter(model, 'pMaxGenQ', 1e-3 * cs.dPower_ThermalGen['Qmax'].fillna(0))  # Convert from MVar to kVar
-        LEGO.addToParameter(model, 'pMinGenQ', 1e-3 * cs.dPower_ThermalGen['Qmin'].fillna(0))  # Convert from MVar to kVar
-
-        model.pInterVarCost = pyo.Param(model.thermalGenerators, initialize=cs.dPower_ThermalGen['pInterVarCostEUR'], doc='Inter-variable cost of thermal generator g')
-        model.pStartupCost = pyo.Param(model.thermalGenerators, initialize=cs.dPower_ThermalGen['pStartupCostEUR'], doc='Startup cost of thermal generator g')
-        model.pMinUpTime = pyo.Param(model.thermalGenerators, initialize=cs.dPower_ThermalGen['MinUpTime'], doc='Minimum up time of thermal generator g')
-        model.pMinDownTime = pyo.Param(model.thermalGenerators, initialize=cs.dPower_ThermalGen['MinDownTime'], doc='Minimum down time of thermal generator g')
-        model.pRampUp = pyo.Param(model.thermalGenerators, initialize=cs.dPower_ThermalGen['RampUp'], doc='Ramp up of thermal generator g')
-        model.pRampDw = pyo.Param(model.thermalGenerators, initialize=cs.dPower_ThermalGen['RampDw'], doc='Ramp down of thermal generator g')
-
-    if cs.dPower_Parameters["pEnableRoR"]:
-        LEGO.addToParameter(model, "pOMVarCost", cs.dPower_RoR['OMVarCost'])
-        LEGO.addToParameter(model, "pEnabInv", cs.dPower_RoR['EnableInvest'])
-        LEGO.addToParameter(model, "pMaxInvest", cs.dPower_RoR['MaxInvest'])
-        LEGO.addToParameter(model, "pInvestCost", cs.dPower_RoR['InvestCostEUR'])
-        LEGO.addToParameter(model, "pMaxProd", cs.dPower_RoR['MaxProd'])
-        LEGO.addToParameter(model, "pMinProd", cs.dPower_RoR['MinProd'])
-        LEGO.addToParameter(model, "pExisUnits", cs.dPower_RoR['ExisUnits'])
-
-        # Reactive ROR power limits for SOCP formulation
-        LEGO.addToParameter(model, 'pMaxGenQ', 1e-3 * cs.dPower_RoR['Qmax'].fillna(0))  # Convert from MVar to kVar
-        LEGO.addToParameter(model, 'pMinGenQ', 1e-3 * cs.dPower_RoR['Qmin'].fillna(0))  # Convert from MVar to kVar
-
-    if cs.dPower_Parameters["pEnableVRES"]:
-        LEGO.addToParameter(model, "pOMVarCost", cs.dPower_VRES['OMVarCost'])
-        LEGO.addToParameter(model, "pEnabInv", cs.dPower_VRES['EnableInvest'])
-        LEGO.addToParameter(model, "pMaxInvest", cs.dPower_VRES['MaxInvest'])
-        LEGO.addToParameter(model, "pInvestCost", cs.dPower_VRES['InvestCostEUR'])
-        LEGO.addToParameter(model, "pMaxProd", cs.dPower_VRES['MaxProd'])
-        LEGO.addToParameter(model, "pMinProd", cs.dPower_VRES['MinProd'])
-        LEGO.addToParameter(model, "pExisUnits", cs.dPower_VRES['ExisUnits'])
-
-        # Reactive VRES power limits for SOCP formulation
-        LEGO.addToParameter(model, 'pMaxGenQ', 1e-3 * cs.dPower_VRES['Qmax'].fillna(0))  # Convert from MVar to kVar
-        LEGO.addToParameter(model, 'pMinGenQ', 1e-3 * cs.dPower_VRES['Qmin'].fillna(0))  # Convert from MVar to kVar
-
     model.pXline = pyo.Param(model.la, initialize=cs.dPower_Network['pXline'], doc='Reactance of line la')
     model.pAngle = pyo.Param(model.la, initialize=cs.dPower_Network['pAngle'] * np.pi / 180, doc='Transformer angle shift')
     model.pRatio = pyo.Param(model.la, initialize=cs.dPower_Network['pRatio'], doc='Transformer ratio')
@@ -215,21 +153,21 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.pWeight_rp = pyo.Param(model.rp, initialize=cs.dPower_WeightsRP["pWeight_rp"], doc='Weight of representative period rp')
     model.pWeight_k = pyo.Param(model.k, initialize=cs.dPower_WeightsK["pWeight_k"], doc='Weight of time step k')
 
-    # SOCP Parameters
-    model.pBusG = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusG'], doc='Conductance of bus i')
-    model.pBusB = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusG'], doc='Susceptance of bus i')
-    model.pBus_pf = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBus_pf'], doc='PowerFactor of bus i')
-    model.pRline = pyo.Param(model.la, initialize=cs.dPower_Network['pRline'], doc='Resistance of line la')
-    model.pBcline = pyo.Param(model.la, initialize=cs.dPower_Network['pBcline'], doc='Susceptance of line la')
-    model.pQmax = pyo.Param(model.la, initialize=lambda model, i, j, c: model.pPmax[i, j, c], doc='Maximum reactive power flow on line la')  # It is asumed that Qmax is ident to Pmax
-    model.pBigM_SOCP = pyo.Param(initialize=1e3, doc="Big M for SOCP")
-    model.pMaxAngleDiff = pyo.Param(initialize=cs.dPower_Parameters["pMaxAngleDiff"] * np.pi / 180, doc='Maximum angle difference between two buses for the SOCP formulation')
-    model.pBusMaxV = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusMaxV'], doc='Maximum voltage at bus i')
-    model.pBusMinV = pyo.Param(model.i, initialize=lambda model, i: max(cs.dPower_BusInfo['pBusMinV'][i], 0.1), doc='Minimum voltage at bus i (with a lower bound of 0.1)')
-    model.pGline = pyo.Param(model.la, initialize=lambda model, i, j, c: model.pRline[i, j, c] / ((model.pRline[i, j, c] ** 2 + model.pXline[i, j, c] ** 2) if model.pRline[i, j, c] > 1e-6 else 1e-6), doc='Conductance of line la with lower bound')
-    model.pBline = pyo.Param(model.la, initialize=lambda model, i, j, c: - model.pXline[i, j, c] / ((model.pRline[i, j, c] ** 2 + model.pXline[i, j, c] ** 2) if model.pRline[i, j, c] > 1e-6 else 1e-6), doc='Susceptance of line la with lower bound')
-    model.pRatioDemQP = pyo.Param(model.i, initialize=lambda model, i: pyo.tan(pyo.acos(model.pBus_pf[i])))
-    model.pDemandQ = pyo.Param(model.rp, model.k, model.i, initialize=lambda model, rp, k, i: model.pDemandP[rp, k, i] * model.pRatioDemQP[i], doc='Reactive demand at bus i in representative period rp and timestep k')
+    if cs.dPower_Parameters['pEnableSOCP']:
+        model.pBusG = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusG'], doc='Conductance of bus i')
+        model.pBusB = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusG'], doc='Susceptance of bus i')
+        model.pBus_pf = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBus_pf'], doc='PowerFactor of bus i')
+        model.pRline = pyo.Param(model.la, initialize=cs.dPower_Network['pRline'], doc='Resistance of line la')
+        model.pBcline = pyo.Param(model.la, initialize=cs.dPower_Network['pBcline'], doc='Susceptance of line la')
+        model.pQmax = pyo.Param(model.la, initialize=lambda model, i, j, c: model.pPmax[i, j, c], doc='Maximum reactive power flow on line la')  # It is asumed that Qmax is ident to Pmax
+        model.pBigM_SOCP = pyo.Param(initialize=1e3, doc="Big M for SOCP")
+        model.pMaxAngleDiff = pyo.Param(initialize=cs.dPower_Parameters["pMaxAngleDiff"] * np.pi / 180, doc='Maximum angle difference between two buses for the SOCP formulation')
+        model.pBusMaxV = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusMaxV'], doc='Maximum voltage at bus i')
+        model.pBusMinV = pyo.Param(model.i, initialize=lambda model, i: max(cs.dPower_BusInfo['pBusMinV'][i], 0.1), doc='Minimum voltage at bus i (with a lower bound of 0.1)')
+        model.pGline = pyo.Param(model.la, initialize=lambda model, i, j, c: model.pRline[i, j, c] / ((model.pRline[i, j, c] ** 2 + model.pXline[i, j, c] ** 2) if model.pRline[i, j, c] > 1e-6 else 1e-6), doc='Conductance of line la with lower bound')
+        model.pBline = pyo.Param(model.la, initialize=lambda model, i, j, c: - model.pXline[i, j, c] / ((model.pRline[i, j, c] ** 2 + model.pXline[i, j, c] ** 2) if model.pRline[i, j, c] > 1e-6 else 1e-6), doc='Susceptance of line la with lower bound')
+        model.pRatioDemQP = pyo.Param(model.i, initialize=lambda model, i: pyo.tan(pyo.acos(model.pBus_pf[i])))
+        model.pDemandQ = pyo.Param(model.rp, model.k, model.i, initialize=lambda model, rp, k, i: model.pDemandP[rp, k, i] * model.pRatioDemQP[i], doc='Reactive demand at bus i in representative period rp and timestep k')
 
     # Variables
     model.vTheta = pyo.Var(model.rp, model.k, model.i, doc='Angle of bus i', bounds=(-cs.dPower_Parameters["pMaxAngleDCOPF"], cs.dPower_Parameters["pMaxAngleDCOPF"]))  # TODO: Discuss impact on runtime etc.(based on discussion with Prof. Renner)
@@ -243,14 +181,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
             model.vAngle[:, :, i, j, c].setub(model.pAngle[i, j, c])
             model.vAngle[:, :, i, j, c].setlb(-model.pAngle[i, j, c])
 
-    if cs.dPower_Parameters["pEnableSOCP"]:
-        model.vLineInvest = pyo.Var(model.la, doc='Transmission line investment', domain=pyo.Binary)
-        for i, j, c in model.le:
-            model.vLineInvest[i, j, c].fix(0)  # Set existing lines to not investable
-    else:
-        model.vLineInvest = pyo.Var(model.la, doc='Transmission line investment', domain=pyo.Binary)
-        for i, j, c in model.le:
-            model.vLineInvest[i, j, c].fix(0)  # Set existing lines to not investable
+    model.vLineInvest = pyo.Var(model.la, doc='Transmission line investment', domain=pyo.Binary)
+    for i, j, c in model.le:
+        model.vLineInvest[i, j, c].fix(0)  # Set existing lines to not investable
     first_stage_variables += [model.vLineInvest]
 
     model.vGenInvest = pyo.Var(model.g, doc="Integer generation investment", bounds=lambda model, g: (0, model.pMaxInvest[g] * model.pEnabInv[g]))
@@ -288,38 +221,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vEPS = pyo.Var(model.rp, model.k, model.i, doc='Slack variable excess power served', bounds=(0, None))
     second_stage_variables += [model.vEPS]
 
-    # Used to relax vCommit, vStartup and vShutdown in the first timesteps of each representative period
-    # Required when using Markov-Chains to connect the timesteps of the representative periods - since fractions of the binary variables (which are present due to the transition-probabilities) are otherwise not possible
-    def vUC_domain(model, k, relax_duration_from_beginning):
-        if model.k.ord(k) <= relax_duration_from_beginning:
-            return pyo.PercentFraction  # PercentFraction = Floating point values in the interval [0,1]
-        else:
-            return pyo.Binary
-
     model.vGenP = pyo.Var(model.rp, model.k, model.g, doc='Power output of generator g', bounds=lambda model, rp, k, g: (0, model.pMaxProd[g] * (model.pExisUnits[g] + model.pMaxInvest[g] * model.pEnabInv[g])))
     second_stage_variables += [model.vGenP]
-
-    if cs.dPower_Parameters["pEnableThermalGen"]:
-        model.vCommit = pyo.Var(model.rp, model.k, model.thermalGenerators, doc='Unit commitment of generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, max(model.pMinUpTime[t], model.pMinDownTime[t])) if cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov" else pyo.Binary)
-        second_stage_variables += [model.vCommit]
-        model.vStartup = pyo.Var(model.rp, model.k, model.thermalGenerators, doc='Start-up of thermal generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, model.pMinDownTime[t]) if cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov" else pyo.Binary)
-        second_stage_variables += [model.vStartup]
-        model.vShutdown = pyo.Var(model.rp, model.k, model.thermalGenerators, doc='Shut-down of thermal generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, model.pMinUpTime[t]) if cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov" else pyo.Binary)
-        second_stage_variables += [model.vShutdown]
-        model.vGenP1 = pyo.Var(model.rp, model.k, model.thermalGenerators, doc='Power output of generator g above minimum production', bounds=lambda model, rp, k, g: (0, (model.pMaxProd[g] - model.pMinProd[g]) * (model.pExisUnits[g] + model.pMaxInvest[g] * model.pEnabInv[g])))
-        second_stage_variables += [model.vGenP1]
-
-    if cs.dPower_Parameters["pEnableRoR"]:
-        for g in model.rorGenerators:
-            for rp in model.rp:
-                for k in model.k:
-                    model.vGenP[rp, k, g].setub(min(model.pMaxProd[g], cs.dPower_Inflows.loc[rp, g, k]['Inflow']))  # TODO: Check and adapt for storage
-
-    if cs.dPower_Parameters["pEnableVRES"]:
-        for g in model.vresGenerators:
-            for rp in model.rp:
-                for k in model.k:
-                    model.vGenP[rp, k, g].setub((model.pMaxProd[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])) * cs.dPower_VRESProfiles.loc[rp, k, g]['value']))
 
     model.vLineP = pyo.Var(model.rp, model.k, model.la, doc='Power flow from bus i to j', bounds=(None, None))
     if cs.dPower_Parameters["pEnableSOCP"]:  # Bound sonly apply in forward direction for existing and candidate lines
@@ -342,6 +245,83 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
                     raise ValueError(f"Technical representation '{cs.dPower_Network.loc[i, j]["pTecRepr"]}' "
                                      f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
     second_stage_variables += [model.vLineP]
+
+    if cs.dPower_Parameters["pEnableSOCP"]:
+        model.vLineQ = pyo.Var(model.rp, model.k, model.la_full, domain=pyo.Reals, doc="Reactive power flow from bus i to j")
+        for (i, j, c) in model.le:
+            for rp in model.rp:
+                for k in model.k:
+                    model.vLineQ[rp, k, i, j, c].setlb(-model.pQmax[i, j, c])
+                    model.vLineQ[rp, k, i, j, c].setub(model.pQmax[i, j, c])
+        second_stage_variables.append(model.vLineQ)
+
+        model.vSOCP_cii = pyo.Var(model.rp, model.k, model.i, domain=pyo.Reals)
+        for rp in model.rp:
+            for k in model.k:
+                for i in model.i:
+                    model.vSOCP_cii[rp, k, i].setub(round(model.pBusMaxV[i] ** 2, 4))  # Set upper bound for cii
+                    model.vSOCP_cii[rp, k, i].setlb(round(model.pBusMinV[i] ** 2, 4))
+        second_stage_variables.append(model.vSOCP_cii)
+
+        # For each DC-OPF "island", set node with highest demand as slack node
+        dDCOPFIslands = pd.DataFrame(index=cs.dPower_BusInfo.index, columns=[cs.dPower_BusInfo.index], data=False)
+
+        for index, entry in cs.dPower_Network.iterrows():
+            if cs.dPower_Network.loc[(index[0], index[1], index[2])]["pTecRepr"] == "DC-OPF" or "SOCP":
+                dDCOPFIslands.loc[index[0], index[1]] = True
+                dDCOPFIslands.loc[index[1], index[0]] = True
+        completed_buses = set()  # Set of buses that have been looked at already
+        i = 0
+
+        for index, entry in dDCOPFIslands.iterrows():
+            if index in completed_buses or entry[entry == True].empty:
+                continue
+            connected_buses = cs.get_connected_buses(dDCOPFIslands, str(index))
+            for bus in connected_buses:
+                completed_buses.add(bus)
+            completed_buses.add(index)
+
+            # Set slack node
+            slack_node = cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
+            slack_node = cs.dPower_Parameters["is"]  # TODO: Switch this again to be calculated (fixed to 'is' for compatibility)
+
+            if i == 0: print("Setting slack nodes for SOCP zones:")
+            i += 1
+            model.vSOCP_cii[:, :, slack_node].fix(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage']))
+            print(f"SOCP {i:>2} - Slack node: {slack_node}")
+            print("Fixed voltage magnitude at slack node:", pyo.value(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage'])))
+            model.vTheta[:, :, slack_node].fix(0)
+
+        model.vSOCP_cij = pyo.Var(model.rp, model.k, model.la_no_c, domain=pyo.Reals, bounds=(0, None))  # cij = (vi^real* vj^real) + vi^imag*vj^imag), Lower bounds for vSOCP_cij need to always be at least 0
+        for (i, j, c) in model.le:
+            for rp in model.rp:
+                for k in model.k:
+                    if (rp, k, i, j) in model.vSOCP_cij:
+                        model.vSOCP_cij[rp, k, i, j].setub(round(model.pBusMaxV[i] ** 2, 4))
+                        model.vSOCP_cij[rp, k, i, j].setlb(round(max(model.pBusMinV[i] ** 2, 0.1), 4))
+        second_stage_variables.append(model.vSOCP_cij)
+
+        model.vSOCP_sij = pyo.Var(model.rp, model.k, model.la_no_c, domain=pyo.Reals)  # sij = (vi^real* vj^imag) - vi^re*vj^imag))
+        for (i, j, c) in model.le:
+            for rp in model.rp:
+                for k in model.k:
+                    if (rp, k, i, j) in model.vSOCP_sij:
+                        model.vSOCP_sij[rp, k, i, j].setub(round(model.pBusMaxV[i] ** 2, 4))
+                        model.vSOCP_sij[rp, k, i, j].setlb(round(-model.pBusMaxV[i] ** 2, 4))
+        second_stage_variables.append(model.vSOCP_sij)
+
+        # Set bounds for reversed direction (la_reverse)
+        for (j, i, c) in model.le_reverse:
+            for rp in model.rp:
+                for k in model.k:
+                    model.vLineQ[rp, k, j, i, c].setlb(-model.pQmax[i, j, c])
+                    model.vLineQ[rp, k, j, i, c].setub(model.pQmax[i, j, c])
+
+        model.vSOCP_IndicConnecNodes = pyo.Var({(i, j) for (i, j, c) in model.lc}, domain=pyo.Binary)
+        second_stage_variables.append(model.vSOCP_IndicConnecNodes)
+
+        model.vGenQ = pyo.Var(model.rp, model.k, model.g, doc='Reactive power output of ge', bounds=lambda model, rp, k, g: (model.pMinGenQ[g], model.pMaxGenQ[g]))
+        second_stage_variables.append(model.vGenQ)
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables

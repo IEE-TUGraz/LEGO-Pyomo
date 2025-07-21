@@ -680,8 +680,7 @@ def compare_variables(vars1, vars2, vars_fixed_to_zero=None, precision: float = 
                     counter_perfect_total += counter
                     counter = 0
                 counter_missing2_total += 1
-                if print_additional_information:
-                    printer.warning(f"Variable not found in GAMS Model: {v}")  # Print variable that is missing in GAMS Model
+                printer.warning(f"Variable not found in Model2: {v}")
         elif bounds_differ:  # If the variable is found but the bounds differ
             vars2.remove(v2)
             if counter > 0:
@@ -689,8 +688,7 @@ def compare_variables(vars1, vars2, vars_fixed_to_zero=None, precision: float = 
                 counter_perfect_total += counter
                 counter = 0
             counter_partial_total += 1
-            if print_additional_information:
-                printer.error(f"Variable bounds differ: Pyomo Model: {v} | GAMS Model: {v2}")
+            printer.error(f"Variable bounds differ: Model1: {v} | Model2: {v2}")
         else:
             counter += 1
             vars2.remove(v2)
@@ -701,7 +699,7 @@ def compare_variables(vars1, vars2, vars_fixed_to_zero=None, precision: float = 
     if counter > 0:
         printer.success(f"{counter} variables matched perfectly")
 
-    if len(vars2) > 0:  # If there are still variables left in GAMS Model that were not found in Pyomo Model
+    if len(vars2) > 0:  # If there are still variables left in Model2 that were not found in Model1
         if print_additional_information:
             missing_var_names = [v[0] for v in vars2]
             formatted_var_list = ", ".join(missing_var_names)

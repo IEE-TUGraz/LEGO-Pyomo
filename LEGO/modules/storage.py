@@ -63,13 +63,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
                 model.vStInterRes[p, g].setub(model.pE2PRatio[g] * model.pMaxProd[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
                 model.vStInterRes[p, g].setlb(model.pE2PRatio[g] * model.pMinReserve[g] * model.pMaxProd[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
 
-    if cs.dPower_Parameters["pEnableSOCP"]:
-        for g in model.storageUnits:
-            for rp in model.rp:
-                for k in model.k:
-                    model.vGenQ[rp, k, g].setlb(model.pMinGenQ[g])
-                    model.vGenQ[rp, k, g].setub(model.pMaxGenQ[g])
-
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
 
