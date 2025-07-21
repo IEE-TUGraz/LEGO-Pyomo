@@ -24,16 +24,15 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     LEGO.addToParameter(model, "pMinProd", cs.dPower_ThermalGen['MinProd'])
     LEGO.addToParameter(model, "pExisUnits", cs.dPower_ThermalGen['ExisUnits'])
 
-    # Reactive generator power limits for SOCP formulation
-    LEGO.addToParameter(model, 'pMaxGenQ', 1e-3 * cs.dPower_ThermalGen['Qmax'].fillna(0))  # Convert from MVar to kVar
-    LEGO.addToParameter(model, 'pMinGenQ', 1e-3 * cs.dPower_ThermalGen['Qmin'].fillna(0))  # Convert from MVar to kVar
-
     model.pInterVarCost = pyo.Param(model.thermalGenerators, initialize=cs.dPower_ThermalGen['pInterVarCostEUR'], doc='Inter-variable cost of thermal generator g')
     model.pStartupCost = pyo.Param(model.thermalGenerators, initialize=cs.dPower_ThermalGen['pStartupCostEUR'], doc='Startup cost of thermal generator g')
     model.pMinUpTime = pyo.Param(model.thermalGenerators, initialize=cs.dPower_ThermalGen['MinUpTime'], doc='Minimum up time of thermal generator g')
     model.pMinDownTime = pyo.Param(model.thermalGenerators, initialize=cs.dPower_ThermalGen['MinDownTime'], doc='Minimum down time of thermal generator g')
     model.pRampUp = pyo.Param(model.thermalGenerators, initialize=cs.dPower_ThermalGen['RampUp'], doc='Ramp up of thermal generator g')
     model.pRampDw = pyo.Param(model.thermalGenerators, initialize=cs.dPower_ThermalGen['RampDw'], doc='Ramp down of thermal generator g')
+
+    LEGO.addToParameter(model, 'pMaxGenQ', cs.dPower_ThermalGen['Qmax'])
+    LEGO.addToParameter(model, 'pMinGenQ', cs.dPower_ThermalGen['Qmin'])
 
     # Variables
     # Used to relax vCommit, vStartup and vShutdown in the first timesteps of each representative period

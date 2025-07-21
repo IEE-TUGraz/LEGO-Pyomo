@@ -24,9 +24,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     LEGO.addToParameter(model, "pMinProd", cs.dPower_RoR['MinProd'])
     LEGO.addToParameter(model, "pExisUnits", cs.dPower_RoR['ExisUnits'])
 
-    # Reactive ROR power limits for SOCP formulation
-    LEGO.addToParameter(model, 'pMaxGenQ', 1e-3 * cs.dPower_RoR['Qmax'].fillna(0))  # Convert from MVar to kVar
-    LEGO.addToParameter(model, 'pMinGenQ', 1e-3 * cs.dPower_RoR['Qmin'].fillna(0))  # Convert from MVar to kVar
+    LEGO.addToParameter(model, 'pMaxGenQ', cs.dPower_RoR['Qmax'])
+    LEGO.addToParameter(model, 'pMinGenQ', cs.dPower_RoR['Qmin'])
 
     # Variables
     for g in model.rorGenerators:

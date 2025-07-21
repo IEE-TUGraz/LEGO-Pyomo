@@ -24,9 +24,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     LEGO.addToParameter(model, "pMinProd", cs.dPower_VRES['MinProd'])
     LEGO.addToParameter(model, "pExisUnits", cs.dPower_VRES['ExisUnits'])
 
-    # Reactive VRES power limits for SOCP formulation
-    LEGO.addToParameter(model, 'pMaxGenQ', 1e-3 * cs.dPower_VRES['Qmax'].fillna(0))  # Convert from MVar to kVar
-    LEGO.addToParameter(model, 'pMinGenQ', 1e-3 * cs.dPower_VRES['Qmin'].fillna(0))  # Convert from MVar to kVar
+    LEGO.addToParameter(model, 'pMaxGenQ', cs.dPower_VRES['Qmax'])
+    LEGO.addToParameter(model, 'pMinGenQ', cs.dPower_VRES['Qmin'])
 
     # Variables
     for g in model.vresGenerators:
