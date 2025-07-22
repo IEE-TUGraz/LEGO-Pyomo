@@ -14,13 +14,23 @@ printer = Printer.getInstance()
 
 
 def test_deterministicVsExtensiveWithNoScenarios(tmp_path):
+    """
+    Test if the MPS files of a deterministic model and an extensive form model with no scenarios are equal.
+    :param tmp_path: Temporary path for the test (provided by pytest).
+    :return: None
+    """
     mps_equal = compareModels(ModelTypeForComparison.DETERMINISTIC, "data/example", True,
-                              ModelTypeForComparison.EXTENSIVE_FORM, "data/example", True)
+                              ModelTypeForComparison.EXTENSIVE_FORM, "data/example", True, remove_scenario_prefix2=True, tmp_folder_path=tmp_path)
 
     assert mps_equal
 
 
 def test_deterministicVsExtensiveWithTwoEqualScenarios(tmp_path):
+    """
+    Test if the MPS files of a deterministic model and an extensive form model with two equal scenarios are equal.
+    :param tmp_path: Temporary path for the test (provided by pytest).
+    :return: None
+    """
     data_folder = "data/example"
 
     # Copy the data folder to a temporary path
@@ -72,14 +82,14 @@ def test_deterministicVsExtensiveWithTwoEqualScenarios(tmp_path):
 
     mps_equal = compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_path_originalData, True,
                               ModelTypeForComparison.EXTENSIVE_FORM, tmp_path_scenarioData, True,
-                              skip_comparison_overall=True)  # TODO: Adjust implementation so that variables and constraints for ScenarioA can still be compared
+                              skip_comparison_overall=True, tmp_folder_path=tmp_path)  # TODO: Adjust implementation so that variables and constraints for ScenarioA can still be compared
 
     assert mps_equal
 
 
-def test_extensiveStochasticVsBendersWithTwoDifferentScenarios():
+def test_extensiveStochasticVsBendersWithTwoDifferentScenarios(tmp_path):
     warnings.warn("This test is not active, since Benders says the solution is infeasible.")  # TODO
     # mps_equal = compareModels(ModelTypeForComparison.EXTENSIVE_FORM, "data/exampleStochastic", True,
-    #                           ModelTypeForComparison.BENDERS, "data/exampleStochastic", True,
-    #                           skip_comparison_overall=True)
-    assert True
+    #                          ModelTypeForComparison.BENDERS, "data/exampleStochastic", True,
+    #                          skip_comparison_overall=True, tmp_folder_path=tmp_path)
+    # assert mps_equal

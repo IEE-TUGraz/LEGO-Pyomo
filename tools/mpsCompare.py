@@ -1,8 +1,7 @@
-import re
 import typing
 from collections import OrderedDict
 
-from pulp import LpProblem
+import cplex
 
 from InOutModule.printer import Printer
 
@@ -10,129 +9,313 @@ printer = Printer.getInstance()
 printer.set_width(240)
 
 
-def normalize_variable_name(string: str) -> str:
-    # Replace first _ with ( and last _ with )
-    string = string.replace("_", "(", 1)
-    string = string[::-1].replace("_", ")", 1)[::-1]
+def load_mps(filepath):
+    model = cplex.Cplex()
+    model.set_results_stream(None)  # suppress CPLEX output
+    model.set_log_stream(None)
+    model.set_warning_stream(None)
+    model.set_error_stream(None)
+    model.read(filepath)
 
-    return string
+    return model
+
+
+def get_model_data(model):
+    var_names = model.variables.get_names()
+    lower_bounds = model.variables.get_lower_bounds()
+    upper_bounds = model.variables.get_upper_bounds()
+    # values = model.solution.get_values() # Only works if the model can be solved
+    # var_values = dict(zip(var_names, values))
+    # print(var_values)
+    obj_linear = dict(zip(var_names, model.objective.get_linear()))
+
+    obj_quadratic = {(var_names[i], var_names[j]): coeff for i, j, coeff in model.objective.get_quadratic()}
+    obj_sense = model.objective.sense
+
+    constraint_names_linear = model.linear_constraints.get_names()
+    rhs_linear = dict(zip(constraint_names_linear, model.linear_constraints.get_rhs()))
+    lin_sense = dict(zip(constraint_names_linear, model.linear_constraints.get_senses()))
+    matrix_linear = {
+        constraint_names_linear[i]: {var_names[ind]: val for ind, val in zip(model.linear_constraints.get_rows(i).ind, model.linear_constraints.get_rows(i).val)}
+        for i in range(model.linear_constraints.get_num())}
+
+    constraint_names_quadratic = model.quadratic_constraints.get_names()
+    rhs_quadratic = dict(zip(constraint_names_quadratic, model.quadratic_constraints.get_rhs()))
+    quad_sense = {name: "E" for name in constraint_names_quadratic}
+    matrix_quadratic = {
+        constraint_names_quadratic[i]: {
+            (var_names[ind1], var_names[ind2]): val for ind1, ind2, val in zip(model.quadratic_constraints.get_quadratic_components(i).ind1,
+                                                                               model.quadratic_constraints.get_quadratic_components(i).ind2,
+                                                                               model.quadratic_constraints.get_quadratic_components(i).val)
+        } for i in range(model.quadratic_constraints.get_num())
+    }
+
+    data = {
+        "variables": var_names,
+        "bounds": {
+            "lower": lower_bounds,
+            "upper": upper_bounds,
+        },
+        "obj": {
+            "linear": obj_linear,
+            "quadratic": obj_quadratic,
+            "sense": obj_sense,
+        },
+        "matrix": {
+            "linear": matrix_linear,
+            "quadratic": matrix_quadratic,
+        },
+        "rhs": {
+            "linear": rhs_linear,
+            "quadratic": rhs_quadratic,
+        },
+        "sense": {
+            "linear": lin_sense,
+            "quadratic": quad_sense,
+        },
+    }
+
+    return data
+
+
+def get_fixed_zero_variables(data,
+                             precision: float = 1e-12,
+                             coefficients_to_skip: list[str] | None = None,
+                             remove_scenario_prefix: bool = False) -> list[str]:
+    """
+    Return a list of *normalised* names that are fixed to zero
+    (lb == ub == 0, within precision) and do **not** match any
+    substring in `coefficients_to_skip`.
+    """
+    coefficients_to_skip = coefficients_to_skip or []
+
+    fixed_to_zero = []
+    for i, var in enumerate(data["variables"]):
+        lb = data["bounds"]["lower"][i]
+        ub = data["bounds"]["upper"][i]
+
+        if (lb == ub == 0) or (lb is not None and ub is not None and abs(lb) < precision and abs(ub) < precision):
+            norm = normalize_variable_names(str(var), remove_scenario_prefix)
+            if any(s in norm for s in coefficients_to_skip):
+                continue
+            fixed_to_zero.append(norm)
+
+    return fixed_to_zero
+
+
+def normalize_variable_names(var_name: str, remove_scenario_prefix: bool) -> str:
+    """ Normalize variable names by:
+    1. Replacing square brackets with parentheses
+    2. Removing the "ScenarioA." prefix if specified
+    3. Returning the normalized variable name
+    :param var_name: The variable name to normalize
+    :param remove_scenario_prefix: If True, removes the "ScenarioA." prefix from the variable name
+    :return: Normalized variable name
+    """
+    var_name = var_name.replace('[', '(').replace(']', ')')
+    normalized_var = var_name
+    if remove_scenario_prefix and normalized_var.startswith("ScenarioA."):
+        normalized_var = normalized_var.replace("ScenarioA.", "")
+    return normalized_var
 
 
 # Normalize constraints by
 # 1. Replacing all names with actual names in the model
 # 2. Sorting the constraint by name
 # 3. Normalizing all factors based on the constant
-def normalize_constraints(model, constraints_to_skip: list[str] = None, constraints_to_keep: list[str] = None, coefficients_to_skip: list[str] = None) -> typing.Dict[str, OrderedDict[str, str]]:
-    original_names = {str(b): a.replace("(", "[").replace(")", "]") for a, b in model[0].items()}
-    constraints = {}
+def normalize_constraints(data,
+                          constraints_to_skip: list[str] = None,
+                          constraints_to_keep: list[str] = None,
+                          coefficients_to_skip: list[str] = None,
+                          remove_scenario_prefix: bool = False) -> typing.Tuple[dict[str, OrderedDict[str, float]], dict[str, float], dict[str, str]]:
+    """
+    Normalize linear constraints:
+    - Filters constraints and coefficients
+    - Converts all RHS to ±1 (if non-zero), adjusts coefficients accordingly
+    - Flips inequality direction if RHS is negative
+    - Sorts variables in constraints
 
-    # Sanity checks
-    # If skip and keep are set, raise error
+    Returns:
+        constraints: {normalized_constraint_name: OrderedDict of {normalized_variable_name: coeff}}
+        rhs: {normalized_constraint_name: float}
+        sense: {normalized_constraint_name: "<=", ">=", "="}
+    """
+    constraints_to_skip = constraints_to_skip or []
+    constraints_to_keep = constraints_to_keep or []
+    coefficients_to_skip = coefficients_to_skip or []
+
     if constraints_to_skip and constraints_to_keep:
         raise ValueError("constraints_to_skip and constraints_to_keep cannot be set at the same time")
 
-    constraints_to_skip = [] if constraints_to_skip is None else constraints_to_skip
-    constraints_to_keep = [] if constraints_to_keep is None else constraints_to_keep
-    coefficients_to_skip = [] if coefficients_to_skip is None else coefficients_to_skip
+    sense_map = {"L": "<=", "G": ">=", "E": "="}
+    reverse_sense = {"<=": ">=", ">=": "<=", "=": "="}
 
-    # Loop through all constraints
-    for name, constraint in model[1].constraints.items():
+    constraints = OrderedDict()
+    normalized_rhs = {}
+    normalized_sense = {}
 
-        # Skip constraint if it contains any of the strings in constraints_to_skip
-        skip_constraint = False
-        for c in constraints_to_skip:
-            if c in name:
-                skip_constraint = True
-                break
-        if skip_constraint:
+    for orig_name, coeffs in data["matrix"]["linear"].items():
+        name = orig_name
+
+        # Skip or keep
+        if any(skip in name for skip in constraints_to_skip):
+            continue
+        if constraints_to_keep and not any(keep in name for keep in constraints_to_keep):
             continue
 
-        # Only continue with constraints from constraints_to_keep (if it is set)
-        if constraints_to_keep:
-            keep_constraint = False
-            for c in constraints_to_keep:
-                if c in name:
-                    keep_constraint = True
-                    break
-            if not keep_constraint:
-                continue
+        # Remove prefixes and suffixes
+        for prefix in ["c_e_", "c_l_", "c_u_"]:
+            if name.startswith(prefix):
+                name = name[len(prefix):]
+        if name.endswith("_"):
+            name = name[:-1]
+        if "_" in name:
+            parts = name.rsplit("_", 1)
+            if parts[1].isdigit():
+                name = f"{parts[0]}({parts[1]})"
 
-        original_constraint_dict = constraint.toDict()
-        result_constraint_dict = {}
+        rhs = data["rhs"]["linear"].get(orig_name, 0.0)
+        sense_code = data["sense"]["linear"].get(orig_name, "E")
+        symbol = sense_map.get(sense_code, sense_code)
 
-        # Try to fix name of constraints for pyomo mps-export
-        if "c_e_" in name:
-            name = (name.replace("c_e_", "")[:-2] + ")")
-        if "c_l_" in name:
-            name = (name.replace("c_l_", "")[:-2] + ")")
-        if "c_u_" in name:
-            name = (name.replace("c_u_", "")[:-2] + ")")
-
-        name = "(".join(name.rsplit("_", 1))
-
-        # Replace name & normalize factors by constant
-        constant = original_constraint_dict['constant']
-        for coefficient in original_constraint_dict['coefficients']:
-            if original_names[coefficient['name']] in result_constraint_dict:
-                raise ValueError(f"Coefficient {original_names[coefficient['name']]} found twice in constraint {name}.\n"
-                                 f"Full constraint: {constraint}")
-
-            sorted_coefficient = sort_indices(original_names[coefficient['name']])  # Sort indices alphabetically
-
-            # Skip coefficient if it is in coefficients_to_skip
-            if sorted_coefficient in coefficients_to_skip:
-                continue
-
-            if constant != 0:
-                result_constraint_dict[sorted_coefficient] = coefficient['value'] / constant
-            else:
-                result_constraint_dict[sorted_coefficient] = coefficient['value']
-
-        # Skip constraints without coefficients (which can happen due to coefficients_to_skip)
-        if len(result_constraint_dict) == 0:
-            continue
-
-        # Create result dictionary
-        orderedDict = OrderedDict()
-
-        # Add sense as human-readable string (it is either '<=' [-1], '=' [0], or '>=' [1]) and adjust if constant is negative
-        if 'sense' in orderedDict:
-            raise ValueError("'sense' already in orderedDict")
-        match original_constraint_dict['sense']:
-            case -1:
-                orderedDict['sense'] = '<=' if constant >= 0 else '>='
-            case 0:
-                orderedDict['sense'] = '='
-            case 1:
-                orderedDict['sense'] = '>=' if constant >= 0 else '<='
-
-        # Add constant to the dictionary (as 1 because we divided all factors by the constant (unless it's 0 to begin with))
-        if 'constant' in orderedDict:
-            raise ValueError("'constant' already in orderedDict")
-        if constant != 0:
-            orderedDict['constant'] = 1
+        if rhs == 0.0:
+            scale = 1.0
+            adjusted_rhs = 0.0
+            symbol = symbol
         else:
-            orderedDict['constant'] = 0
+            scale = 1.0 / abs(rhs)
+            adjusted_rhs = 1.0
+            symbol = symbol
+            if rhs < 0:
+                symbol = reverse_sense[symbol]
 
-        # Add sorted coefficients to the dictionary
-        orderedDict.update(sorted(result_constraint_dict.items()))
+        normalized_coeffs = OrderedDict()
+        for var, val in coeffs.items():
+            if any(skip in var for skip in coefficients_to_skip):
+                continue
 
-        constraints[name] = orderedDict
+            normalized_var = normalize_variable_names(var, remove_scenario_prefix)
 
-    return constraints
+            sorted_var = sort_indices(normalized_var)
+            normal_var = val * scale
+            if rhs < 0:
+                normal_var *= -1  # Flip variable if RHS is negative
+
+            normalized_coeffs[sorted_var] = normal_var
+
+        normalized_coeffs = OrderedDict(
+            sorted((k, v) for k, v in normalized_coeffs.items())
+        )
+        normalized_name = normalize_variable_names(name, remove_scenario_prefix)
+        constraints[normalized_name] = normalized_coeffs
+        # Store normalized RHS and sense but not needed right now
+        normalized_rhs[normalized_name] = adjusted_rhs
+        normalized_sense[normalized_name] = symbol
+
+    return constraints, normalized_rhs, normalized_sense
+
+
+def normalize_quadratic_constraints(data,
+                                    constraints_to_skip: list[str] = None,
+                                    constraints_to_keep: list[str] = None,
+                                    coefficients_to_skip: list[str] = None,
+                                    remove_scenario_prefix: bool = False) -> typing.Tuple[dict[str, OrderedDict[str, float]], dict[str, float], dict[str, str]]:
+    constraints_to_skip = constraints_to_skip or []
+    constraints_to_keep = constraints_to_keep or []
+    coefficients_to_skip = coefficients_to_skip or []
+
+    if constraints_to_skip and constraints_to_keep:
+        raise ValueError("Only one of constraints_to_skip or constraints_to_keep can be set.")
+
+    sense_map = {"L": "<=", "G": ">=", "E": "="}
+    reverse_sense = {"<=": ">=", ">=": "<=", "=": "="}
+
+    quad_constraints = OrderedDict()
+    quad_normalized_rhs = {}
+    quad_normalized_sense = {}
+
+    for quad_orig_name, quad_coeffs in data["matrix"]["quadratic"].items():
+        # Skip filters use original name
+        if any(skip in quad_orig_name for skip in constraints_to_skip):
+            continue
+        if constraints_to_keep and not any(keep in quad_orig_name for keep in constraints_to_keep):
+            continue
+
+        # Extract RHS and sense BEFORE normalization
+        quad_rhs = data['rhs']['quadratic'].get(quad_orig_name, 0.0)
+
+        quad_sense_code = data['sense']["quadratic"].get(quad_orig_name, "E")
+        quad_symbol = sense_map.get(quad_sense_code, quad_sense_code)
+
+        # Compute scaling
+        if quad_rhs == 0:
+            scale = 1.0
+            adjusted_rhs = 0.0
+        else:
+            scale = 1.0 / abs(quad_rhs)
+            adjusted_rhs = 1.0
+            if quad_rhs < 0:
+                quad_symbol = reverse_sense[quad_symbol]
+
+        # Now normalize constraint name
+        quad_name = quad_orig_name
+        for prefix in ["c_e_", "c_l_", "c_u_"]:
+            if quad_name.startswith(prefix):
+                quad_name = quad_name[len(prefix):]
+        if quad_name.endswith("_"):
+            quad_name = quad_name[:-1]
+        if "_" in quad_name:
+            parts = quad_name.rsplit("_", 1)
+            if parts[1].isdigit():
+                quad_name = f"{parts[0]}({parts[1]})"
+        quad_normalized_name = normalize_variable_names(quad_name, remove_scenario_prefix)
+
+        # Normalize coefficients
+        quad_normalized_coeffs = OrderedDict()
+        for (v1, v2), val in quad_coeffs.items():
+            if any(skip in v1 for skip in coefficients_to_skip) or any(skip in v2 for skip in coefficients_to_skip):
+                continue
+
+            quad_v1_norm = sort_indices(normalize_variable_names(v1, remove_scenario_prefix))
+            quad_v2_norm = sort_indices(normalize_variable_names(v2, remove_scenario_prefix))
+            key = tuple(sorted((quad_v1_norm, quad_v2_norm)))
+            quad_normalized_coeffs[key] = quad_normalized_coeffs.get(key, 0.0) + val * scale
+
+        quad_constraints[quad_normalized_name] = quad_normalized_coeffs
+        quad_normalized_rhs[quad_normalized_name] = adjusted_rhs
+        quad_normalized_sense[quad_normalized_name] = quad_symbol
+
+    return quad_constraints, quad_normalized_rhs, quad_normalized_sense
 
 
 def sort_indices(coefficient: str) -> str:
-    regex_result = re.findall(r"(\w*)\[([^]]*)", coefficient)
-    indices_groups = regex_result[0] if len(regex_result) > 0 else [""]  # No indices found
-    if len(indices_groups) > 2:
-        raise ValueError(f"More than one index group found in {coefficient}")
-    if len(indices_groups) == 1:  # No indices found
-        indices = ""
-    else:
-        indices = ",".join(sorted([i.strip() for i in indices_groups[1].split(",")]))  # Sort indices alphabetically
-    sorted_coefficient = f"{indices_groups[0]}[{indices}]"
-    return sorted_coefficient
+    """
+    Sorts and organizes the indices within a coefficient string in alphabetical order.
+
+    If the coefficient string does not contain indices (i.e., it doesn't match the
+    pattern `name(index1,index2,...)`), the original string is returned unchanged.
+
+    :param coefficient: The input coefficient string with optional indices.
+    :type coefficient: str
+    :return: A string with sorted indices, or the original string if no indices are present.
+    :rtype: str
+    """
+    # regex_result = re.findall(r"(\w+)\(([^)]*)\)", coefficient)
+    #
+    # # If no match found, return the original string
+    # if not regex_result:
+    #     return coefficient
+    #
+    # if len(regex_result) > 1:
+    #     raise ValueError(f"More than one index group found in {coefficient}")
+    #
+    # name, indices_str = regex_result[0]
+    # if not indices_str.strip():
+    #     return coefficient  # No indices, return original
+    #
+    # indices = sorted(i.strip() for i in indices_str.split(",") if i.strip())
+    # return f"{name}({','.join(indices)})"
+    return coefficient
 
 
 # Sort constraints by number of coefficients
@@ -150,152 +333,304 @@ def sort_constraints(constraints: typing.Dict[str, OrderedDict[str, str]]) -> Or
     return OrderedDict(sorted(constraint_dicts.items()))
 
 
-# Compare two lists of constraints where coefficients are already normalized (i.e. sorted by name and all factors are divided by the constant)
-def compare_constraints(constraints1: typing.Dict[str, OrderedDict[str, str]], constraints2: typing.Dict[str, OrderedDict[str, str]], precision: float = 1e-12,
-                        constraints_to_enforce_from2: list[str] = None, print_additional_information=False) -> dict[str, int]:
-    # Sort constraints by number of coefficients
-    constraint_dicts1 = sort_constraints(constraints=constraints1)
-    constraint_dicts2 = sort_constraints(constraints=constraints2)
+# Compare two lists of constraints where coefficients are already normalized (i.e. sorted by length and all factors are divided by the constant)
+def compare_linear_constraints(constraints1: dict[str, OrderedDict[str, float]],
+                               constraints2: dict[str, OrderedDict[str, float]],
+                               vars_fixed_to_zero: set[str],
+                               precision: float = 1e-12,
+                               constraints_to_enforce_from2: list[str] = None,
+                               print_additional_information: bool = False) -> dict[str, int]:
+    """
+    Compare two sets of normalized constraints, optionally filtering out
+    variables fixed to zero and enforcing specific constraints to be present.
+
+    :param constraints1: Constraints from Model1
+    :param constraints2: Constraints from Model2
+    :param vars_fixed_to_zero: Set of variable names to eliminate from constraints
+    :param precision: Threshold for comparing floating-point values
+    :param constraints_to_enforce_from2: List of constraint name substrings that must be present in Model2
+    :param print_additional_information: Flag to print detailed debug info
+    :return: Dictionary with counts of perfect, partial, and missing matches
+    """
+
+    # Remove coefficients for variables fixed to zero
+    def clear_linear_constraints(constraints):
+        cleaned = {}
+        for cname, coeffs in constraints.items():
+            new_coeffs = OrderedDict((var, val) for var, val in coeffs.items()
+                                     if var not in vars_fixed_to_zero and abs(val) >= precision)
+            cleaned[cname] = new_coeffs
+        return cleaned
+
+    cleaned_constraints1_raw = clear_linear_constraints(constraints1)
+    cleaned_constraints2_raw = clear_linear_constraints(constraints2)
+
+    removed1 = [k for k, v in cleaned_constraints1_raw.items() if len(v) == 0]
+    removed2 = [k for k, v in cleaned_constraints2_raw.items() if len(v) == 0]
+
+    if len(removed1) > 0:
+        printer.information(f"Removed {len(removed1)} constraints of 0 length from Model1 after eliminating fixed-to-zero vars.")
+        printer.information("Example constraints removed from Model1: " + ", ".join(removed1[:5]))
+    else:
+        printer.information("No constraints of 0 length removed from Model1 after eliminating fixed-to-zero vars.")
+
+    if len(removed2) > 0:
+        printer.information(f"Removed {len(removed2)} constraints of 0 length from Model2 after eliminating fixed-to-zero vars.")
+        printer.information("Example constraints removed from Model2: " + ", ".join(removed2[:5]))
+    else:
+        printer.information("No constraints of 0 length removed from Model2 after eliminating fixed-to-zero vars.")
+
+    cleaned_constraints1 = {k: v for k, v in cleaned_constraints1_raw.items() if len(v) > 0}
+    cleaned_constraints2 = {k: v for k, v in cleaned_constraints2_raw.items() if len(v) > 0}
+
+    constraint_dicts1 = sort_constraints(cleaned_constraints1)
+    constraint_dicts2 = sort_constraints(cleaned_constraints2)
 
     counter_perfect_total = 0
     counter_partial_total = 0
     counter_missing1_total = 0
     counter_missing2_total = 0
 
-    # Loop through all constraints in first list and for each through all constraints in the second list
-    counter_perfectly_matched_constraints = 0
-    for length, constraint_dict1 in constraint_dicts1.items():
+    for length, group1 in constraint_dicts1.items():
         if length not in constraint_dicts2:
-            if counter_perfectly_matched_constraints > 0:
-                printer.success(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
-                counter_perfect_total += counter_perfectly_matched_constraints
-                counter_perfectly_matched_constraints = 0
-            printer.error(f"No constraints of length {length} in second model, skipping comparison for {len(constraint_dict1)} constraints, e.g. {list(constraint_dict1.keys())[0]}", hard_wrap_chars="[...]")
-            counter_missing2_total += len(constraint_dict1)
+            counter_missing2_total += len(group1)
+            if print_additional_information:
+                printer.information(f"No constraints of length {length} in Model2; skipping {len(group1)} constraints.")
             continue
 
-        for constraint_name1, constraint1 in constraint_dict1.items():
-            status = "Potential match"
-            for constraint_name2, constraint2 in constraint_dicts2[length].items():
+        group2 = constraint_dicts2[length]
+        matched_in_group2 = set()
+
+        for cname1, c1 in group1.items():
+            # Skip constraints that are all zero (i.e., no coefficients left after removing fixed-to-zero vars)
+            if all(abs(v) < precision for v in c1.values()):
+                continue
+
+            matched = False
+            for cname2, c2 in group2.items():
+                if cname2 in matched_in_group2:
+                    continue
+                if all(abs(v) < precision for v in c2.values()):
+                    continue
+                if set(c1.keys()) != set(c2.keys()):
+                    continue
+
+                coefficients_off_by_minus_one = 0
+                partial_mismatches1 = {}
+                partial_mismatches2 = {}
                 status = "Potential match"
 
-                partial_match_coefficients1 = {}
-                partial_match_coefficients2 = {}
-                coefficients_off_by_minus_one = 0  # Counter for coefficients that differ by a factor of -1
-                for coefficient_name1, coefficient_value1 in constraint1.items():
-                    if coefficient_name1 not in constraint2:
-                        status = "Coefficient name mismatch"
-                        break
+                for var in c1.keys():
+                    val1, val2 = float(c1[var]), float(c2[var])
 
-                    if ((isinstance(coefficient_value1, int) or isinstance(coefficient_value1, float)) and
-                            (isinstance(constraint2[coefficient_name1], int) or isinstance(constraint2[coefficient_name1], float))):  # If both values are numeric
-                        coefficient_value1 = float(coefficient_value1)
-                        coefficient_value2 = float(constraint2[coefficient_name1])
-                        if coefficient_value1 == 0:
-                            if abs(coefficient_value2) > precision:  # If coefficient_value1 == 0, check if coefficient_value2 is sufficiently small
-                                status = "Coefficient values differ"
-                                partial_match_coefficients1[coefficient_name1] = coefficient_value1
-                                partial_match_coefficients2[coefficient_name1] = coefficient_value2
-                        elif abs((coefficient_value1 - coefficient_value2) / coefficient_value1) > precision:
-                            if abs(((coefficient_value1 * -1) - coefficient_value2) / coefficient_value1) <= precision:  # Check if it's just a sign difference
+                    if abs(val1) < precision:
+                        if abs(val2) > precision:
+                            status = "Coefficient values differ"
+                            partial_mismatches1[var] = val1
+                            partial_mismatches2[var] = val2
+                            break
+                    else:
+                        rel_diff = abs((val1 - val2) / val1)
+                        if rel_diff > precision:
+                            rel_diff_sign_flip = abs(((val1 * -1) - val2) / val1)
+                            if rel_diff_sign_flip <= precision:
                                 coefficients_off_by_minus_one += 1
-                            status = "Coefficient values differ"
-                            partial_match_coefficients1[coefficient_name1] = coefficient_value1
-                            partial_match_coefficients2[coefficient_name1] = coefficient_value2
-                    else:  # If one or both values are not numeric, check equality
-                        if coefficient_value1 != constraint2[coefficient_name1]:
-                            status = "Coefficient values differ"
-                            partial_match_coefficients1[coefficient_name1] = coefficient_value1
-                            partial_match_coefficients2[coefficient_name1] = constraint2[coefficient_name1]
+                            else:
+                                status = "Coefficient values differ"
+                                partial_mismatches1[var] = val1
+                                partial_mismatches2[var] = val2
+                                break
 
-                match status:
-                    case "Potential match":
-                        status = "Perfect match"
-                        counter_perfectly_matched_constraints += 1
-                        if print_additional_information:
-                            printer.information(f"Perfect match found for constraint {constraint_name1}: {constraint1}")
-                        constraint_dicts2[length].pop(constraint_name2)
-                        break
-                    case "Coefficient values differ":
-                        # Check if all coefficients only differ by a factor of -1 and the sense is opposite -> Then they are equivalent
-                        if (coefficients_off_by_minus_one == len(constraint1) - 2 and  # -2 because we have the constant and the sense
-                                ((constraint1['sense'] == '>=' and constraint2['sense'] == '<=') or
-                                 (constraint1['sense'] == '<=' and constraint2['sense'] == '>=') or
-                                 (constraint1['sense'] == '=' and constraint2['sense'] == '='))):
-                            status = "Perfect match"
-                            counter_perfectly_matched_constraints += 1
-                            if print_additional_information:
-                                printer.information(f"Perfect match (differing by factor -1) found for constraint {constraint_name1}: \nmodel1: {constraint1}\n model2: {constraint2}")
-                        else:
-                            if counter_perfectly_matched_constraints > 0:
-                                printer.success(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
-                                counter_perfect_total += counter_perfectly_matched_constraints
-                                counter_perfectly_matched_constraints = 0
-                            printer.warning(f"Found partial match (factors differ by more than {precision * 100}%):")
-                            printer.information(f"model1 {constraint_name1}: {partial_match_coefficients1}", hard_wrap_chars="[...]")
-                            printer.information(f"model2 {constraint_name2}: {partial_match_coefficients2}", hard_wrap_chars="[...]")
-                            counter_partial_total += 1
-                        constraint_dicts2[length].pop(constraint_name2)
-                        break
-                    case "Coefficient name mismatch":
-                        continue
-                    case _:
-                        raise ValueError("Unknown status")
+                if status == "Potential match":
+                    matched = True
+                    counter_perfect_total += 1
+                    matched_in_group2.add(cname2)
+                    break
+                elif status == "Coefficient values differ":
+                    matched = True
+                    counter_partial_total += 1
+                    matched_in_group2.add(cname2)
+                    if print_additional_information:
+                        printer.information(f"Partial mismatch: {cname1} vs {cname2}")
+                        printer.information(f"  Model1 coefficients: {partial_mismatches1}")
+                        printer.information(f"  Model2 coefficients: {partial_mismatches2}")
+                    break
 
-            if status != "Perfect match" and status != "Coefficient values differ":
-                if counter_perfectly_matched_constraints > 0:
-                    printer.success(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
-                    counter_perfect_total += counter_perfectly_matched_constraints
-                    counter_perfectly_matched_constraints = 0
-                printer.error(f"No match for {constraint_name1}: {constraint1}", hard_wrap_chars=f"[... {len(constraint1)} total]")
+            if not matched:
+                counter_missing2_total += 1
+                if print_additional_information:
+                    printer.information(f"No match for constraint: {cname1}")
+
+        unmatched_2 = len(group2) - len(matched_in_group2)
+        counter_missing1_total += unmatched_2
+
+        if unmatched_2 > 0 and print_additional_information:
+            printer.information(f"{unmatched_2} constraints of length {length} in Model2 unmatched for in Model1")
+
+            # Print missing constraint names or keys
+            missing_constraints = [key for key in group2 if key not in matched_in_group2]
+            printer.information("Example unmatched constraints of Model2 missing in Model1:")
+            for key in missing_constraints[:50]:
+                printer.information(f"  - {key}")
+
+    extra_lengths_in_model2 = set(constraint_dicts2.keys()) - set(constraint_dicts1.keys())
+    for length in extra_lengths_in_model2:
+        unmatched_group = {name: coeffs for name, coeffs in constraint_dicts2[length].items()
+                           if not all(abs(v) < precision for v in coeffs.values())}
+        num_unmatched = len(unmatched_group)
+        counter_missing1_total += num_unmatched
+        if num_unmatched > 0 and print_additional_information:
+            printer.information(f"{num_unmatched} constraints in Model2 of length {length} missing in Model1.")
+
+    if constraints_to_enforce_from2:
+        for enforced_name in constraints_to_enforce_from2:
+            found = any(enforced_name in c_name for group in constraint_dicts2.values() for c_name in group.keys())
+            if not found:
                 counter_missing1_total += 1
+                if print_additional_information:
+                    printer.information(f"Enforced constraint missing in Model2: {enforced_name}")
 
-            if counter_perfectly_matched_constraints > 0 and counter_perfectly_matched_constraints % 500 == 0:
-                printer.information(f"{counter_perfectly_matched_constraints} constraints matched perfectly, continue to count...")
+    return {"perfect": counter_perfect_total,
+            "partial": counter_partial_total,
+            "missing in Model1": counter_missing1_total,
+            "missing in Model2": counter_missing2_total, }
 
-    if counter_perfectly_matched_constraints > 0:
-        printer.success(f"{counter_perfectly_matched_constraints} constraints matched perfectly")
-        counter_perfect_total += counter_perfectly_matched_constraints
 
-    if constraints_to_enforce_from2 is not None:
-        for enforced_constraint_name in constraints_to_enforce_from2:
-            for length, constraint_dict2 in constraint_dicts2.items():
-                for constraint_name2, constraint2 in constraint_dict2.items():
-                    if enforced_constraint_name in constraint_name2:
-                        printer.error(f"Missing enforced constraint {constraint_name2}: {constraint2}", hard_wrap_chars=f"[... {len(constraint2)} total]")
-                        counter_missing1_total += 1
+def compare_quadratic_constraints(quad_constraints1: dict[str, dict[tuple[str, str], float]],
+                                  quad_constraints2: dict[str, dict[tuple[str, str], float]],
+                                  vars_fixed_to_zero: set[str],
+                                  precision: float = 1e-12,
+                                  constraints_to_enforce_from2: list[str] = None,
+                                  print_additional_information: bool = False) -> dict[str, int]:
+    """
+    Compare two sets of quadratic constraints, ignoring variables fixed to zero.
+    Each constraint is a dict mapping (var1, var2) -> coefficient.
+    """
 
-    return {"perfect": counter_perfect_total, "partial": counter_partial_total, "missing in model 1": counter_missing1_total, "missing in model 2": counter_missing2_total}
+    def clear_quad_constraints(
+            quad_constraints: dict[str, dict[tuple[str, str], float]]
+    ) -> tuple[dict[str, dict[tuple[str, str], float]], list[str]]:
+        cleaned = {}
+        removed = []
+        for cname, qdict in quad_constraints.items():
+            q_clean = {}
+            for (v1, v2), coeff in qdict.items():
+                if v1 in vars_fixed_to_zero or v2 in vars_fixed_to_zero:
+                    continue
+                if abs(coeff) < precision:
+                    continue
+                # Canonicalize key
+                key = tuple(sorted((v1, v2)))
+                q_clean[key] = q_clean.get(key, 0.0) + coeff
+            if q_clean:
+                cleaned[cname] = q_clean
+            else:
+                removed.append(cname)
+        return cleaned, removed
+
+    if constraints_to_enforce_from2 is None:
+        constraints_to_enforce_from2 = []
+
+    cleaned1, removed1 = clear_quad_constraints(quad_constraints1)
+    cleaned2, removed2 = clear_quad_constraints(quad_constraints2)
+
+    printer.information(f"Removed {len(removed1)} quadratic constraints of 0 length from Model1 after eliminating fixed-to-zero vars.")
+    printer.information(f"Removed {len(removed2)} quadratic constraints of 0 length from Model2 after eliminating fixed-to-zero vars.")
+
+    names1 = set(cleaned1.keys())
+    names2 = set(cleaned2.keys())
+
+    counter_perfect = 0
+    counter_partial = 0
+    counter_missing1 = 0
+    counter_missing2 = 0
+
+    for cname in names1:
+        if cname not in cleaned2:
+            counter_missing2 += 1
+            if print_additional_information:
+                printer.information(f"[✘] Constraint {cname} missing in Model2.")
+            continue
+
+        q1 = cleaned1[cname]
+        q2 = cleaned2[cname]
+
+        if set(q1.keys()) != set(q2.keys()):
+            counter_partial += 1
+            if print_additional_information:
+                missing_keys = set(q1.keys()).symmetric_difference(q2.keys())
+                printer.information(f"[⚠] Constraint {cname}: mismatched variable pairs: {missing_keys}")
+            continue
+
+        mismatch_found = False
+
+        for key in q1:
+            val1 = q1[key]
+            val2 = q2[key]
+            denom = max(abs(val1), abs(val2), precision)  # prevent zero division
+            rel_diff = abs(val1 - val2) / denom
+            if rel_diff > precision:
+                mismatch_found = True
+                if print_additional_information:
+                    printer.information(f" [⚠] Constraint {cname}: {key} -> {val1} ≠ {val2}")
+                break
+
+        if mismatch_found:
+            counter_partial += 1
+        else:
+            counter_perfect += 1
+
+    for cname in names2 - names1:
+        counter_missing1 += 1
+        if print_additional_information:
+            printer.information(f"[✘] Quadratic constraint {cname} missing in Model1.")
+
+    printer.information(f"[✔] {counter_perfect} quadratic constraints matched perfectly.")
+    if counter_partial:
+        printer.information(f"[⚠] {counter_partial} quadratic constraints partially mismatched.")
+    if counter_missing1:
+        printer.information(f"[✘] {counter_missing1} quadratic constraints missing in Model1.")
+    if counter_missing2:
+        printer.information(f"[✘] {counter_missing2} quadratic constraints missing in Model2.")
+
+    return {
+        "perfect": counter_perfect,
+        "partial": counter_partial,
+        "missing in Model1": counter_missing1,
+        "missing in Model2": counter_missing2,
+    }
 
 
 # Compare two lists of variables where coefficients are already normalized
-# Returns a list of variables that are fixed to 0 and missing in the second list
-def compare_variables(vars1, vars2, precision: float = 1e-12) -> (dict[str, int], list[str]):
+# Returns a list of variables that are missing in the second list
+def compare_variables(vars1, vars2, vars_fixed_to_zero=None, precision: float = 1e-12, print_additional_information: bool = False) -> dict[str, int]:
     counter = 0
     counter_perfect_total = 0
     counter_partial_total = 0
     counter_missing1_total = 0
     counter_missing2_total = 0
+    vars_fixed_to_zero = set(vars_fixed_to_zero or [])
+
     vars2 = vars2.copy()
-    vars_fixed_to_zero = []  # Variables that are fixed to 0, so if they are missing it is ok
+
     for v in vars1:
         found = False
         bounds_differ = False
         for v2 in vars2:
-            if v[0] == v2[0]:
+            if v[0] == v2[0]:  # We see if the variable names match
                 found = True
-                if v[1] is None or v2[1] is None:
-                    if v[1] != v2[1]:
+                if v[1] is None or v2[1] is None:  # If one of the bounds is None, we compare if the other one is also none
+                    if v[1] != v2[1]:  # If one bound is None and the other is not, they differ
                         bounds_differ = True
                         break
-                elif v[1] == 0:
+                elif v[1] == 0:  # If the lower bound is 0, we check if the other lower bound is sufficiently small
                     if abs(v2[1]) > precision:
                         bounds_differ = True
                         break
-                elif abs((v[1] - v2[1]) / v[1]) > precision:
+                elif abs((v[1] - v2[1]) / v[1]) > precision:  # If the first lower bound is not 0 or None we check if the relative difference is within the precision
                     bounds_differ = True
                     break
-
+                # Same for upper bounds
                 if v[2] is None or v2[2] is None:
                     if v[2] != v2[2]:
                         bounds_differ = True
@@ -307,68 +642,116 @@ def compare_variables(vars1, vars2, precision: float = 1e-12) -> (dict[str, int]
                 elif abs((v[2] - v2[2]) / v[2]) > precision:
                     bounds_differ = True
                     break
-                break  # Found a match so we can break
-        if not found:
-            if v[1] == 0 and v[2] == 0:  # Variable is missing, but is fixed to 0, so that's ok
+                break  # Found a match, exit inner loop
+
+        if not found:  # If a variable is not found in Model2
+            if v[0] in vars_fixed_to_zero:  # If the variable is fixed to zero, we can ignore it
                 counter += 1
-                vars_fixed_to_zero.append(v[0])
             else:
-                if counter > 0:
+                if counter > 0:  # If we have counted some perfect matches, we print them
                     printer.success(f"{counter} variables matched perfectly")
                     counter_perfect_total += counter
                     counter = 0
                 counter_missing2_total += 1
-                printer.warning(f"Variable not found in model2: {v}")
-        elif bounds_differ:
+                printer.warning(f"Variable not found in Model2: {v}")
+        elif bounds_differ:  # If the variable is found but the bounds differ
             vars2.remove(v2)
             if counter > 0:
                 printer.success(f"{counter} variables matched perfectly")
                 counter_perfect_total += counter
                 counter = 0
             counter_partial_total += 1
-            printer.error(f"Variable bounds differ: model1: {v} | model2: {v2}")
+            printer.error(f"Variable bounds differ: Model1: {v} | Model2: {v2}")
         else:
             counter += 1
             vars2.remove(v2)
+
         if counter > 0 and counter % 500 == 0:
             printer.information(f"{counter} variables matched perfectly, continue to count...")
+
     if counter > 0:
         printer.success(f"{counter} variables matched perfectly")
 
-    if len(vars2) > 0:
-        printer.error(f"Variables missing in model 1: {', '.join([v[0] for v in vars2])}", hard_wrap_chars=f"[... {len(vars2)} total]")
+    if len(vars2) > 0:  # If there are still variables left in Model2 that were not found in Model1
+        if print_additional_information:
+            missing_var_names = [v[0] for v in vars2]
+            formatted_var_list = ", ".join(missing_var_names)
+            printer.error(f"Variables missing in Pyomo model ({len(vars2)} total): {formatted_var_list}")
+
         counter_missing1_total += len(vars2)
 
-    vars_fixed_to_zero = [sort_indices(v.replace("(", "[").replace(")", "]")) for v in vars_fixed_to_zero]  # Adjust indexing-style and sort indices alphabetically
-    if len(vars_fixed_to_zero) > 0:
-        printer.information(f"Variables missing in list2, but fixed to 0: {', '.join(vars_fixed_to_zero)}", hard_wrap_chars=f"[... {len(vars_fixed_to_zero)} total]")
+    if vars_fixed_to_zero:
+        info_list = [str(v) for v in vars_fixed_to_zero]
+        preview = ", ".join(info_list[:5])
+        total = len(info_list)
+        printer.information(f"Variables missing in Model2, but fixed to 0: {preview}, ... [{total} total]" if total > 5 else "")
 
     counter_perfect_total += counter
 
-    return {"perfect": counter_perfect_total, "partial": counter_partial_total, "missing in model 1": counter_missing1_total, "missing in model 2": counter_missing2_total}, vars_fixed_to_zero
+    return {"perfect": counter_perfect_total,
+            "partial": counter_partial_total,
+            "missing in Model1": counter_missing1_total,
+            "missing in Model2": counter_missing2_total}
 
 
-def normalize_objective(model, coefficients_to_skip: list[str] = None) -> dict[str, float]:
-    if coefficients_to_skip is None:
-        coefficients_to_skip = []
+def normalize_objective(model_data,
+                        vars_fixed_to_zero: set[str] | None = None, coefficients_to_skip: list[str] | None = None,
+                        zero_tol: float = 1e-15, remove_scenario_prefix: bool = False) -> tuple[dict, dict]:
+    """
+    Build a dict {normalised-var-name: coeff} while
+    • dropping vars fixed to zero
+    • dropping vars whose name contains any substring in `coefficients_to_skip`
+    • dropping coefficients whose magnitude ≤ zero_tol
+    """
+    vars_fixed_to_zero = vars_fixed_to_zero or set()
+    coefficients_to_skip = coefficients_to_skip or []
+    norm_lin = {}
+    norm_quad = {}
+    skipped = []
+    skipped_quadratic = []
 
-    normalized_objective = {}
-
-    original_names = {str(b): a.replace("(", "[").replace(")", "]") for a, b in model[0].items()}
-
-    for name, value in model[1].objective.items():
-        skip_coefficient = False
-        for c in coefficients_to_skip:
-            if c in original_names[str(name)]:
-                skip_coefficient = True
-                break
-        if skip_coefficient:
+    # Normalize linear objective coefficients
+    for raw_name, val in model_data["obj"]["linear"].items():
+        if abs(val) <= zero_tol:
             continue
 
-        sorted_name = sort_indices(original_names[str(name)])
-        normalized_objective[sorted_name] = value
+        norm_name = sort_indices(normalize_variable_names(raw_name, remove_scenario_prefix))
+        if remove_scenario_prefix:
+            norm_name = norm_name.replace("ScenarioA.", "")
+        if any(substr in norm_name for substr in coefficients_to_skip):
+            skipped.append(raw_name)
+            continue
+        if norm_name in vars_fixed_to_zero:
+            skipped.append(raw_name)
+            continue
 
-    return normalized_objective
+        norm_lin[sort_indices(norm_name)] = val
+    if skipped: printer.information(f"Skipped {len(skipped)} vars in linear objective (0-fixed or substring match)")
+
+    # Normalize quadratic objective coefficients
+    for (raw_name1, raw_name2), value in model_data["obj"]["quadratic"].items():
+        if abs(value) <= zero_tol:
+            continue
+
+        name1 = normalize_variable_names(raw_name1, remove_scenario_prefix)
+        name2 = normalize_variable_names(raw_name2, remove_scenario_prefix)
+
+        if any(substr in name1 for substr in coefficients_to_skip) or any(substr in name2 for substr in coefficients_to_skip):
+            skipped_quadratic.append((raw_name1, raw_name2))
+            continue
+        if name1 in vars_fixed_to_zero and name2 in vars_fixed_to_zero:
+            skipped_quadratic.append((raw_name1, raw_name2))
+            continue
+
+        norm1 = sort_indices(name1)
+        norm2 = sort_indices(name2)
+        var_pair = tuple(sorted([norm1, norm2]))
+
+        norm_quad[var_pair] = value
+
+    if skipped_quadratic: printer.information(f"Skipped {len(skipped_quadratic)} quadratic objective (0-fixed or substring match)")
+
+    return norm_lin, norm_quad
 
 
 def compare_objectives(objective1, objective2, precision: float = 1e-12) -> dict[str, int]:
@@ -380,43 +763,49 @@ def compare_objectives(objective1, objective2, precision: float = 1e-12) -> dict
 
     for name1, value1 in objective1.items():
         found = False
-        for name2, value2 in objective2.items():
-            if name1 == name2:
-                if abs((value1 - value2) / value1) > precision:
-                    partial_matches.append(f"{name1}: {value1} != {value2}")
-                else:
-                    counter_perfect_matches += 1
-                    if counter_perfect_matches % 500 == 0:
-                        printer.information(f"{counter_perfect_matches} coefficients matched perfectly, continue to count...")
-                objective2.pop(name2)
-                found = True
-                break
+        if name1 in objective2:
+            value2 = objective2[name1]
+            rel_diff = abs((value1 - value2) / value1) if value1 != 0 else abs(value2)
+            if rel_diff > precision:
+                partial_matches.append(f"{name1}: {value1} != {value2}")
+            else:
+                counter_perfect_matches += 1
+                if counter_perfect_matches % 500 == 0:
+                    printer.information(f"{counter_perfect_matches} coefficients matched perfectly...")
+
+            del objective2[name1]
+            found = True
+
         if not found:
             coefficients_missing_in_model2.append(f"{name1}: {value1}")
 
     for name2, value2 in objective2.items():
         coefficients_missing_in_model1.append(f"{name2}: {value2}")
 
-    printer.success(f"{counter_perfect_matches} coefficients of objective matched perfectly")
-    if len(partial_matches) > 0:
-        printer.error(f"Partial matches found:")
-        for match in partial_matches:
-            printer.warning(f"Partial: {match}", prefix="")
-    if len(coefficients_missing_in_model1) > 0:
-        printer.error(f"Coefficients missing in model1:")
-        for missing in coefficients_missing_in_model1:
-            printer.warning(f"Missing in 1: {missing}", prefix="")
-    if len(coefficients_missing_in_model2) > 0:
-        printer.error(f"Coefficients missing in model2:")
-        for missing in coefficients_missing_in_model2:
-            printer.warning(f"Missing in 2: {missing}", prefix="")
+    # Summary logging
+    printer.information(f"[✔] {counter_perfect_matches} objective coefficients matched perfectly.")
+    if partial_matches:
+        printer.information("[⚠] Partial mismatches found:")
+        for entry in partial_matches:
+            printer.information(f"    • {entry}")
+    if coefficients_missing_in_model1:
+        printer.information("[✘] Coefficients missing in Model1:")
+        for entry in coefficients_missing_in_model1:
+            printer.information(f"    • {entry}")
+    if coefficients_missing_in_model2:
+        printer.information("[✘] Coefficients missing in Model2:")
+        for entry in coefficients_missing_in_model2:
+            printer.information(f"    • {entry}")
 
-    return {"perfect": counter_perfect_matches, "partial": len(partial_matches), "missing in model 1": len(coefficients_missing_in_model1), "missing in model 2": len(coefficients_missing_in_model2)}
+    return {"perfect": counter_perfect_matches,
+            "partial": len(partial_matches),
+            "missing in Model1": len(coefficients_missing_in_model1),
+            "missing in Model2": len(coefficients_missing_in_model2)}
 
 
 def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix: bool,
                 file2, file2_isPyomoFormat: bool, file2_removeScenarioPrefix: bool,
-                check_vars=True, check_constraints=True, print_additional_information=False,
+                check_vars=True, check_constraints=True, check_quadratic_constraints=True, check_objectives=True, print_additional_information=False,
                 constraints_to_skip_from1=None, constraints_to_keep_from1=None, coefficients_to_skip_from1=None,
                 constraints_to_skip_from2=None, constraints_to_keep_from2=None, coefficients_to_skip_from2=None, constraints_to_enforce_from2=None) -> bool:
     # Safety before more expensive operations start
@@ -432,29 +821,42 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
         if len(constraints_to_skip_from1) and len(constraints_to_keep_from1):
             printer.warning("Ignoring 'constraints_to_skip_from1' since 'constraints_to_keep_from1' is set!")
             constraints_to_skip_from1 = None
+        elif not file1_isPyomoFormat:
+            coefficients_to_skip_from1 = coefficients_to_skip_from1 + ["constobj"] if coefficients_to_skip_from1 else ["constobj"]
 
         if len(constraints_to_skip_from2) and len(constraints_to_keep_from2):
             printer.warning("Ignoring 'constraints_to_skip_from2' since 'constraints_to_keep_from2' is set!")
             constraints_to_skip_from2 = None
+        elif not file2_isPyomoFormat:
+            coefficients_to_skip_from2 = coefficients_to_skip_from2 + ["constobj"] if coefficients_to_skip_from2 else ["constobj"]
 
     # Load MPS files
-    model1 = LpProblem.fromMPS(file1)
-    model2 = LpProblem.fromMPS(file2)
+    model1 = get_model_data(load_mps(str(file1)))
+    model2 = get_model_data(load_mps(str(file2)))
 
     comparison_results = {}
 
     # Variables
     if check_vars:
-        vars1 = {(normalize_variable_name(v.name) if file1_isPyomoFormat else v.name, v.lowBound, v.upBound) for v in model1[1].variables() if v.name not in coefficients_to_skip_from1}
-        vars2 = {(normalize_variable_name(v.name) if file2_isPyomoFormat else v.name, v.lowBound, v.upBound) for v in model2[1].variables() if v.name not in coefficients_to_skip_from2}
+        vars1 = set()
+        for i, var in enumerate(model1["variables"]):
+            norm_var = normalize_variable_names(var, file1_removeScenarioPrefix)
+            if coefficients_to_skip_from1 and any(skip in norm_var for skip in coefficients_to_skip_from1):
+                continue
+            vars1.add((norm_var, model1["bounds"]["lower"][i], model1["bounds"]["upper"][i]))
 
-        if file1_removeScenarioPrefix:
-            vars1 = {(v[0].replace("ScenarioA.", ""), v[1], v[2]) for v in vars1}
-        if file2_removeScenarioPrefix:
-            vars2 = {(v[0].replace("ScenarioA.", ""), v[1], v[2]) for v in vars2}
+        vars2 = set()
+        for i, var in enumerate(model2["variables"]):
+            norm_var = normalize_variable_names(var, file2_removeScenarioPrefix)
+            if coefficients_to_skip_from2 and any(skip in norm_var for skip in coefficients_to_skip_from2):
+                continue
+            vars2.add((norm_var, model2["bounds"]["lower"][i], model2["bounds"]["upper"][i]))
 
-        comparison_results['variables'], vars_fixed_to_zero = compare_variables(vars1, vars2)
+        vars_fixed_to_zero = get_fixed_zero_variables(model1, remove_scenario_prefix=file1_removeScenarioPrefix)  # Only the Pyomo model writes fixed to zero variables, GAMS doesn't write them at all, so those can be ignored
+
         coefficients_to_skip_from1.extend(vars_fixed_to_zero)  # Add variables that are fixed to 0 to the list of coefficients to skip
+
+        comparison_results["variables"] = compare_variables(vars1, vars2, vars_fixed_to_zero=vars_fixed_to_zero, print_additional_information=print_additional_information)
 
     # Constraints
     if check_constraints:
@@ -466,16 +868,49 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
         if constraints_to_keep_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).intersection(constraints_to_keep_from2)):
             raise ValueError(f"constraints_to_keep_from2 is missing elements of constraints_to_enforce_from2: {set(constraints_to_keep_from2).difference(constraints_to_enforce_from2)}")
 
-        constraints1 = normalize_constraints(model1, constraints_to_skip=constraints_to_skip_from1, constraints_to_keep=constraints_to_keep_from1, coefficients_to_skip=coefficients_to_skip_from1)
-        constraints2 = normalize_constraints(model2, constraints_to_skip=constraints_to_skip_from2, constraints_to_keep=constraints_to_keep_from2, coefficients_to_skip=coefficients_to_skip_from2)
+        constraints1, _, _ = normalize_constraints(model1, constraints_to_skip=constraints_to_skip_from1, constraints_to_keep=constraints_to_keep_from1, coefficients_to_skip=coefficients_to_skip_from1, remove_scenario_prefix=file1_removeScenarioPrefix)
+        constraints2, _, _ = normalize_constraints(model2, constraints_to_skip=constraints_to_skip_from2, constraints_to_keep=constraints_to_keep_from2, coefficients_to_skip=coefficients_to_skip_from2, remove_scenario_prefix=file2_removeScenarioPrefix)
 
+        vars_fixed_to_zero_raw = get_fixed_zero_variables(model1, remove_scenario_prefix=file1_removeScenarioPrefix)
+        vars_fixed_to_zero = {sort_indices(str(v)) for v in vars_fixed_to_zero_raw}
         # Check if constraints are the same
-        comparison_results['constraints'] = compare_constraints(constraints1, constraints2, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
+        comparison_results['constraints'] = compare_linear_constraints(constraints1, constraints2, vars_fixed_to_zero=vars_fixed_to_zero, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
+
+    if check_quadratic_constraints:
+        # If any of enforce is in skip, raise error
+        if constraints_to_skip_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)):
+            raise ValueError(f"constraints_to_skip_from2 contains elements of constraints_to_enforce_from2: {set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)}")
+
+        # If any of enforce is not in keep, raise error
+        if constraints_to_keep_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).intersection(constraints_to_keep_from2)):
+            raise ValueError(f"constraints_to_keep_from2 is missing elements of constraints_to_enforce_from2: {set(constraints_to_keep_from2).difference(constraints_to_enforce_from2)}")
+
+        quad_constraints1, _, _ = normalize_quadratic_constraints(model1, constraints_to_skip=constraints_to_skip_from1, constraints_to_keep=constraints_to_keep_from1, coefficients_to_skip=coefficients_to_skip_from1, remove_scenario_prefix=file1_removeScenarioPrefix)
+        quad_constraints2, _, _ = normalize_quadratic_constraints(model2, constraints_to_skip=constraints_to_skip_from2, constraints_to_keep=constraints_to_keep_from2, coefficients_to_skip=coefficients_to_skip_from2, remove_scenario_prefix=file2_removeScenarioPrefix)
+
+        vars_fixed_to_zero_raw = get_fixed_zero_variables(model1, remove_scenario_prefix=file1_removeScenarioPrefix)
+        vars_fixed_to_zero = {sort_indices(str(v)) for v in vars_fixed_to_zero_raw}
+        # Check if constraints are the same
+        comparison_results['quadratic_constraints'] = compare_quadratic_constraints(quad_constraints1, quad_constraints2, vars_fixed_to_zero=vars_fixed_to_zero, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
 
     # Objective
-    objective1 = normalize_objective(model1, coefficients_to_skip=coefficients_to_skip_from1)
-    objective2 = normalize_objective(model2, coefficients_to_skip=coefficients_to_skip_from2)
-    comparison_results['coefficients of objective'] = compare_objectives(objective1, objective2)
+    if check_objectives:
+        vars_fixed_to_zero = get_fixed_zero_variables(model1, remove_scenario_prefix=file1_removeScenarioPrefix)
+
+        objective1, quad_objective1 = normalize_objective(model1,
+                                                          vars_fixed_to_zero=vars_fixed_to_zero,
+                                                          coefficients_to_skip=coefficients_to_skip_from1,
+                                                          remove_scenario_prefix=file1_removeScenarioPrefix)
+
+        objective2, quad_objective2 = normalize_objective(model2,
+                                                          vars_fixed_to_zero=vars_fixed_to_zero,
+                                                          coefficients_to_skip=coefficients_to_skip_from2,
+                                                          remove_scenario_prefix=file2_removeScenarioPrefix)
+
+        comparison_results['coefficients of objective'] = compare_objectives(objective1, objective2)
+        if len(quad_objective1) > 0 or len(quad_objective2) > 0:
+            printer.information("Also comparing quadratic objective coefficients...")
+            comparison_results['quadratic coefficients of objective'] = compare_objectives(quad_objective1, quad_objective2)
 
     # Print results
     printer.information("\n   ---------   \n\nResults of MPS Comparison:")
@@ -488,8 +923,8 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
         max_key = max(max_key, len(key))
         max_digits_perfect = max(max_digits_perfect, len(str(value["perfect"])))
         max_digits_partial = max(max_digits_partial, len(str(value["partial"])))
-        max_digits_missing1 = max(max_digits_missing1, len(str(value["missing in model 1"])))
-        max_digits_missing2 = max(max_digits_missing2, len(str(value["missing in model 2"])))
+        max_digits_missing1 = max(max_digits_missing1, len(str(value["missing in Model1"])))
+        max_digits_missing2 = max(max_digits_missing2, len(str(value["missing in Model2"])))
 
     all_perfect = True
     for key, value in comparison_results.items():
@@ -503,17 +938,17 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
         text += f"Partial: {value['partial']:>{max_digits_partial}}"
         text += f"[/yellow] | " if value['partial'] > 0 else f"[/green] | "
 
-        text += f"[red]" if value['missing in model 1'] > 0 else "[green]"
-        text += f"Missing in 1: {value['missing in model 1']:>{max_digits_missing1}}"
-        text += f"[/red] | " if value['missing in model 1'] > 0 else f"[/green] | "
+        text += f"[red]" if value['missing in Model1'] > 0 else "[green]"
+        text += f"Missing in Model1: {value['missing in Model1']:>{max_digits_missing1}}"
+        text += f"[/red] | " if value['missing in Model1'] > 0 else f"[/green] | "
 
-        text += f"[red]" if value['missing in model 2'] > 0 else "[green]"
-        text += f"Missing in 2: {value['missing in model 2']:>{max_digits_missing2}}"
-        text += f"[/red]" if value['missing in model 2'] > 0 else f"[/green]"
+        text += f"[red]" if value['missing in Model2'] > 0 else "[green]"
+        text += f"Missing in Model2: {value['missing in Model2']:>{max_digits_missing2}}"
+        text += f"[/red]" if value['missing in Model2'] > 0 else f"[/green]"
 
         printer.information(text)
 
-        all_perfect = all_perfect and value['partial'] == 0 and value['missing in model 1'] == 0 and value['missing in model 2'] == 0
+        all_perfect = all_perfect and value['partial'] == 0 and value['missing in Model1'] == 0 and value['missing in Model2'] == 0
 
     if all_perfect:
         printer.success("All checks passed, no missing or partially matching elements found!")

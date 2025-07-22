@@ -32,6 +32,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     LEGO.addToParameter(model, "pEnabInv", cs.dPower_Storage['EnableInvest'])
     LEGO.addToParameter(model, "pInvestCost", cs.dPower_Storage['InvestCostEUR'])
 
+    LEGO.addToParameter(model, 'pMaxGenQ', cs.dPower_Storage['Qmax'])
+    LEGO.addToParameter(model, 'pMinGenQ', cs.dPower_Storage['Qmin'])
+
     # Variables
     if model.pEnableChDisPower:
         model.bChargeDisCharge = pyo.Var(model.storageUnits, model.rp, model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
