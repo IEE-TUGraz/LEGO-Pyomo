@@ -164,7 +164,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     dTechnicalReprIslands = pd.DataFrame(index=cs.dPower_BusInfo.index, columns=[cs.dPower_BusInfo.index], data=False)
 
     for index, entry in cs.dPower_Network.iterrows():
-        if cs.dPower_Network.loc[(index[0], index[1], index[2])]["pTecRepr"] == "DC-OPF" or "SOCP":
+        if cs.dPower_Network.loc[(index[0], index[1], index[2])]["pTecRepr"] in ["DC-OPF", "SOCP"]:
             dTechnicalReprIslands.loc[index[0], index[1]] = True
             dTechnicalReprIslands.loc[index[1], index[0]] = True
     completed_buses = set()  # Set of buses that have been looked at already
@@ -181,12 +181,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         # Set slack node
         slack_node = cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
         slack_node = cs.dPower_Parameters["is"]  # TODO: Switch this again to be calculated (fixed to 'is' for compatibility)
-        if i == 0: print("Setting slack nodes for technical representation islands:")
+        if i == 0: printer.information("Setting slack nodes for technical representation islands:")
         i += 1
-        print(f"Zone {i:>2} - Slack node: {slack_node}")
+        printer.information(f"Zone {i:>2} - Slack node: {slack_node}")
         model.vTheta[:, :, slack_node].fix(0)
         if cs.dPower_Parameters['pEnableSOCP']:
-            print("Fixed voltage magnitude at slack node: ", pyo.value(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage'])))
+            printer.information("Fixed voltage magnitude at slack node: ", pyo.value(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage'])))
             model.vSOCP_cii[:, :, slack_node].fix(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage']))
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)

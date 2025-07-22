@@ -279,7 +279,7 @@ def normalize_quadratic_constraints(data,
             quad_v1_norm = sort_indices(normalize_variable_names(v1, remove_scenario_prefix))
             quad_v2_norm = sort_indices(normalize_variable_names(v2, remove_scenario_prefix))
             key = tuple(sorted((quad_v1_norm, quad_v2_norm)))
-            quad_normalized_coeffs[key] = quad_normalized_coeffs.get(key, 0.0) + val * scale
+            quad_normalized_coeffs[key] += val * scale
 
         quad_constraints[quad_normalized_name] = quad_normalized_coeffs
         quad_normalized_rhs[quad_normalized_name] = adjusted_rhs
@@ -395,7 +395,7 @@ def compare_linear_constraints(constraints1: dict[str, OrderedDict[str, float]],
         if length not in constraint_dicts2:
             counter_missing2_total += len(group1)
             if print_additional_information:
-                print(f"No constraints of length {length} in Model2; skipping {len(group1)} constraints.")
+                printer.information(f"No constraints of length {length} in Model2; skipping {len(group1)} constraints.")
             continue
 
         group2 = constraint_dicts2[length]
@@ -451,27 +451,27 @@ def compare_linear_constraints(constraints1: dict[str, OrderedDict[str, float]],
                     counter_partial_total += 1
                     matched_in_group2.add(cname2)
                     if print_additional_information:
-                        print(f"Partial mismatch: {cname1} vs {cname2}")
-                        print(f"  Model1 coefficients: {partial_mismatches1}")
-                        print(f"  Model2 coefficients: {partial_mismatches2}")
+                        printer.information(f"Partial mismatch: {cname1} vs {cname2}")
+                        printer.information(f"  Model1 coefficients: {partial_mismatches1}")
+                        printer.information(f"  Model2 coefficients: {partial_mismatches2}")
                     break
 
             if not matched:
                 counter_missing2_total += 1
                 if print_additional_information:
-                    print(f"No match for constraint: {cname1}")
+                    printer.information(f"No match for constraint: {cname1}")
 
         unmatched_2 = len(group2) - len(matched_in_group2)
         counter_missing1_total += unmatched_2
 
         if unmatched_2 > 0 and print_additional_information:
-            print(f"{unmatched_2} constraints of length {length} in Model2 unmatched for in Model1")
+            printer.information(f"{unmatched_2} constraints of length {length} in Model2 unmatched for in Model1")
 
             # Print missing constraint names or keys
             missing_constraints = [key for key in group2 if key not in matched_in_group2]
-            print("Example unmatched constraints of Model2 missing in Model1:")
+            printer.information("Example unmatched constraints of Model2 missing in Model1:")
             for key in missing_constraints[:50]:
-                print(f"  - {key}")
+                printer.information(f"  - {key}")
 
     extra_lengths_in_model2 = set(constraint_dicts2.keys()) - set(constraint_dicts1.keys())
     for length in extra_lengths_in_model2:
@@ -480,7 +480,7 @@ def compare_linear_constraints(constraints1: dict[str, OrderedDict[str, float]],
         num_unmatched = len(unmatched_group)
         counter_missing1_total += num_unmatched
         if num_unmatched > 0 and print_additional_information:
-            print(f"{num_unmatched} constraints in Model2 of length {length} missing in Model1.")
+            printer.information(f"{num_unmatched} constraints in Model2 of length {length} missing in Model1.")
 
     if constraints_to_enforce_from2:
         for enforced_name in constraints_to_enforce_from2:
@@ -488,7 +488,7 @@ def compare_linear_constraints(constraints1: dict[str, OrderedDict[str, float]],
             if not found:
                 counter_missing1_total += 1
                 if print_additional_information:
-                    print(f"Enforced constraint missing in Model2: {enforced_name}")
+                    printer.information(f"Enforced constraint missing in Model2: {enforced_name}")
 
     return {"perfect": counter_perfect_total,
             "partial": counter_partial_total,
@@ -549,7 +549,7 @@ def compare_quadratic_constraints(quad_constraints1: dict[str, dict[tuple[str, s
         if cname not in cleaned2:
             counter_missing2 += 1
             if print_additional_information:
-                print(f"[✘] Constraint {cname} missing in Model2.")
+                printer.information(f"[✘] Constraint {cname} missing in Model2.")
             continue
 
         q1 = cleaned1[cname]
@@ -559,7 +559,7 @@ def compare_quadratic_constraints(quad_constraints1: dict[str, dict[tuple[str, s
             counter_partial += 1
             if print_additional_information:
                 missing_keys = set(q1.keys()).symmetric_difference(q2.keys())
-                print(f"[⚠] Constraint {cname}: mismatched variable pairs: {missing_keys}")
+                printer.information(f"[⚠] Constraint {cname}: mismatched variable pairs: {missing_keys}")
             continue
 
         mismatch_found = False
@@ -572,7 +572,7 @@ def compare_quadratic_constraints(quad_constraints1: dict[str, dict[tuple[str, s
             if rel_diff > precision:
                 mismatch_found = True
                 if print_additional_information:
-                    print(f" [⚠] Constraint {cname}: {key} -> {val1} ≠ {val2}")
+                    printer.information(f" [⚠] Constraint {cname}: {key} -> {val1} ≠ {val2}")
                 break
 
         if mismatch_found:
@@ -583,15 +583,15 @@ def compare_quadratic_constraints(quad_constraints1: dict[str, dict[tuple[str, s
     for cname in names2 - names1:
         counter_missing1 += 1
         if print_additional_information:
-            print(f"[✘] Quadratic constraint {cname} missing in Model1.")
+            printer.information(f"[✘] Quadratic constraint {cname} missing in Model1.")
 
-    print(f"[✔] {counter_perfect} quadratic constraints matched perfectly.")
+    printer.information(f"[✔] {counter_perfect} quadratic constraints matched perfectly.")
     if counter_partial:
-        print(f"[⚠] {counter_partial} quadratic constraints partially mismatched.")
+        printer.information(f"[⚠] {counter_partial} quadratic constraints partially mismatched.")
     if counter_missing1:
-        print(f"[✘] {counter_missing1} quadratic constraints missing in Model1.")
+        printer.information(f"[✘] {counter_missing1} quadratic constraints missing in Model1.")
     if counter_missing2:
-        print(f"[✘] {counter_missing2} quadratic constraints missing in Model2.")
+        printer.information(f"[✘] {counter_missing2} quadratic constraints missing in Model2.")
 
     return {
         "perfect": counter_perfect,
@@ -709,6 +709,7 @@ def normalize_objective(model_data,
     norm_quad = {}
     skipped = []
     skipped_quadratic = []
+
     # Normalize linear objective coefficients
     for raw_name, val in model_data["obj"]["linear"].items():
         if abs(val) <= zero_tol:
@@ -725,9 +726,9 @@ def normalize_objective(model_data,
             continue
 
         norm_lin[sort_indices(norm_name)] = val
-    if skipped: print(f"Skipped {len(skipped)} vars in linear objective (0-fixed or substring match)")
-    # Normalize quadratic objective coefficients
+    if skipped: printer.information(f"Skipped {len(skipped)} vars in linear objective (0-fixed or substring match)")
 
+    # Normalize quadratic objective coefficients
     for (raw_name1, raw_name2), value in model_data["obj"]["quadratic"].items():
         if abs(value) <= zero_tol:
             continue
@@ -741,13 +742,14 @@ def normalize_objective(model_data,
         if name1 in vars_fixed_to_zero and name2 in vars_fixed_to_zero:
             skipped_quadratic.append((raw_name1, raw_name2))
             continue
-        if skipped_quadratic: print(f"Skipped {len(skipped_quadratic)} quadratic objective (0-fixed or substring match)")
 
         norm1 = sort_indices(name1)
         norm2 = sort_indices(name2)
         var_pair = tuple(sorted([norm1, norm2]))
 
         norm_quad[var_pair] = value
+
+    if skipped_quadratic: printer.information(f"Skipped {len(skipped_quadratic)} quadratic objective (0-fixed or substring match)")
 
     return norm_lin, norm_quad
 
@@ -769,7 +771,7 @@ def compare_objectives(objective1, objective2, precision: float = 1e-12) -> dict
             else:
                 counter_perfect_matches += 1
                 if counter_perfect_matches % 500 == 0:
-                    print(f"{counter_perfect_matches} coefficients matched perfectly...")
+                    printer.information(f"{counter_perfect_matches} coefficients matched perfectly...")
 
             del objective2[name1]
             found = True
@@ -781,19 +783,19 @@ def compare_objectives(objective1, objective2, precision: float = 1e-12) -> dict
         coefficients_missing_in_model1.append(f"{name2}: {value2}")
 
     # Summary logging
-    print(f"[✔] {counter_perfect_matches} objective coefficients matched perfectly.")
+    printer.information(f"[✔] {counter_perfect_matches} objective coefficients matched perfectly.")
     if partial_matches:
-        print("[⚠] Partial mismatches found:")
+        printer.information("[⚠] Partial mismatches found:")
         for entry in partial_matches:
-            print(f"    • {entry}")
+            printer.information(f"    • {entry}")
     if coefficients_missing_in_model1:
-        print("[✘] Coefficients missing in Model1:")
+        printer.information("[✘] Coefficients missing in Model1:")
         for entry in coefficients_missing_in_model1:
-            print(f"    • {entry}")
+            printer.information(f"    • {entry}")
     if coefficients_missing_in_model2:
-        print("[✘] Coefficients missing in Model2:")
+        printer.information("[✘] Coefficients missing in Model2:")
         for entry in coefficients_missing_in_model2:
-            print(f"    • {entry}")
+            printer.information(f"    • {entry}")
 
     return {"perfect": counter_perfect_matches,
             "partial": len(partial_matches),
