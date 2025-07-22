@@ -212,8 +212,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vLinkP = pyo.Var(model.rp, model.k, model.links, doc='Power flow from bus HV to LV', bounds=(None, None))#Zeile 201
     second_stage_variables += [model.vLinkP]
 
-    model.vLinkCounterP = pyo.Var(model.rp, model.k, model.links, doc='Power flow from bus LV to HV', bounds=(None, None))#Zeile 201
-    second_stage_variables += [model.vLinkCounterP]
+    #model.vLinkCounterP = pyo.Var(model.rp, model.k, model.links, doc='Power flow from bus LV to HV', bounds=(None, None))#Zeile 201
+    #second_stage_variables += [model.vLinkCounterP]
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
@@ -232,6 +232,14 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     # Note: eDC_BalanceP_expr is defined as expression to enable later adding coefficients to the constraint (e.g., for import/export)
     model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.k, model.i, rule=eDC_BalanceP_rule)
+
+    if cs.dPower_Parameters["pEnableLinks"]:
+        for rp in model.rp:
+            for k in model.k:
+                for i in model.i:
+                    model.eDC_BalanceP_expr[rp, k, i] += (sum(model.vLinkP[rp, k, e] for e in model.links if (e[0] == i)) +  # Link flow from bus i to bus j NUR WENN LINK AKTIVIERT
+                                                sum(model.vLinkP[rp, k, e] for e in model.links if (e[1] == i)))
+
     model.eDC_BalanceP = pyo.Constraint(model.rp, model.k, model.i, doc='Power balance constraint for each bus', rule=lambda model, rp, k, i: model.eDC_BalanceP_expr[rp, k, i] == 0)
 
     def eDC_ExiLinePij_rule(model, rp, k, i, j, c):
@@ -266,12 +274,12 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     model.eDC_LimCanLine2 = pyo.Constraint(model.rp, model.k, model.lc, doc="Power flow limit standard direction for candidate lines (for DC-OPF)", rule=eDC_LimCanLine2_rule)
 
-    def eReMaxProd_rule(model, rp, k, r):
-        capacity = cs.dPower_VRESProfiles.loc[rp, k, r]['value']
-        capacity = capacity.values[0] if isinstance(capacity, pd.Series) else capacity
-        return model.vGenP[rp, k, r] <= model.pMaxProd[r] * (model.vGenInvest[r] + model.pExisUnits[r]) * capacity
-
     if cs.dPower_Parameters["pEnableVRES"]:
+        def eReMaxProd_rule(model, rp, k, r):
+            capacity = cs.dPower_VRESProfiles.loc[rp, k, r]['value']
+            capacity = capacity.values[0] if isinstance(capacity, pd.Series) else capacity
+            return model.vGenP[rp, k, r] <= model.pMaxProd[r] * (model.vGenInvest[r] + model.pExisUnits[r]) * capacity
+
         model.eReMaxProd = pyo.Constraint(model.rp, model.k, model.vresGenerators, rule=eReMaxProd_rule)
 
     def eThRampUp_rule(model, rp, k, g, transition_matrix):
@@ -414,33 +422,33 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 #model.pDemandP
 #welche variable sind di VRES gen? model.vGenP[rp, k, r]? was ist r?
 # Link implementation
+    if cs.dPower_Parameters["pEnableLinks"]:
+        def eDC_PositivLinkExpansion_rule(model, i, j, c): #welche index? nur knoten? brauchen das eig nur bei den LV knoten?
+            return model.vLinkExpPower[i, j, c]  >= 0
+        
+        model.eDC_PositiveLinkExpansion = pyo.Constraint(model.links, doc="Power Exansion must be positiv", rule=eDC_PositivLinkExpansion_rule)
+        
+        def eDC_posLinkExpansion_rule(model, rp, k, i, j, c):
+            return model.vLinkP[rp, k, i, j, c]  <=  model.pPmaxLink[i, j, c] + model.vLinkExpPower[i, j, c]
+        
+        model.eDC_posLinkExpansion = pyo.Constraint(model.rp, model.k, model.links, doc="Link Expansion Calculation with positiv Sign", rule=eDC_posLinkExpansion_rule)
 
-    def eDC_LinkBalanceP_rule(model, rp, k, i):
-        return (sum(model.vGenP[rp, k, g] for g in model.g if (g, i) in model.gi) -  # Production of generators at bus i
-                sum(model.vLinkP[rp, k, e] for e in model.la if (e[0] == i)) +  # Power flow from bus i to bus j
-                sum(model.vLinkP[rp, k, e] for e in model.la if (e[1] == i)) + # Power flow from bus j to bus i
-                sum(model.vLinkCounterP[rp, k, e] for e in model.la if (e[0] == i)) -  # Power flow from bus i to bus j
-                sum(model.vLinkCounterP[rp, k, e] for e in model.la if (e[1] == i))   # Power flow from bus j to bus i
-                == model.pDemandP[rp, k, i] )  # Demand at bus i
+        def eDC_negLinkExpansion_rule(model, rp, k, i, j, c):
+            return model.vLinkP[rp, k, i, j, c]  >=  -(model.pPmaxLink[i, j, c] + model.vLinkExpPower[i, j, c])
 
-    def eDC_PositivLinkExpansion_rule(model, rp, k, i, j, c): #welche index? nur knoten? brauchen das eig nur bei den LV knoten?
-        return model.vLinkExpPower[rp, k, i, j, c]  >= 0
-    
-    def eDC_LinkExpansion_rule(model, rp, k, i, j, c):
-        return model.vLinkP[rp, k, i, j, c]  <=  model.pPmaxLink[rp, k, i, j, c] + model.vLinkExpPower[rp, k, i, j, c]
-    
-    def eDC_LinkCounterExpansion_rule(model, rp, k, i, j, c):
-        return model.vLinkCounterP[rp, k, i, j, c]  >=  -(model.pPmaxLink[rp, k, i, j, c] + model.vLinkExpPower[rp, k, i, j, c])
-
+        model.eDC_negLinkExpansion = pyo.Constraint(model.rp, model.k, model.links, doc="Link Expansion Calculation with negative Sign", rule=eDC_negLinkExpansion_rule)
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
-                             sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g) +  # Investment cost of generators
-                             sum(model.pExpCost [i, j, c] * (model.vLinkExpPower [i, j, c]) for i, j, c in model.links))  
+                             sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
+                              
     second_stage_objective = (sum(sum(model.vPNS[rp, k, :]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost for rp in model.rp for k in model.k) +  # Power not served
                               sum(sum(model.vEPS[rp, k, :]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost * 2 for rp in model.rp for k in model.k) +  # Excess power served
                               sum(model.vStartup[rp, k, t] * model.pStartupCost[t] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for t in model.thermalGenerators) +  # Startup cost of thermal generators
                               sum(model.vCommit[rp, k, t] * model.pInterVarCost[t] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for t in model.thermalGenerators) +  # Commit cost of thermal generators
                               sum(model.vGenP[rp, k, g] * model.pOMVarCost[g] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for g in model.g))  # Production cost of generators
+
+    if cs.dPower_Parameters["pEnableLinks"]:
+        first_stage_objective += sum(model.pExpCost [i, j, c] * (model.vLinkExpPower [i, j, c]) for i, j, c in model.links)
 
     # Adjust objective and return first_stage_objective expression
     model.objective.expr += first_stage_objective + second_stage_objective
