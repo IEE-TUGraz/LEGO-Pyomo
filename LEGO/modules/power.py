@@ -237,7 +237,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         for rp in model.rp:
             for k in model.k:
                 for i in model.i:
-                    model.eDC_BalanceP_expr[rp, k, i] += (sum(model.vLinkP[rp, k, e] for e in model.links if (e[0] == i)) +  # Link flow from bus i to bus j NUR WENN LINK AKTIVIERT
+                    model.eDC_BalanceP_expr[rp, k, i] += (-sum(model.vLinkP[rp, k, e] for e in model.links if (e[0] == i)) +  # Link flow from bus i to bus j NUR WENN LINK AKTIVIERT
                                                 sum(model.vLinkP[rp, k, e] for e in model.links if (e[1] == i)))
 
     model.eDC_BalanceP = pyo.Constraint(model.rp, model.k, model.i, doc='Power balance constraint for each bus', rule=lambda model, rp, k, i: model.eDC_BalanceP_expr[rp, k, i] == 0)
