@@ -1,4 +1,5 @@
 import pyomo.environ as pyo
+from pyomo.core import ConcreteModel
 
 from InOutModule.CaseStudy import CaseStudy
 from LEGO import LEGO, LEGOUtilities
@@ -11,19 +12,41 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     second_stage_variables = []
 
     # Matthias Jannach Adaptations
+    model = ConcreteModel()
+
     # Sets
+    # model.hydroPlants = pyo.Set(doc='Hydro plants', initialize=cs.dHydro_Reservoir.reset_index().set_index(['rp', 'k']).index)
+    model.hydroplants = pyo.Set(initialize=['P1', 'P2', 'P3'], doc='Hydro plants')  # Example hydro plants, replace with actual data
+    model.T = pyo.Set(initialize=[1, 2, 3])                                         # Example time steps, replace with actual data
 
     # Parameters
+    model.pMaxInflow = pyo.Param(model.hydroplants, initialize={'P1': 100, 'P2': 150, 'P3': 200}, doc='Maximum inflow rate for hydro plants')  # Example max inflow rates
+    model.pInflow = pyo.Param(model.hydroplants, model.T, initialize = {
+        ('P1', 1): 80, ('P1', 2): 90, ('P1', 3): 100,
+        ('P2', 1): 120, ('P2', 2): 130, ('P2', 3): 140,
+        ('P3', 1): 160, ('P3', 2): 170, ('P3', 3): 180
+    })  # Example inflow rates, replace with actual data (Values from Co-pilot)
+    model.pCapacityReservoir = pyo.Param(model.hydroplants, initialize={}) # not yet defined or used, but can be added if needed
 
     # Variables
+    model.vPowerFactor = pyo.Var(model.hydroplants)
+    second_stage_variables += [model.vPowerFactor]
 
     # Constraints
+    def max_inflow_rule(model, i, t):
+        return model.pInflow[i, t] <= model.pMaxInflow[i]
+    model.eInflowLimit = pyo.Constraint(model.hydroplants, model.T, rule=max_inflow_rule, doc='Maximum inflow limit for hydro plants')
 
     # Objectives
+    def obj_rule(model):
+        return sum(model.vPowerFactor[i] * model.pInflow[i, t] for i in model.hydroplants for t in model.T)
+
+    model.objective = pyo.Objective(rule=obj_rule, sense=pyo.maximize, doc='Objective function for hydro plants') # function maximizes the total output of hydro plants
+
 
     # Sets  # TODO: Add Hydro sets (e.g., hydro plants, reservoirs, etc.) if needed
     # storageUnits = ["S1, S2, S3"]
-    #model.myVariable = pyo.Var(model.rp, model.k, doc='My variable for testing purposes', bounds=(0, 10))  # Example variable to show how to add variables
+    # model.myVariable = pyo.Var(model.rp, model.k, doc='My variable for testing purposes', bounds=(0, 10))  # Example variable to show how to add variables
     #second_stage_variables += [model.myVariable]
 
     # model.storageUnits = pyo.Set(doc='Storage units', initialize=storageUnits)
