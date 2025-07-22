@@ -279,7 +279,7 @@ def normalize_quadratic_constraints(data,
             quad_v1_norm = sort_indices(normalize_variable_names(v1, remove_scenario_prefix))
             quad_v2_norm = sort_indices(normalize_variable_names(v2, remove_scenario_prefix))
             key = tuple(sorted((quad_v1_norm, quad_v2_norm)))
-            quad_normalized_coeffs[key] += val * scale
+            quad_normalized_coeffs[key] = quad_normalized_coeffs.get(key, 0.0) + val * scale
 
         quad_constraints[quad_normalized_name] = quad_normalized_coeffs
         quad_normalized_rhs[quad_normalized_name] = adjusted_rhs
