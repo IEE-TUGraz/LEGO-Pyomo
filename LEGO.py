@@ -50,6 +50,8 @@ printer.information("Solving LEGO model")
 results, timing, objective_value = lego.solve_model()
 printer.information(f"Solving LEGO model took {timing:.2f} seconds")
 
+#model.vLinkExpPower.pprint()
+
 match results.solver.termination_condition:
     case pyo.TerminationCondition.optimal:
         printer.success(f"Optimal solution: {pyo.value(model.objective):.4f}")
