@@ -86,19 +86,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     else:
                         model.eStIntraRes.add(0 == model.vStIntraRes[rp, model.k.prev(k), g] - model.vStIntraRes[rp, k, g] - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic'])
                 elif len(model.rp) > 1:
-                    match cs.dPower_Parameters["pReprPeriodEdgeHandlingStorage"]:
-                        case "notEnforced":
-                            if model.k.first() != k:  # Skip first timestep if constraint is not enforced
-                                model.eStIntraRes.add(0 == model.vStIntraRes[rp, model.k.prev(k), g] - model.vStIntraRes[rp, k, g] - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic'])
-                        case "cyclic":
-                            model.eStIntraRes.add(0 == model.vStIntraRes[rp, model.k.prevw(k), g] - model.vStIntraRes[rp, k, g] - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic'])
-                        case "markov":
-                            if model.k.first() == k:  # Calculate Markov Summand for first time step
-                                model.eStIntraRes.add(0 == LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k), model.vStIntraRes, cs.rpTransitionMatrixRelativeFrom, g) - model.vStIntraRes[rp, k, g] - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic'])
-                            else:
-                                model.eStIntraRes.add(0 == model.vStIntraRes[rp, model.k.prev(k), g] - model.vStIntraRes[rp, k, g] - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic'])
-                        case _:
-                            raise ValueError(f"Unknown value for pReprPeriodEdgeHandlingStorage: {cs.dPower_Parameters['pReprPeriodEdgeHandlingStorage']}")
+                    model.eStIntraRes.add(0 == model.vStIntraRes[rp, model.k.prevw(k), g] - model.vStIntraRes[rp, k, g] - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic'])
 
                 # TODO: Check if we should rather do a +/- value and calculate charge/discharge ex-post
                 if model.pEnableChDisPower:

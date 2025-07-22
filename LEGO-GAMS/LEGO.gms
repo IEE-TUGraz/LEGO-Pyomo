@@ -1,5 +1,5 @@
 $Title Low-carbon Electricity Generation Optimization (LEGO) model
-*Test
+
 $OnText
 
 Developed by
