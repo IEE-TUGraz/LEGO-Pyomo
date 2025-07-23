@@ -3,7 +3,7 @@ channels:
   - defaults
   - conda-forge
 dependencies:
-  - ibmdecisionoptimization::cplex=22.1.2
+  - ibmdecisionoptimization::cplex=22.1.2  # Currently doesn't work for MacOS - re-activate GitHub tests when fixed (GitHub issue #30)
   - highspy=1.11.0
   - matplotlib=3.10.3
   - openmpi=4.1.3

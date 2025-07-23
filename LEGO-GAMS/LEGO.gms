@@ -469,7 +469,7 @@ $offFold
 $onFold // Define tables and helper sets ---------------------------------------
 
 Sets
-    tThermalGenColumns   /ExisUnits, MaxProd, MinProd, RampUp, RampDw, MinUpTime, MinDownTime, Qmax, Qmin, InertiaConst, FuelCost, Efficiency, CommitConsumption, OMVarCost, StartupConsumption, EFOR, EnableInvest, InvestCost, FirmCapCoef, CO2Emis, YearCom, YearDecom, lat, long, dataPackage, dataSource/
+    tThermalGenColumns   /ExisUnits, MaxProd, MinProd, RampUp, RampDw, MinUpTime, MinDownTime, Qmax, Qmin, InertiaConst, FuelCost, Efficiency, CommitConsumption, OMVarCost, StartupConsumption, EFOR, EnableInvest, InvestCost, FirmCapCoef, CO2Emis, YearCom, YearDecom /
     tStorageColumns      /ExisUnits, MaxProd, MinProd, MaxCons, DisEffic, ChEffic, Qmax, Qmin, InertiaConst, MinReserve, IniReserve, IsHydro, OMVarCost, EnableInvest, MaxInvest, InvestCostPerMW, InvestCostPerMWh, Ene2PowRatio, ReplaceCost, ShelfLife, FirmCapCoef, CDSF_alpha, CDSF_beta /
     tRenewableColumns    /ExisUnits, MaxProd, EnableInvest, MaxInvest, InvestCost, OMVarCost, FirmCapCoef, Qmax, Qmin, InertiaConst/
     tFACTSColumns        /ExisUnits, Qmax, Qmin, EnableInvest, MaxInvest, InvestCost/
