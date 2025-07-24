@@ -61,5 +61,5 @@ match results.solver.termination_condition:
     case _:
         printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
 
-SQLiteWriter.model_to_sqlite(model, "model.sqlite")
+# SQLiteWriter.model_to_sqlite(model, "model.sqlite")
 ExcelWriter.model_to_excel(model, "model.xlsx")

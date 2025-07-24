@@ -200,17 +200,17 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
                                  f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
 
     # Link implementation
-    model.links = pyo.Set(doc='Link lines', initialize=cs.dPower_Links.index.tolist(), within=model.i * model.i * model.c) 
-    
+    if cs.dPower_Parameters["pEnableLinks"]:
+        model.links = pyo.Set(doc='Link lines', initialize=cs.dPower_Links.index.tolist(), within=model.i * model.i * model.c) 
+        
+        model.pPmaxLink = pyo.Param(model.links, initialize=cs.dPower_Links['pPmaxLink'], doc='Max Power between HV and LV Node') #Zeile 100
+        model.pExpCost = pyo.Param(model.links, initialize=cs.dPower_Links['pExpCost'], doc='Costs of an Link Expansion')
 
-    model.pPmaxLink = pyo.Param(model.links, initialize=cs.dPower_Links['pPmaxLink'], doc='Max Power between HV and LV Node') #Zeile 100
-    model.pExpCost = pyo.Param(model.links, initialize=cs.dPower_Links['pExpCost'], doc='Costs of an Link Expansion')
+        model.vLinkExpPower = pyo.Var(model.links, doc='Power Expansion of Link', domain=pyo.Binary) #brauch ich die DC OPF zeilen? Zeile 201
+        first_stage_variables += [model.vLinkExpPower]
 
-    model.vLinkExpPower = pyo.Var(model.links, doc='Power Expansion of Link', domain=pyo.Binary) #brauch ich die DC OPF zeilen? Zeile 201
-    first_stage_variables += [model.vLinkExpPower]
-
-    model.vLinkP = pyo.Var(model.rp, model.k, model.links, doc='Power flow from bus HV to LV', bounds=(None, None))#Zeile 201
-    second_stage_variables += [model.vLinkP]
+        model.vLinkP = pyo.Var(model.rp, model.k, model.links, doc='Power flow from bus HV to LV', bounds=(None, None))#Zeile 201
+        second_stage_variables += [model.vLinkP]
 
     #model.vLinkCounterP = pyo.Var(model.rp, model.k, model.links, doc='Power flow from bus LV to HV', bounds=(None, None))#Zeile 201
     #second_stage_variables += [model.vLinkCounterP]
