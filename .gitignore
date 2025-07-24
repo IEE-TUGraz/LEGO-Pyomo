@@ -24,5 +24,9 @@ LEGO*.log*
 # Model files
 *.mps
 
+# Standard output files for LEGO.py
+model.sqlite
+model.xlsx
+
 # Operating system files
 .DS_Store
