@@ -11,6 +11,15 @@
             "program": "LEGO.py",
             "console": "integratedTerminal",
             "args": "data/example"
-        }
+        },
+        {
+            "name": "LEGO data/links",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "LEGO.py",
+            "console": "integratedTerminal",
+            "args": "data/links"
+        },
+
     ]
 }
