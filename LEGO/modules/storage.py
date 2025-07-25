@@ -15,6 +15,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.storageUnits = pyo.Set(doc='Storage units', initialize=storageUnits)
     LEGO.addToSet(model, "g", storageUnits)
     LEGO.addToSet(model, "gi", cs.dPower_Storage.reset_index().set_index(['g', 'i']).index)  # Note: Add gi after g since it depends on g
+    model.longDurationStorageUnits = pyo.Set(doc='Long-duration storage units (subset of storage units)', initialize=cs.dPower_Storage[cs.dPower_Storage['IsLDS'] == 1].index.tolist(), within=model.storageUnits)
 
     # Parameters
     model.pEnableChDisPower = cs.dPower_Parameters['pEnableChDisPower']  # Avoid simultaneous charging and discharging
@@ -53,10 +54,10 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
                 model.vStIntraRes[rp, k, g].setub(model.pMaxReserve[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
                 model.vStIntraRes[rp, k, g].setlb(model.pMinReserve[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
 
-    model.vStInterRes = pyo.Var(model.p, model.storageUnits, doc='Inter-reserve of storage unit g', bounds=(None, None))
+    model.vStInterRes = pyo.Var(model.p, model.longDurationStorageUnits, doc='Inter-reserve of storage unit g', bounds=(None, None))
     second_stage_variables += [model.vStInterRes]
     for p in model.p:
-        for g in model.storageUnits:
+        for g in model.longDurationStorageUnits:
             if model.p.ord(p) % model.pMovWindow == 0:
                 model.vStInterRes[p, g].setub(model.pMaxReserve[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
                 model.vStInterRes[p, g].setlb(model.pMinReserve[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
@@ -109,7 +110,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         else:
             return pyo.Constraint.Skip
 
-    model.eStMaxInterRes = pyo.Constraint(model.p, model.storageUnits, doc='Max inter-reserve constraint for storage units', rule=eStMaxInterRes_rule)
+    model.eStMaxInterRes = pyo.Constraint(model.p, model.longDurationStorageUnits, doc='Max inter-reserve constraint for storage units', rule=eStMaxInterRes_rule)
 
     def eStMinInterRes_rule(model, p, s):
         # If current p is a multiple of moving window, add constraint
@@ -118,7 +119,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         else:
             return pyo.Constraint.Skip
 
-    model.eStMinInterRes = pyo.Constraint(model.p, model.storageUnits, doc='Min inter-reserve constraint for storage units', rule=eStMinInterRes_rule)
+    model.eStMinInterRes = pyo.Constraint(model.p, model.longDurationStorageUnits, doc='Min inter-reserve constraint for storage units', rule=eStMinInterRes_rule)
 
     def eStInterRes_rule(model, p, storage_unit):
         # If current p is a multiple of moving window, add constraint
@@ -137,7 +138,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             return pyo.Constraint.Skip
 
     if len(model.rp) > 1:
-        model.eStInterRes = pyo.Constraint(model.p, model.storageUnits, doc='Inter-day reserve constraint for storage units', rule=eStInterRes_rule)
+        model.eStInterRes = pyo.Constraint(model.p, model.longDurationStorageUnits, doc='Inter-day reserve constraint for storage units', rule=eStInterRes_rule)
 
     def eConnectStInterResToIniReserve_rule(model, p, storage_unit):
         # Fix vStInterRes to pIniReserve if flag is set and if p is the last period of the representative period, else only set lower bound
@@ -149,7 +150,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         else:  # Skip otherwise
             return pyo.Constraint.Skip
 
-    model.eConnectStInterResToIniReserve = pyo.Constraint(model.p, model.storageUnits, doc='Fix inter-day reserve to initial reserve for last period of representative period', rule=eConnectStInterResToIniReserve_rule)
+    model.eConnectStInterResToIniReserve = pyo.Constraint(model.p, model.longDurationStorageUnits, doc='Fix inter-day reserve to initial reserve for last period of representative period', rule=eConnectStInterResToIniReserve_rule)
 
     # Add vConsump to eDC_BalanceP (vGenP should already be there, since it gets added for all generators)
     for rp in model.rp:
