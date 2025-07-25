@@ -1,3 +1,4 @@
+import pandas as pd
 import pyomo.environ as pyo
 
 from InOutModule.CaseStudy import CaseStudy
@@ -23,6 +24,14 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.pMinReserve = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['MinReserve'] * cs.dPower_Storage['MaxProd'] * cs.dPower_Storage['Ene2PowRatio'], doc='Minimum reserve of storage unit g [power]')
     model.pIniReserve = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['IniReserve'] * cs.dPower_Storage['MaxProd'] * cs.dPower_Storage['Ene2PowRatio'], doc='Initial reserve of storage unit g [power]')
     model.pMaxReserve = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['MaxProd'] * cs.dPower_Storage['Ene2PowRatio'], doc='Maximum reserve of storage unit g [power]')
+
+    dInflows = []
+    for g in model.longDurationStorageUnits:
+        if g in cs.dPower_Inflows.index.get_level_values("g"):
+            dInflows.append(cs.dPower_Inflows.loc[(slice(None), slice(None), g), 'value'])
+    dInflows = pd.concat(dInflows, axis=0)
+
+    model.pLDSInflows = pyo.Param(model.rp, model.k, model.longDurationStorageUnits, initialize=dInflows, doc="Inflows of long-duration storage units [power/timestep]", default=0)
 
     LEGO.addToParameter(model, "pMaxCons", cs.dPower_Storage['MaxCons'], indices=[model.storageUnits], doc='Maximum consumption of storage unit')
 
@@ -62,14 +71,15 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
                 model.vStInterRes[p, g].setub(model.pMaxReserve[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
                 model.vStInterRes[p, g].setlb(model.pMinReserve[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
 
+    model.vLDSSpillage = pyo.Var(model.rp, model.k, model.longDurationStorageUnits, doc='Spillage of long-duration storage units', bounds=(0, None))
+    second_stage_variables += [model.vLDSSpillage]
+
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
 
 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
-    # TODO: Check if we should add Hydro here as well
-
     # Constraint definitions
     model.eStIntraRes = pyo.ConstraintList(doc='Intra-day reserve constraint for storage units')
     model.eExclusiveChargeDischarge = pyo.ConstraintList(doc='Enforce exclusive charge or discharge for storage units')
@@ -80,11 +90,20 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             for k in model.k:
                 if len(model.rp) == 1:
                     if model.k.ord(k) == 1:  # Adding IniReserve if it is the first time step (instead of 'prev' value)
-                        model.eStIntraRes.add(0 == model.pIniReserve[g] * (model.pExisUnits[g] + model.vGenInvest[g]) - model.vStIntraRes[rp, k, g] - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic'])
+                        model.eStIntraRes.add(0 == model.pIniReserve[g] * (model.pExisUnits[g] + model.vGenInvest[g])
+                                              - model.vStIntraRes[rp, k, g]
+                                              - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
+                                              + ((model.pLDSInflows[rp, k, g] * model.pWeight_k[k] - model.vLDSSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationStorageUnits else 0))
                     else:
-                        model.eStIntraRes.add(0 == model.vStIntraRes[rp, model.k.prev(k), g] - model.vStIntraRes[rp, k, g] - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic'])
+                        model.eStIntraRes.add(0 == model.vStIntraRes[rp, model.k.prev(k), g]
+                                              - model.vStIntraRes[rp, k, g]
+                                              - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
+                                              + ((model.pLDSInflows[rp, k, g] * model.pWeight_k[k] - model.vLDSSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationStorageUnits else 0))
                 elif len(model.rp) > 1:  # Only cyclic if it has multiple representative periods
-                    model.eStIntraRes.add(0 == model.vStIntraRes[rp, model.k.prevw(k), g] - model.vStIntraRes[rp, k, g] - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic'])
+                    model.eStIntraRes.add(0 == model.vStIntraRes[rp, model.k.prevw(k), g]
+                                          - model.vStIntraRes[rp, k, g]
+                                          - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
+                                          + ((model.pLDSInflows[rp, k, g] * model.pWeight_k[k] - model.vLDSSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationStorageUnits else 0))
 
                 # TODO: Check if we should rather do a +/- value and calculate charge/discharge ex-post
                 if model.pEnableChDisPower:
@@ -132,7 +151,9 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     + (model.pIniReserve[storage_unit] * (model.pExisUnits[storage_unit] + model.vGenInvest[storage_unit]) if model.p.ord(p) == model.pMovWindow else 0)
                     - model.vStInterRes[p, storage_unit]
                     + sum(- model.vGenP[rp2, k2, storage_unit] * model.pWeight_k[k2] / cs.dPower_Storage.loc[storage_unit, 'DisEffic'] * hindex_count.loc[rp2, k2]
-                          + model.vConsump[rp2, k2, storage_unit] * model.pWeight_k[k2] * cs.dPower_Storage.loc[storage_unit, 'ChEffic'] * hindex_count.loc[rp2, k2] for rp2, k2 in hindex_count.index))
+                          + model.vConsump[rp2, k2, storage_unit] * model.pWeight_k[k2] * cs.dPower_Storage.loc[storage_unit, 'ChEffic'] * hindex_count.loc[rp2, k2]
+                          + model.pLDSInflows[rp2, k2, storage_unit] * model.pWeight_k[k2] * hindex_count.loc[rp2, k2]
+                          - model.vLDSSpillage[rp2, k2, storage_unit] * model.pWeight_k[k] * hindex_count.loc[rp2, k2] for rp2, k2 in hindex_count.index))
 
         else:  # Skip otherwise
             return pyo.Constraint.Skip
