@@ -4,7 +4,6 @@ from pyomo.core import ConcreteModel
 from InOutModule.CaseStudy import CaseStudy
 from LEGO import LEGO, LEGOUtilities
 
-
 @LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
 def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> (list[pyo.Var], list[pyo.Var]):
     # Lists for defining stochastic behavior. First stage variables are common for all scenarios, second stage variables are scenario-specific.
@@ -15,38 +14,93 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model = ConcreteModel()
 
     # Sets
-    # model.hydroPlants = pyo.Set(doc='Hydro plants', initialize=cs.dHydro_Reservoir.reset_index().set_index(['rp', 'k']).index)
     model.Hydroplants = pyo.Set(initialize=['P1', 'P2', 'P3'], doc='Hydro plants')  # Example hydro plants, replace with actual data
     model.T = pyo.Set(initialize=[1, 2, 3])                                         # Example time steps, replace with actual data
-    model.ReservoirswoHp = pyo.Set(initialize=['R1', 'R2', 'R3'], doc='Reservoirs')     # Reservoirs without power plants (e.g. Lakes), replace with actual data
+    # model.ReservoirswoHp = pyo.Set(initialize=['R1', 'R2', 'R3'], doc='Reservoirs')     # Reservoirs without power plants (e.g. Lakes), replace with actual data
 
     # Parameters
-    model.pMaxInflow = pyo.Param(model.hydroplants, initialize={'P1': 100, 'P2': 150, 'P3': 200}, doc='Maximum inflow rate for hydro plants')  # Example max inflow rates
-    model.pInflow = pyo.Param(model.hydroplants, model.T, initialize = {
-        ('P1', 1): 80, ('P1', 2): 90, ('P1', 3): 100,
-        ('P2', 1): 120, ('P2', 2): 130, ('P2', 3): 140,
-        ('P3', 1): 160, ('P3', 2): 170, ('P3', 3): 180
-    })  # Example inflow rates, replace with actual data
+    model.pMaxInflow = pyo.Param(model.Hydroplants, initialize={'P1': 100, 'P2': 150, 'P3': 200}, doc='Maximum inflow rate for hydro plants')  # Example max inflow rates
+
+    model.pInflowRiver = pyo.Param(model.Hydroplants, model.T, initialize={
+        ('P1', 1): 50, ('P1', 2): 60, ('P1', 3): 70,
+        ('P2', 1): 80, ('P2', 2): 90, ('P2', 3): 100,
+        ('P3', 1): 110, ('P3', 2): 120, ('P3', 3): 130
+    }, doc='Flow of river for hydro plants at certain time steps')  # Example flow rates, replace with actual data
+
+     # model.pInflow = pyo.Param(model.Hydroplants, model.T, initialize = {
+      #   ('P1', 1): 80, ('P1', 2): 90, ('P1', 3): 100,
+       #  ('P2', 1): 120, ('P2', 2): 130, ('P2', 3): 140,
+       #  ('P3', 1): 160, ('P3', 2): 170, ('P3', 3): 180
+    # })  # Example inflow rates, replace with actual data
+
     model.pCapacityReservoir = pyo.Param(model.hydroplants, initialize={
         'P1': 500, 'P2': 600, 'P3': 700}, doc='Capacity of reservoirs for hydro plants')  # not yet used, but can be added if needed
+
     model.pLowerLimitReservoir = pyo.Param(model.hydroplants, initialize={
         'P1': 50, 'P2': 60, 'P3': 70}, doc='Lower limit of reservoir levels for hydro plants')  # not yet used, but can be added if needed
 
+    model.pInitialStorage = pyo.Param(model.hydroplants, initialize={
+        'P1': 100, 'P2': 120, 'P3': 140}, doc='Initial storage levels for hydro plants')  # Initial storage levels, replace with
+
+    model.pPowerFactor = pyo.Param(model.Hydroplants, model.T, initialize={
+        ('P1', 1): 0.9, ('P1', 2): 0.85, ('P1', 3): 0.8,
+        ('P2', 1): 0.95, ('P2', 2): 0.9, ('P2', 3): 0.85,
+        ('P3', 1): 0.8, ('P3', 2): 0.75, ('P3', 3): 0.7
+    }, doc='Power factor for hydro plants')  # Example power factors, replace with actual data
+
+    model.pDemand = pyo.Param(model.T, initialize={1: 300, 2: 350, 3: 400}, doc='Demand for each time step')  # Example demand, replace with actual data
+
+    model.pCost = pyo.Param(model.Hydroplants, model.T, initialize={
+        ('P1', 1): 10, ('P1', 2): 12, ('P1', 3): 14,
+        ('P2', 1): 15, ('P2', 2): 18, ('P2', 3): 20,
+        ('P3', 1): 8, ('P3', 2): 10, ('P3', 3): 12
+    }, doc='Cost of production for hydro plants')  # Example costs, replace with actual data
+
     # Variables
-    model.vPowerFactor = pyo.Var(model.Hydroplants, model.T)     # Power factor for hydro plants, normally read in via excel
-    second_stage_variables += [model.vPowerFactor]
+    model.vProd = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Production of hydro plants')  # Production of hydro plants; Domain cannot be changed?
+    second_stage_variables += [model.vProd]
+    model.vInflow = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Inflow rate for hydro plants')  # Inflow rate for hydro plants
+    second_stage_variables += [model.vInflow]
+    model.vStorage = pyo.Var(model.Hydroplants, model. T, domain=pyo.NonNegativeReals, doc='Storage level for hydro plants')  # Storage level for hydro plants at certain time steps
+    second_stage_variables += [model.vStorage]
+
+    # Validation of parameters / Constraints?
+    # def validate_parameters(model, pInflow, pMaxInflow):
+    #     for i in model.Hydroplants:
+    #         for t in model.T:
+    #             if model.pInflow[i, t] > model.pMaxInflow[i]:
+    #                raise ValueError('Inflow rate for hydro plant {} is too high'.format(i))
+    # model.validate_parameters = pyo.Constraint(rule=validate_parameters, doc='Validation of parameters for hydro plants')
 
     # Constraints
-    def max_inflow_rule(model, i, t):
-        return model.pInflow[i, t] <= model.pMaxInflow[i]
-    model.eInflowLimit = pyo.Constraint(model.Hydroplants, model.T, rule=max_inflow_rule, doc='Maximum inflow limit for hydro plants')
+    def inflow_rule(model, i, t):
+        return model.vInflow[i, t] <= model.pMaxInflow[i]
+    model.eInflow = pyo.Constraint(model.Hydroplants, model.T, rule=inflow_rule, doc='Inflow constraint for hydro plants')  # Inflow constraint
+
+    def storage_rule(model, i, t):
+        if t == 1:
+            return model.vStorage[i, t] == model.pInitialStorage[i] + model.pInflowRiver[i, t] - model.vInflow[i, t]
+        else:
+            return model.vStorage[i, t] == model.vStorage[i, t-1] + model.pInflowRiver[i, t] - model.vInflow[i, t]
+    model.eStorage = pyo.Constraint(model.Hydroplants, model.T, rule=storage_rule, doc='Storage level constraint for hydro plants')  # Storage level constraint
+
+    def capacity_rule(model, i, t):
+        return model.vStorage[i, t] <= model.pCapacityReservoir[i]
+    model.eCapacity = pyo.Constraint(model.Hydroplants, model.T, rule=capacity_rule, doc='Capacity constraint for hydro plants')  # Capacity constraint for reservoirs
+
+    def prod_def_rule(model, i, t):
+        return model.vProd[i, t] == model.vInflow[i, t] * model.pPowerFactor[i, t]
+
+    model.eProdDef = pyo.Constraint(model.Hydroplants, model.T, rule=prod_def_rule, doc='Production definition for hydro plants')  # Production definition constraint
+
+    def demand_rule(model, i, t):
+        return sum(model.vProd[i, t] for i in model.Hydroplants) == model.pDemand[t]
+    model.eDemand_con = pyo.Constraint(model.T, rule=demand_rule)
 
     # Objectives
-    def obj_rule(model):
-        return sum(model.vPowerFactor[i, t] * model.pInflow[i, t] for i in model.Hydroplants for t in model.T)
-
-    model.objective = pyo.Objective(rule=obj_rule, sense=pyo.maximize, doc='Objective function for hydro plants') # function maximizes the total output of hydro plants
-    print("\nHydro")
+    def objective_rule(model):
+        return sum(model.vProd[i, t] * model.pCost[i, t] for i in model.Hydroplants for t in model.T)
+    model.obj_cost = pyo.Objective(rule=objective_rule, sense=pyo.minimize, doc='Objective function for hydro plants')  # Objective function to minimize cost of production
 
     # Sets  # TODO: Add Hydro sets (e.g., hydro plants, reservoirs, etc.) if needed
     # storageUnits = ["S1, S2, S3"]
