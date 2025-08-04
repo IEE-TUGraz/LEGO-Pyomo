@@ -125,6 +125,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         return sum(model.vProd[i, t] * model.pCost[i, t] for i in model.Hydroplants for t in model.T)
     model.obj_cost = pyo.Objective(rule=objective_rule, sense=pyo.minimize, doc='Objective function for hydro plants')  # Objective function to minimize cost of production
 
+    print("Model created, trying to solve it...")
+    optimizer = pyo.SolverFactory("highs")  # Use HiGHS solver for optimization
+    results = optimizer.solve(model)
+    print(results)
+    exit(0)
+
     # Sets  # TODO: Add Hydro sets (e.g., hydro plants, reservoirs, etc.) if needed
     # storageUnits = ["S1, S2, S3"]
     # model.myVariable = pyo.Var(model.rp, model.k, doc='My variable for testing purposes', bounds=(0, 10))  # Example variable to show how to add variables
