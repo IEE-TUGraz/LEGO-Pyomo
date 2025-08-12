@@ -27,12 +27,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         ('P3', 1): 110, ('P3', 2): 120, ('P3', 3): 130
     }, doc='Flow of river for hydro plants at certain time steps')  # Example flow rates, replace with actual data
 
-     # model.pInflow = pyo.Param(model.Hydroplants, model.T, initialize = {
-      #   ('P1', 1): 80, ('P1', 2): 90, ('P1', 3): 100,
-       #  ('P2', 1): 120, ('P2', 2): 130, ('P2', 3): 140,
-       #  ('P3', 1): 160, ('P3', 2): 170, ('P3', 3): 180
-    # })  # Example inflow rates, replace with actual data
-
     model.pCapacityReservoir = pyo.Param(model.Hydroplants, initialize={
         'P1': 500, 'P2': 600, 'P3': 700}, doc='Capacity of reservoirs for hydro plants')  # not yet used, but can be added if needed
 
@@ -42,10 +36,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.pInitialStorage = pyo.Param(model.Hydroplants, initialize={
         'P1': 100, 'P2': 120, 'P3': 140}, doc='Initial storage levels for hydro plants')  # Initial storage levels, replace with
 
-    model.pPowerFactor = pyo.Param(model.Hydroplants, model.T, initialize={
-        ('P1', 1): 0.9, ('P1', 2): 0.85, ('P1', 3): 0.8,
-        ('P2', 1): 0.95, ('P2', 2): 0.9, ('P2', 3): 0.85,
-        ('P3', 1): 0.8, ('P3', 2): 0.75, ('P3', 3): 0.7
+    model.pPowerFactor = pyo.Param(model.Hydroplants, initialize={ 'P1': 1.1, 'P2': 1.4, 'P3': 1.5
     }, doc='Power factor for hydro plants')  # Example power factors, replace with actual data
 
     model.pDemand = pyo.Param(model.T, initialize={1: 300, 2: 350, 3: 400}, doc='Demand for each time step')  # Example demand, replace with actual data
@@ -61,64 +52,53 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     second_stage_variables += [model.vProd]
     model.vInflow = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Inflow rate for hydro plants')  # Inflow rate for hydro plants
     second_stage_variables += [model.vInflow]
-    model.vStorage = pyo.Var(model.Hydroplants, model. T, domain=pyo.NonNegativeReals, doc='Storage level for hydro plants')  # Storage level for hydro plants at certain time steps
+    model.vStorage = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Storage level for hydro plants')  # Storage level for hydro plants at certain time steps
     second_stage_variables += [model.vStorage]
 
-    # Variable for Big M formulation
-    model.x = pyo.Var(model.Hydroplants, model.T, domain=pyo.Binary, doc='Binary variable for Big M formulation')  # Binary variable for Big M formulation (if needed)
-
-    # Validation of parameters / Constraints?
-    # def validate_parameters(model, pInflow, pMaxInflow):
-    #     for i in model.Hydroplants:
-    #         for t in model.T:
-    #             if model.pInflow[i, t] > model.pMaxInflow[i]:
-    #                raise ValueError('Inflow rate for hydro plant {} is too high'.format(i))
-    # model.validate_parameters = pyo.Constraint(rule=validate_parameters, doc='Validation of parameters for hydro plants')
+    model.vConsumption = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Consumption of hydro plants')  # Consumption from Reservoir
+    second_stage_variables += [model.vConsumption]
+    model.vSafe = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Safe production of hydro plants')     # Safe to Reservoir from River
+    second_stage_variables += [model.vSafe]
 
     # Constraints
 
-    # Constrain for Big M formulation (if needed)
-    def bigM_rule(model, i):
-        return pyo.value(model.pCapacityReservoir[i])
-    model.M = pyo.Param(model.Hydroplants, initialize=lambda model, i: pyo.value(model.pCapacityReservoir[i]))
-    epsilon = 1e-16  # Small value to avoid numerical issues
-
-    def storage_upper_boundary(model, i, t):
-        return model.vStorage[i, t] >= model.M[i] + epsilon * model.M[i] * (1 - model.x[i, t])
-    model.eStorageUpperBoundary = pyo.Constraint(model.Hydroplants, model.T, rule=storage_upper_boundary, doc='Upper boundary for storage level with Big M formulation')
-
-    def storage_lower_boundary(model, i, t):
-        return model.vStorage[i, t] <= model.pLowerLimitReservoir[i] + model.M[i] * model.x[i, t]
-    model.eStorageLowerBoundary = pyo.Constraint(model.Hydroplants, model.T, rule=storage_lower_boundary, doc='Lower boundary for storage level with Big M formulation')
-
-    def inflow_limit_storage_low(model, i, t):
-        return model.vInflow[i, t] <= model.pInflowRiver[i, t] + model.M[i] * model.x[i, t]
-    model.eInflowLimitStorageLow = pyo.Constraint(model.Hydroplants, model.T, rule=inflow_limit_storage_low, doc='Inflow limit when storage is low with Big M formulation')
-    # End Big M formulation
-
-    def inflow_rule(model, i, t):
+    def inflow_rule_1(model, i, t):
         return model.vInflow[i, t] <= model.pMaxInflow[i]
-    model.eInflow = pyo.Constraint(model.Hydroplants, model.T, rule=inflow_rule, doc='Inflow constraint for hydro plants')  # Inflow constraint
+    model.eMaxInflow = pyo.Constraint(model.Hydroplants, model.T, rule=inflow_rule_1, doc='Inflow rate constraint for hydro plants')
 
-    def storage_def_rule(model, i, t):
+    def storage_rule_1(model, i, t):
         if t == 1:
             return model.vStorage[i, t] == model.pInitialStorage[i] + model.pInflowRiver[i, t] - model.vInflow[i, t]
         else:
             return model.vStorage[i, t] == model.vStorage[i, t-1] + model.pInflowRiver[i, t] - model.vInflow[i, t]
-    model.eStorage = pyo.Constraint(model.Hydroplants, model.T, rule=storage_def_rule, doc='Storage level constraint for hydro plants')  # Storage level constraint
-
-    def capacity_rule(model, i, t):
-        return model.vStorage[i, t] <= model.pCapacityReservoir[i]
-    model.eCapacity = pyo.Constraint(model.Hydroplants, model.T, rule=capacity_rule, doc='Capacity constraint for hydro plants')  # Capacity constraint for reservoirs
+    model.eStorage = pyo.Constraint(model.Hydroplants, model.T, rule=storage_rule_1, doc='Storage level constraint for hydro plants')
 
     def prod_def_rule(model, i, t):
-        return model.vProd[i, t] == model.vInflow[i, t] * model.pPowerFactor[i, t]
-
+        return model.vProd[i, t] == model.vInflow[i, t] * model.pPowerFactor[i]
     model.eProdDef = pyo.Constraint(model.Hydroplants, model.T, rule=prod_def_rule, doc='Production definition for hydro plants')  # Production definition constraint
 
-    def demand_rule(model, i, t):
+    def demand_rule(model, t):
         return sum(model.vProd[i, t] for i in model.Hydroplants) == model.pDemand[t]
     model.eDemand_con = pyo.Constraint(model.T, rule=demand_rule)
+
+    def inflow_rule_2(model, i, t):
+        return model.vInflow[i, t] == model.pInflowRiver[i, t] + model.vConsumption[i, t] - model.vSafe[i, t]
+    model.eInflow = pyo.Constraint(model.Hydroplants, model.T, rule=inflow_rule_2)
+
+    def storage_rule_2(model, i, t):
+        if t == 1:
+            return pyo.Constraint.Skip
+        else:
+            return model.vStorage[i, t] == model.vStorage[i, t-1] - model.vConsumption[i,t] + model.vSafe[i,t]
+    model.eStorage2 = pyo.Constraint(model.Hydroplants, model.T, rule=storage_rule_2)
+
+    def min_capacity_rule(model, i, t):
+       return model.pLowerLimitReservoir[i] <= model.vStorage[i, t]
+    model.eMinCapacity = pyo.Constraint(model.Hydroplants, model.T, rule=min_capacity_rule, doc='Minimum capacity constraint for hydro plants')
+
+    def max_capacity_rule(model, i, t):
+        return model.vStorage[i, t] <= model.pCapacityReservoir[i]
+    model.eMaxCapacity = pyo.Constraint(model.Hydroplants, model.T, rule=max_capacity_rule, doc='Maximum capacity constraint for hydro plants')
 
     # Objectives
     def objective_rule(model):
