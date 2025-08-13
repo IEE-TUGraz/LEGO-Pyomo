@@ -162,86 +162,46 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     if (g, i) in model.gi:
                         model.eDC_BalanceP_expr[rp, k, i] -= model.vConsump[rp, k, g]
 
-    #    eStDyLeR_StBe1(rp,k,i    )  "Don't chage out of the grid                       "
-    #// Charging must be smaller or equal generation minus demand + (if demand is bigger than the generation)
-    # eStDyLeR_StBe1 (rpk(rp,k),i)$[pDyLeR_StBe and 1]..
-    #    sum[gi(s,i),vConsump(rp,k,s)] =l= sum[gi(solar,i),vGenP(rp,k,solar)] - pDemandP(rp,k,i) + pBigM * vBin_DyLeR_StBe_NoChGrid(rp,k,i) - eps;
-    def eStDyLeR_StBe1_rule(m, rp, k, i, cs):
-        return sum(m.vConsump[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) <= sum(m.vGenP[rp, k, solar] for solar in m.vresGenerators if (solar, i) in model.gi and cs.dPower_VRES.loc[solar]["tec"] == "Solar") - m.pDemandP[rp, k, i] + m.pBigM * m.vBin_DyLeR_StBe_NoChGrid[rp, k, i] - m.eps
+    if cs.dPower_Parameters["pForcePrimitiveStorageUsage"]:
+        def eStDyLeR_StBe1_rule(m, rp, k, i, cs):
+            return sum(m.vConsump[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) <= sum(m.vGenP[rp, k, solar] for solar in m.vresGenerators if (solar, i) in model.gi and cs.dPower_VRES.loc[solar]["tec"] == "Solar") - m.pDemandP[rp, k, i] + m.pBigM * m.vBin_DyLeR_StBe_NoChGrid[rp, k, i] - m.eps
 
-    model.eStDyLeR_StBe1 = pyo.Constraint(model.rp, model.k, model.i, doc="Don't charge out of the grid", rule=lambda m, rp, k, i: eStDyLeR_StBe1_rule(m, rp, k, i, cs))
+        model.eStDyLeR_StBe1 = pyo.Constraint(model.rp, model.k, model.i, doc="Don't charge out of the grid", rule=lambda m, rp, k, i: eStDyLeR_StBe1_rule(m, rp, k, i, cs))
 
-    #    eStDyLeR_StBe2(rp,k,i    )  "Charge only overproduction                        "
-    # // Only Chage if generation is bigger than demand
-    # eStDyLeR_StBe2 (rpk(rp,k),i)$[pDyLeR_StBe and 1]..
-    #    sum[gi(s,i),vConsump(rp,k,s)] =l= pBigM * (1 - vBin_DyLeR_StBe_NoChGrid(rp,k,i));
-    def eStDyLeR_StBe2_rule (m, rp, k, i):
-        return sum(m.vConsump[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) <= m.pBigM * (1 - m.vBin_DyLeR_StBe_NoChGrid[rp, k, i])
+        def eStDyLeR_StBe2_rule(m, rp, k, i):
+            return sum(m.vConsump[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) <= m.pBigM * (1 - m.vBin_DyLeR_StBe_NoChGrid[rp, k, i])
 
-    model.eStDyLeR_StBe2 = pyo.Constraint(model.rp, model.k, model.i, doc="Charge only overproduction", rule=lambda m, rp, k, i: eStDyLeR_StBe2_rule(m, rp, k, i))
+        model.eStDyLeR_StBe2 = pyo.Constraint(model.rp, model.k, model.i, doc="Charge only overproduction", rule=lambda m, rp, k, i: eStDyLeR_StBe2_rule(m, rp, k, i))
 
-    #    eStDyLeR_StBe3(rp,k,i    )  "Checks if storage is full                         "
-    # // Check if BESS already full
-    # eStDyLeR_StBe3 (rpk(rp,k),i)$[pDyLeR_StBe and 1]..
-    #    sum[gi(s,i),vStIntraRes(rp,k,s)] =g= sum(gi(s,i),pMaxCons(s) * pE2PRatio(s)) * vBin_DyLeR_StBe_BeFull(rp,k,i) - eps;
-    def eStDyLeR_StBe3_rule(m, rp, k, i):
-        return sum(m.vStIntraRes[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) >= sum(m.pMaxCons[s] * m.pE2PRatio[s] for s in m.storageUnits if (s, i) in model.gi) * m.vBin_DyLeR_StBe_BeFull[rp, k, i] - m.eps
+        def eStDyLeR_StBe3_rule(m, rp, k, i):
+            return sum(m.vStIntraRes[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) >= sum(m.pMaxCons[s] * m.pE2PRatio[s] for s in m.storageUnits if (s, i) in model.gi) * m.vBin_DyLeR_StBe_BeFull[rp, k, i] - m.eps
 
-    model.eStDyLeR_StBe3 = pyo.Constraint(model.rp, model.k, model.i, doc="Checks if storage is full", rule=lambda m, rp, k, i: eStDyLeR_StBe3_rule(m, rp, k, i))
+        model.eStDyLeR_StBe3 = pyo.Constraint(model.rp, model.k, model.i, doc="Checks if storage is full", rule=lambda m, rp, k, i: eStDyLeR_StBe3_rule(m, rp, k, i))
 
-    #    eStDyLeR_StBe4(rp,k,i    )  "Charge Storage until it is full                   "
-    # // Storge must be charged until it's full
-    # eStDyLeR_StBe4 (rpk(rp,k),i)$[pDyLeR_StBe and 1]..
-    #    sum[gi(s,i),vConsump(rp,k,s)] =g= sum[gi(solar,i),vGenP(rp,k,solar)] - pDemandP(rp,k,i) - pBigM * vBin_DyLeR_StBe_BeFull(rp,k,i) + eps;
-    def eStDyLeR_StBe4_rule(m, rp, k, i):
-        return sum(m.vConsump[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) >= sum(m.vGenP[rp, k, solar] for solar in m.vresGenerators if (solar, i) in model.gi and cs.dPower_VRES.loc[solar]["tec"] == "Solar") - m.pDemandP[rp, k, i] - m.pBigM * m.vBin_DyLeR_StBe_BeFull[rp, k, i] + m.eps
+        def eStDyLeR_StBe4_rule(m, rp, k, i):
+            return sum(m.vConsump[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) >= sum(m.vGenP[rp, k, solar] for solar in m.vresGenerators if (solar, i) in model.gi and cs.dPower_VRES.loc[solar]["tec"] == "Solar") - m.pDemandP[rp, k, i] - m.pBigM * m.vBin_DyLeR_StBe_BeFull[rp, k, i] + m.eps
 
-    model.eStDyLeR_StBe4 = pyo.Constraint(model.rp, model.k, model.i, doc="Charge Storage until it is full", rule=lambda m, rp, k, i: eStDyLeR_StBe4_rule(m, rp, k, i))
+        model.eStDyLeR_StBe4 = pyo.Constraint(model.rp, model.k, model.i, doc="Charge Storage until it is full", rule=lambda m, rp, k, i: eStDyLeR_StBe4_rule(m, rp, k, i))
 
-    #    eStDyLeR_StBe5(rp,k,i    )  "Don't dischage in the grid                        "
-    # // Discharging must be smaller or equal demand minus generation + (if generation is bigger than the demand)
-    # eStDyLeR_StBe5 (rpk(rp,k),i)$[pDyLeR_StBe and 1]..
-    #    sum[gi(s,i),vGenP(rp,k,s)] =l= pDemandP(rp,k,i) - sum[gi(solar,i),vGenP(rp,k,solar)] + pBigM * vBin_DyLeR_StBe_NoDischGrid(rp,k,i) + eps;
-    def eStDyLeR_StBe5_rule(m, rp, k, i):
-        return sum(m.vGenP[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) <= m.pDemandP[rp, k, i] - sum(m.vGenP[rp, k, solar] for solar in m.vresGenerators if (solar, i) in model.gi and cs.dPower_VRES.loc[solar]["tec"] == "Solar") + m.pBigM * m.vBin_DyLeR_StBe_NoDischGrid[rp, k, i] + m.eps
+        def eStDyLeR_StBe5_rule(m, rp, k, i):
+            return sum(m.vGenP[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) <= m.pDemandP[rp, k, i] - sum(m.vGenP[rp, k, solar] for solar in m.vresGenerators if (solar, i) in model.gi and cs.dPower_VRES.loc[solar]["tec"] == "Solar") + m.pBigM * m.vBin_DyLeR_StBe_NoDischGrid[rp, k, i] + m.eps
 
-    model.eStDyLeR_StBe5 = pyo.Constraint(model.rp, model.k, model.i, doc="Don't discharge in the grid", rule=lambda m, rp, k, i: eStDyLeR_StBe5_rule(m, rp, k, i))
+        model.eStDyLeR_StBe5 = pyo.Constraint(model.rp, model.k, model.i, doc="Don't discharge in the grid", rule=lambda m, rp, k, i: eStDyLeR_StBe5_rule(m, rp, k, i))
 
-    #    eStDyLeR_StBe6(rp,k,i    )  "Discharge only underproduction                    "
-    # // Only Discharge if demand is bigger than generation
-    # eStDyLeR_StBe6 (rpk(rp,k),i)$[pDyLeR_StBe and 1]..
-    #    sum[gi(s,i),vGenP(rp,k,s)] =l= pBigM * (1 - vBin_DyLeR_StBe_NoDischGrid(rp,k,i));
-    def eStDyLeR_StBe6_rule(m, rp, k, i):
-        return sum(m.vGenP[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) <= m.pBigM * (1 - m.vBin_DyLeR_StBe_NoDischGrid[rp, k, i])
+        def eStDyLeR_StBe6_rule(m, rp, k, i):
+            return sum(m.vGenP[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) <= m.pBigM * (1 - m.vBin_DyLeR_StBe_NoDischGrid[rp, k, i])
 
-    model.eStDyLeR_StBe6 = pyo.Constraint(model.rp, model.k, model.i, doc="Discharge only underproduction", rule=lambda m, rp, k, i: eStDyLeR_StBe6_rule(m, rp, k, i))
+        model.eStDyLeR_StBe6 = pyo.Constraint(model.rp, model.k, model.i, doc="Discharge only underproduction", rule=lambda m, rp, k, i: eStDyLeR_StBe6_rule(m, rp, k, i))
 
-    #    eStDyLeR_StBe7(rp,k,i    )  "Checks if storage is empty                        "
-    # //
-    # eStDyLeR_StBe7 (rpk(rp,k),i)$[pDyLeR_StBe and 1]..
-    #    sum[gi(s,i),vStIntraRes(rp,k,s)] =l= sum(gi(s,i),pMaxProd(s) * pE2PRatio(s)) * (1 - vBin_DyLeR_StBe_BeEmpty(rp,k,i)) + eps;
-    def eStDyLeR_StBe7_rule(m, rp, k, i):
-        return sum(m.vStIntraRes[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) <= sum(m.pMaxProd[s] * m.pE2PRatio[s] for s in m.storageUnits if (s, i) in model.gi) * (1 - m.vBin_DyLeR_StBe_BeEmpty[rp, k, i]) + m.eps
+        def eStDyLeR_StBe7_rule(m, rp, k, i):
+            return sum(m.vStIntraRes[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) <= sum(m.pMaxProd[s] * m.pE2PRatio[s] for s in m.storageUnits if (s, i) in model.gi) * (1 - m.vBin_DyLeR_StBe_BeEmpty[rp, k, i]) + m.eps
 
-    model.eStDyLeR_StBe7 = pyo.Constraint(model.rp, model.k, model.i, doc="Checks if storage is empty", rule=lambda m, rp, k, i: eStDyLeR_StBe7_rule(m, rp, k, i))
+        model.eStDyLeR_StBe7 = pyo.Constraint(model.rp, model.k, model.i, doc="Checks if storage is empty", rule=lambda m, rp, k, i: eStDyLeR_StBe7_rule(m, rp, k, i))
 
-    #    eStDyLeR_StBe8(rp,k,i    )  "Disharge Storage until it is empty                "
-    # //
-    # eStDyLeR_StBe8 (rpk(rp,k),i)$[pDyLeR_StBe and 1]..
-    #    sum[gi(s,i),vGenP(rp,k,s)] =g= pDemandP(rp,k,i) - sum[gi(solar,i),vGenP(rp,k,solar)] - pBigM * vBin_DyLeR_StBe_BeEmpty(rp,k,i) + eps;
-    def eStDyLeR_StBe8_rule(m, rp, k, i):
-        return sum(m.vGenP[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) >= m.pDemandP[rp, k, i] - sum(m.vGenP[rp, k, solar] for solar in m.vresGenerators if (solar, i) in model.gi and cs.dPower_VRES.loc[solar]["tec"] == "Solar") - m.pBigM * m.vBin_DyLeR_StBe_BeEmpty[rp, k, i] + m.eps
+        def eStDyLeR_StBe8_rule(m, rp, k, i):
+            return sum(m.vGenP[rp, k, s] for s in m.storageUnits if (s, i) in model.gi) >= m.pDemandP[rp, k, i] - sum(m.vGenP[rp, k, solar] for solar in m.vresGenerators if (solar, i) in model.gi and cs.dPower_VRES.loc[solar]["tec"] == "Solar") - m.pBigM * m.vBin_DyLeR_StBe_BeEmpty[rp, k, i] + m.eps
 
-    model.eStDyLeR_StBe8 = pyo.Constraint(model.rp, model.k, model.i, doc="Disharge Storage until it is empty", rule=lambda m, rp, k, i: eStDyLeR_StBe8_rule(m, rp, k, i))
-
-    #    eStDyLeR_StBe9(rp,k,i    )  "No Charing and Discharging at the same time       "
-    # //
-    # eStDyLeR_StBe9 (rpk(rp,k),i)$[pDyLeR_StBe and 0]..
-    #    vBin_DyLeR_StBe_NoChGrid(rp,k,i) + vBin_DyLeR_StBe_NoDischGrid(rp,k,i) =g= 1;
-    def eStDyLeR_StBe9_rule(m, rp, k, i):
-        return m.vBin_DyLeR_StBe_NoChGrid[rp, k, i] + m.vBin_DyLeR_StBe_NoDischGrid[rp, k, i] >= 1
-
-    model.eStDyLeR_StBe9 = pyo.Constraint(model.rp, model.k, model.i, doc="No Charing and Discharging at the same time", rule=lambda m, rp, k, i: eStDyLeR_StBe9_rule(m, rp, k, i))
+        model.eStDyLeR_StBe8 = pyo.Constraint(model.rp, model.k, model.i, doc="Disharge Storage until it is empty", rule=lambda m, rp, k, i: eStDyLeR_StBe8_rule(m, rp, k, i))
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0
