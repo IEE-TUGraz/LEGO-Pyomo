@@ -93,6 +93,7 @@ if not use_moving_window:
         process_results(results)
     except NoFeasibleSolutionError:
         printer.error("No feasible solution found!")
+        analyze_infeasible_constraints(model)
         exit(1)
 
 else:
@@ -139,6 +140,7 @@ else:
             process_results(results)
         except NoFeasibleSolutionError:
             printer.error(f"No feasible solution found for window {start} to {end}!")
+            analyze_infeasible_constraints(model)
             exit(1)
 
         model_old = model

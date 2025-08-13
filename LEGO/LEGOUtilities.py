@@ -4,6 +4,8 @@ import typing
 import matplotlib.pyplot as plt
 import pandas as pd
 import pyomo.environ as pyo
+from pyomo.core.expr import identify_variables
+from pyomo.util.infeasible import find_infeasible_constraints, find_infeasible_bounds
 
 from InOutModule import ExcelReader
 from LEGO import LEGO
@@ -334,3 +336,177 @@ def getUnitCommitmentSlackCost(lego: LEGO, thermalGen_df: pd.DataFrame, PNS_cost
     :return: The total unit commitment slack cost weighted by the given factors.
     """
     return sum(sum(sum((pyo.value(lego.model.vCommitCorrectHigher[rp, k, t]) + pyo.value(lego.model.vCommitCorrectLower[rp, k, t])) * lego.model.pWeight_rp[rp] for rp in lego.model.rp) * lego.model.pWeight_k[k] for k in lego.model.k) * thermalGen_df.loc[t]["MaxProd"] * PNS_cost for t in lego.model.thermalGenerators)
+
+
+def analyze_infeasible_constraints(model) -> None:
+    """
+    Comprehensive analysis of infeasible constraints using pyomo's diagnostic tools
+
+    :param model: pyomo model object containing the Pyomo model to check
+    """
+    print("\n" + "=" * 80)
+    print("COMPREHENSIVE INFEASIBILITY ANALYSIS")
+    print("=" * 80 + "\n")
+
+    # First, check for infeasible variable bounds
+    print("-" * 40)
+    print("1. VARIABLE BOUNDS ANALYSIS:")
+    print("-" * 40)
+    var_bound_violations = {}
+    total_var_violations = 0
+
+    for var, infeasible in find_infeasible_bounds(model, tol=1e-6):
+        var_name = var.name.split('[')[0]
+        if var_name not in var_bound_violations:
+            var_bound_violations[var_name] = []
+
+        violation_msg = ""
+        if infeasible & 4:
+            violation_msg = "no value assigned"
+        else:
+            if infeasible & 1:
+                violation_msg += f"value={var.value:.4f} < lower={var.lb:.4f}"
+            if infeasible & 2:
+                if violation_msg:
+                    violation_msg += " AND "
+                violation_msg += f"value={var.value:.4f} > upper={var.ub:.4f}"
+
+        var_bound_violations[var_name].append({
+            'var': var,
+            'violation': violation_msg
+        })
+        total_var_violations += 1
+
+    if var_bound_violations:
+        print(f"Found {total_var_violations} variable bound violations across {len(var_bound_violations)} variable types:")
+        for var_name, violations in list(var_bound_violations.items())[:5]:  # Show first 5 types
+            print(f"  \n - {var_name}: {len(violations)} violations")
+            for i, violation in enumerate(violations[:3]):  # Show first 3 of each type
+                var = violation['var']
+                index_part = f"[{var.index()}]" if hasattr(var, 'index') and var.index() is not None else ""
+                print(f"    {var_name}{index_part}: {violation['violation']}")
+            if len(violations) > 3:
+                print(f"    ... and {len(violations) - 3} more")
+        if len(var_bound_violations) > 5:
+            print(f"  ... and {len(var_bound_violations) - 5} more variable types")
+    else:
+        print("No variable bound violations found.")
+    print()
+
+    # Now analyze constraint infeasibilities
+    print("-" * 40)
+    print("2. CONSTRAINT INFEASIBILITY ANALYSIS:")
+    print("-" * 40)
+
+    constraint_groups = {}
+    evaluation_error_constraints = {}
+
+    for constr, body_value, infeasible in find_infeasible_constraints(model, tol=1e-6):
+        constraint_name = constr.name.split('[')[0]
+
+        if constraint_name not in constraint_groups:
+            constraint_groups[constraint_name] = {
+                'infeasible': [],
+                'eval_errors': 0
+            }
+
+        if infeasible & 4:  # Evaluation error
+            constraint_groups[constraint_name]['eval_errors'] += 1
+
+            # For evaluation errors, try to identify problematic variables
+            if constraint_name not in evaluation_error_constraints:
+                evaluation_error_constraints[constraint_name] = {
+                    'sample_constraint': constr,
+                    'count': 0
+                }
+            evaluation_error_constraints[constraint_name]['count'] += 1
+
+        else:
+            # Regular bound violations
+            violation_parts = []
+            if infeasible & 1:
+                lb = pyo.value(constr.lower, exception=False)
+                violation_parts.append(f"body={body_value:.4f} < lower={lb:.4f}")
+            if infeasible & 2:
+                ub = pyo.value(constr.upper, exception=False)
+                violation_parts.append(f"body={body_value:.4f} > upper={ub:.4f}")
+
+            violation_info = " | ".join(violation_parts)
+            constraint_groups[constraint_name]['infeasible'].append({
+                'constraint': constr,
+                'violation': violation_info
+            })
+
+    # Count total constraints for context
+    total_constraints_by_type = {}
+    for constraint in model.component_objects(pyo.Constraint, active=True):
+        base_name = constraint.name
+        total_constraints_by_type[base_name] = len(list(constraint)) if constraint.is_indexed() else 1
+
+    # Display constraint summary
+    total_constraint_types = len(total_constraints_by_type)
+    infeasible_constraint_types = len(constraint_groups)
+    total_regular_violations = sum(len(group['infeasible']) for group in constraint_groups.values())
+    total_eval_errors = sum(group['eval_errors'] for group in constraint_groups.values())
+
+    print(f"CONSTRAINT SUMMARY:")
+    print(f"  Total constraint types: {total_constraint_types}")
+    print(f"  Constraint types with issues: {infeasible_constraint_types}")
+    print(f"  Regular bound violations: {total_regular_violations}")
+    print(f"  Evaluation errors: {total_eval_errors}")
+    print()
+
+    # Show regular constraint violations first
+    if total_regular_violations > 0:
+        print("BOUND VIOLATION DETAILS:")
+        for constraint_name, info in constraint_groups.items():
+            if info['infeasible']:
+                violation_count = len(info['infeasible'])
+                total_count = total_constraints_by_type.get(constraint_name, "Unknown")
+
+                print(f"  {constraint_name}: {violation_count}/{total_count} violated")
+                for i, violation in enumerate(info['infeasible'][:3]):
+                    constr = violation['constraint']
+                    index_part = f"[{constr.index()}]" if hasattr(constr, 'index') and constr.index() is not None else ""
+                    print(f"    {constraint_name}{index_part}: {violation['violation']}")
+                if violation_count > 3:
+                    print(f"    ... and {violation_count - 3} more")
+        print()
+
+    # Show evaluation error details
+    if evaluation_error_constraints:
+        print("EVALUATION ERROR ANALYSIS:")
+        print("These constraints cannot be evaluated (usually due to missing variable values):")
+
+        for constraint_name, info in evaluation_error_constraints.items():
+            total_count = total_constraints_by_type.get(constraint_name, "Unknown")
+            print(f" \n - {constraint_name}: {info['count']}/{total_count} have evaluation errors")
+
+            # Try to identify variables in a sample constraint
+            sample_constr = info['sample_constraint']
+            try:
+                constraint_vars = list(identify_variables(sample_constr.expr, include_fixed=True))
+                unvalued_vars = [v for v in constraint_vars if v.value is None]
+
+                if unvalued_vars:
+                    print(f"    Variables without values in this constraint type:")
+                    var_types = {}
+                    for v in unvalued_vars[:10]:  # Show first 10
+                        var_base = v.name.split('[')[0]
+                        if var_base not in var_types:
+                            var_types[var_base] = 0
+                        var_types[var_base] += 1
+
+                    for var_type, count in var_types.items():
+                        print(f"      {var_type}: {count} variables without values")
+                else:
+                    print(f"    All variables have values - constraint expression may have other issues")
+
+            except Exception as e:
+                print(f"    Could not analyze constraint variables: {e}")
+        print()
+
+    if total_regular_violations == 0 and total_eval_errors == 0:
+        print("No infeasible constraints found with current tolerance (1e-6)")
+
+    print("=" * 80)
