@@ -11,7 +11,7 @@ paper [[1]](https://doi.org/10.1016/j.softx.2022.101141) if you do.
 ## Setup
 
 1. Install MPI implementation according to your OS (e.g., [MPICH](https://www.mpich.org/downloads/)
-   or [OpenMPI](https://www.open-mpi.org/software/ompi/v4.1/)).
+   or [OpenMPI](https://www.open-mpi.org/software/ompi/v4.1/) or [Microsoft MPI](https://www.microsoft.com/en-us/download/details.aspx?id=105289)).
 2. Create environment from the 'environment.yml' file
     1. _For Pros_: Use whatever environment manager you like, e.g., for `conda`:
        ```bash
