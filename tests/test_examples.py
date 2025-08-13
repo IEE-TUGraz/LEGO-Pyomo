@@ -1,5 +1,6 @@
 import os
 import shutil
+from pathlib import Path
 
 import pytest
 from openpyxl import load_workbook
@@ -43,7 +44,7 @@ def test_socp(tmp_path):
     # Activate SOCP in Power Parameters
     workbook = load_workbook(filename=tmp_path_originalData + "/Power_Parameters.xlsx")
     sheet = workbook.active
-    sheet["C37"] = "Yes"  # Enable SOCP
+    sheet["C40"] = "Yes"  # Enable SOCP
     workbook.save(filename=tmp_path_originalData + "/Power_Parameters.xlsx")
 
     # Use SOCP for all lines
@@ -55,10 +56,9 @@ def test_socp(tmp_path):
 
     mps_equal = compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_path_originalData, False,
                               ModelTypeForComparison.MPS_FILE, "data/mps-archive/example-SOCP-LEGOGAMS-5cb285a21d6f277891d943d4b036f4b05cad6107.mps", False,
-                              coefficients_skip_model2=["constobj"], tmp_folder_path=tmp_path)
+                              coefficients_skip_model2=["constobj"], tmp_folder_path=tmp_path, print_additional_information=True)
 
     assert mps_equal
-
 
 def test_documentationMPSArchive():
     """
