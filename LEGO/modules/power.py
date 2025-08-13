@@ -69,7 +69,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     # Parameters
     model.pDemandP = pyo.Param(model.rp, model.k, model.i, initialize=cs.dPower_Demand['value'], doc='Demand at bus i in representative period rp and timestep k')
-    model.pMovWindow = cs.dGlobal_Parameters['pMovWindow']
+    model.pMovWindowLDS = cs.dGlobal_Parameters['pMovWindowLDS']
 
     model.pOMVarCost = pyo.Param(model.g, doc='Production cost of generator g')
     model.pEnabInv = pyo.Param(model.g, doc='Enable investment in thermal generator g')

@@ -4,15 +4,16 @@ import os
 import time
 
 import pyomo.environ as pyo
+from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 from pyomo.core import NameLabeler
 from pyomo.core.base.var import IndexedVar
-from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
 from InOutModule import SQLiteWriter, ExcelWriter
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO, ModelType
+from LEGO.LEGOUtilities import analyze_infeasible_constraints
 
 printer = Printer.getInstance()
 
@@ -32,55 +33,7 @@ def directory_path(string):
         raise argparse.ArgumentTypeError(f"Directory path not valid: '{string}'")
 
 
-parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to folder containing data for LEGO model")
-parser.add_argument("modelType", default=ModelType.DETERMINISTIC, type=lambda s: ModelType[s], choices=list(ModelType), nargs="?", help="ModelType of first model")
-args = parser.parse_args()
-
-# Load case study
-printer.information(f"Loading case study from '{args.caseStudyDirectory}'")
-start_time = time.time()
-cs = CaseStudy(args.caseStudyDirectory)
-
-# cs = cs.filter_representative_periods("rp07")
-
-rh_length = 5
-rh_overlap = 3
-
-model_old = None
-for end in range(rh_length, len(cs.dPower_WeightsK.index.unique()), rh_length - rh_overlap):
-    start = "k0001"
-    end = f"k{end:04}"
-
-    cut_cs = cs.filter_timesteps(start, end)
-
-    lego = LEGO(cut_cs)
-    printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
-
-    # Build LEGO model
-    printer.information("Building LEGO model")
-    model, timing = lego.build_model(model_type=args.modelType)
-    printer.information(f"Building LEGO model took {timing:.2f} seconds")
-
-    if model_old is not None:
-        for component in list(model_old.component_objects()):
-            if isinstance(component, IndexedVar):
-                indices = [str(i) for i in component.index_set().subsets()]
-
-                if "k" in indices:
-                    new_component = getattr(model, str(component))
-                    new_end = f"k{int(end[1:]) - rh_length:04}"
-                    for n, v in list(component.items()):
-                        if start <= n[(indices.index('k'))] <= new_end:
-                            if v.value is not None:
-                                new_component[n].fix(pyo.value(v))  # TODO skip validation
-
-    # Solve LEGO model
-    printer.information("Solving LEGO model")
-    results, timing, objective_value = lego.solve_model(model_type=args.modelType)
-    printer.information(f"Solving LEGO model took {timing:.2f} seconds")
-
-    model_old = model
-
+def process_results(model_results):
     logger = logging.getLogger('pyomo.util.infeasible')
     logger.setLevel(logging.INFO)
 
@@ -90,20 +43,107 @@ for end in range(rh_length, len(cs.dPower_WeightsK.index.unique()), rh_length - 
         handler.setFormatter(logging.Formatter('%(message)s'))
         logger.addHandler(handler)
 
-    match results.solver.termination_condition:
+    match model_results.solver.termination_condition:
         case pyo.TerminationCondition.optimal:
             match args.modelType:
                 case ModelType.DETERMINISTIC:
-                    printer.success(f"Optimal solution: {pyo.value(model.objective):.4f}")
+                    printer.success(f"Optimal solution: {pyo.value(model.objective):.4f}\n")
                 case ModelType.EXTENSIVE_FORM:
-                    printer.success(f"Optimal solution: {lego._extensive_form.get_objective_value():.4f}")
+                    printer.success(f"Optimal solution: {lego._extensive_form.get_objective_value():.4f}\n")
                 case _:
-                    printer.warning(f"Model type {args.modelType} not fully tested yet, no objective value reported.")
+                    printer.warning(f"Model type {args.modelType} not fully tested yet, no objective value reported.\n")
         case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
-            printer.error(f"Model returned as {results.solver.termination_condition}, logging infeasible constraints:")
-            log_infeasible_constraints(model, log_expression=False)
+            printer.error(f"Model returned as {model_results.solver.termination_condition}")
+            analyze_infeasible_constraints(model)
         case _:
-            printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
+            printer.warning(f"Solver terminated with condition: {model_results.solver.termination_condition}")
+
+
+parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to folder containing data for LEGO model")
+parser.add_argument("modelType", default=ModelType.DETERMINISTIC, type=lambda s: ModelType[s], choices=list(ModelType), nargs="?", help="ModelType of first model")
+args = parser.parse_args()
+
+# Load case study
+printer.information(f"Loading case study from '{args.caseStudyDirectory}'\n")
+start_time = time.time()
+cs = CaseStudy(args.caseStudyDirectory)
+
+rh_length = cs.dGlobal_Parameters["pMovingWindowLength"]
+rh_overlap = cs.dGlobal_Parameters["pMovingWindowOverlap"]
+
+# Check if moving window is disabled (both parameters are 0)
+use_moving_window = rh_length > 0 and rh_overlap >= 0
+
+if not use_moving_window:
+    printer.information("Moving window disabled - running entire problem at once\n")
+
+    lego = LEGO(cs)
+    printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
+
+    # Build LEGO model
+    printer.information("Building LEGO model")
+    model, timing = lego.build_model(model_type=args.modelType)
+    printer.information(f"Building LEGO model took {timing:.2f} seconds")
+
+    # Solve LEGO model
+    printer.information("Solving LEGO model")
+    try:
+        results, timing, objective_value = lego.solve_model(model_type=args.modelType)
+        printer.information(f"Solving LEGO model took {timing:.2f} seconds\n")
+        process_results(results)
+    except NoFeasibleSolutionError:
+        printer.error("No feasible solution found!")
+        exit(1)
+
+else:
+    printer.information(f"Using moving window: length={rh_length}, overlap={rh_overlap}\n")
+
+    model_old = None
+    total_timesteps = len(cs.dPower_WeightsK.index.unique())
+
+    for end in range(rh_length, total_timesteps, rh_length - rh_overlap):
+        start_time_iteration = time.time()
+
+        start = "k0001"
+        end = f"k{end:04}"
+        printer.information(f"[Runtime] Moving window until {end} took {time.time() - start_time:.2f} seconds")
+
+        cut_cs = cs.filter_timesteps(start, end)
+
+        lego = LEGO(cut_cs)
+        printer.information(f"Loading case study took {time.time() - start_time_iteration:.2f} seconds")
+
+        # Build LEGO model
+        printer.information("Building LEGO model")
+        model, timing = lego.build_model(model_type=args.modelType)
+        printer.information(f"Building LEGO model took {timing:.2f} seconds")
+
+        if model_old is not None:
+            for component in list(model_old.component_objects()):
+                if isinstance(component, IndexedVar):
+                    indices = [str(i) for i in component.index_set().subsets()]
+
+                    if "k" in indices:
+                        new_component = getattr(model, str(component))
+                        new_end = f"k{int(end[1:]) - rh_length:04}"
+                        for n, v in list(component.items()):
+                            if start <= n[(indices.index('k'))] <= new_end:
+                                if v.value is not None:
+                                    new_component[n].fix(pyo.value(v))  # TODO skip validation
+
+        # Solve LEGO model
+        printer.information("Solving LEGO model")
+        try:
+            results, timing, objective_value = lego.solve_model(model_type=args.modelType)
+            printer.information(f"Solving LEGO model took {timing:.2f} seconds")
+            process_results(results)
+        except NoFeasibleSolutionError:
+            printer.error(f"No feasible solution found for window {start} to {end}!")
+            exit(1)
+
+        model_old = model
+
+printer.information(f"Finished in {time.time() - start_time:.2f} seconds")
 
 SQLiteWriter.model_to_sqlite(model, "model.sqlite")
 ExcelWriter.model_to_excel(model, "model.xlsx")

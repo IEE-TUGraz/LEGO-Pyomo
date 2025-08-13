@@ -60,7 +60,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
                     model.vStInterRes[p, g].fix(cs.dPower_Storage.loc[g, 'IniReserve'])
                 else:
                     model.vStInterRes[p, g].setlb(cs.dPower_Storage.loc[g, 'IniReserve'])
-            elif model.p.ord(p) % model.pMovWindow == 0:
+            elif model.p.ord(p) % model.pMovWindowLDS == 0:
                 model.vStInterRes[p, g].setub(model.pE2PRatio[g] * model.pMaxProd[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
                 model.vStInterRes[p, g].setlb(model.pE2PRatio[g] * model.pMinReserve[g] * model.pMaxProd[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
 
@@ -119,7 +119,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     def eStMaxInterRes_rule(model, p, s):
         # If current p is a multiple of moving window, add constraint
-        if model.p.ord(p) % model.pMovWindow == 0:
+        if model.p.ord(p) % model.pMovWindowLDS == 0:
             return 0 >= model.vStInterRes[p, s] - model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s]
         else:
             return pyo.Constraint.Skip
@@ -128,7 +128,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     def eStMinInterRes_rule(model, p, s):
         # If current p is a multiple of moving window, add constraint
-        if model.p.ord(p) % model.pMovWindow == 0:
+        if model.p.ord(p) % model.pMovWindowLDS == 0:
             return 0 <= model.vStInterRes[p, s] - model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]) * model.pE2PRatio[s] * model.pMinReserve[s]
         else:
             return pyo.Constraint.Skip
@@ -137,13 +137,13 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     def eStInterRes_rule(model, p, storage_unit):
         # If current p is a multiple of moving window, add constraint
-        if model.p.ord(p) % model.pMovWindow == 0:
-            relevant_hindeces = model.hindex[model.p.ord(p) - model.pMovWindow:model.p.ord(p)]
+        if model.p.ord(p) % model.pMovWindowLDS == 0:
+            relevant_hindeces = model.hindex[model.p.ord(p) - model.pMovWindowLDS:model.p.ord(p)]
             hindex_count = relevant_hindeces.to_frame(index=False).groupby(['rp', 'k']).size()
 
             return (0 ==
-                    (model.vStInterRes[model.p.at(model.p.ord(p) - model.pMovWindow), storage_unit] if model.p.ord(p) - model.pMovWindow > 0 else 0)
-                    + (cs.dPower_Storage.loc[storage_unit, 'IniReserve'] if model.p.ord(p) == model.pMovWindow else 0)
+                    (model.vStInterRes[model.p.at(model.p.ord(p) - model.pMovWindowLDS), storage_unit] if model.p.ord(p) - model.pMovWindowLDS > 0 else 0)
+                    + (cs.dPower_Storage.loc[storage_unit, 'IniReserve'] if model.p.ord(p) == model.pMovWindowLDS else 0)
                     - model.vStInterRes[p, storage_unit]
                     + sum(- model.vGenP[rp2, k2, storage_unit] * model.pWeight_k[k2] / cs.dPower_Storage.loc[storage_unit, 'DisEffic'] * hindex_count.loc[rp2, k2]
                           + model.vConsump[rp2, k2, storage_unit] * model.pWeight_k[k2] * cs.dPower_Storage.loc[storage_unit, 'ChEffic'] * hindex_count.loc[rp2, k2] for rp2, k2 in hindex_count.index))
