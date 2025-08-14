@@ -214,6 +214,8 @@ def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: st
             data_bar_min_uptime_height = {}
             data_bar_min_downtime_bottom = {}
             data_plot_demand = {}
+            data_plot_vpns = {}
+            data_plot_veps = {}
             for counter, (_, row) in enumerate(hindex.iterrows()):
                 counter += 1
                 rp = row["rp"] if case != "Truth " and "regret" not in case else "rp01"
@@ -222,6 +224,8 @@ def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: st
                 data_bar_startup[counter] = df.loc[case, rp, k, g]["vStartup"]
                 data_bar_shutdown[counter] = df.loc[case, rp, k, g]["vShutdown"]
                 data_plot_demand[counter] = df.loc[case, rp, k, g]["pDemandP"]
+                data_plot_vpns[counter] = df.loc[case, rp, k, g]["vPNS"]
+                data_plot_veps[counter] = df.loc[case, rp, k, g]["vEPS"]
 
             for counter, (_, row) in enumerate(hindex.iterrows()):
                 counter += 1
@@ -239,6 +243,13 @@ def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: st
             # Plot demand on second y-axis
             axs2 = axs[i, j].twinx()
             axs2.plot(index, data_plot_demand.values(), color="blue", alpha=0.3)
+
+            # Plot PNS and EPS on third y-axis
+            axs3 = axs[i, j].twinx()
+            axs3.spines['right'].set_position(('outward', 30))  #
+            axs3.plot(index, data_plot_vpns.values(), color="orange", alpha=0.3, label="PNS")
+            axs3.plot(index, data_plot_veps.values(), color="purple", alpha=0.3, label="EPS")
+            axs3.legend(loc='upper right')
 
             # Set ticks and vertical lines
             index_labels = []

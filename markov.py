@@ -25,7 +25,7 @@ pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
 
-def execute_case_studies(case_study_path: str, unit_commitment_result_file: str = "markov.xlsx"):
+def execute_case_studies(case_study_path: str, unit_commitment_result_file: str = "markov.xlsx", no_sqlite: bool = False):
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
@@ -85,11 +85,12 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
         result, timing_solving, objective_value = lego.solve_model()
         printer.information(f"Solving model took {timing_solving:.2f} seconds")
 
-        sqlite_timer = time.time()
-        sqlite_file = f"{os.path.basename(os.path.normpath(case_study_path))}-{caseName.replace(".", "")}.sqlite"
-        printer.information(f"Writing model to SQLite database: {sqlite_file}")
-        SQLiteWriter.model_to_sqlite(lego.model, sqlite_file)
-        printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
+        if not no_sqlite:
+            sqlite_timer = time.time()
+            sqlite_file = f"{os.path.basename(os.path.normpath(case_study_path))}-{caseName.replace(".", "")}.sqlite"
+            printer.information(f"Writing model to SQLite database: {sqlite_file}")
+            SQLiteWriter.model_to_sqlite(lego.model, sqlite_file)
+            printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
 
         match result.solver.termination_condition:
             case pyo.TerminationCondition.optimal:
@@ -118,7 +119,9 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
                                  "vGenP1": pyo.value(model.vGenP1[i]),
                                  "pMinUpTime": pyo.value(model.pMinUpTime[i[2]]),
                                  "pMinDownTime": pyo.value(model.pMinDownTime[i[2]]),
-                                 "pDemandP": sum([pyo.value(model.pDemandP[i[0], i[1], node]) for node in model.i])}) for i in list(model.vCommit)]:
+                                 "pDemandP": sum([pyo.value(model.pDemandP[i[0], i[1], node]) for node in model.i]),
+                                 "vPNS": sum([pyo.value(model.vPNS[i[0], i[1], node]) for node in model.i]),
+                                 "vEPS": sum([pyo.value(model.vEPS[i[0], i[1], node]) for node in model.i])}) for i in list(model.vCommit)]:
                 df = pd.concat([df, x], axis=1)
 
             if caseName != "Truth ":
@@ -131,11 +134,12 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
                 regret_result, regret_timing_solving, regret_objective_value = regret_lego.solve_model(already_solved_ok=True)
                 printer.information(f"Solving regret model took {regret_timing_solving:.2f} seconds")
 
-                sqlite_timer = time.time()
-                sqlite_file = f"{os.path.basename(os.path.normpath(case_study_path))}-{caseName.replace(".", "")}-regret.sqlite"
-                printer.information(f"Writing model to SQLite database: {sqlite_file}")
-                SQLiteWriter.model_to_sqlite(regret_lego.model, sqlite_file)
-                printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
+                if not no_sqlite:
+                    sqlite_timer = time.time()
+                    sqlite_file = f"{os.path.basename(os.path.normpath(case_study_path))}-{caseName.replace(".", "")}-regret.sqlite"
+                    printer.information(f"Writing model to SQLite database: {sqlite_file}")
+                    SQLiteWriter.model_to_sqlite(regret_lego.model, sqlite_file)
+                    printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
 
                 match regret_result.solver.termination_condition:
                     case pyo.TerminationCondition.optimal:
@@ -192,6 +196,7 @@ if __name__ == "__main__":
     parser.add_argument("caseStudyFolder", type=str, default=None, help="Path to folder containing data for LEGO model. Can be a comma-separated list of multiple folders (executed after each other)", nargs="?")
     parser.add_argument("--plot", action="store_true", help="Plot unit commitment results")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode where exceptions are passed on")
+    parser.add_argument("--no-sqlite", action="store_true", help="Do not save results to SQLite database")
     args = parser.parse_args()
 
     if args.caseStudyFolder is None:
@@ -208,7 +213,7 @@ if __name__ == "__main__":
 
             unit_commitment_result_file = f"unitCommitmentResult-{folder_name}.xlsx"
             printer.information(f"Unit commitment result file: '{unit_commitment_result_file}'")
-            execute_case_studies(folder, unit_commitment_result_file)
+            execute_case_studies(folder, unit_commitment_result_file, args.no_sqlite)
 
             printer.information("Plotting unit commitment")
             if args.plot:
