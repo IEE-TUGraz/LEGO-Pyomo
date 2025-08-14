@@ -5,7 +5,6 @@ import time
 
 import pandas as pd
 import pyomo.environ as pyo
-from pyomo.opt import SolverFactory
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
@@ -69,9 +68,6 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
     ########################################################################################################################
     # Evaluation
     ########################################################################################################################
-
-    optimizer = SolverFactory("gurobi")
-
     results = []
 
     df = pd.DataFrame()
@@ -86,7 +82,7 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
             timing_building = truth_timing_building
             printer.information(f"Using pre-built model for truth case study")
 
-        result, timing_solving = lego.solve_model(optimizer)
+        result, timing_solving, objective_value = lego.solve_model()
         printer.information(f"Solving model took {timing_solving:.2f} seconds")
 
         sqlite_timer = time.time()
@@ -132,7 +128,7 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
 
                 # Re-solve the model
                 printer.information("Re-solving model with fixed variables for regret calculation")
-                regret_result, regret_timing_solving = regret_lego.solve_model(optimizer, already_solved_ok=True)
+                regret_result, regret_timing_solving, regret_objective_value = regret_lego.solve_model(already_solved_ok=True)
                 printer.information(f"Solving regret model took {regret_timing_solving:.2f} seconds")
 
                 sqlite_timer = time.time()
@@ -166,8 +162,8 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
 
         results.append({
             "Case": caseName,
-            "Objective": pyo.value(model.objective) if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1,
-            "Objective Regret": pyo.value(regret_lego.model.objective) - getUnitCommitmentSlackCost(regret_lego, cs_notEnforced.dPower_ThermalGen, cs_notEnforced.dPower_Parameters["pENSCost"]) if regret_result.solver.termination_condition == pyo.TerminationCondition.optimal and caseName != "Truth " else -1,
+            "Objective": objective_value if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1,
+            "Objective Regret": regret_objective_value - getUnitCommitmentSlackCost(regret_lego, cs_notEnforced.dPower_ThermalGen, cs_notEnforced.dPower_Parameters["pENSCost"]) if regret_result.solver.termination_condition == pyo.TerminationCondition.optimal and caseName != "Truth " else -1,
             "Correction Cost": getUnitCommitmentSlackCost(regret_lego, cs_notEnforced.dPower_ThermalGen, cs_notEnforced.dPower_Parameters["pENSCost"]) if caseName != "Truth " else -1,
             "Solution": result.solver.termination_condition,
             "Build Time": timing_building,
