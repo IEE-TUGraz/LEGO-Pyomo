@@ -8,7 +8,7 @@ import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
-from InOutModule import SQLiteWriter
+from InOutModule import SQLiteWriter, ExcelWriter
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO
@@ -25,7 +25,7 @@ pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
 
-def execute_case_studies(case_study_path: str, unit_commitment_result_file: str = "markov.xlsx", no_sqlite: bool = False):
+def execute_case_studies(case_study_path: str, unit_commitment_result_file: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False):
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
@@ -92,6 +92,13 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
             SQLiteWriter.model_to_sqlite(lego.model, sqlite_file)
             printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
 
+        if not no_excel:
+            excel_timer = time.time()
+            excel_file = f"{os.path.basename(os.path.normpath(case_study_path))}-{caseName.replace('.', '')}.xlsx"
+            printer.information(f"Writing model to Excel file: {excel_file}")
+            ExcelWriter.model_to_excel(lego.model, excel_file)
+            printer.information(f"Writing model to Excel file took {time.time() - excel_timer:.2f} seconds")
+
         match result.solver.termination_condition:
             case pyo.TerminationCondition.optimal:
                 printer.success("Optimal solution found")
@@ -140,6 +147,13 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
                     printer.information(f"Writing model to SQLite database: {sqlite_file}")
                     SQLiteWriter.model_to_sqlite(regret_lego.model, sqlite_file)
                     printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
+
+                if not no_excel:
+                    excel_timer = time.time()
+                    excel_file = f"{os.path.basename(os.path.normpath(case_study_path))}-{caseName.replace('.', '')}-regret.xlsx"
+                    printer.information(f"Writing model to Excel file: {excel_file}")
+                    ExcelWriter.model_to_excel(regret_lego.model, excel_file)
+                    printer.information(f"Writing model to Excel file took {time.time() - excel_timer:.2f} seconds")
 
                 match regret_result.solver.termination_condition:
                     case pyo.TerminationCondition.optimal:
@@ -197,6 +211,7 @@ if __name__ == "__main__":
     parser.add_argument("--plot", action="store_true", help="Plot unit commitment results")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode where exceptions are passed on")
     parser.add_argument("--no-sqlite", action="store_true", help="Do not save results to SQLite database")
+    parser.add_argument("--no-excel", action="store_true", help="Do not save results to Excel file")
     args = parser.parse_args()
 
     if args.caseStudyFolder is None:
@@ -213,7 +228,7 @@ if __name__ == "__main__":
 
             unit_commitment_result_file = f"unitCommitmentResult-{folder_name}.xlsx"
             printer.information(f"Unit commitment result file: '{unit_commitment_result_file}'")
-            execute_case_studies(folder, unit_commitment_result_file, args.no_sqlite)
+            execute_case_studies(folder, unit_commitment_result_file, args.no_sqlite, args.no_excel)
 
             printer.information("Plotting unit commitment")
             if args.plot:
