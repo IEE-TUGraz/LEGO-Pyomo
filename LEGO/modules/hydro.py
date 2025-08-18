@@ -50,14 +50,14 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     # Variables
     model.vProd = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Production of hydro plants')  # Production of hydro plants; Domain cannot be changed?
     second_stage_variables += [model.vProd]
-    model.vInflow = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Inflow rate for hydro plants')  # Inflow rate for hydro plants
+    model.vInflow = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Inflow rate into the hydro plants / actual consumption of the hydro plant')  # Inflow rate for hydro plants
     second_stage_variables += [model.vInflow]
-    model.vStorage = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Storage level for hydro plants')  # Storage level for hydro plants at certain time steps
+    model.vStorage = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Storage level of the reservoir at the hydro plants')  # Storage level for hydro plants at certain time steps
     second_stage_variables += [model.vStorage]
 
-    model.vConsumption = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Consumption of hydro plants')  # Consumption from Reservoir
+    model.vConsumption = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Consumption of the hydro plant from reservoir')  # Consumption from Reservoir
     second_stage_variables += [model.vConsumption]
-    model.vSafe = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Safe production of hydro plants')     # Safe to Reservoir from River
+    model.vSafe = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Safe to reservoir from river')     # Safe to Reservoir from River
     second_stage_variables += [model.vSafe]
 
     # Constraints
@@ -71,7 +71,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
             return model.vStorage[i, t] == model.pInitialStorage[i] + model.pInflowRiver[i, t] - model.vInflow[i, t]
         else:
             return model.vStorage[i, t] == model.vStorage[i, t-1] + model.pInflowRiver[i, t] - model.vInflow[i, t]
-    model.eStorage = pyo.Constraint(model.Hydroplants, model.T, rule=storage_rule_1, doc='Storage level constraint for hydro plants')
+    # model.eStorage = pyo.Constraint(model.Hydroplants, model.T, rule=storage_rule_1, doc='Storage level constraint for hydro plants')
 
     def prod_def_rule(model, i, t):
         return model.vProd[i, t] == model.vInflow[i, t] * model.pPowerFactor[i]
@@ -90,7 +90,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
             return pyo.Constraint.Skip
         else:
             return model.vStorage[i, t] == model.vStorage[i, t-1] - model.vConsumption[i,t] + model.vSafe[i,t]
-    model.eStorage2 = pyo.Constraint(model.Hydroplants, model.T, rule=storage_rule_2)
+    #model.eStorage2 = pyo.Constraint(model.Hydroplants, model.T, rule=storage_rule_2)
 
     def min_capacity_rule(model, i, t):
        return model.pLowerLimitReservoir[i] <= model.vStorage[i, t]
@@ -99,6 +99,20 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     def max_capacity_rule(model, i, t):
         return model.vStorage[i, t] <= model.pCapacityReservoir[i]
     model.eMaxCapacity = pyo.Constraint(model.Hydroplants, model.T, rule=max_capacity_rule, doc='Maximum capacity constraint for hydro plants')
+
+    # Cascade constraints
+    def cascade_rule_1(model, i, t):
+        hydro_list = list(model.Hydroplants)
+        idx = hydro_list.index(i)           # Get index of current hydro plant in the list
+        if idx < len(hydro_list) - 1:
+            next_i = hydro_list[idx + 1]
+            if t == 1:
+                return model.vStorage[next_i, t] == model.pInitialStorage[next_i] + model.vInflow[i, t] + model.pInflowRiver[next_i, t]
+            else:
+                return model.vStorage[next_i, t] == model.vStorage[next_i, t - 1] + model.vInflow[i, t] + model.pInflowRiver[next_i, t]
+        else:
+            return pyo.Constraint.Skip
+    model.eCascade1 = pyo.Constraint(model.Hydroplants, model.T, rule=cascade_rule_1, doc='First Cascade constraint for hydro plants')
 
     # Objectives
     def objective_rule(model):
