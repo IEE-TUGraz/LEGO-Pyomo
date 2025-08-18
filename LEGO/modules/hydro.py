@@ -108,7 +108,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     print("Model created, trying to solve it...")
     optimizer = pyo.SolverFactory("highs")  # Use HiGHS solver for optimization
     results = optimizer.solve(model)
-    print(results)
+    model.pprint()
     exit(0)
 
     # Sets  # TODO: Add Hydro sets (e.g., hydro plants, reservoirs, etc.) if needed
