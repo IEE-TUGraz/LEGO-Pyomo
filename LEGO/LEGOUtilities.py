@@ -178,13 +178,14 @@ def safetyCheck_addConstraints(required_functions: list[typing.Callable]):
     return decorator
 
 
-def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: str, number_of_hours: int = 24 * 7, start_hour: int = 1):
+def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: str, number_of_hours: int = 24 * 7, start_hour: int = 1, plot_regret: bool = True):
     """
     Plot the unit commitment of a given output file
     :param unit_commitment_result_file: Path to Excel-File containing unit commitment results
     :param case_study_folder: Path to folder containing Power_Hindex file
     :param number_of_hours: Number of hours to plot (default: 24 * 7 = 168)
     :param start_hour: Start hour for the plot (default: 1)
+    :param plot_regret: If True, plots the regret solution as well (default: True)
     :return: Nothing (shows plot)
     """
     plt.rcParams['figure.dpi'] = 300  # Set resolution of the plot
@@ -204,8 +205,19 @@ def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: st
     # Plot the data
     index = [i + 1 for i in range(len(hindex))]
 
-    fig, axs = plt.subplots(len(df.index.get_level_values("case").unique()), len(df.index.get_level_values("g").unique()), figsize=(6 * len(df.index.get_level_values("g").unique()), 2 * len(df.index.get_level_values("case").unique())))
+    if plot_regret:
+        nr_cases = len(df.index.get_level_values("case").unique())
+    else:
+        nr_cases = len([case for case in df.index.get_level_values("case").unique() if "regret" not in case])
+
+    fig, axs = plt.subplots(nr_cases, len(df.index.get_level_values("g").unique()), figsize=(6 * len(df.index.get_level_values("g").unique()), 2 * nr_cases))
+
+    i_correction = 0  # Correction for skipped regret cases in the loop below
     for i, case in enumerate(df.index.get_level_values("case").unique()):
+        if not plot_regret and "regret" in case:
+            i_correction += 1
+            continue
+        i = i - i_correction  # Adjust index if regret cases are skipped
         for j, g in enumerate(df.index.get_level_values("g").unique()):
 
             data_vGenP = {}

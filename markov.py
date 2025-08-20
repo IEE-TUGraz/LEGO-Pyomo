@@ -212,6 +212,7 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true", help="Enable debug mode where exceptions are passed on")
     parser.add_argument("--no-sqlite", action="store_true", help="Do not save results to SQLite database")
     parser.add_argument("--no-excel", action="store_true", help="Do not save results to Excel file")
+    parser.add_argument("--no-regret-plot", action="store_true", help="Do not plot regret results")
     args = parser.parse_args()
 
     if args.caseStudyFolder is None:
@@ -232,7 +233,7 @@ if __name__ == "__main__":
 
             if args.plot:
                 printer.information("Plotting unit commitment")
-                plot_unit_commitment(unit_commitment_result_file, folder, 6 * 24, 1)
+                plot_unit_commitment(unit_commitment_result_file, folder, 6 * 24, 1, not args.no_regret_plot)
         except Exception as e:
             printer.error(f"Exception while executing case study '{folder}': {e}")
             if args.debug:
