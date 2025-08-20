@@ -195,13 +195,33 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
             "EPS regr.": sum(regret_lego.model.vEPS[rp, k, i].value if regret_lego.model.vEPS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if caseName != "Truth " else -1,
             "Commit Correction +": sum(regret_lego.model.vCommitCorrectHigher[rp, k, t].value if regret_lego.model.vCommitCorrectHigher[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1,
             "Commit Correction -": sum(regret_lego.model.vCommitCorrectLower[rp, k, t].value if regret_lego.model.vCommitCorrectLower[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1,
+            "vGenP": sum(model.vGenP[rp, k, g].value if model.vGenP[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.g),
+            "vCommit": sum(model.vCommit[rp, k, g].value if model.vCommit[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.g),
+            "vStartup": sum(model.vStartup[rp, k, g].value if model.vStartup[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.g),
+            "vShutdown": sum(model.vShutdown[rp, k, g].value if model.vShutdown[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.g),
+            "vPNS": sum(model.vPNS[rp, k, i].value if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
+            "vEPS": sum(model.vEPS[rp, k, i].value if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "model": model
         })
 
-    printer.information("Case   |  Objective  | Objective Regret | Correction Cost | Solution | Build Time | Solve Time | # Variables Overall | # Binary Variables | # Constraints | PNS     | EPS     | PNS regr. | EPS regr. | Commit Correction + | Commit Correction - ")
-    for result in results:
-        printer.information(
-            f"{result['Case']} | {result['Objective']:11.2f} | {result['Objective Regret']:16.2f} | {result['Correction Cost']:15.2f} | {result['Solution']}  | {result['Build Time']:10.2f} | {result['Solve Time']:10.2f} | {result['# Variables Overall']:>19} | {result['# Binary Variables']:>18} | {result['# Constraints']:>13} | {result['PNS']:>7.2f} | {result['EPS']:>7.2f} | {result['PNS regr.']:>9.2f} | {result['EPS regr.']:>9.2f} | {result['Commit Correction +']:>19.2f} | {result['Commit Correction -']:>19.2f} ")
+    values = ["Case", "Objective", "Build Time", "Solve Time", "vGenP", "vCommit", "vStartup", "vShutdown", "vPNS", "vEPS", "Objective Regret"]
+    table = []
+    for v in values:
+        column = [v]
+        for result in results:
+            value = result[v]
+            if isinstance(value, float):
+                value = f"{value:.2f}"
+            elif isinstance(value, int):
+                value = f"{value:d}"
+            else:
+                value = f"{value}"
+            column.append(value)
+        table.append(column)
+
+    for i in range(len(table[0])):
+        printer.information(" | ".join(f"{table[j][i]:{">" if i != 0 else ""}{max(len(table[j][i2]) for i2 in range(len(table[j])))}}" for j in range(len(table))))
+
     df.T.to_excel(unit_commitment_result_file)
 
 
