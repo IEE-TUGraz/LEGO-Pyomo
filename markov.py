@@ -167,8 +167,8 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
                                              "pMinUpTime": pyo.value(regret_lego.model.pMinUpTime[i[2]]),
                                              "pMinDownTime": pyo.value(regret_lego.model.pMinDownTime[i[2]]),
                                              "pDemandP": sum([pyo.value(regret_lego.model.pDemandP[i[0], i[1], node]) for node in regret_lego.model.i]),
-                                             "vPNS regr.": sum([pyo.value(regret_lego.model.vPNS[i[0], i[1], node]) for node in regret_lego.model.i]),
-                                             "vEPS regr.": sum([pyo.value(regret_lego.model.vEPS[i[0], i[1], node]) for node in regret_lego.model.i]),
+                                             "vPNS": sum([pyo.value(regret_lego.model.vPNS[i[0], i[1], node]) for node in regret_lego.model.i]),
+                                             "vEPS": sum([pyo.value(regret_lego.model.vEPS[i[0], i[1], node]) for node in regret_lego.model.i]),
                                              "vCommitCorrectHigher": pyo.value(regret_lego.model.vCommitCorrectHigher[i]) if not regret_lego.model.vCommitCorrectHigher[i].stale else None,
                                              "vCommitCorrectLower": pyo.value(regret_lego.model.vCommitCorrectLower[i]) if not regret_lego.model.vCommitCorrectLower[i].stale else None, }) for i in list(regret_lego.model.vCommit)]:
                             df = pd.concat([df, x], axis=1)
@@ -230,8 +230,8 @@ if __name__ == "__main__":
             printer.information(f"Unit commitment result file: '{unit_commitment_result_file}'")
             execute_case_studies(folder, unit_commitment_result_file, args.no_sqlite, args.no_excel)
 
-            printer.information("Plotting unit commitment")
             if args.plot:
+                printer.information("Plotting unit commitment")
                 plot_unit_commitment(unit_commitment_result_file, folder, 6 * 24, 1)
         except Exception as e:
             printer.error(f"Exception while executing case study '{folder}': {e}")
