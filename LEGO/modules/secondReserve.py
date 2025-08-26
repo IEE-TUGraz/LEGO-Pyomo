@@ -51,13 +51,13 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         return ((sum(model.v2ndResUP[rp, k, t] for t in model.thermalGenerators) if hasattr(model, "thermalGenerators") else 0) +
                 (sum(model.v2ndResUP[rp, k, s] for s in model.storageUnits) if hasattr(model, "storageUnits") else 0) >= model.p2ndResUp * sum(model.pDemandP[rp, k, i] for i in model.i))
 
-    model.e2ReserveUp = pyo.Constraint(model.rp, model.k, doc="2nd reserve up", rule=e2ReserveUp_rule)
+    #model.e2ReserveUp = pyo.Constraint(model.rp, model.k, doc="2nd reserve up", rule=e2ReserveUp_rule)
 
     def e2ReserveDw_rule(model, rp, k):
         return ((sum(model.v2ndResDW[rp, k, t] for t in model.thermalGenerators) if hasattr(model, "thermalGenerators") else 0) +
                 (sum(model.v2ndResDW[rp, k, s] for s in model.storageUnits) if hasattr(model, "storageUnits") else 0) >= model.p2ndResDW * sum(model.pDemandP[rp, k, i] for i in model.i))
 
-    model.e2ReserveDw = pyo.Constraint(model.rp, model.k, doc="2nd reserve down", rule=e2ReserveDw_rule)
+    #model.e2ReserveDw = pyo.Constraint(model.rp, model.k, doc="2nd reserve down", rule=e2ReserveDw_rule)
 
     # Add 2nd reserve to power balance and unit commitment constraints
     if hasattr(model, "thermalGenerators"):
