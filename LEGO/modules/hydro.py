@@ -78,8 +78,10 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.eDemand_con = pyo.Constraint(model.T, rule=demand_rule)
 
     def inflow_rule_2(model, i, t):
-        return model.vInflow[i, t] == model.pInflowRiver[i, t] + model.vStorage[i, t-1]
-    model.eInflow = pyo.Constraint(model.Hydroplants, model.T, rule=inflow_rule_2)
+        if t == 1:
+            return model.vInflow[i, t] == model.pInflowRiver[i, t] + model.pInitialStorage[i] + model.pInflowRiver[i, t]
+        else:
+            return model.vInflow[i, t] == model.pInflowRiver[i, t] + model.vStorage[i, t - 1]
 
     #def storage_rule_2(model, i, t):
     #    if t == 1:
@@ -146,14 +148,13 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     model.eCascadeGraph = pyo.Constraint(model.Hydroplants, model.T, rule=cascade_rule_graph, doc='Cascade constraints for hydro plants based on graph structure')
 
-
     # Objectives
     def objective_rule(model):
         prod_cost = sum(model.vProd[i, t] * model.pCost[i] for i in model.Hydroplants for t in model.T)
         pump_cost = sum(model.vPumpedWater[i, j, t] * model.vCostPumps[i] for (i, j) in model.PumpPairs for t in model.T)
         return prod_cost + pump_cost
-
     model.obj_cost = pyo.Objective(rule=objective_rule, sense=pyo.minimize, doc='Objective function for hydro plants including pump costs')
+
     print("Model created, trying to solve it...")
     optimizer = pyo.SolverFactory("highs")  # Use HiGHS solver for optimization
     results = optimizer.solve(model)
