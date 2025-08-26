@@ -67,7 +67,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     first_stage_objective = 0.0
 
     # Add import/export cost/revenues to total cost
-    second_stage_objective = sum(model.vImpExp[rp, k, hub, i] * model.pImpExpPrice[rp, k, hub] for rp in model.rp for k in model.k for hub, i in model.hubConnections)
+    second_stage_objective = sum(model.vImpExp[rp, k, hub, i] * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pImpExpPrice[rp, k, hub] for rp in model.rp for k in model.k for hub, i in model.hubConnections)
 
     # Adjust objective and return first_stage_objective expression
     model.objective.expr += first_stage_objective + second_stage_objective
