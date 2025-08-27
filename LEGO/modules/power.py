@@ -115,10 +115,14 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     second_stage_variables += [model.vAngle]
     for i, j, c in model.la:
         if model.pAngle[i, j, c] == 0:
-            model.vAngle[:, :, i, j, c].fix(0)
+            for rp in model.rp:
+                for k in model.k:
+                    model.vAngle[rp, k, i, j, c].fix(0)
         else:
-            model.vAngle[:, :, i, j, c].setub(model.pAngle[i, j, c])
-            model.vAngle[:, :, i, j, c].setlb(-model.pAngle[i, j, c])
+            for rp in model.rp:
+                for k in model.k:
+                    model.vAngle[rp, k, i, j, c].setub(model.pAngle[i, j, c])
+                    model.vAngle[rp, k, i, j, c].setlb(-model.pAngle[i, j, c])
 
     model.vLineInvest = pyo.Var(model.la, doc='Transmission line investment', domain=pyo.Binary)
     for i, j, c in model.le:
@@ -179,15 +183,19 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         completed_buses.add(index)
 
         # Set slack node
-        slack_node = cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
+        # slack_node = cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
         slack_node = cs.dPower_Parameters["is"]  # TODO: Switch this again to be calculated (fixed to 'is' for compatibility)
         if i == 0: printer.information("Setting slack nodes for technical representation islands:")
         i += 1
         printer.information(f"Zone {i:>2} - Slack node: {slack_node}")
-        model.vTheta[:, :, slack_node].fix(0)
+        for rp in model.rp:
+            for k in model.k:
+                model.vTheta[rp, k, slack_node].fix(0)
         if cs.dPower_Parameters['pEnableSOCP']:
             printer.information("Fixed voltage magnitude at slack node: ", pyo.value(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage'])))
-            model.vSOCP_cii[:, :, slack_node].fix(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage']))
+            for rp in model.rp:
+                for k in model.k:
+                    model.vSOCP_cii[rp, k, slack_node].fix(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage']))
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
@@ -454,8 +462,8 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
                              sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
-    second_stage_objective = (sum(sum(model.vPNS[rp, k, :]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost for rp in model.rp for k in model.k) +  # Power not served
-                              sum(sum(model.vEPS[rp, k, :]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost * 2 for rp in model.rp for k in model.k) +  # Excess power served
+    second_stage_objective = (sum(model.vPNS[rp, k, i] * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost +  # Power not served
+                                  model.vEPS[rp, k, i] * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost * 2 for rp in model.rp for k in model.k for i in model.i) +  # Excess power served
                               sum(model.vGenP[rp, k, g] * model.pOMVarCost[g] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for g in model.g))  # Production cost of generators
 
     # Adjust objective and return first_stage_objective expression

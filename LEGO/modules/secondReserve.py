@@ -26,13 +26,17 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     if hasattr(model, "thermalGenerators"):
         model.eUCMinOut = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc="Output limit of a committed unit", rule=lambda model, rp, k, t: model.vGenP1[rp, k, t] - model.v2ndResDW[rp, k, t] >= 0)
         for t in model.thermalGenerators:
-            model.v2ndResUP[:, :, t].setub((model.pMaxProd[t] - model.pMinProd[t]) * (model.pExisUnits[t] + (model.pMaxInvest[t] * model.pEnabInv[t])))
-            model.v2ndResDW[:, :, t].setub((model.pMaxProd[t] - model.pMinProd[t]) * (model.pExisUnits[t] + (model.pMaxInvest[t] * model.pEnabInv[t])))
+            for rp in model.rp:
+                for k in model.k:
+                    model.v2ndResUP[rp, k, t].setub((model.pMaxProd[t] - model.pMinProd[t]) * (model.pExisUnits[t] + (model.pMaxInvest[t] * model.pEnabInv[t])))
+                    model.v2ndResDW[rp, k, t].setub((model.pMaxProd[t] - model.pMinProd[t]) * (model.pExisUnits[t] + (model.pMaxInvest[t] * model.pEnabInv[t])))
 
     if hasattr(model, "storageUnits"):
         for s in model.storageUnits:
-            model.v2ndResUP[:, :, s].setub(model.pMaxProd[s] * (model.pExisUnits[s] + (model.pMaxInvest[s] * model.pEnabInv[s])))
-            model.v2ndResDW[:, :, s].setub(max(model.pMaxCons[s], model.pMaxProd[s]) * (model.pExisUnits[s] + (model.pMaxInvest[s] * model.pEnabInv[s])))
+            for rp in model.rp:
+                for k in model.k:
+                    model.v2ndResUP[rp, k, s].setub(model.pMaxProd[s] * (model.pExisUnits[s] + (model.pMaxInvest[s] * model.pEnabInv[s])))
+                    model.v2ndResDW[rp, k, s].setub(max(model.pMaxCons[s], model.pMaxProd[s]) * (model.pExisUnits[s] + (model.pMaxInvest[s] * model.pEnabInv[s])))
 
     # Parameters
     model.p2ndResUp = pyo.Param(initialize=cs.dPower_Parameters["p2ndResUp"], doc="2nd reserve factor up")
