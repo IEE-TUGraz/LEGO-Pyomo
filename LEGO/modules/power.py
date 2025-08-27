@@ -204,23 +204,29 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # Power balance for nodes DC ann SOCP
-    def eDC_BalanceP_rule(m, rp, k, i):
+    def eDC_BalanceP_rule(m, rp, k, i, gi, la_full, la0, la1):
         if cs.dPower_Parameters["pEnableSOCP"]:
-            return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi)  # Gen at bus i
-                    - sum(m.vLineP[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i)  # Only outflows from i
+            return (sum(m.vGenP[rp, k, g] for g in gi)  # Gen at bus i
+                    - sum(m.vLineP[rp, k, i, j, c] for (i2, j, c) in la_full)  # Only outflows from i
                     - m.vSOCP_cii[rp, k, i] * m.pBusG[i] * m.pSBase
                     - m.pDemandP[rp, k, i]
                     + m.vPNS[rp, k, i]
                     - m.vEPS[rp, k, i])
         else:
-            return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi) -  # Production of generators at bus i
-                    sum(m.vLineP[rp, k, e] for e in m.la if (e[0] == i)) +  # Power flow from bus i to bus j
-                    sum(m.vLineP[rp, k, e] for e in m.la if (e[1] == i)) -  # Power flow from bus j to bus i
+            return (sum(m.vGenP[rp, k, g] for g in gi) -  # Production of generators at bus i
+                    sum(m.vLineP[rp, k, e] for e in la0) +  # Power flow from bus i to bus j
+                    sum(m.vLineP[rp, k, e] for e in la1) -  # Power flow from bus j to bus i
                     m.pDemandP[rp, k, i] +  # Demand at bus i
                     m.vPNS[rp, k, i] -  # Slack variable for demand not served
                     m.vEPS[rp, k, i])  # Slack variable for overproduction
 
-    model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.k, model.i, rule=eDC_BalanceP_rule)
+    # Precompute sets for faster access within rules
+    gi = {i: [g for g in model.g if (g, i) in model.gi] for i in model.i}  # Generators at bus i
+    la_full = {i: [(i2, j, c) for (i2, j, c) in model.la_full if i2 == i] for i in model.i} if cs.dPower_Parameters["pEnableSOCP"] else {}  # Lines starting at bus i for SOCP
+    la0 = {i: [e for e in model.la if (e[0] == i)] for i in model.i}  # Lines from i to j
+    la1 = {i: [e for e in model.la if (e[1] == i)] for i in model.i}  # Lines from j to i
+
+    model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.k, model.i, rule=lambda m, rp, k, i: eDC_BalanceP_rule(m, rp, k, i, gi[i], la_full[i] if cs.dPower_Parameters["pEnableSOCP"] else None, la0[i], la1[i]))
     model.eDC_BalanceP = pyo.Constraint(model.rp, model.k, model.i, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eDC_BalanceP_expr[rp, k, i] == 0)
 
     if not cs.dPower_Parameters["pEnableSOCP"]:
