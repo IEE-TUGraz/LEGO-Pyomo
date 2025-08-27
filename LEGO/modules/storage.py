@@ -107,19 +107,19 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
                 # TODO: Check if we should rather do a +/- value and calculate charge/discharge ex-post
                 if model.pEnableChDisPower:
-                    model.eExclusiveChargeDischarge.add(model.vConsump[rp, k, g] <= model.bChargeDisCharge[rp, k, g] * model.pMaxCons[g] * model.pExisUnits[g])
-                    model.eExclusiveChargeDischarge.add(model.vGenP[rp, k, g] <= (1 - model.bChargeDisCharge[rp, k, g]) * model.pMaxProd[g] * model.pExisUnits[g])
+                    model.eExclusiveChargeDischarge.add(model.vConsump[rp, k, g] <= model.bChargeDisCharge[rp, k, g] * model.pMaxCons[g] * (model.pExisUnits[g] + model.vGenInvest[g]))
+                    model.eExclusiveChargeDischarge.add(model.vGenP[rp, k, g] <= (1 - model.bChargeDisCharge[rp, k, g]) * model.pMaxProd[g] * (model.pExisUnits[g]+ model.vGenInvest[g]))
 
-    model.eStMaxProd_expr = pyo.Expression(model.rp, model.k, model.storageUnits, doc='Max production expression for storage units', rule=lambda model, rp, k, s: model.vGenP[rp, k, s] - model.vConsump[rp, k, s] - model.pMaxProd[s] * (model.vGenInvest[s] + model.pExisUnits[s]))
+    model.eStMaxProd_expr = pyo.Expression(model.rp, model.k, model.storageUnits, doc='Max production expression for storage units', rule=lambda model, rp, k, s: model.vGenP[rp, k, s] - model.vConsump[rp, k, s] - model.pMaxProd[s] * (model.pExisUnits[s] + model.vGenInvest[s]))
     model.eStMaxProd = pyo.Constraint(model.rp, model.k, model.storageUnits, doc='Max production constraint for storage units', rule=lambda model, rp, k, s: model.eStMaxProd_expr[rp, k, s] <= 0)
 
-    model.eStMaxCons_expr = pyo.Expression(model.rp, model.k, model.storageUnits, doc='Max consumption expression for storage units', rule=lambda model, rp, k, s: model.vGenP[rp, k, s] - model.vConsump[rp, k, s] + model.pMaxCons[s] * (model.vGenInvest[s] + model.pExisUnits[s]))
+    model.eStMaxCons_expr = pyo.Expression(model.rp, model.k, model.storageUnits, doc='Max consumption expression for storage units', rule=lambda model, rp, k, s: model.vGenP[rp, k, s] - model.vConsump[rp, k, s] + model.pMaxCons[s] * (model.pExisUnits[s] + model.vGenInvest[s]))
     model.eStMaxCons = pyo.Constraint(model.rp, model.k, model.storageUnits, doc='Max consumption constraint for storage units', rule=lambda model, rp, k, s: model.eStMaxCons_expr[rp, k, s] >= 0)
 
-    model.eStMaxIntraRes_expr = pyo.Expression(model.rp, model.k, model.storageUnits, doc='Max intra-reserve expression for storage units', rule=lambda model, rp, k, s: model.vStIntraRes[rp, k, s] - model.pMaxReserve[s] * (model.vGenInvest[s] + model.pExisUnits[s]))
+    model.eStMaxIntraRes_expr = pyo.Expression(model.rp, model.k, model.storageUnits, doc='Max intra-reserve expression for storage units', rule=lambda model, rp, k, s: model.vStIntraRes[rp, k, s] - model.pMaxReserve[s] * (model.pExisUnits[s] + model.vGenInvest[s]))
     model.eStMaxIntraRes = pyo.Constraint(model.rp, model.k, model.storageUnits, doc='Max intra-reserve constraint for storage units', rule=lambda model, rp, k, s: model.eStMaxIntraRes_expr[rp, k, s] <= 0)
 
-    model.eStMinIntraRes_expr = pyo.Expression(model.rp, model.k, model.storageUnits, doc='Min intra-reserve expression for storage units', rule=lambda model, rp, k, s: model.vStIntraRes[rp, k, s] - model.pMinReserve[s] * (model.vGenInvest[s] + model.pExisUnits[s]))
+    model.eStMinIntraRes_expr = pyo.Expression(model.rp, model.k, model.storageUnits, doc='Min intra-reserve expression for storage units', rule=lambda model, rp, k, s: model.vStIntraRes[rp, k, s] - model.pMinReserve[s] * (model.pExisUnits[s] + model.vGenInvest[s]))
     model.eStMinIntraRes = pyo.Constraint(model.rp, model.k, model.storageUnits, doc='Min intra-reserve constraint for storage units', rule=lambda model, rp, k, s: model.eStMinIntraRes_expr[rp, k, s] >= 0)
 
     def eStFinIntraRes_rule(model, rp, k, s):
@@ -134,7 +134,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def eStMaxInterRes_rule(model, p, s):
         # If current p is a multiple of moving window, add constraint
         if model.p.ord(p) % model.pMovWindow == 0:
-            return 0 >= model.vStInterRes[p, s] - model.pMaxReserve[s] * (model.vGenInvest[s] + model.pExisUnits[s])
+            return 0 >= model.vStInterRes[p, s] - model.pMaxReserve[s] * (model.pExisUnits[s] + model.vGenInvest[s])
         else:
             return pyo.Constraint.Skip
 
@@ -143,7 +143,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def eStMinInterRes_rule(model, p, s):
         # If current p is a multiple of moving window, add constraint
         if model.p.ord(p) % model.pMovWindow == 0:
-            return 0 <= model.vStInterRes[p, s] - model.pMinReserve[s] * (model.vGenInvest[s] + model.pExisUnits[s])
+            return 0 <= model.vStInterRes[p, s] - model.pMinReserve[s] * (model.pExisUnits[s] + model.vGenInvest[s])
         else:
             return pyo.Constraint.Skip
 
