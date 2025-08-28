@@ -39,7 +39,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.pPowerFactor = pyo.Param(model.Hydroplants, initialize={ 'P1': 1.1, 'P2': 1.4, 'P3': 1.5, 'P4': 1.6
     }, doc='Power factor for hydro plants')  # Example power factors, replace with actual data
 
-    model.pDemand = pyo.Param(model.T, initialize={1: 300, 2: 350, 3: 400}, doc='Demand for each time step')  # Example demand, replace with actual data
+    model.pDemand = pyo.Param(model.T, initialize={1: 500, 2: 600, 3: 400}, doc='Demand for each time step')  # Example demand, replace with actual data
 
     model.pCost = pyo.Param(model.Hydroplants, initialize={'P1': 20, 'P2': 25, 'P3': 30, 'P4': 35}, doc='Cost of production for hydro plants')  # Example costs, replace with actual data
 
@@ -77,12 +77,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         return sum(model.vProd[i, t] for i in model.Hydroplants) == model.pDemand[t]
     model.eDemand_con = pyo.Constraint(model.T, rule=demand_rule)
 
-    def inflow_rule_2(model, i, t):
-        if t == 1:
-            return model.vInflow[i, t] == model.pInflowRiver[i, t] + model.pInitialStorage[i]
-        else:
-            return model.vInflow[i, t] == model.pInflowRiver[i, t] + model.vStorage[i, t - 1]
-    model.eInflow2 = pyo.Constraint(model.Hydroplants, model.T, rule=inflow_rule_2)
+    #def inflow_rule_2(model, i, t):
+    #    if t == 1:
+    #        return model.vInflow[i, t] == model.vStorage[i, t]
+    #    else:
+    #        return model.vInflow[i, t] == model.vStorage[i, t - 1] - model.vStorage[i, t]
+    #model.eInflow2 = pyo.Constraint(model.Hydroplants, model.T, rule=inflow_rule_2)
 
     #def storage_rule_2(model, i, t):
     #    if t == 1:
