@@ -25,7 +25,7 @@ pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
 
-def execute_case_studies(case_study_path: str, unit_commitment_result_file: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False):
+def execute_case_studies(case_study_path: str, unit_commitment_result_file: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False, calculate_regret: bool = False):
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
@@ -131,7 +131,7 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
                                  "vEPS": sum([pyo.value(model.vEPS[i[0], i[1], node]) for node in model.i])}) for i in list(model.vCommit)]:
                 df = pd.concat([df, x], axis=1)
 
-            if caseName != "Truth ":
+            if calculate_regret and caseName != "Truth ":
                 regret_lego = truth_lego.copy()
 
                 add_UnitCommitmentSlack_And_FixVariables(regret_lego, model, cs_notEnforced.dPower_Hindex, cs_notEnforced.dPower_ThermalGen, cs_notEnforced.dPower_Parameters["pENSCost"])
@@ -181,8 +181,8 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
         results.append({
             "Case": caseName,
             "Objective": objective_value if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1,
-            "Objective Regret": regret_objective_value - getUnitCommitmentSlackCost(regret_lego, cs_notEnforced.dPower_ThermalGen, cs_notEnforced.dPower_Parameters["pENSCost"]) if regret_result.solver.termination_condition == pyo.TerminationCondition.optimal and caseName != "Truth " else -1,
-            "Correction Cost": getUnitCommitmentSlackCost(regret_lego, cs_notEnforced.dPower_ThermalGen, cs_notEnforced.dPower_Parameters["pENSCost"]) if caseName != "Truth " else -1,
+            "Objective Regret": -1 if not calculate_regret else (regret_objective_value - getUnitCommitmentSlackCost(regret_lego, cs_notEnforced.dPower_ThermalGen, cs_notEnforced.dPower_Parameters["pENSCost"]) if regret_result.solver.termination_condition == pyo.TerminationCondition.optimal and caseName != "Truth " else -1),
+            "Correction Cost": -1 if not calculate_regret else (getUnitCommitmentSlackCost(regret_lego, cs_notEnforced.dPower_ThermalGen, cs_notEnforced.dPower_Parameters["pENSCost"]) if caseName != "Truth " else -1),
             "Solution": result.solver.termination_condition,
             "Build Time": timing_building,
             "Solve Time": timing_solving,
@@ -191,14 +191,14 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
             "# Constraints": model.nconstraints(),
             "PNS": sum(model.vPNS[rp, k, i].value if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "EPS": sum(model.vEPS[rp, k, i].value if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
-            "PNS regr.": sum(regret_lego.model.vPNS[rp, k, i].value if regret_lego.model.vPNS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if caseName != "Truth " else -1,
-            "EPS regr.": sum(regret_lego.model.vEPS[rp, k, i].value if regret_lego.model.vEPS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if caseName != "Truth " else -1,
-            "Commit Correction +": sum(regret_lego.model.vCommitCorrectHigher[rp, k, t].value if regret_lego.model.vCommitCorrectHigher[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1,
-            "Commit Correction -": sum(regret_lego.model.vCommitCorrectLower[rp, k, t].value if regret_lego.model.vCommitCorrectLower[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1,
+            "PNS regr.": -1 if not calculate_regret else (sum(regret_lego.model.vPNS[rp, k, i].value if regret_lego.model.vPNS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if caseName != "Truth " else -1),
+            "EPS regr.": -1 if not calculate_regret else (sum(regret_lego.model.vEPS[rp, k, i].value if regret_lego.model.vEPS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if caseName != "Truth " else -1),
+            "Commit Correction +": -1 if not calculate_regret else (sum(regret_lego.model.vCommitCorrectHigher[rp, k, t].value if regret_lego.model.vCommitCorrectHigher[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1),
+            "Commit Correction -": -1 if not calculate_regret else (sum(regret_lego.model.vCommitCorrectLower[rp, k, t].value if regret_lego.model.vCommitCorrectLower[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1),
             "vGenP": sum(model.vGenP[rp, k, g].value if model.vGenP[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.g),
-            "vCommit": sum(model.vCommit[rp, k, g].value if model.vCommit[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.g),
-            "vStartup": sum(model.vStartup[rp, k, g].value if model.vStartup[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.g),
-            "vShutdown": sum(model.vShutdown[rp, k, g].value if model.vShutdown[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.g),
+            "vCommit": sum(model.vCommit[rp, k, g].value if model.vCommit[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.thermalGenerators),
+            "vStartup": sum(model.vStartup[rp, k, g].value if model.vStartup[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.thermalGenerators),
+            "vShutdown": sum(model.vShutdown[rp, k, g].value if model.vShutdown[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.thermalGenerators),
             "vPNS": sum(model.vPNS[rp, k, i].value if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "vEPS": sum(model.vEPS[rp, k, i].value if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "model": model
@@ -233,6 +233,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-sqlite", action="store_true", help="Do not save results to SQLite database")
     parser.add_argument("--no-excel", action="store_true", help="Do not save results to Excel file")
     parser.add_argument("--no-regret-plot", action="store_true", help="Do not plot regret results")
+    parser.add_argument("--calculate-regret", action="store_true", help="Calculate regret by re-solving the truth model with fixed unit commitment from the other models (can take a while)")
     args = parser.parse_args()
 
     for folder in args.caseStudyFolder.split(","):
@@ -246,7 +247,7 @@ if __name__ == "__main__":
 
             unit_commitment_result_file = f"unitCommitmentResult-{folder_name}.xlsx"
             printer.information(f"Unit commitment result file: '{unit_commitment_result_file}'")
-            execute_case_studies(folder, unit_commitment_result_file, args.no_sqlite, args.no_excel)
+            execute_case_studies(folder, unit_commitment_result_file, args.no_sqlite, args.no_excel, args.calculate_regret)
 
             if args.plot:
                 printer.information("Plotting unit commitment")
