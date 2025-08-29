@@ -100,7 +100,22 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                                               - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
                                               + ((model.pLDSInflows[rp, k, g] * model.pWeight_k[k] - model.vLDSSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationStorageUnits else 0))
                 elif len(model.rp) > 1:  # Only cyclic if it has multiple representative periods
-                    model.eStIntraRes.add(0 == model.vStIntraRes[rp, model.k.prevw(k), g]
+                    match cs.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"]:
+                        case "notEnforced":
+                            if model.k.ord(k) == 1:
+                                continue  # Don't enforce the constraint for the first time step at all
+                            else:
+                                vStIntraRes_prev = model.vStIntraRes[rp, model.k.prev(k), g]
+                        case "cyclic":
+                            vStIntraRes_prev = model.vStIntraRes[rp, model.k.prevw(k), g]
+                        case "markov":
+                            if model.k.ord(k) == 1:
+                                vStIntraRes_prev = LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k), model.vStIntraRes, cs.rpTransitionMatrixRelativeFrom, g)
+                            else:
+                                vStIntraRes_prev = model.vStIntraRes[rp, model.k.prev(k), g]
+                        case _:
+                            raise ValueError(f"Unknown pReprPeriodEdgeHandlingIntraDayStorage: '{cs.dPower_Parameters['pReprPeriodEdgeHandlingIntraDayStorage']}'")
+                    model.eStIntraRes.add(0 == vStIntraRes_prev
                                           - model.vStIntraRes[rp, k, g]
                                           - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
                                           + ((model.pLDSInflows[rp, k, g] * model.pWeight_k[k] - model.vLDSSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationStorageUnits else 0))

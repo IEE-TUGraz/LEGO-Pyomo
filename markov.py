@@ -40,14 +40,17 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
     start_time = time.time()
     cs_notEnforced.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "notEnforced"
     cs_notEnforced.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "notEnforced"
+    cs_notEnforced.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"] = "notEnforced"
 
     cs_cyclic = cs_notEnforced.copy()
     cs_cyclic.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "cyclic"
     cs_cyclic.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "cyclic"
+    cs_cyclic.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"] = "cyclic"
 
     cs_markov = cs_notEnforced.copy()
     cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "markov"
     cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "markov"
+    cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"] = "markov"
     printer.information(f"Creating varied case studies took {time.time() - start_time:.2f} seconds")
 
     # Create "truth" case study for comparison
