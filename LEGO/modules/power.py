@@ -167,7 +167,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     # For each DC-OPF/SOCP "island", set node with highest demand as slack node
     dTechnicalReprIslands = pd.DataFrame(index=cs.dPower_BusInfo.index, columns=[cs.dPower_BusInfo.index], data=False)
 
-    for index, entry in cs.dPower_Network.iterrows():
+    for index in cs.dPower_Network.index:
         if cs.dPower_Network.loc[(index[0], index[1], index[2])]["pTecRepr"] in ["DC-OPF", "SOCP"]:
             dTechnicalReprIslands.loc[index[0], index[1]] = True
             dTechnicalReprIslands.loc[index[1], index[0]] = True

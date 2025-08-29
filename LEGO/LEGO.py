@@ -91,7 +91,7 @@ class LEGO:
         match model_type:
             case ModelType.DETERMINISTIC:
                 optimizer = pyo.SolverFactory(solver_name)
-                results = optimizer.solve(self.model)
+                results = optimizer.solve(self.model, tee=True)
                 objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
             case ModelType.EXTENSIVE_FORM:
                 if solver_name != self.solver_name:

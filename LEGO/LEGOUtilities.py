@@ -25,8 +25,8 @@ def set_range_non_cyclic(set: pyo.Set, first_index: int, last_index: int):
 
 # Returns a list of elements from a set, starting from 'first_index' and ending at 'last_index' (both inclusive) with wrapping around
 def set_range_cyclic(set: pyo.Set, first_index: int, last_index: int):
-    if first_index > len(set) or first_index < -len(set):
-        raise ValueError(f"'first_index' must be <= len(set) and >= -len(set) (got {first_index} and {len(set)})")
+    if not (-len(set) <= first_index <= len(set)):
+        raise ValueError(f"Check failed: -{len(set)} <= 'first_index' <= {len(set)}, which is not true for {first_index}")
     elif last_index < 1:
         raise ValueError(f"'last_index' must be greater than 1 (got {last_index})")
 
