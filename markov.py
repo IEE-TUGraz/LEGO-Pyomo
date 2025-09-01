@@ -33,7 +33,7 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
     # Load case study from Excels
     printer.information(f"Loading case study from '{case_study_path}'")
     start_time = time.time()
-    cs_notEnforced = CaseStudy(case_study_path)
+    cs_notEnforced = CaseStudy(case_study_path, clip_method="absolute_count", clip_value=2)
     printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
 
     # Create varied case studies
