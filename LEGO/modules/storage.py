@@ -19,6 +19,10 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.longDurationEnergyStorageUnits = pyo.Set(doc='Long-duration storage units (subset of storage units)', initialize=cs.dPower_Storage[cs.dPower_Storage['IsLDES'] == 1].index.tolist(), within=model.storageUnits)
 
     model.intraStorageUnits = pyo.Set(doc='Intra-day storage units (subset of storage units)', initialize=model.storageUnits if len(model.rp) == 1 else (model.storageUnits - model.longDurationEnergyStorageUnits), within=model.storageUnits)
+    model.interStorageUnits = pyo.Set(doc='Inter-day storage units (subset of storage units)', initialize=model.longDurationEnergyStorageUnits if len(model.rp) > 1 else [], within=model.storageUnits)
+
+    # Subset of p with only the elements at 'movingWindow' intervals
+    model.movingWindowP = pyo.Set(doc='Set of periods at moving window intervals', initialize=[p for p in model.p if model.p.ord(p) % model.pMovWindow == 0])
 
     # Parameters
     model.pEnableChDisPower = cs.dPower_Parameters['pEnableChDisPower']  # Avoid simultaneous charging and discharging
@@ -60,13 +64,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vStIntraRes = pyo.Var(model.rp, model.k, model.intraStorageUnits, doc='Intra-reserve of storage unit g', bounds=lambda m, rp, k, g: (m.pMinReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g])), m.pMaxReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g]))))
     second_stage_variables += [model.vStIntraRes]
 
-    model.vStInterRes = pyo.Var(model.p, model.longDurationEnergyStorageUnits, doc='Inter-reserve of storage unit g', bounds=(None, None))
+    model.vStInterRes = pyo.Var(model.movingWindowP, model.interStorageUnits, doc='Inter-reserve of storage unit g', bounds=lambda m, p, g: (m.pMinReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g])), m.pMaxReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g]))))
     second_stage_variables += [model.vStInterRes]
-    for p in model.p:
-        for g in model.longDurationEnergyStorageUnits:
-            if model.p.ord(p) % model.pMovWindow == 0:
-                model.vStInterRes[p, g].setub(model.pMaxReserve[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
-                model.vStInterRes[p, g].setlb(model.pMinReserve[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
 
     model.vLDESSpillage = pyo.Var(model.rp, model.k, model.longDurationEnergyStorageUnits, doc='Spillage of long-duration energy storage units [power]', bounds=(0, None))
     second_stage_variables += [model.vLDESSpillage]
@@ -123,39 +122,13 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         # If there is only one rp and k is the last period of the representative period, limit the final storage level to initial storage level
         model.eStFinIntraRes = pyo.Constraint(model.rp, model.k, model.intraStorageUnits, doc='Final intra-reserve storage level constraint', rule=lambda m, rp, k, g: (m.vStIntraRes[rp, k, g] >= m.pIniReserve[g] * (m.pExisUnits[g] + m.vGenInvest[g])) if m.k.ord(k) == len(m.k) else pyo.Constraint.Skip)
 
-    def eStMaxInterRes_rule(model, p, s):
-        # If current p is a multiple of moving window, add constraint
-        if model.p.ord(p) % model.pMovWindow == 0:
-            return 0 >= model.vStInterRes[p, s] - model.pMaxReserve[s] * (model.pExisUnits[s] + model.vGenInvest[s])
-        else:
-            return pyo.Constraint.Skip
+    if len(model.rp) > 1:
+        model.eStMaxInterRes = pyo.Constraint(model.movingWindowP, model.interStorageUnits, doc='Max inter-reserve constraint for storage units', rule=lambda m, p, s: m.vStInterRes[p, s] <= m.pMaxReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s]))
+        model.eStMinInterRes = pyo.Constraint(model.movingWindowP, model.interStorageUnits, doc='Min inter-reserve constraint for storage units', rule=lambda m, p, s: m.vStInterRes[p, s] >= m.pMinReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s]))
 
-    model.eStMaxInterRes = pyo.Constraint(model.p, model.longDurationEnergyStorageUnits, doc='Max inter-reserve constraint for storage units', rule=eStMaxInterRes_rule)
+        model.eStFinInterRes = pyo.Constraint([model.p[-1]], model.interStorageUnits, doc='Final inter-reserve storage level constraint', rule=lambda m, p, s: (m.vStInterRes[p, s] == m.pIniReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s])) if cs.dPower_Parameters['pFixStInterResToIniReserve'] else (m.vStInterRes[p, s] >= m.pIniReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s])))
 
-    def eStMinInterRes_rule(model, p, s):
-        # If current p is a multiple of moving window, add constraint
-        if model.p.ord(p) % model.pMovWindow == 0:
-            return 0 <= model.vStInterRes[p, s] - model.pMinReserve[s] * (model.pExisUnits[s] + model.vGenInvest[s])
-        else:
-            return pyo.Constraint.Skip
-
-    model.eStMinInterRes = pyo.Constraint(model.p, model.longDurationEnergyStorageUnits, doc='Min inter-reserve constraint for storage units', rule=eStMinInterRes_rule)
-
-    def eStFinInterRes_rule(model, p, s):
-        # If current p is the last period of the representative period, add constraint
-        if len(model.rp) > 1 and model.p.ord(p) == len(model.p):
-            if cs.dPower_Parameters['pFixStInterResToIniReserve']:
-                return model.vStInterRes[p, s] == model.pIniReserve[s] * (model.pExisUnits[s] + model.vGenInvest[s])
-            else:
-                return model.vStInterRes[p, s] >= model.pIniReserve[s] * (model.pExisUnits[s] + model.vGenInvest[s])
-        else:
-            return pyo.Constraint.Skip
-
-    model.eStFinInterRes = pyo.Constraint(model.p, model.longDurationEnergyStorageUnits, doc='Final inter-reserve storage level constraint', rule=eStFinInterRes_rule)
-
-    def eStInterRes_rule(model, p, storage_unit):
-        # If current p is a multiple of moving window, add constraint
-        if model.p.ord(p) % model.pMovWindow == 0 and len(model.rp) > 1:
+        def eStInterRes_rule(model, p, storage_unit):
             relevant_hindeces = model.hindex[model.p.ord(p) - model.pMovWindow:model.p.ord(p)]
             hindex_count = relevant_hindeces.to_frame(index=False).groupby(['rp', 'k']).size()
 
@@ -166,13 +139,9 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     + sum(- model.vGenP[rp2, k2, storage_unit] * model.pWeight_k[k2] / cs.dPower_Storage.loc[storage_unit, 'DisEffic'] * hindex_count.loc[rp2, k2]
                           + model.vConsump[rp2, k2, storage_unit] * model.pWeight_k[k2] * cs.dPower_Storage.loc[storage_unit, 'ChEffic'] * hindex_count.loc[rp2, k2]
                           + model.pLDESInflows[rp2, k2, storage_unit] * hindex_count.loc[rp2, k2]
-                          - model.vLDESSpillage[rp2, k2, storage_unit] * model.pWeight_k[k] * hindex_count.loc[rp2, k2] for rp2, k2 in hindex_count.index))
+                          - model.vLDESSpillage[rp2, k2, storage_unit] * model.pWeight_k[k2] * hindex_count.loc[rp2, k2] for rp2, k2 in hindex_count.index))
 
-        else:  # Skip otherwise
-            return pyo.Constraint.Skip
-
-    if len(model.rp) > 1:
-        model.eStInterRes = pyo.Constraint(model.p, model.longDurationEnergyStorageUnits, doc='Inter-day reserve constraint for storage units', rule=eStInterRes_rule)
+        model.eStInterRes = pyo.Constraint(model.movingWindowP, model.longDurationEnergyStorageUnits, doc='Inter-day reserve constraint for storage units', rule=eStInterRes_rule)
 
     # Add vConsump to eDC_BalanceP (vGenP should already be there, since it gets added for all generators)
     for rp in model.rp:
