@@ -76,35 +76,23 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
-    # Constraint definitions
-    model.eStIntraRes = pyo.ConstraintList(doc='Intra-day reserve constraint for storage units')
-    model.eExclusiveChargeDischarge = pyo.ConstraintList(doc='Enforce exclusive charge or discharge for storage units')
+    def eStIntraRes_rule(m, rp, k, g):
+        return (((m.pIniReserve[g] * (m.pExisUnits[g] + m.vGenInvest[g])) if (len(m.rp) == 1 and m.k.ord(k) == 1) else m.vStIntraRes[rp, m.k.prevw(k), g])  # If single representative period and first time step, use initial reserve, otherwise use previous time step
+                ==
+                + m.vStIntraRes[rp, k, g]
+                + m.vGenP[rp, k, g] * m.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + m.vConsump[rp, k, g] * m.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
+                - ((m.pLDESInflows[rp, k, g] - m.vLDESSpillage[rp, k, g] * m.pWeight_k[k]) if g in m.longDurationEnergyStorageUnits else 0))
 
-    # Constraint implementations
-    for g in model.storageUnits:
+    model.eStIntraRes = pyo.ConstraintList(model.rp, model.k, model.storageUnits, doc='Intra-day reserve constraint for storage units')
+
+    if model.pEnableChDisPower:
+        # TODO: Check if we should rather do a +/- value and calculate charge/discharge ex-post
+        model.eExclusiveChargeDischarge = pyo.ConstraintList(doc='Enforce exclusive charge or discharge for storage units')
         for rp in model.rp:
             for k in model.k:
-                if len(model.rp) == 1:
-                    if model.k.ord(k) == 1:  # Adding IniReserve if it is the first time step (instead of 'prev' value)
-                        model.eStIntraRes.add(0 == model.pIniReserve[g] * (model.pExisUnits[g] + model.vGenInvest[g])
-                                              - model.vStIntraRes[rp, k, g]
-                                              - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
-                                              + ((model.pLDESInflows[rp, k, g] - model.vLDESSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationEnergyStorageUnits else 0))
-                    else:
-                        model.eStIntraRes.add(0 == model.vStIntraRes[rp, model.k.prev(k), g]
-                                              - model.vStIntraRes[rp, k, g]
-                                              - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
-                                              + ((model.pLDESInflows[rp, k, g] - model.vLDESSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationEnergyStorageUnits else 0))
-                elif len(model.rp) > 1:  # Only cyclic if it has multiple representative periods
-                    model.eStIntraRes.add(0 == model.vStIntraRes[rp, model.k.prevw(k), g]
-                                          - model.vStIntraRes[rp, k, g]
-                                          - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
-                                          + ((model.pLDESInflows[rp, k, g] - model.vLDESSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationEnergyStorageUnits else 0))
-
-                # TODO: Check if we should rather do a +/- value and calculate charge/discharge ex-post
-                if model.pEnableChDisPower:
+                for g in model.storageUnits:
                     model.eExclusiveChargeDischarge.add(model.vConsump[rp, k, g] <= model.bChargeDisCharge[rp, k, g] * model.pMaxCons[g] * (model.pExisUnits[g] + model.vGenInvest[g]))
-                    model.eExclusiveChargeDischarge.add(model.vGenP[rp, k, g] <= (1 - model.bChargeDisCharge[rp, k, g]) * model.pMaxProd[g] * (model.pExisUnits[g]+ model.vGenInvest[g]))
+                    model.eExclusiveChargeDischarge.add(model.vGenP[rp, k, g] <= (1 - model.bChargeDisCharge[rp, k, g]) * model.pMaxProd[g] * (model.pExisUnits[g] + model.vGenInvest[g]))
 
     model.eStMaxProd_expr = pyo.Expression(model.rp, model.k, model.storageUnits, doc='Max production expression for storage units', rule=lambda model, rp, k, s: model.vGenP[rp, k, s] - model.vConsump[rp, k, s] - model.pMaxProd[s] * (model.pExisUnits[s] + model.vGenInvest[s]))
     model.eStMaxProd = pyo.Constraint(model.rp, model.k, model.storageUnits, doc='Max production constraint for storage units', rule=lambda model, rp, k, s: model.eStMaxProd_expr[rp, k, s] <= 0)
