@@ -18,6 +18,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     LEGO.addToSet(model, "gi", cs.dPower_Storage.reset_index().set_index(['g', 'i']).index)  # Note: Add gi after g since it depends on g
     model.longDurationEnergyStorageUnits = pyo.Set(doc='Long-duration storage units (subset of storage units)', initialize=cs.dPower_Storage[cs.dPower_Storage['IsLDES'] == 1].index.tolist(), within=model.storageUnits)
 
+    model.intraStorageUnits = pyo.Set(doc='Intra-day storage units (subset of storage units)', initialize=model.storageUnits if len(model.rp) == 1 else (model.storageUnits - model.longDurationEnergyStorageUnits), within=model.storageUnits)
+
     # Parameters
     model.pEnableChDisPower = cs.dPower_Parameters['pEnableChDisPower']  # Avoid simultaneous charging and discharging
     model.pE2PRatio = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['Ene2PowRatio'], doc='Energy to power ratio of storage unit g')
@@ -33,7 +35,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     model.pLDESInflows = pyo.Param(model.rp, model.k, model.longDurationEnergyStorageUnits, initialize=dInflows, doc="Inflows of long-duration energy storage units [energy/timestep]", default=0)
 
-    model.pMaxCons = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['MaxCons'],  doc='Maximum consumption of storage unit [power]')
+    model.pMaxCons = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['MaxCons'], doc='Maximum consumption of storage unit [power]')
 
     LEGO.addToParameter(model, "pMaxProd", cs.dPower_Storage['MaxProd'])
     LEGO.addToParameter(model, "pMinProd", cs.dPower_Storage['MinProd'])
@@ -55,13 +57,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vConsump = pyo.Var(model.rp, model.k, model.storageUnits, doc='Charging of storage unit g', bounds=lambda model, rp, k, g: (0, model.pMaxCons[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g]))))
     second_stage_variables += [model.vConsump]
 
-    model.vStIntraRes = pyo.Var(model.rp, model.k, model.storageUnits, doc='Intra-reserve of storage unit g', bounds=(None, None))
+    model.vStIntraRes = pyo.Var(model.rp, model.k, model.intraStorageUnits, doc='Intra-reserve of storage unit g', bounds=lambda m, rp, k, g: (m.pMinReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g])), m.pMaxReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g]))))
     second_stage_variables += [model.vStIntraRes]
-    for rp in model.rp:
-        for k in model.k:
-            for g in model.storageUnits:
-                model.vStIntraRes[rp, k, g].setub(model.pMaxReserve[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
-                model.vStIntraRes[rp, k, g].setlb(model.pMinReserve[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])))
 
     model.vStInterRes = pyo.Var(model.p, model.longDurationEnergyStorageUnits, doc='Inter-reserve of storage unit g', bounds=(None, None))
     second_stage_variables += [model.vStInterRes]
@@ -116,20 +113,15 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     model.eStMaxCons_expr = pyo.Expression(model.rp, model.k, model.storageUnits, doc='Max consumption expression for storage units', rule=lambda model, rp, k, s: model.vGenP[rp, k, s] - model.vConsump[rp, k, s] + model.pMaxCons[s] * (model.pExisUnits[s] + model.vGenInvest[s]))
     model.eStMaxCons = pyo.Constraint(model.rp, model.k, model.storageUnits, doc='Max consumption constraint for storage units', rule=lambda model, rp, k, s: model.eStMaxCons_expr[rp, k, s] >= 0)
 
-    model.eStMaxIntraRes_expr = pyo.Expression(model.rp, model.k, model.storageUnits, doc='Max intra-reserve expression for storage units', rule=lambda model, rp, k, s: model.vStIntraRes[rp, k, s] - model.pMaxReserve[s] * (model.pExisUnits[s] + model.vGenInvest[s]))
-    model.eStMaxIntraRes = pyo.Constraint(model.rp, model.k, model.storageUnits, doc='Max intra-reserve constraint for storage units', rule=lambda model, rp, k, s: model.eStMaxIntraRes_expr[rp, k, s] <= 0)
+    model.eStMaxIntraRes_expr = pyo.Expression(model.rp, model.k, model.intraStorageUnits, doc='Max intra-reserve expression for storage units', rule=lambda model, rp, k, s: model.vStIntraRes[rp, k, s] - model.pMaxReserve[s] * (model.pExisUnits[s] + model.vGenInvest[s]))
+    model.eStMaxIntraRes = pyo.Constraint(model.rp, model.k, model.intraStorageUnits, doc='Max intra-reserve constraint for storage units', rule=lambda model, rp, k, s: model.eStMaxIntraRes_expr[rp, k, s] <= 0)
 
-    model.eStMinIntraRes_expr = pyo.Expression(model.rp, model.k, model.storageUnits, doc='Min intra-reserve expression for storage units', rule=lambda model, rp, k, s: model.vStIntraRes[rp, k, s] - model.pMinReserve[s] * (model.pExisUnits[s] + model.vGenInvest[s]))
-    model.eStMinIntraRes = pyo.Constraint(model.rp, model.k, model.storageUnits, doc='Min intra-reserve constraint for storage units', rule=lambda model, rp, k, s: model.eStMinIntraRes_expr[rp, k, s] >= 0)
+    model.eStMinIntraRes_expr = pyo.Expression(model.rp, model.k, model.intraStorageUnits, doc='Min intra-reserve expression for storage units', rule=lambda model, rp, k, s: model.vStIntraRes[rp, k, s] - model.pMinReserve[s] * (model.pExisUnits[s] + model.vGenInvest[s]))
+    model.eStMinIntraRes = pyo.Constraint(model.rp, model.k, model.intraStorageUnits, doc='Min intra-reserve constraint for storage units', rule=lambda model, rp, k, s: model.eStMinIntraRes_expr[rp, k, s] >= 0)
 
-    def eStFinIntraRes_rule(model, rp, k, s):
-        # If there is only one rp and k is the last period of the representative period, add constraint
-        if len(model.rp) == 1 and model.k.ord(k) == len(model.k):
-            return model.vStIntraRes[rp, k, s] >= model.pIniReserve[s] * (model.pExisUnits[s] + model.vGenInvest[s])
-        else:
-            return pyo.Constraint.Skip
-
-    model.eStFinIntraRes = pyo.Constraint(model.rp, model.k, model.storageUnits, doc='Final intra-reserve storage level constraint', rule=eStFinIntraRes_rule)
+    if len(model.rp) == 1:
+        # If there is only one rp and k is the last period of the representative period, limit the final storage level to initial storage level
+        model.eStFinIntraRes = pyo.Constraint(model.rp, model.k, model.intraStorageUnits, doc='Final intra-reserve storage level constraint', rule=lambda m, rp, k, g: (m.vStIntraRes[rp, k, g] >= m.pIniReserve[g] * (m.pExisUnits[g] + m.vGenInvest[g])) if m.k.ord(k) == len(m.k) else pyo.Constraint.Skip)
 
     def eStMaxInterRes_rule(model, p, s):
         # If current p is a multiple of moving window, add constraint
