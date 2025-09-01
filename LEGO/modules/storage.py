@@ -2,7 +2,10 @@ import pandas as pd
 import pyomo.environ as pyo
 
 from InOutModule.CaseStudy import CaseStudy
+from InOutModule.printer import Printer
 from LEGO import LEGO, LEGOUtilities
+
+printer = Printer.getInstance()
 
 
 @LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
@@ -20,6 +23,11 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     model.intraStorageUnits = pyo.Set(doc='Intra-day storage units (subset of storage units)', initialize=model.storageUnits if len(model.rp) == 1 else (model.storageUnits - model.longDurationEnergyStorageUnits), within=model.storageUnits)
     model.interStorageUnits = pyo.Set(doc='Inter-day storage units (subset of storage units)', initialize=model.longDurationEnergyStorageUnits if len(model.rp) > 1 else [], within=model.storageUnits)
+    model.hydroStorageUnits = pyo.Set(doc='Hydro storage units (subset of storage units)', initialize=cs.dPower_Storage[cs.dPower_Storage['tec'].str.lower() == "hydro"].index.tolist(), within=model.storageUnits)
+    if len(model.hydroStorageUnits) > 0:
+        printer.information(f"The following storage units are hydro storage units: {list(model.hydroStorageUnits)}")
+    else:
+        printer.information("No hydro storage units defined.")
 
     # Subset of p with only the elements at 'movingWindow' intervals
     model.movingWindowP = pyo.Set(doc='Set of periods at moving window intervals', initialize=[p for p in model.p if model.p.ord(p) % model.pMovWindow == 0])
@@ -32,12 +40,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.pMaxReserve = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['MaxProd'] * cs.dPower_Storage['Ene2PowRatio'], doc='Maximum reserve of storage unit g [energy]')
 
     dInflows = []
-    for g in model.longDurationEnergyStorageUnits:
+    for g in model.hydroStorageUnits:
         if g in cs.dPower_Inflows.index.get_level_values("g"):
             dInflows.append(cs.dPower_Inflows.loc[(slice(None), slice(None), g), 'value'])
     dInflows = pd.concat(dInflows, axis=0)
 
-    model.pLDESInflows = pyo.Param(model.rp, model.k, model.longDurationEnergyStorageUnits, initialize=dInflows, doc="Inflows of long-duration energy storage units [energy/timestep]", default=0)
+    model.pStorageInflows = pyo.Param(model.rp, model.k, model.storageUnits, initialize=dInflows, doc="Inflows of long-duration energy storage units [energy/timestep]", default=0)
 
     model.pMaxCons = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['MaxCons'], doc='Maximum consumption of storage unit [power]')
 
@@ -67,8 +75,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vStInterRes = pyo.Var(model.movingWindowP, model.interStorageUnits, doc='Inter-reserve of storage unit g', bounds=lambda m, p, g: (m.pMinReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g])), m.pMaxReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g]))))
     second_stage_variables += [model.vStInterRes]
 
-    model.vLDESSpillage = pyo.Var(model.rp, model.k, model.longDurationEnergyStorageUnits, doc='Spillage of long-duration energy storage units [power]', bounds=(0, None))
-    second_stage_variables += [model.vLDESSpillage]
+    model.vStorageSpillage = pyo.Var(model.rp, model.k, model.hydroStorageUnits, doc='Spillage of hydro storage unit [power]', bounds=lambda m, rp, k, s: (0, (m.pMaxReserve[s] * (m.pExisUnits[s] + (m.pMaxInvest[s] * m.pEnabInv[s])))))
+    second_stage_variables += [model.vStorageSpillage]
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
@@ -81,9 +89,9 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                 ==
                 + m.vStIntraRes[rp, k, g]
                 + m.vGenP[rp, k, g] * m.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + m.vConsump[rp, k, g] * m.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
-                - ((m.pLDESInflows[rp, k, g] - m.vLDESSpillage[rp, k, g] * m.pWeight_k[k]) if g in m.longDurationEnergyStorageUnits else 0))
+                - ((m.pStorageInflows[rp, k, g] - m.vStorageSpillage[rp, k, g] * m.pWeight_k[k]) if g in m.hydroStorageUnits else 0))
 
-    model.eStIntraRes = pyo.ConstraintList(model.rp, model.k, model.storageUnits, doc='Intra-day reserve constraint for storage units')
+    model.eStIntraRes = pyo.Constraint(model.rp, model.k, model.intraStorageUnits, doc='Intra-day reserve constraint for storage units', rule=eStIntraRes_rule)
 
     if model.pEnableChDisPower:
         # TODO: Check if we should rather do a +/- value and calculate charge/discharge ex-post
@@ -110,11 +118,11 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         # If there is only one rp and k is the last period of the representative period, limit the final storage level to initial storage level
         model.eStFinIntraRes = pyo.Constraint(model.rp, model.k, model.intraStorageUnits, doc='Final intra-reserve storage level constraint', rule=lambda m, rp, k, g: (m.vStIntraRes[rp, k, g] >= m.pIniReserve[g] * (m.pExisUnits[g] + m.vGenInvest[g])) if m.k.ord(k) == len(m.k) else pyo.Constraint.Skip)
 
-    if len(model.rp) > 1:
+    if len(model.rp) > 1:  # Only add inter-day constraints if there are multiple representative periods
         model.eStMaxInterRes = pyo.Constraint(model.movingWindowP, model.interStorageUnits, doc='Max inter-reserve constraint for storage units', rule=lambda m, p, s: m.vStInterRes[p, s] <= m.pMaxReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s]))
         model.eStMinInterRes = pyo.Constraint(model.movingWindowP, model.interStorageUnits, doc='Min inter-reserve constraint for storage units', rule=lambda m, p, s: m.vStInterRes[p, s] >= m.pMinReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s]))
 
-        model.eStFinInterRes = pyo.Constraint([model.p[-1]], model.interStorageUnits, doc='Final inter-reserve storage level constraint', rule=lambda m, p, s: (m.vStInterRes[p, s] == m.pIniReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s])) if cs.dPower_Parameters['pFixStInterResToIniReserve'] else (m.vStInterRes[p, s] >= m.pIniReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s])))
+        model.eStFinInterRes = pyo.Constraint([model.movingWindowP.at(-1)], model.interStorageUnits, doc='Final inter-reserve storage level constraint', rule=lambda m, p, s: (m.vStInterRes[p, s] == m.pIniReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s])) if cs.dPower_Parameters['pFixStInterResToIniReserve'] else (m.vStInterRes[p, s] >= m.pIniReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s])))
 
         def eStInterRes_rule(model, p, storage_unit):
             relevant_hindeces = model.hindex[model.p.ord(p) - model.pMovWindow:model.p.ord(p)]
@@ -126,8 +134,8 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     - model.vStInterRes[p, storage_unit]
                     + sum(- model.vGenP[rp2, k2, storage_unit] * model.pWeight_k[k2] / cs.dPower_Storage.loc[storage_unit, 'DisEffic'] * hindex_count.loc[rp2, k2]
                           + model.vConsump[rp2, k2, storage_unit] * model.pWeight_k[k2] * cs.dPower_Storage.loc[storage_unit, 'ChEffic'] * hindex_count.loc[rp2, k2]
-                          + model.pLDESInflows[rp2, k2, storage_unit] * hindex_count.loc[rp2, k2]
-                          - model.vLDESSpillage[rp2, k2, storage_unit] * model.pWeight_k[k2] * hindex_count.loc[rp2, k2] for rp2, k2 in hindex_count.index))
+                          + model.pStorageInflows[rp2, k2, storage_unit] * hindex_count.loc[rp2, k2]
+                          - ((model.vStorageSpillage[rp2, k2, storage_unit] * model.pWeight_k[k2] * hindex_count.loc[rp2, k2]) if storage_unit in model.hydroStorageUnits else 0) for rp2, k2 in hindex_count.index))
 
         model.eStInterRes = pyo.Constraint(model.movingWindowP, model.longDurationEnergyStorageUnits, doc='Inter-day reserve constraint for storage units', rule=eStInterRes_rule)
 

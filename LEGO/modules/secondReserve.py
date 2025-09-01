@@ -87,6 +87,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                 for s in model.storageUnits:
                     model.eStMaxProd_expr[rp, k, s] += model.v2ndResUP[rp, k, s]
                     model.eStMaxCons_expr[rp, k, s] -= model.v2ndResDW[rp, k, s]
+                for s in model.intraStorageUnits:
                     model.eStMaxIntraRes_expr[rp, k, s] += model.v2ndResDW[rp, k, s] + model.v2ndResDW[rp, model.k.prevw(k), s] * model.pWeight_k[k]
                     model.eStMinIntraRes_expr[rp, k, s] -= model.v2ndResUP[rp, k, s] + model.v2ndResUP[rp, model.k.prevw(k), s] * model.pWeight_k[k]
 
