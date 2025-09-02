@@ -18,7 +18,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     storageUnits = cs.dPower_Storage.index.tolist()
     model.storageUnits = pyo.Set(doc='Storage units', initialize=storageUnits)
     LEGO.addToSet(model, "g", storageUnits)
-    LEGO.addToSet(model, "gi", cs.dPower_Storage.reset_index().set_index(['g', 'i']).index)  # Note: Add gi after g since it depends on g
+    model.gi_storage = pyo.Set(doc="Storage unit g connected to node i", initialize=cs.dPower_Storage.reset_index().set_index(['g', 'i']).index, within=model.storageUnits * model.i)
+    LEGO.addToSet(model, "gi", model.gi_storage)  # Note: Add gi after g since it depends on g
     model.longDurationEnergyStorageUnits = pyo.Set(doc='Long-duration energy storage units (subset of storage units)', initialize=cs.dPower_Storage[cs.dPower_Storage['IsLDES'] == 1].index.tolist(), within=model.storageUnits)
 
     model.intraStorageUnits = pyo.Set(doc='Intra-day storage units (subset of storage units)', initialize=model.storageUnits if len(model.rp) == 1 else (model.storageUnits - model.longDurationEnergyStorageUnits), within=model.storageUnits)
@@ -44,7 +45,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         if g in cs.dPower_Inflows.index.get_level_values("g"):
             dInflows.append(cs.dPower_Inflows.loc[(slice(None), slice(None), g), 'value'])
     dInflows = pd.concat(dInflows, axis=0)
-
     model.pStorageInflows = pyo.Param(model.rp, model.k, model.storageUnits, initialize=dInflows, doc="Inflows of long-duration energy storage units [energy/timestep]", default=0)
 
     model.pMaxCons = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['MaxCons'], doc='Maximum consumption of storage unit [power]')
@@ -75,7 +75,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vStInterRes = pyo.Var(model.movingWindowP, model.interStorageUnits, doc='Inter-reserve of storage unit g', bounds=lambda m, p, g: (m.pMinReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g])), m.pMaxReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g]))))
     second_stage_variables += [model.vStInterRes]
 
-    model.vStorageSpillage = pyo.Var(model.rp, model.k, model.hydroStorageUnits, doc='Spillage of hydro storage unit [power]', bounds=lambda m, rp, k, s: (0, (m.pMaxReserve[s] * (m.pExisUnits[s] + (m.pMaxInvest[s] * m.pEnabInv[s])))))
+    model.vStorageSpillage = pyo.Var(model.rp, model.k, model.hydroStorageUnits, doc='Spillage of hydro storage unit [power]', bounds=lambda m, rp, k, s: (0, (m.pMaxReserve[s] * (m.pExisUnits[s] + (m.pMaxInvest[s] * m.pEnabInv[s]))) + m.pStorageInflows[rp, k, s]))
     second_stage_variables += [model.vStorageSpillage]
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
@@ -142,11 +142,10 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
         model.eStInterRes = pyo.Constraint(model.movingWindowP, model.longDurationEnergyStorageUnits, doc='Inter-day reserve constraint for storage units', rule=eStInterRes_rule)
 
-    # Add vConsump to eDC_BalanceP (vGenP should already be there, since it gets added for all generators)
-    storage_gi = [(g, i) for g in model.storageUnits for i in model.i if (g, i) in model.gi]
+    # Add vConsump to eDC_BalanceP (vGenP is already there, since it gets added for all generators)
     for rp in model.rp:
         for k in model.k:
-            for g, i in storage_gi:
+            for g, i in model.gi_storage:
                 model.eDC_BalanceP_expr[rp, k, i] -= model.vConsump[rp, k, g]
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
