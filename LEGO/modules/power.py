@@ -203,17 +203,14 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     if cs.dPower_Parameters["pEnableLinks"]:
         model.links = pyo.Set(doc='Link lines', initialize=cs.dPower_Links.index.tolist(), within=model.i * model.i * model.c) 
         
-        model.pPmaxLink = pyo.Param(model.links, initialize=cs.dPower_Links['pPmaxLink'], doc='Max Power between HV and LV Node') #Zeile 100
+        model.pPmaxLink = pyo.Param(model.links, initialize=cs.dPower_Links['pPmaxLink'], doc='Max Power between HV and LV Node') 
         model.pExpCost = pyo.Param(model.links, initialize=cs.dPower_Links['pExpCost'], doc='Costs of an Link Expansion')
 
-        model.vLinkExpPower = pyo.Var(model.links, doc='Power Expansion of Link', domain=pyo.Binary) #brauch ich die DC OPF zeilen? Zeile 201
+        model.vLinkExpPower = pyo.Var(model.links, doc='Power Expansion of Link', domain=pyo.Binary) 
         first_stage_variables += [model.vLinkExpPower]
 
-        model.vLinkP = pyo.Var(model.rp, model.k, model.links, doc='Power flow from bus HV to LV', bounds=(None, None))#Zeile 201
+        model.vLinkP = pyo.Var(model.rp, model.k, model.links, doc='Power flow from bus HV to LV', bounds=(None, None))
         second_stage_variables += [model.vLinkP]
-
-    #model.vLinkCounterP = pyo.Var(model.rp, model.k, model.links, doc='Power flow from bus LV to HV', bounds=(None, None))#Zeile 201
-    #second_stage_variables += [model.vLinkCounterP]
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
@@ -233,6 +230,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # Note: eDC_BalanceP_expr is defined as expression to enable later adding coefficients to the constraint (e.g., for import/export)
     model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.k, model.i, rule=eDC_BalanceP_rule)
 
+# Link implementation
     if cs.dPower_Parameters["pEnableLinks"]:
         for rp in model.rp:
             for k in model.k:
@@ -419,11 +417,9 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     model.eMinDownTime = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Minimum down time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=lambda m, rp, k, t: eMinDownTime_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
 
 
-#model.pDemandP
-#welche variable sind di VRES gen? model.vGenP[rp, k, r]? was ist r?
 # Link implementation
     if cs.dPower_Parameters["pEnableLinks"]:
-        def eDC_PositivLinkExpansion_rule(model, i, j, c): #welche index? nur knoten? brauchen das eig nur bei den LV knoten?
+        def eDC_PositivLinkExpansion_rule(model, i, j, c): 
             return model.vLinkExpPower[i, j, c]  >= 0
         
         model.eDC_PositiveLinkExpansion = pyo.Constraint(model.links, doc="Power Exansion must be positiv", rule=eDC_PositivLinkExpansion_rule)
@@ -447,6 +443,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                               sum(model.vCommit[rp, k, t] * model.pInterVarCost[t] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for t in model.thermalGenerators) +  # Commit cost of thermal generators
                               sum(model.vGenP[rp, k, g] * model.pOMVarCost[g] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for g in model.g))  # Production cost of generators
 
+# Link implementation
     if cs.dPower_Parameters["pEnableLinks"]:
         first_stage_objective += sum(model.pExpCost [i, j, c] * (model.vLinkExpPower [i, j, c]) for i, j, c in model.links)
 
