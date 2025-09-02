@@ -19,7 +19,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.storageUnits = pyo.Set(doc='Storage units', initialize=storageUnits)
     LEGO.addToSet(model, "g", storageUnits)
     LEGO.addToSet(model, "gi", cs.dPower_Storage.reset_index().set_index(['g', 'i']).index)  # Note: Add gi after g since it depends on g
-    model.longDurationEnergyStorageUnits = pyo.Set(doc='Long-duration storage units (subset of storage units)', initialize=cs.dPower_Storage[cs.dPower_Storage['IsLDES'] == 1].index.tolist(), within=model.storageUnits)
+    model.longDurationEnergyStorageUnits = pyo.Set(doc='Long-duration energy storage units (subset of storage units)', initialize=cs.dPower_Storage[cs.dPower_Storage['IsLDES'] == 1].index.tolist(), within=model.storageUnits)
 
     model.intraStorageUnits = pyo.Set(doc='Intra-day storage units (subset of storage units)', initialize=model.storageUnits if len(model.rp) == 1 else (model.storageUnits - model.longDurationEnergyStorageUnits), within=model.storageUnits)
     model.interStorageUnits = pyo.Set(doc='Inter-day storage units (subset of storage units)', initialize=model.longDurationEnergyStorageUnits if len(model.rp) > 1 else [], within=model.storageUnits)
@@ -88,7 +88,8 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         return (((m.pIniReserve[g] * (m.pExisUnits[g] + m.vGenInvest[g])) if (len(m.rp) == 1 and m.k.ord(k) == 1) else m.vStIntraRes[rp, m.k.prevw(k), g])  # If single representative period and first time step, use initial reserve, otherwise use previous time step
                 ==
                 + m.vStIntraRes[rp, k, g]
-                + m.vGenP[rp, k, g] * m.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + m.vConsump[rp, k, g] * m.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
+                + m.vGenP[rp, k, g] * m.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic']
+                - m.vConsump[rp, k, g] * m.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
                 - ((m.pStorageInflows[rp, k, g] - m.vStorageSpillage[rp, k, g] * m.pWeight_k[k]) if g in m.hydroStorageUnits else 0))
 
     model.eStIntraRes = pyo.Constraint(model.rp, model.k, model.intraStorageUnits, doc='Intra-day reserve constraint for storage units', rule=eStIntraRes_rule)
@@ -116,7 +117,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     if len(model.rp) == 1:
         # If there is only one rp and k is the last period of the representative period, limit the final storage level to initial storage level
-        model.eStFinIntraRes = pyo.Constraint(model.rp, model.k, model.intraStorageUnits, doc='Final intra-reserve storage level constraint', rule=lambda m, rp, k, g: (m.vStIntraRes[rp, k, g] >= m.pIniReserve[g] * (m.pExisUnits[g] + m.vGenInvest[g])) if m.k.ord(k) == len(m.k) else pyo.Constraint.Skip)
+        model.eStFinIntraRes = pyo.Constraint(model.rp, model.k.at(-1), model.intraStorageUnits, doc='Final intra-reserve storage level constraint', rule=lambda m, rp, k, g: (m.vStIntraRes[rp, k, g] >= m.pIniReserve[g] * (m.pExisUnits[g] + m.vGenInvest[g])))
 
     if len(model.rp) > 1:  # Only add inter-day constraints if there are multiple representative periods
         model.eStMaxInterRes = pyo.Constraint(model.movingWindowP, model.interStorageUnits, doc='Max inter-reserve constraint for storage units', rule=lambda m, p, s: m.vStInterRes[p, s] <= m.pMaxReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s]))
@@ -125,27 +126,28 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         model.eStFinInterRes = pyo.Constraint([model.movingWindowP.at(-1)], model.interStorageUnits, doc='Final inter-reserve storage level constraint', rule=lambda m, p, s: (m.vStInterRes[p, s] == m.pIniReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s])) if cs.dPower_Parameters['pFixStInterResToIniReserve'] else (m.vStInterRes[p, s] >= m.pIniReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s])))
 
         def eStInterRes_rule(model, p, storage_unit):
-            relevant_hindeces = model.hindex[model.p.ord(p) - model.pMovWindow:model.p.ord(p)]
-            hindex_count = relevant_hindeces.to_frame(index=False).groupby(['rp', 'k']).size()
+            if model.movingWindowP.ord(p) == 1:
+                return model.vStInterRes[p, storage_unit] == model.pIniReserve[storage_unit] * (model.pExisUnits[storage_unit] + model.vGenInvest[storage_unit])
+            else:
+                relevant_hindeces = model.hindex[model.p.ord(p) - model.pMovWindow:model.p.ord(p)]
+                hindex_count = relevant_hindeces.to_frame(index=False).groupby(['rp', 'k']).size()
 
-            return (0 ==
-                    (model.vStInterRes[model.p.at(model.p.ord(p) - model.pMovWindow), storage_unit] if model.p.ord(p) - model.pMovWindow > 0 else 0)
-                    + (model.pIniReserve[storage_unit] * (model.pExisUnits[storage_unit] + model.vGenInvest[storage_unit]) if model.p.ord(p) == model.pMovWindow else 0)
-                    - model.vStInterRes[p, storage_unit]
-                    + sum(- model.vGenP[rp2, k2, storage_unit] * model.pWeight_k[k2] / cs.dPower_Storage.loc[storage_unit, 'DisEffic'] * hindex_count.loc[rp2, k2]
-                          + model.vConsump[rp2, k2, storage_unit] * model.pWeight_k[k2] * cs.dPower_Storage.loc[storage_unit, 'ChEffic'] * hindex_count.loc[rp2, k2]
-                          + model.pStorageInflows[rp2, k2, storage_unit] * hindex_count.loc[rp2, k2]
-                          - ((model.vStorageSpillage[rp2, k2, storage_unit] * model.pWeight_k[k2] * hindex_count.loc[rp2, k2]) if storage_unit in model.hydroStorageUnits else 0) for rp2, k2 in hindex_count.index))
+                return (model.vStInterRes[model.movingWindowP.prev(p), storage_unit]
+                        ==
+                        model.vStInterRes[p, storage_unit]
+                        + sum(+ model.vGenP[rp, k, storage_unit] * model.pWeight_k[k] / cs.dPower_Storage.loc[storage_unit, 'DisEffic'] * hindex_count.loc[rp, k]
+                              - model.vConsump[rp, k, storage_unit] * model.pWeight_k[k] * cs.dPower_Storage.loc[storage_unit, 'ChEffic'] * hindex_count.loc[rp, k]
+                              - model.pStorageInflows[rp, k, storage_unit] * hindex_count.loc[rp, k]
+                              + ((model.vStorageSpillage[rp, k, storage_unit] * model.pWeight_k[k] * hindex_count.loc[rp, k]) if storage_unit in model.hydroStorageUnits else 0) for rp, k in hindex_count.index))
 
         model.eStInterRes = pyo.Constraint(model.movingWindowP, model.longDurationEnergyStorageUnits, doc='Inter-day reserve constraint for storage units', rule=eStInterRes_rule)
 
     # Add vConsump to eDC_BalanceP (vGenP should already be there, since it gets added for all generators)
+    storage_gi = [(g, i) for g in model.storageUnits for i in model.i if (g, i) in model.gi]
     for rp in model.rp:
         for k in model.k:
-            for i in model.i:
-                for g in model.storageUnits:
-                    if (g, i) in model.gi:
-                        model.eDC_BalanceP_expr[rp, k, i] -= model.vConsump[rp, k, g]
+            for g, i in storage_gi:
+                model.eDC_BalanceP_expr[rp, k, i] -= model.vConsump[rp, k, g]
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0
