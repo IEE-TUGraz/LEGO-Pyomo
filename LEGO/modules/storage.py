@@ -135,10 +135,11 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                 return (model.vStInterRes[model.movingWindowP.prev(p), storage_unit]
                         ==
                         model.vStInterRes[p, storage_unit]
-                        + sum(+ model.vGenP[rp, k, storage_unit] * model.pWeight_k[k] / cs.dPower_Storage.loc[storage_unit, 'DisEffic'] * hindex_count.loc[rp, k]
-                              - model.vConsump[rp, k, storage_unit] * model.pWeight_k[k] * cs.dPower_Storage.loc[storage_unit, 'ChEffic'] * hindex_count.loc[rp, k]
-                              - model.pStorageInflows[rp, k, storage_unit] * hindex_count.loc[rp, k]
-                              + ((model.vStorageSpillage[rp, k, storage_unit] * model.pWeight_k[k] * hindex_count.loc[rp, k]) if storage_unit in model.hydroStorageUnits else 0) for rp, k in hindex_count.index))
+                        + sum((+ model.vGenP[rp, k, storage_unit] * model.pWeight_k[k] / cs.dPower_Storage.loc[storage_unit, 'DisEffic']
+                               - model.vConsump[rp, k, storage_unit] * model.pWeight_k[k] * cs.dPower_Storage.loc[storage_unit, 'ChEffic']
+                               - model.pStorageInflows[rp, k, storage_unit])
+                              * hindex_count.loc[rp, k] for rp, k in hindex_count.index)
+                        + (0 if storage_unit not in model.hydroStorageUnits else sum(model.vStorageSpillage[rp, k, storage_unit] * model.pWeight_k[k] * hindex_count.loc[rp, k] for rp, k in hindex_count.index)))
 
         model.eStInterRes = pyo.Constraint(model.movingWindowP, model.longDurationEnergyStorageUnits, doc='Inter-day reserve constraint for storage units', rule=eStInterRes_rule)
 
