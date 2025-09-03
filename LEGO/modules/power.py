@@ -447,15 +447,15 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
                              sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
-    second_stage_objective = (sum(model.pWeight_rp[rp] *  # Weight of representative periods
-                                  sum(model.pWeight_k[k] *  # Weight of time steps
-                                      (+ sum(+ model.vPNS[rp, k, i] * model.pENSCost  # Power not served
-                                             + model.vEPS[rp, k, i] * model.pENSCost * 2  # Excess power served
-                                             for i in model.i)
-                                       + sum(+ model.vGenP[rp, k, g] * model.pOMVarCost[g]  # Production cost of generators
-                                             for g in model.g))
-                                      for k in model.k)
-                                  for rp in model.rp))
+    second_stage_objective = sum(model.pWeight_rp[rp] *  # Weight of representative periods
+                                 sum(model.pWeight_k[k] *  # Weight of time steps
+                                     (+ sum(+ model.vPNS[rp, k, i] * model.pENSCost  # Power not served
+                                            + model.vEPS[rp, k, i] * model.pENSCost * 2  # Excess power served
+                                            for i in model.i)
+                                      + sum(+ model.vGenP[rp, k, g] * model.pOMVarCost[g]  # Production cost of generators
+                                            for g in model.g))
+                                     for k in model.k)
+                                 for rp in model.rp)
 
     # Adjust objective and return first_stage_objective expression
     model.objective.expr += first_stage_objective + second_stage_objective
