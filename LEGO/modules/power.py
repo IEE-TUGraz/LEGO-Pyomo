@@ -109,16 +109,10 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         model.pDemandQ = pyo.Param(model.rp, model.k, model.i, initialize=lambda model, rp, k, i: model.pDemandP[rp, k, i] * model.pRatioDemQP[i], doc='Reactive demand at bus i in representative period rp and timestep k')
 
     # Variables
-    model.vTheta = pyo.Var(model.rp, model.k, model.i, doc='Angle of bus i', bounds=(-cs.dPower_Parameters["pMaxAngleDCOPF"], cs.dPower_Parameters["pMaxAngleDCOPF"]))  # TODO: Discuss impact on runtime etc.(based on discussion with Prof. Renner)
+    model.vTheta = pyo.Var(model.rp, model.k, model.i, doc='Angle of bus i', bounds=(-cs.dPower_Parameters["pMaxAngleDCOPF"], cs.dPower_Parameters["pMaxAngleDCOPF"]))
     second_stage_variables += [model.vTheta]
-    model.vAngle = pyo.Var(model.rp, model.k, model.la, doc='Angle phase shifting transformer')
+    model.vAngle = pyo.Var(model.rp, model.k, model.la, doc='Angle phase shifting transformer', bounds=lambda m, rp, k, i, j, c: (-m.pAngle[i, j, c], m.pAngle[i, j, c]))
     second_stage_variables += [model.vAngle]
-    for i, j, c in model.la:
-        if model.pAngle[i, j, c] == 0:
-            model.vAngle[:, :, i, j, c].fix(0)
-        else:
-            model.vAngle[:, :, i, j, c].setub(model.pAngle[i, j, c])
-            model.vAngle[:, :, i, j, c].setlb(-model.pAngle[i, j, c])
 
     model.vLineInvest = pyo.Var(model.la, doc='Transmission line investment', domain=pyo.Binary)
     for i, j, c in model.le:
@@ -136,7 +130,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vGenP = pyo.Var(model.rp, model.k, model.g, doc='Power output of generator g', bounds=lambda model, rp, k, g: (0, model.pMaxProd[g] * (model.pExisUnits[g] + model.pMaxInvest[g] * model.pEnabInv[g])))
     second_stage_variables += [model.vGenP]
 
-    model.vLineP = pyo.Var(model.rp, model.k, model.la_full if cs.dPower_Parameters["pEnableSOCP"] else model.la, doc='Power flow from bus i to j', bounds=lambda m, rp, k, i, j, c: (-model.pPmax[i, j, c], model.pPmax[i, j, c]) if (i, j, c) in m.la else (None, None))
+    model.vLineP = pyo.Var(model.rp, model.k, model.la_full if cs.dPower_Parameters["pEnableSOCP"] else model.la, doc='Power flow from bus i to j', bounds=lambda m, rp, k, i, j, c: (-model.pPmax[i, j, c], model.pPmax[i, j, c]) if (i, j, c) in m.la else (-model.pPmax[j, i, c], model.pPmax[j, i, c]))
     second_stage_variables += [model.vLineP]
 
     if cs.dPower_Parameters["pEnableSOCP"]:
@@ -205,12 +199,11 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     + m.vPNS[rp, k, i]
                     - m.vEPS[rp, k, i])
         else:
-            return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi) -  # Production of generators at bus i
-                    sum(m.vLineP[rp, k, e] for e in m.la if (e[0] == i)) +  # Power flow from bus i to bus j
-                    sum(m.vLineP[rp, k, e] for e in m.la if (e[1] == i)) -  # Power flow from bus j to bus i
-                    m.pDemandP[rp, k, i] +  # Demand at bus i
-                    m.vPNS[rp, k, i] -  # Slack variable for demand not served
-                    m.vEPS[rp, k, i])  # Slack variable for overproduction
+            return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi)  # Production of generators at bus i
+                    + sum(m.vLineP[rp, k, e] if (e[1] == i) else -m.vLineP[rp, k, e] for e in m.la)  # Add power flow from bus j to bus i and subtract from bus i to bus j
+                    - m.pDemandP[rp, k, i]  # Demand at bus i
+                    + m.vPNS[rp, k, i]  # Slack variable for demand not served
+                    - m.vEPS[rp, k, i])  # Slack variable for overproduction
 
     model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.k, model.i, rule=eDC_BalanceP_rule)
     model.eDC_BalanceP = pyo.Constraint(model.rp, model.k, model.i, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eDC_BalanceP_expr[rp, k, i] == 0)
@@ -454,9 +447,15 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
                              sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
-    second_stage_objective = (sum(sum(model.vPNS[rp, k, :]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost for rp in model.rp for k in model.k) +  # Power not served
-                              sum(sum(model.vEPS[rp, k, :]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost * 2 for rp in model.rp for k in model.k) +  # Excess power served
-                              sum(model.vGenP[rp, k, g] * model.pOMVarCost[g] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for g in model.g))  # Production cost of generators
+    second_stage_objective = (sum(model.pWeight_rp[rp] *  # Weight of representative periods
+                                  sum(model.pWeight_k[k] *  # Weight of time steps
+                                      (+ sum(+ model.vPNS[rp, k, i] * model.pENSCost  # Power not served
+                                             + model.vEPS[rp, k, i] * model.pENSCost * 2  # Excess power served
+                                             for i in model.i)
+                                       + sum(+ model.vGenP[rp, k, g] * model.pOMVarCost[g]  # Production cost of generators
+                                             for g in model.g))
+                                      for k in model.k)
+                                  for rp in model.rp))
 
     # Adjust objective and return first_stage_objective expression
     model.objective.expr += first_stage_objective + second_stage_objective
