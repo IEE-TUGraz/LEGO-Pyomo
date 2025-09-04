@@ -21,5 +21,23 @@
             "args": "data/links"
         },
 
+        {
+            "name": "LEGO data/Links2",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "LEGO.py",
+            "console": "integratedTerminal",
+            "args": "data/Links2"
+        },
+
+        {
+            "name": "LEGO data/Two Node Link",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "LEGO.py",
+            "console": "integratedTerminal",
+            "args": "data/Two_Node_Link"
+        },
+
     ]
 }
