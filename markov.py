@@ -2,6 +2,8 @@ import argparse
 import logging
 import os
 import time
+import typing
+from copy import deepcopy
 
 import pandas as pd
 import pyomo.environ as pyo
@@ -25,7 +27,7 @@ pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
 
-def execute_case_studies(case_study_path: str, unit_commitment_result_file: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False, calculate_regret: bool = False):
+def execute_case_studies(case_study_path: str, unit_commitment_result_file: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False, calculate_regret: bool = False, write_unit_commitment_result_file: bool = True):
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
@@ -33,11 +35,13 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
     # Load case study from Excels
     printer.information(f"Loading case study from '{case_study_path}'")
     start_time = time.time()
-    cs_notEnforced = CaseStudy(case_study_path, clip_method="absolute_count", clip_value=2)
+    cs = CaseStudy(case_study_path, clip_method="none", clip_value=0)
     printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
 
     # Create varied case studies
     start_time = time.time()
+    printer.information(f"Creating varied case studies")
+    cs_notEnforced = cs.copy()
     cs_notEnforced.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "notEnforced"
     cs_notEnforced.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "notEnforced"
     cs_notEnforced.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"] = "notEnforced"
@@ -55,49 +59,78 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
 
     # Create "truth" case study for comparison
     start_time = time.time()
-    cs_truth = cs_notEnforced.to_full_hourly_model(inplace=False)  # Create a full hourly model (which copies from notEnforced)
+    printer.information(f"Creating truth case study (full-hourly)")
+    cs_truth = cs.to_full_hourly_model(inplace=False)  # Create a full hourly model (which copies from notEnforced)
     printer.information(f"Creating truth case study (full-hourly) took {time.time() - start_time:.2f} seconds")
 
-    # Build truth model already as it is used later for regret calculations as well
     start_time = time.time()
-    truth_lego = LEGO(cs_truth)
-    truth_lego_model, truth_timing_building = truth_lego.build_model()  # Build the truth model (for regret calculations later)
-    printer.information(f"Building regret model took {time.time() - start_time:.2f} seconds (will be used later for regret calculations)")
+    printer.information(f"Building the LEGO models")
+    lego_models = {"NoEnf.": LEGO(cs_notEnforced), "Cyclic": LEGO(cs_cyclic), "Markov": LEGO(cs_markov), "Truth ": LEGO(cs_truth)}
+    for name, lego in lego_models.items():
+        printer.information(f"Building model for case study '{name}'")
+        _, build_time = lego.build_model()
+        printer.information(f"Building model for case study '{name}' took {build_time:.2f} seconds")
+    printer.information(f"Building the LEGO models took {time.time() - start_time:.2f} seconds overall")
 
-    start_time = time.time()
-    lego_models = [("NoEnf.", LEGO(cs_notEnforced)), ("Cyclic", LEGO(cs_cyclic)), ("Markov", LEGO(cs_markov)), ("Truth ", truth_lego)]
-    printer.information(f"Creating the rest of the LEGO models took {time.time() - start_time:.2f} seconds")
+    thermalGenerators = cs.dPower_ThermalGen.index.tolist()
+    STEP_SIZE = 5
+    printer.information(f"Relaxing with step size: {STEP_SIZE}")
 
+    for count_relaxed in range(len(thermalGenerators), -1, -STEP_SIZE):
+        printer.information(f"Relaxing {count_relaxed} thermal generators, keeping {len(thermalGenerators) - count_relaxed} binary")
+        start_time = time.time()
+        adjusted_lego_models = deepcopy(lego_models)
+
+        thermalGeneratorRelaxed = {g: False for g in thermalGenerators}
+        offset = 0
+        for i in range(count_relaxed):
+            if all(thermalGeneratorRelaxed[g] == True for g in thermalGenerators):
+                break  # Safety check if all generators are already relaxed
+            index = (i * (len(thermalGenerators) // STEP_SIZE) + offset) % len(thermalGenerators)
+            while thermalGeneratorRelaxed[thermalGenerators[index]]:  # Skip already relaxed generators
+                index = (index + 1) % len(thermalGenerators)
+                offset += 1
+            thermalGeneratorRelaxed[thermalGenerators[index]] = True
+
+        printer.information(f"Relaxing {count_relaxed} thermal generators: {[g for g in thermalGenerators if thermalGeneratorRelaxed[g]]}")
+        for case_name, lego in adjusted_lego_models.items():
+            for rp in lego.model.rp:
+                for k in lego.model.k:
+                    for g in lego.model.thermalGenerators:
+                        lego.model.vCommit[rp, k, g].domain = pyo.PercentFraction if thermalGeneratorRelaxed[g] else pyo.Binary
+                        lego.model.vStartup[rp, k, g].domain = pyo.PercentFraction if thermalGeneratorRelaxed[g] else pyo.Binary
+                        lego.model.vShutdown[rp, k, g].domain = pyo.PercentFraction if thermalGeneratorRelaxed[g] else pyo.Binary
+        printer.information(f"Relaxing {count_relaxed} thermal generators took {time.time() - start_time:.2f} seconds")
+
+        execute_case_study(adjusted_lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file.replace(".xlsx", f"-relaxed{count_relaxed}.xlsx"), no_sqlite, no_excel, calculate_regret, write_unit_commitment_result_file)
+
+
+def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit_commitment_result_file: str, no_sqlite: bool, no_excel: bool, calculate_regret: bool, write_unit_commitment_result_file: bool):
     ########################################################################################################################
     # Evaluation
     ########################################################################################################################
     results = []
 
-    df = pd.DataFrame()
-    for caseName, lego in lego_models:
-        printer.information(f"\n\n{'=' * 60}\n{caseName}\n{'=' * 60}")
+    truth_lego = lego_models["Truth "]
 
-        if caseName != "Truth ":
-            model, timing_building = lego.build_model()
-            printer.information(f"Building model took {timing_building:.2f} seconds")
-        else:
-            model = truth_lego.model
-            timing_building = truth_timing_building
-            printer.information(f"Using pre-built model for truth case study")
+    df = pd.DataFrame()
+    for edgeHandlingType, lego in lego_models.items():
+        printer.information(f"\n\n{'=' * 60}\n{edgeHandlingType}\n{'=' * 60}")
+        model = lego.model
 
         result, timing_solving, objective_value = lego.solve_model()
         printer.information(f"Solving model took {timing_solving:.2f} seconds")
 
         if not no_sqlite:
             sqlite_timer = time.time()
-            sqlite_file = f"{os.path.basename(os.path.normpath(case_study_path))}-{caseName.replace(".", "")}.sqlite"
+            sqlite_file = f"{case_name}-{edgeHandlingType.replace(".", "")}.sqlite"
             printer.information(f"Writing model to SQLite database: {sqlite_file}")
             SQLiteWriter.model_to_sqlite(lego.model, sqlite_file)
             printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
 
         if not no_excel:
             excel_timer = time.time()
-            excel_file = f"{os.path.basename(os.path.normpath(case_study_path))}-{caseName.replace('.', '')}.xlsx"
+            excel_file = f"{case_name}-{edgeHandlingType.replace('.', '')}.xlsx"
             printer.information(f"Writing model to Excel file: {excel_file}")
             ExcelWriter.model_to_excel(lego.model, excel_file)
             printer.information(f"Writing model to Excel file took {time.time() - excel_timer:.2f} seconds")
@@ -120,8 +153,8 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
                 if v[i].domain == pyo.Binary:
                     counter_binaries += 1
 
-        if result.solver.termination_condition == pyo.TerminationCondition.optimal:
-            for x in [pd.Series({"case": caseName, "rp": i[0], "k": i[1], "g": i[2],
+        if result.solver.termination_condition == pyo.TerminationCondition.optimal and write_unit_commitment_result_file:
+            for x in [pd.Series({"case": edgeHandlingType, "rp": i[0], "k": i[1], "g": i[2],
                                  "vCommit": pyo.value(model.vCommit[i]),
                                  "vStartup": pyo.value(model.vStartup[i]),
                                  "vShutdown": pyo.value(model.vShutdown[i]) if not model.vShutdown[i].stale else None,
@@ -134,10 +167,10 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
                                  "vEPS": sum([pyo.value(model.vEPS[i[0], i[1], node]) for node in model.i])}) for i in list(model.vCommit)]:
                 df = pd.concat([df, x], axis=1)
 
-            if calculate_regret and caseName != "Truth ":
+            if calculate_regret and edgeHandlingType != "Truth ":
                 regret_lego = truth_lego.copy()
 
-                add_UnitCommitmentSlack_And_FixVariables(regret_lego, model, cs_notEnforced.dPower_Hindex, cs_notEnforced.dPower_ThermalGen, cs_notEnforced.dPower_Parameters["pENSCost"])
+                add_UnitCommitmentSlack_And_FixVariables(regret_lego, model, lego.cs.dPower_Hindex, lego.cs.dPower_ThermalGen, lego.cs.dPower_Parameters["pENSCost"])
 
                 # Re-solve the model
                 printer.information("Re-solving model with fixed variables for regret calculation")
@@ -146,14 +179,14 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
 
                 if not no_sqlite:
                     sqlite_timer = time.time()
-                    sqlite_file = f"{os.path.basename(os.path.normpath(case_study_path))}-{caseName.replace(".", "")}-regret.sqlite"
+                    sqlite_file = f"{case_name}-{edgeHandlingType.replace(".", "")}-regret.sqlite"
                     printer.information(f"Writing model to SQLite database: {sqlite_file}")
                     SQLiteWriter.model_to_sqlite(regret_lego.model, sqlite_file)
                     printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
 
                 if not no_excel:
                     excel_timer = time.time()
-                    excel_file = f"{os.path.basename(os.path.normpath(case_study_path))}-{caseName.replace('.', '')}-regret.xlsx"
+                    excel_file = f"{case_name}-{edgeHandlingType.replace('.', '')}-regret.xlsx"
                     printer.information(f"Writing model to Excel file: {excel_file}")
                     ExcelWriter.model_to_excel(regret_lego.model, excel_file)
                     printer.information(f"Writing model to Excel file took {time.time() - excel_timer:.2f} seconds")
@@ -161,7 +194,7 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
                 match regret_result.solver.termination_condition:
                     case pyo.TerminationCondition.optimal:
                         printer.success("Optimal solution found")
-                        for x in [pd.Series({"case": f"{caseName}-regret", "rp": i[0], "k": i[1], "g": i[2],
+                        for x in [pd.Series({"case": f"{edgeHandlingType}-regret", "rp": i[0], "k": i[1], "g": i[2],
                                              "vCommit": pyo.value(regret_lego.model.vCommit[i]),
                                              "vStartup": pyo.value(regret_lego.model.vStartup[i]),
                                              "vShutdown": pyo.value(regret_lego.model.vShutdown[i]) if regret_lego.model.vShutdown[i].fixed or not regret_lego.model.vShutdown[i].stale else None,
@@ -181,23 +214,23 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
                     case _:
                         printer.warning("Solver terminated with condition:", regret_result.solver.termination_condition)
 
-        results.append({
-            "Case": caseName,
+        entry = {
+            "Case": f"{case_name}-{edgeHandlingType}",
             "Objective": objective_value if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1,
-            "Objective Regret": -1 if not calculate_regret else (regret_objective_value - getUnitCommitmentSlackCost(regret_lego, cs_notEnforced.dPower_ThermalGen, cs_notEnforced.dPower_Parameters["pENSCost"]) if regret_result.solver.termination_condition == pyo.TerminationCondition.optimal and caseName != "Truth " else -1),
-            "Correction Cost": -1 if not calculate_regret else (getUnitCommitmentSlackCost(regret_lego, cs_notEnforced.dPower_ThermalGen, cs_notEnforced.dPower_Parameters["pENSCost"]) if caseName != "Truth " else -1),
+            "Objective Regret": -1 if not calculate_regret else (regret_objective_value - getUnitCommitmentSlackCost(regret_lego, lego.cs.dPower_ThermalGen, lego.cs.dPower_Parameters["pENSCost"]) if regret_result.solver.termination_condition == pyo.TerminationCondition.optimal and edgeHandlingType != "Truth " else -1),
+            "Correction Cost": -1 if not calculate_regret else (getUnitCommitmentSlackCost(regret_lego, lego.cs.dPower_ThermalGen, lego.cs.dPower_Parameters["pENSCost"]) if edgeHandlingType != "Truth " else -1),
             "Solution": result.solver.termination_condition,
-            "Build Time": timing_building,
+            # "Build Time": timing_building,
             "Solve Time": timing_solving,
             "# Variables Overall": model.nvariables(),
             "# Binary Variables": counter_binaries,
             "# Constraints": model.nconstraints(),
             "PNS": sum(model.vPNS[rp, k, i].value if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "EPS": sum(model.vEPS[rp, k, i].value if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
-            "PNS regr.": -1 if not calculate_regret else (sum(regret_lego.model.vPNS[rp, k, i].value if regret_lego.model.vPNS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if caseName != "Truth " else -1),
-            "EPS regr.": -1 if not calculate_regret else (sum(regret_lego.model.vEPS[rp, k, i].value if regret_lego.model.vEPS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if caseName != "Truth " else -1),
-            "Commit Correction +": -1 if not calculate_regret else (sum(regret_lego.model.vCommitCorrectHigher[rp, k, t].value if regret_lego.model.vCommitCorrectHigher[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1),
-            "Commit Correction -": -1 if not calculate_regret else (sum(regret_lego.model.vCommitCorrectLower[rp, k, t].value if regret_lego.model.vCommitCorrectLower[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if caseName != "Truth " else -1),
+            "PNS regr.": -1 if not calculate_regret else (sum(regret_lego.model.vPNS[rp, k, i].value if regret_lego.model.vPNS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if edgeHandlingType != "Truth " else -1),
+            "EPS regr.": -1 if not calculate_regret else (sum(regret_lego.model.vEPS[rp, k, i].value if regret_lego.model.vEPS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if edgeHandlingType != "Truth " else -1),
+            "Commit Correction +": -1 if not calculate_regret else (sum(regret_lego.model.vCommitCorrectHigher[rp, k, t].value if regret_lego.model.vCommitCorrectHigher[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if edgeHandlingType != "Truth " else -1),
+            "Commit Correction -": -1 if not calculate_regret else (sum(regret_lego.model.vCommitCorrectLower[rp, k, t].value if regret_lego.model.vCommitCorrectLower[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if edgeHandlingType != "Truth " else -1),
             "vGenP": sum(model.vGenP[rp, k, g].value if model.vGenP[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.g),
             "vCommit": sum(model.vCommit[rp, k, g].value if model.vCommit[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.thermalGenerators),
             "vStartup": sum(model.vStartup[rp, k, g].value if model.vStartup[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.thermalGenerators),
@@ -205,9 +238,20 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
             "vPNS": sum(model.vPNS[rp, k, i].value if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "vEPS": sum(model.vEPS[rp, k, i].value if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "model": model
-        })
+        }
+        results.append(entry)
 
-    values = ["Case", "Objective", "Build Time", "Solve Time", "vGenP", "vCommit", "vStartup", "vShutdown", "vPNS", "vEPS", "Objective Regret"]
+        # Write entry to solutions logfile
+        log_file = printer.get_logfile().replace(".log", "-solutions.csv")
+        if os.path.exists(log_file):
+            with open(log_file, "a") as f:
+                f.write(",".join([f"{v}" for v in entry.values()]) + "\n")
+        else:
+            with open(log_file, "w") as f:
+                f.write(",".join(entry.keys()) + "\n")
+                f.write(",".join([f"{v}" for v in entry.values()]) + "\n")
+
+    values = ["Case", "Objective", "Solve Time", "vGenP", "vCommit", "vStartup", "vShutdown", "vPNS", "vEPS", "Objective Regret"]
     table = []
     for v in values:
         column = [v]
@@ -225,7 +269,8 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
     for i in range(len(table[0])):
         printer.information(" | ".join(f"{table[j][i]:{">" if i != 0 else ""}{max(len(table[j][i2]) for i2 in range(len(table[j])))}}" for j in range(len(table))))
 
-    df.T.to_excel(unit_commitment_result_file)
+    if write_unit_commitment_result_file:
+        df.T.to_excel(unit_commitment_result_file)
 
 
 if __name__ == "__main__":
@@ -237,6 +282,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-excel", action="store_true", help="Do not save results to Excel file")
     parser.add_argument("--no-regret-plot", action="store_true", help="Do not plot regret results")
     parser.add_argument("--calculate-regret", action="store_true", help="Calculate regret by re-solving the truth model with fixed unit commitment from the other models (can take a while)")
+    parser.add_argument("--dont-write-unit-commitment-result-file", action="store_true", help="Write unit commitment result file (can take a while)")
     args = parser.parse_args()
 
     for folder in args.caseStudyFolder.split(","):
@@ -250,7 +296,7 @@ if __name__ == "__main__":
 
             unit_commitment_result_file = f"unitCommitmentResult-{folder_name}.xlsx"
             printer.information(f"Unit commitment result file: '{unit_commitment_result_file}'")
-            execute_case_studies(folder, unit_commitment_result_file, args.no_sqlite, args.no_excel, args.calculate_regret)
+            execute_case_studies(folder, unit_commitment_result_file, args.no_sqlite, args.no_excel, args.calculate_regret, not args.dont_write_unit_commitment_result_file)
 
             if args.plot:
                 printer.information("Plotting unit commitment")

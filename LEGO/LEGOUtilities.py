@@ -199,7 +199,7 @@ def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: st
     df = df.set_index(["case", "rp", "k", "g"])
 
     # Get original mapping from Power_Hindex
-    hindex = ExcelReader.get_dPower_Hindex(case_study_folder + "Power_Hindex.xlsx")
+    hindex = ExcelReader.get_Power_Hindex(case_study_folder + "Power_Hindex.xlsx")
     hindex = hindex.reset_index()
     hindex["p_int"] = hindex["p"].str.extract(r'(\d+)').astype(int)  # Extract the integer part of the "p" column
     hindex["rp_int"] = hindex["rp"].str.extract(r'(\d+)').astype(int)  # Extract the integer part of the "rp" column
