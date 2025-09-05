@@ -3,7 +3,6 @@ import logging
 import os
 import time
 import typing
-from copy import deepcopy
 
 import pandas as pd
 import pyomo.environ as pyo
@@ -75,12 +74,13 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
     thermalGenerators = cs.dPower_ThermalGen.index.tolist()
     STEP_SIZE = 5
     printer.information(f"Relaxing with step size: {STEP_SIZE}")
-
     for count_relaxed in range(len(thermalGenerators), -1, -STEP_SIZE):
         start_time = time.time()
-        printer.information(f"Creating deep-copy of already built models")
-        adjusted_lego_models = deepcopy(lego_models)
-        printer.information(f"Creating deep-copy of already built models took {time.time() - start_time:.2f} seconds")
+        printer.information(f"Preparing already built models for adjustments")
+        adjusted_lego_models = {"NoEnf.": LEGO(cs_notEnforced), "Cyclic": LEGO(cs_cyclic), "Markov": LEGO(cs_markov), "Truth ": LEGO(cs_truth)}
+        for name, lego in adjusted_lego_models.items():
+            lego.model = lego_models[name].model.clone()
+        printer.information(f"Preparing already built models took {time.time() - start_time:.2f} seconds")
 
         start_time = time.time()
         printer.information(f"Relaxing {count_relaxed} thermal generators, keeping {len(thermalGenerators) - count_relaxed} binary")
