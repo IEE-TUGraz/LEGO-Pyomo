@@ -113,8 +113,15 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
         printer.information(f"\n\n{'=' * 60}\n{edgeHandlingType}\n{'=' * 60}")
         model = lego.model
 
-        result, timing_solving, objective_value = lego.solve_model()
-        printer.information(f"Solving model took {timing_solving:.2f} seconds")
+        # Solve model
+        optimizer = pyo.SolverFactory('gurobi_persistent')
+        optimizer.set_instance(model)
+        start_time = time.time()
+        result = optimizer.solve(tee=True)
+        objective_value = pyo.value(model.objective) if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+        timing_solving = time.time() - start_time
+        work_time = optimizer._solver_model.Work
+        printer.information(f"Solving model took {timing_solving:.2f} seconds ({work_time:.2f} work units)")
 
         if not no_sqlite:
             sqlite_timer = time.time()
@@ -217,6 +224,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
             "Solution": result.solver.termination_condition,
             # "Build Time": timing_building,
             "Solve Time": timing_solving,
+            "Work Time": work_time,
             "# Variables Overall": model.nvariables(),
             "# Binary Variables": counter_binaries,
             "# Constraints": model.nconstraints(),
