@@ -77,10 +77,13 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
     printer.information(f"Relaxing with step size: {STEP_SIZE}")
 
     for count_relaxed in range(len(thermalGenerators), -1, -STEP_SIZE):
-        printer.information(f"Relaxing {count_relaxed} thermal generators, keeping {len(thermalGenerators) - count_relaxed} binary")
         start_time = time.time()
+        printer.information(f"Creating deep-copy of already built models")
         adjusted_lego_models = deepcopy(lego_models)
+        printer.information(f"Creating deep-copy of already built models took {time.time() - start_time:.2f} seconds")
 
+        start_time = time.time()
+        printer.information(f"Relaxing {count_relaxed} thermal generators, keeping {len(thermalGenerators) - count_relaxed} binary")
         thermalGeneratorRelaxed = {g: False for g in thermalGenerators}
         offset = 0
         for i in range(count_relaxed):
@@ -225,18 +228,16 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
             "# Variables Overall": model.nvariables(),
             "# Binary Variables": counter_binaries,
             "# Constraints": model.nconstraints(),
-            "PNS": sum(model.vPNS[rp, k, i].value if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
-            "EPS": sum(model.vEPS[rp, k, i].value if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "PNS regr.": -1 if not calculate_regret else (sum(regret_lego.model.vPNS[rp, k, i].value if regret_lego.model.vPNS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if edgeHandlingType != "Truth " else -1),
             "EPS regr.": -1 if not calculate_regret else (sum(regret_lego.model.vEPS[rp, k, i].value if regret_lego.model.vEPS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if edgeHandlingType != "Truth " else -1),
             "Commit Correction +": -1 if not calculate_regret else (sum(regret_lego.model.vCommitCorrectHigher[rp, k, t].value if regret_lego.model.vCommitCorrectHigher[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if edgeHandlingType != "Truth " else -1),
             "Commit Correction -": -1 if not calculate_regret else (sum(regret_lego.model.vCommitCorrectLower[rp, k, t].value if regret_lego.model.vCommitCorrectLower[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if edgeHandlingType != "Truth " else -1),
-            "vGenP": sum(model.vGenP[rp, k, g].value if model.vGenP[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.g),
-            "vCommit": sum(model.vCommit[rp, k, g].value if model.vCommit[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.thermalGenerators),
-            "vStartup": sum(model.vStartup[rp, k, g].value if model.vStartup[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.thermalGenerators),
-            "vShutdown": sum(model.vShutdown[rp, k, g].value if model.vShutdown[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.thermalGenerators),
-            "vPNS": sum(model.vPNS[rp, k, i].value if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
-            "vEPS": sum(model.vEPS[rp, k, i].value if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
+            "vGenP": sum(model.vGenP[rp, k, g].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vGenP[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.g),
+            "vCommit": sum(model.vCommit[rp, k, g].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vCommit[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.thermalGenerators),
+            "vStartup": sum(model.vStartup[rp, k, g].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vStartup[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.thermalGenerators),
+            "vShutdown": sum(model.vShutdown[rp, k, g].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vShutdown[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.thermalGenerators),
+            "vPNS": sum(model.vPNS[rp, k, i].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
+            "vEPS": sum(model.vEPS[rp, k, i].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "model": model
         }
         results.append(entry)
