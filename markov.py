@@ -62,25 +62,17 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
     cs_truth = cs.to_full_hourly_model(inplace=False)  # Create a full hourly model (which copies from notEnforced)
     printer.information(f"Creating truth case study (full-hourly) took {time.time() - start_time:.2f} seconds")
 
-    start_time = time.time()
-    printer.information(f"Building the LEGO models")
-    lego_models = {"NoEnf.": LEGO(cs_notEnforced), "Cyclic": LEGO(cs_cyclic), "Markov": LEGO(cs_markov), "Truth ": LEGO(cs_truth)}
-    for name, lego in lego_models.items():
-        printer.information(f"Building model for case study '{name}'")
-        _, build_time = lego.build_model()
-        printer.information(f"Building model for case study '{name}' took {build_time:.2f} seconds")
-    printer.information(f"Building the LEGO models took {time.time() - start_time:.2f} seconds overall")
-
     thermalGenerators = cs.dPower_ThermalGen.index.tolist()
     STEP_SIZE = 5
     printer.information(f"Relaxing with step size: {STEP_SIZE}")
     for count_relaxed in range(len(thermalGenerators), -1, -STEP_SIZE):
         start_time = time.time()
-        printer.information(f"Preparing already built models for adjustments")
-        adjusted_lego_models = {"NoEnf.": LEGO(cs_notEnforced), "Cyclic": LEGO(cs_cyclic), "Markov": LEGO(cs_markov), "Truth ": LEGO(cs_truth)}
-        for name, lego in adjusted_lego_models.items():
-            lego.model = lego_models[name].model.clone()
-        printer.information(f"Preparing already built models took {time.time() - start_time:.2f} seconds")
+        printer.information(f"Building the LEGO models for adjustments")  # Note this is actually faster (1.5-2x) than copying already built models to re-use them
+        lego_models = {"NoEnf.": LEGO(cs_notEnforced), "Cyclic": LEGO(cs_cyclic), "Markov": LEGO(cs_markov), "Truth ": LEGO(cs_truth)}
+        for name, lego in lego_models.items():
+            _, build_time = lego.build_model()
+            printer.information(f"Building model for case study '{name}' took {build_time:.2f} seconds")
+        printer.information(f"Building the LEGO models took {time.time() - start_time:.2f} seconds overall")
 
         start_time = time.time()
         printer.information(f"Relaxing {count_relaxed} thermal generators, keeping {len(thermalGenerators) - count_relaxed} binary")
@@ -96,7 +88,7 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
             thermalGeneratorRelaxed[thermalGenerators[index]] = True
 
         printer.information(f"Relaxing {count_relaxed} thermal generators: {[g for g in thermalGenerators if thermalGeneratorRelaxed[g]]}")
-        for case_name, lego in adjusted_lego_models.items():
+        for case_name, lego in lego_models.items():
             for rp in lego.model.rp:
                 for k in lego.model.k:
                     for g in lego.model.thermalGenerators:
@@ -105,7 +97,7 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
                         lego.model.vShutdown[rp, k, g].domain = pyo.PercentFraction if thermalGeneratorRelaxed[g] else pyo.Binary
         printer.information(f"Relaxing {count_relaxed} thermal generators took {time.time() - start_time:.2f} seconds")
 
-        execute_case_study(adjusted_lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file.replace(".xlsx", f"-relaxed{count_relaxed}.xlsx"), no_sqlite, no_excel, calculate_regret, write_unit_commitment_result_file)
+        execute_case_study(lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file.replace(".xlsx", f"-relaxed{count_relaxed}.xlsx"), no_sqlite, no_excel, calculate_regret, write_unit_commitment_result_file)
 
 
 def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit_commitment_result_file: str, no_sqlite: bool, no_excel: bool, calculate_regret: bool, write_unit_commitment_result_file: bool):
