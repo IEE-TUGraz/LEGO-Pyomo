@@ -6,6 +6,7 @@ from openpyxl import load_workbook
 
 from CompareModels import compareModels, ModelTypeForComparison
 from InOutModule.printer import Printer
+from LEGO.LEGOUtilities import MPSFileManager
 
 printer = Printer.getInstance()
 
@@ -22,10 +23,11 @@ def test_comparisonAgainstMPS(tmp_path, folder_path, model_type, comparison_mps)
     :param tmp_path: Temporary path for the test (provided by pytest).
     :return: None
     """
-    mps_equal = compareModels(model_type, folder_path, True,
-                              ModelTypeForComparison.MPS_FILE, comparison_mps, False, tmp_folder_path=tmp_path)
-
-    assert mps_equal
+    # Use context manager for automatic compression/decompression
+    with MPSFileManager(comparison_mps) as mps_file:
+        assert compareModels(model_type, folder_path, True,
+                             ModelTypeForComparison.MPS_FILE, mps_file, False,
+                             tmp_folder_path=tmp_path)
 
 
 def test_socp(tmp_path):
@@ -35,6 +37,7 @@ def test_socp(tmp_path):
     :return: None
     """
     data_folder = "data/example"
+    comparison_mps = "data/mps-archive/example-SOCP-LEGOGAMS-5cb285a21d6f277891d943d4b036f4b05cad6107.mps"
 
     # Copy the data folder to a temporary path
     tmp_path_originalData = str(tmp_path / "originalData")
@@ -53,16 +56,17 @@ def test_socp(tmp_path):
         sheet[f"O{i}"] = "SOCP"  # Set all lines to use SOCP
     workbook.save(filename=tmp_path_originalData + "/Power_Network.xlsx")
 
-    mps_equal = compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_path_originalData, False,
-                              ModelTypeForComparison.MPS_FILE, "data/mps-archive/example-SOCP-LEGOGAMS-5cb285a21d6f277891d943d4b036f4b05cad6107.mps", False,
-                              coefficients_skip_model2=["constobj"], tmp_folder_path=tmp_path)
-
-    assert mps_equal
+    # Use context manager for automatic compression/decompression
+    with MPSFileManager(comparison_mps) as decompressed_mps_path:
+        assert compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_path_originalData, False,
+                             ModelTypeForComparison.MPS_FILE, decompressed_mps_path, False,
+                             coefficients_skip_model2=["constobj"], tmp_folder_path=tmp_path)
 
 
 def test_documentationMPSArchive():
     """
     Checks if all MPS files in the archive have a description and if all descriptions are found in the archive.
+    Handles both compressed (.mps.zip) and uncompressed (.mps) files.
     :return: None
     """
     descriptionMissing = []
@@ -78,19 +82,29 @@ def test_documentationMPSArchive():
             entries[split[0]] = split[1]
     printer.information(f"Found {len(entries)} MPS file descriptions in 'data/mps-archive/mps-file-descriptions.txt'")
 
-    # Check if all MPS files in the archive have a description
+    # Check if all MPS files (compressed or uncompressed) in the archive have a description
     counter_correct = 0
-    for mpsFile in os.listdir("data/mps-archive"):
-        if mpsFile.endswith(".mps"):
-            if mpsFile not in entries:
-                descriptionMissing.append(mpsFile)
-            else:
-                del entries[mpsFile]
-                counter_correct += 1
-        elif mpsFile == "mps-file-descriptions.txt":
+    archive_files = os.listdir("data/mps-archive")
+
+    for archive_file in archive_files:
+        if archive_file.endswith(".mps"):
+            mps_filename = archive_file
+        elif archive_file.endswith(".mps.zip"):
+            # Remove .zip extension to get the .mps filename
+            mps_filename = archive_file[:-4]  # Remove '.zip'
+        elif archive_file == "mps-file-descriptions.txt":
             continue  # Skip the description file itself
         else:
-            printer.information(f"Skipping non-MPS file '{mpsFile}'")
+            printer.information(f"Skipping non-MPS file '{archive_file}'")
+            continue
+
+        if mps_filename:
+            if mps_filename not in entries:
+                descriptionMissing.append(mps_filename)
+            else:
+                del entries[mps_filename]
+                counter_correct += 1
+
     printer.information(f"Found {counter_correct} MPS files with a description in the archive")
 
     if len(descriptionMissing) > 0:
