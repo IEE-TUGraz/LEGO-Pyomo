@@ -1,5 +1,8 @@
 import functools
 import typing
+import zipfile
+from pathlib import Path
+from typing import Union, List
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -334,3 +337,42 @@ def getUnitCommitmentSlackCost(lego: LEGO, thermalGen_df: pd.DataFrame, PNS_cost
     :return: The total unit commitment slack cost weighted by the given factors.
     """
     return sum(sum(sum((pyo.value(lego.model.vCommitCorrectHigher[rp, k, t]) + pyo.value(lego.model.vCommitCorrectLower[rp, k, t])) * lego.model.pWeight_rp[rp] for rp in lego.model.rp) * lego.model.pWeight_k[k] for k in lego.model.k) * thermalGen_df.loc[t]["MaxProd"] * PNS_cost for t in lego.model.thermalGenerators)
+
+
+def decompress_mps_file(mps_file_path: Union[str, Path]) -> str:
+    """
+    Decompresses a .mps.zip file to extract the corresponding .mps file.
+
+    Args:
+        mps_file_path: Path to the .mps file (the function will look for .mps.zip)
+
+    Returns:
+        str: Path to the extracted .mps file
+
+    Raises:
+        FileNotFoundError: If the .mps.zip file doesn't exist
+        zipfile.BadZipFile: If the zip file is corrupted
+    """
+    mps_path = Path(mps_file_path)
+    zip_path = mps_path.with_suffix(mps_path.suffix + '.zip')  # .mps -> .mps.zip
+
+    # If .mps file already exists, assume it's already decompressed
+    if mps_path.exists():
+        return str(mps_path)
+
+    if not zip_path.exists():
+        raise FileNotFoundError(f"Compressed file not found: {zip_path}")
+
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            # Extract to the same directory as the zip file
+            zip_ref.extractall(mps_path.parent)
+
+        if not mps_path.exists():
+            raise FileNotFoundError(f"Expected .mps file not found after extraction: {mps_path}")
+
+        return str(mps_path)
+
+    except zipfile.BadZipFile as e:
+        raise zipfile.BadZipFile(f"Corrupted zip file: {zip_path}") from e
+
