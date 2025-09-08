@@ -376,3 +376,41 @@ def decompress_mps_file(mps_file_path: Union[str, Path]) -> str:
     except zipfile.BadZipFile as e:
         raise zipfile.BadZipFile(f"Corrupted zip file: {zip_path}") from e
 
+
+def compress_mps_file(mps_file_path: Union[str, Path], remove_original: bool = True) -> str:
+    """
+    Compresses a .mps file to a .mps.zip file.
+
+    Args:
+        mps_file_path: Path to the .mps file to compress
+        remove_original: Whether to remove the original .mps file after compression
+
+    Returns:
+        str: Path to the created .mps.zip file
+
+    Raises:
+        FileNotFoundError: If the .mps file doesn't exist
+    """
+    mps_path = Path(mps_file_path)
+
+    if not mps_path.exists():
+        raise FileNotFoundError(f"MPS file not found: {mps_path}")
+
+    zip_path = mps_path.with_suffix(mps_path.suffix + '.zip')  # .mps -> .mps.zip
+
+    try:
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zip_ref:
+            # Add file with just the filename (not the full path) inside the zip
+            zip_ref.write(mps_path, mps_path.name)
+
+        if remove_original and mps_path.exists():
+            mps_path.unlink()
+
+        return str(zip_path)
+
+    except Exception as e:
+        # Clean up partially created zip file on error
+        if zip_path.exists():
+            zip_path.unlink()
+        raise e
+
