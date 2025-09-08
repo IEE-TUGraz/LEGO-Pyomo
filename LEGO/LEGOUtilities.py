@@ -414,3 +414,64 @@ def compress_mps_file(mps_file_path: Union[str, Path], remove_original: bool = T
             zip_path.unlink()
         raise e
 
+
+class MPSFileManager:
+    """
+    Context manager that automatically handles MPS file compression/decompression.
+
+    Usage:
+        # Single file - returns string path directly
+        with MPSFileManager('path1.mps') as mps_file:
+            # Use the decompressed file (mps_file is a string)
+            pass
+
+        # Multiple files - returns list of paths
+        with MPSFileManager(['path1.mps', 'path2.mps']) as mps_files:
+            # Use the decompressed files (mps_files is a list)
+            pass
+
+        # Files are automatically cleaned up when exiting the context
+    """
+
+    def __init__(self, mps_file_paths: Union[str, Path, List[Union[str, Path]]],
+                 remove_decompressed_on_exit: bool = True):
+        # Handle single file or list of files
+        if isinstance(mps_file_paths, (str, Path)):
+            self.mps_file_paths = [Path(mps_file_paths)]
+            self.is_single_file = True
+        else:
+            self.mps_file_paths = [Path(p) for p in mps_file_paths]
+            self.is_single_file = False
+
+        self.remove_decompressed_on_exit = remove_decompressed_on_exit
+        self.extracted_files = []
+        self.originally_compressed = []  # Files that were compressed and we decompressed
+
+    def __enter__(self):
+        for mps_path in self.mps_file_paths:
+            zip_path = mps_path.with_suffix(mps_path.suffix + '.zip')
+
+            # Check if file was originally compressed (.zip exists, .mps doesn't)
+            if zip_path.exists() and not mps_path.exists():
+                # File is compressed - decompress it for use
+                self.originally_compressed.append(mps_path)
+                extracted_path = decompress_mps_file(mps_path)
+                self.extracted_files.append(Path(extracted_path))
+            elif mps_path.exists():
+                # File is already uncompressed - use as is
+                self.extracted_files.append(mps_path)
+            else:
+                raise FileNotFoundError(f"Neither {mps_path} nor {zip_path} exists")
+
+        # Return single path or list based on input type
+        extracted_paths = [str(f) for f in self.extracted_files]
+        if self.is_single_file:
+            return extracted_paths[0]
+        else:
+            return extracted_paths
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.remove_decompressed_on_exit:
+            for mps_path in self.originally_compressed:
+                if mps_path.exists():
+                    mps_path.unlink()  # Delete the decompressed file
