@@ -79,7 +79,10 @@ def test_documentationMPSArchive():
             if line.startswith("#") or not line.strip():
                 continue  # Skip comment lines and empty lines
             split = line.split(" ", 1)
-            entries[split[0]] = split[1]
+            filename = split[0]
+            if filename.endswith('.mps.zip'):
+                filename = filename[:-4]  # Remove '.zip'
+            entries[filename] = split[1]
     printer.information(f"Found {len(entries)} MPS file descriptions in 'data/mps-archive/mps-file-descriptions.txt'")
 
     # Check if all MPS files (compressed or uncompressed) in the archive have a description
