@@ -52,6 +52,17 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vGenP1 = pyo.Var(model.rp, model.k, model.thermalGenerators, doc='Power output of generator g above minimum production', bounds=lambda model, rp, k, g: (0, (model.pMaxProd[g] - model.pMinProd[g]) * (model.pExisUnits[g] + model.pMaxInvest[g] * model.pEnabInv[g])))
     second_stage_variables += [model.vGenP1]
 
+    if cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov":
+        model.vMarkovPushStartup1 = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to force startup to be one of [0, maximum possible value (due to MinDownTime constraints), 1]")
+        second_stage_variables += [model.vMarkovPushStartup1]
+        model.vMarkovPushStartup2 = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to force startup to be one of [0, maximum possible value (due to MinDownTime constraints), 1]")
+        second_stage_variables += [model.vMarkovPushStartup2]
+
+        model.vMarkovPushShutdown1 = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to force shutdown to be one of [0, maximum possible value (due to MinUpTime constraints), 1]")
+        second_stage_variables += [model.vMarkovPushShutdown1]
+        model.vMarkovPushShutdown2 = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to force shutdown to be one of [0, maximum possible value (due to MinUpTime constraints), 1]")
+        second_stage_variables += [model.vMarkovPushShutdown2]
+
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
 
@@ -186,6 +197,43 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     raise ValueError(f"Invalid value for 'pReprPeriodEdgeHandlingUnitCommitment' in 'Global_Parameters.xlsx': {cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]} - please choose from 'notEnforced', 'cyclic' or 'markov'!")
 
     model.eMinDownTime = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Minimum down time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=lambda m, rp, k, t: eMinDownTime_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
+
+    if cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov":
+        # Y ≤ z2 + z1                       # Upper bound
+        # Y ≥ z2                            # When z2=1: Y ≥ 1, so Y=1
+        # Y ≤ X + (1-z1)                    # When z1=1: Y ≤ X
+        # Y ≥ X - (1-z1)                    # When z1=1: Y ≥ X, so Y=X
+        # Y ≤ z1 + z2                       # When both=0: Y ≤ 0, so Y=0
+        # z1 + z2 ≤ 1
+        # z1, z2 ∈ {0,1}
+        model.eMarkovPushStartup = pyo.ConstraintList(doc="Markov constraint to force vStartup to be either 0 or the maximum it can be due to MinDownTime")
+        model.eMarkovPushShutdown = pyo.ConstraintList(doc="Markov constraint to force vShutdown to be either 0 or the maximum it can be due to MinUpTime")
+
+        for t in model.thermalGenerators:
+            if model.pMinDownTime[t] == 0:
+                raise ValueError(f"Minimum down time must be at least 1, got 0 instead for generator '{t}'")
+            elif model.pMinDownTime[t] != 1:  # If MinDownTime is 1, no constraint is required
+                for k in model.k:
+                    if model.k.ord(k) > model.pMinDownTime[t]:
+                        break
+                    for rp in model.rp:
+                        model.eMarkovPushStartup.add(model.vStartup[rp, k, t] <= model.vMarkovPushStartup1[rp, k, t] + model.vMarkovPushStartup2[rp, k, t])
+                        model.eMarkovPushStartup.add(model.vStartup[rp, k, t] >= model.vMarkovPushStartup2[rp, k, t])
+                        model.eMarkovPushStartup.add(model.vStartup[rp, k, t] <= LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k, model.pMinDownTime[t] + 1), model.vShutdown, cs.rpTransitionMatrixRelativeFrom, t) + (1 - model.vMarkovPushStartup1[rp, k, t]))
+                        model.eMarkovPushStartup.add(model.vStartup[rp, k, t] >= LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k, model.pMinDownTime[t] + 1), model.vShutdown, cs.rpTransitionMatrixRelativeFrom, t) - (1 - model.vMarkovPushStartup1[rp, k, t]))
+                        model.eMarkovPushStartup.add(model.vStartup[rp, k, t] <= model.vMarkovPushStartup1[rp, k, t] + model.vMarkovPushStartup2[rp, k, t])
+                        model.eMarkovPushStartup.add(model.vMarkovPushStartup1[rp, k, t] + model.vMarkovPushStartup2[rp, k, t] <= 1)
+
+                for k in model.k:
+                    if model.k.ord(k) > model.pMinUpTime[t]:
+                        break
+                    for rp in model.rp:
+                        model.eMarkovPushShutdown.add(model.vShutdown[rp, k, t] <= model.vMarkovPushShutdown1[rp, k, t] + model.vMarkovPushShutdown2[rp, k, t])
+                        model.eMarkovPushShutdown.add(model.vShutdown[rp, k, t] >= model.vMarkovPushShutdown2[rp, k, t])
+                        model.eMarkovPushShutdown.add(model.vShutdown[rp, k, t] <= LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k, model.pMinUpTime[t] + 1), model.vCommit, cs.rpTransitionMatrixRelativeFrom, t) + (1 - model.vMarkovPushShutdown1[rp, k, t]))
+                        model.eMarkovPushShutdown.add(model.vShutdown[rp, k, t] >= LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k, model.pMinUpTime[t] + 1), model.vCommit, cs.rpTransitionMatrixRelativeFrom, t) - (1 - model.vMarkovPushShutdown1[rp, k, t]))
+                        model.eMarkovPushShutdown.add(model.vShutdown[rp, k, t] <= model.vMarkovPushShutdown1[rp, k, t] + model.vMarkovPushShutdown2[rp, k, t])
+                        model.eMarkovPushShutdown.add(model.vMarkovPushShutdown1[rp, k, t] + model.vMarkovPushShutdown2[rp, k, t] <= 1)
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0
