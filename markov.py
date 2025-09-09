@@ -26,7 +26,7 @@ pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
 
-def execute_case_studies(case_study_path: str, unit_commitment_result_file: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False, calculate_regret: bool = False, write_unit_commitment_result_file: bool = True):
+def execute_case_studies(case_study_path: str, unit_commitment_result_file: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False, calculate_regret: bool = False, write_unit_commitment_result_file: bool = True, step_size: int = 0):
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
@@ -63,9 +63,15 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
     printer.information(f"Creating truth case study (full-hourly) took {time.time() - start_time:.2f} seconds")
 
     thermalGenerators = cs.dPower_ThermalGen.index.tolist()
-    STEP_SIZE = 5
-    printer.information(f"Relaxing with step size: {STEP_SIZE}")
-    for count_relaxed in range(len(thermalGenerators), -1, -STEP_SIZE):
+
+    if step_size == 0:
+        printer.information(f"Not relaxing any unit commitment variables, all {len(thermalGenerators)} thermal generators stay binary")
+    else:
+        printer.information(f"Relaxing with step size: {step_size}")
+
+    for count_relaxed in range(len(thermalGenerators), -1, -step_size if step_size > 0 else -1):
+        if step_size == 0:
+            count_relaxed = 0
         start_time = time.time()
         printer.information(f"Building the LEGO models for adjustments")  # Note this is actually faster (1.5-2x) than copying already built models to re-use them
         lego_models = {"NoEnf.": LEGO(cs_notEnforced), "Cyclic": LEGO(cs_cyclic), "Markov": LEGO(cs_markov), "Truth ": LEGO(cs_truth)}
@@ -81,7 +87,7 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
         for i in range(count_relaxed):
             if all(thermalGeneratorRelaxed[g] == True for g in thermalGenerators):
                 break  # Safety check if all generators are already relaxed
-            index = (i * (len(thermalGenerators) // STEP_SIZE) + offset) % len(thermalGenerators)
+            index = (i * (len(thermalGenerators) // step_size) + offset) % len(thermalGenerators)
             while thermalGeneratorRelaxed[thermalGenerators[index]]:  # Skip already relaxed generators
                 index = (index + 1) % len(thermalGenerators)
                 offset += 1
@@ -98,6 +104,9 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
         printer.information(f"Relaxing {count_relaxed} thermal generators took {time.time() - start_time:.2f} seconds")
 
         execute_case_study(lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file.replace(".xlsx", f"-relaxed{count_relaxed}.xlsx"), no_sqlite, no_excel, calculate_regret, write_unit_commitment_result_file)
+
+        if step_size == 0:
+            break
 
 
 def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit_commitment_result_file: str, no_sqlite: bool, no_excel: bool, calculate_regret: bool, write_unit_commitment_result_file: bool):
@@ -284,6 +293,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-regret-plot", action="store_true", help="Do not plot regret results")
     parser.add_argument("--calculate-regret", action="store_true", help="Calculate regret by re-solving the truth model with fixed unit commitment from the other models (can take a while)")
     parser.add_argument("--dont-write-unit-commitment-result-file", action="store_true", help="Write unit commitment result file (can take a while)")
+    parser.add_argument("--relax-step-size", type=int, default=0, help="Step size for relaxing unit commitment variables (default: 0 = no relaxation, all binary)")
     args = parser.parse_args()
 
     for folder in args.caseStudyFolder.split(","):
@@ -297,7 +307,7 @@ if __name__ == "__main__":
 
             unit_commitment_result_file = f"unitCommitmentResult-{folder_name}.xlsx"
             printer.information(f"Unit commitment result file: '{unit_commitment_result_file}'")
-            execute_case_studies(folder, unit_commitment_result_file, args.no_sqlite, args.no_excel, args.calculate_regret, not args.dont_write_unit_commitment_result_file)
+            execute_case_studies(folder, unit_commitment_result_file, args.no_sqlite, args.no_excel, args.calculate_regret, not args.dont_write_unit_commitment_result_file, args.relax_step_size)
 
             if args.plot:
                 printer.information("Plotting unit commitment")
