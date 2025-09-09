@@ -22,7 +22,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     # Parameters
     model.pMaxProdWater = pyo.Param(model.Hydroplants, initialize={'P1': 100, 'P2': 150, 'P3': 200, 'P4': 250}, doc='Maximum production rate for hydro plants [water amount]')  # Example max inflow rates
     model.pInflowRiver = pyo.Param(model.Hydroplants, model.T, initialize={
-        ('P1', 1): 0, ('P1', 2): 0, ('P1', 3): 0,
+        ('P1', 1): 50, ('P1', 2): 60, ('P1', 3): 70,
         ('P2', 1): 80, ('P2', 2): 90, ('P2', 3): 100,
         ('P3', 1): 110, ('P3', 2): 120, ('P3', 3): 130,
         ('P4', 1): 140, ('P4', 2): 150, ('P4', 3): 160
@@ -32,10 +32,10 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.pLowerLimitReservoir = pyo.Param(model.Hydroplants, initialize={
         'P1': 50, 'P2': 60, 'P3': 70, 'P4': 80}, doc='Lower limit of reservoir levels for hydro plants [water amount]')  # not yet used, but can be added if needed
     model.pInitialStorage = pyo.Param(model.Hydroplants, initialize={
-        'P1': 50, 'P2': 520, 'P3': 140, 'P4': 580}, doc='Initial storage levels for hydro plants [water amount]')  # Initial storage levels, replace with
+        'P1': 50, 'P2': 100, 'P3': 140, 'P4': 280}, doc='Initial storage levels for hydro plants [water amount]')  # Initial storage levels, replace with
     model.pPowerFactor = pyo.Param(model.Hydroplants, initialize={ 'P1': 1.5, 'P2': 1.4, 'P3': 1.5, 'P4': 1.6
     }, doc='Power factor for hydro plants (water amount to energy output)')  # Example power factors, replace with actual data
-    model.pDemand = pyo.Param(model.T, initialize={1: 100, 2: 1900, 3: 900}, doc='Demand for each time step')  # Example demand, replace with actual data
+    model.pDemand = pyo.Param(model.T, initialize={1: 100, 2: 1000, 3: 900}, doc='Demand for each time step')  # Example demand, replace with actual data
     model.pCost = pyo.Param(model.Hydroplants, initialize={'P1': 20, 'P2': 25, 'P3': 30, 'P4': 35}, doc='Cost of production for hydro plants')  # Example costs, replace with actual data
     model.pCostPumps = pyo.Param(model.PumpPairs, initialize={
         ('P2', 'P1'): 1,
@@ -47,6 +47,10 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         ('P2', 'P4'): 1.0,  # 100% of the inflow from P2 goes to P4
         ('P3', 'P4'): 1.0  # 100% of the inflow from P3 goes to P4
     }, doc='Distribution factors for cascade nodes')
+    model.pPowerFactorPumps = pyo.Param(model.PumpPairs, initialize={
+        ('P2', 'P1'): 1.2,  # Example power factor for pumping from P2 to P1
+        ('P4', 'P1'): 1.3   # Example power factor for pumping from P4 to P1
+    }, doc='Power factors for pumps between hydro plants')
 
     # Variables
     model.vGenP = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Production of hydro plants [energy]')  # Production of hydro plants; Domain cannot be changed?
@@ -57,6 +61,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     second_stage_variables += [model.vStorage]
     model.vPumpedWater = pyo.Var(model.PumpPairs, model.T, domain=pyo.NonNegativeReals, doc='Pumped water between hydro plants [water amount]')  # Pumped water between hydro plants
     second_stage_variables += [model.vPumpedWater]
+    model.vConsumptionPumps = pyo.Var(model.PumpPairs, model.T, domain=pyo.NonNegativeReals, doc='Energy used for pumping between hydro plants [energy]')  # Energy used for pumping between hydro plants
+    second_stage_variables += [model.vConsumptionPumps]
     model.vSlackPNS = pyo.Var(model.T, domain=pyo.NonNegativeReals, doc='Slack variable for unmet demand')
     second_stage_variables += [model.vSlackPNS]
     model.vSlackEPS = pyo.Var(model.T, domain=pyo.NonNegativeReals, doc='Slack variable for excess power served')
@@ -67,8 +73,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         return model.vGenP[i, t] == model.vTotalIntake[i, t] * model.pPowerFactor[i]
     model.eProdDef = pyo.Constraint(model.Hydroplants, model.T, rule=prod_def_rule, doc='Production definition for hydro plants')  # Production definition constraint
 
+    def use_pump(model, i, j, t):
+        return model.vConsumptionPumps[i, j, t] == model.vPumpedWater[i, j, t] * model.pPowerFactorPumps[i, j]
+    model.eUsePump = pyo.Constraint(model.PumpPairs, model.T, rule=use_pump, doc='Energy use definition for pumps between hydro plants')
+
     def demand_rule(model, t):
-        return sum(model.vGenP[i, t] for i in model.Hydroplants) + model.vSlackPNS[t] - model.vSlackEPS[t] == model.pDemand[t]
+        return sum(model.vGenP[i, t] for i in model.Hydroplants) + model.vSlackPNS[t] - model.vSlackEPS[t] == model.pDemand[t] + sum(model.vConsumptionPumps[i, j, t] for (i, j) in model.PumpPairs)
     model.eDemand_con = pyo.Constraint(model.T, rule=demand_rule)
 
     # Cascade for Network of HPP (P1 -> P2, P1 -> P3, P2 -> P4, P3 -> P4)
