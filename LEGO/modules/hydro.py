@@ -67,6 +67,10 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     second_stage_variables += [model.vSlackPNS]
     model.vSlackEPS = pyo.Var(model.T, domain=pyo.NonNegativeReals, doc='Slack variable for excess power served')
     second_stage_variables += [model.vSlackEPS]
+    model.vSlackWNS = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Slack variable for water not served (unmet water inflow)')
+    second_stage_variables += [model.vSlackWNS]
+    model.vSlackWES = pyo.Var(model.Hydroplants, model.T, domain=pyo.NonNegativeReals, doc='Slack variable for excess water served (overflowing reservoir)')
+    second_stage_variables += [model.vSlackWES]
 
     # Constraints
     def prod_def_rule(model, i, t):
@@ -90,13 +94,13 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     def cascade_rule_graph(model, i, t):
         pumped_out = sum(model.vPumpedWater[j, k, t] for (j, k) in model.PumpPairs if j == i)
         if t == 1:
-            return model.vStorage[i, t] == model.pInitialStorage[i] + model.pInflowRiver[i, t] - model.vTotalIntake[i, t] - pumped_out
+            return model.vStorage[i, t] == model.pInitialStorage[i] + model.pInflowRiver[i, t] - model.vTotalIntake[i, t] - pumped_out + model.vSlackWNS[i, t] - model.vSlackWES[i, t]
         else:
             # Sum of all inflows from upstream plants
             inflow_from_upstream = sum(model.vTotalIntake[u, model.T.prev(t)] * model.pDistributionFactor[u, i] for u in model.UpstreamPlants[i])
             # Pumps water
             pumped_in = sum(model.vPumpedWater[j, k, model.T.prev(t)] for (j, k) in model.PumpPairs if k == i)
-            return model.vStorage[i, t] == model.vStorage[i, t - 1] + inflow_from_upstream + model.pInflowRiver[i, t] - model.vTotalIntake[i, t] + pumped_in - pumped_out
+            return model.vStorage[i, t] == model.vStorage[i, t - 1] + inflow_from_upstream + model.pInflowRiver[i, t] - model.vTotalIntake[i, t] + pumped_in - pumped_out + model.vSlackWNS[i, t] - model.vSlackWES[i, t]
     model.eCascadeGraph = pyo.Constraint(model.Hydroplants, model.T, rule=cascade_rule_graph, doc='Cascade constraints for hydro plants based on graph structure')
 
     # Objectives
@@ -104,8 +108,10 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         prod_cost = sum(model.vGenP[i, t] * model.pCost[i] for i in model.Hydroplants for t in model.T)
         pump_cost = sum(model.vPumpedWater[i, j, t] * model.pCostPumps[i, j] for (i, j) in model.PumpPairs for t in model.T)
         slack_cost = sum(model.vSlackPNS[t] * 10000 for t in model.T)
-        excess_cost = sum(model.vSlackEPS[t] * 1 for t in model.T)
-        return prod_cost + pump_cost + slack_cost + excess_cost
+        excess_cost = sum(model.vSlackEPS[t] * 10000 for t in model.T)
+        water_excess_cost = sum(model.vSlackWES[i, t] * 10000 for i in model.Hydroplants for t in model.T)
+        water_slack_cost = sum(model.vSlackWNS[i, t] * 10000 for i in model.Hydroplants for t in model.T)
+        return prod_cost + pump_cost + slack_cost + excess_cost + water_excess_cost + water_slack_cost
     model.obj_cost = pyo.Objective(rule=objective_rule, sense=pyo.minimize, doc='Objective function for hydro plants including pump costs')
 
     print("Model created, trying to solve it...")
