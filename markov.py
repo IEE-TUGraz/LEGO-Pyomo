@@ -26,10 +26,11 @@ pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
 
-def execute_case_studies(case_study_path: str, unit_commitment_result_file: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False, calculate_regret: bool = False, write_unit_commitment_result_file: bool = True, step_size: int = 0):
+def execute_case_studies(case_study_path: str, unit_commitment_result_file_template: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False, calculate_regret: bool = False, write_unit_commitment_result_file: bool = True, step_size: int = 0) -> typing.List[str]:
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
+    unit_commitment_result_files = []
 
     # Load case study from Excels
     printer.information(f"Loading case study from '{case_study_path}'")
@@ -103,10 +104,13 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
                         lego.model.vShutdown[rp, k, g].domain = pyo.PercentFraction if thermalGeneratorRelaxed[g] else pyo.Binary
         printer.information(f"Relaxing {count_relaxed} thermal generators took {time.time() - start_time:.2f} seconds")
 
-        execute_case_study(lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file.replace(".xlsx", f"-relaxed{count_relaxed}.xlsx"), no_sqlite, no_excel, calculate_regret, write_unit_commitment_result_file)
+        unit_commitment_result_file = unit_commitment_result_file_template.replace(".xlsx", f"-relaxed{count_relaxed}.xlsx")
+        execute_case_study(lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file, no_sqlite, no_excel, calculate_regret, write_unit_commitment_result_file)
+        unit_commitment_result_files.append(unit_commitment_result_file)
 
         if step_size == 0:
             break
+    return unit_commitment_result_files
 
 
 def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit_commitment_result_file: str, no_sqlite: bool, no_excel: bool, calculate_regret: bool, write_unit_commitment_result_file: bool):
@@ -305,13 +309,15 @@ if __name__ == "__main__":
             printer.information(f"Loading case study from '{folder}'")
             printer.information(f"Logfile: '{printer.get_logfile()}'")
 
-            unit_commitment_result_file = f"unitCommitmentResult-{folder_name}.xlsx"
-            printer.information(f"Unit commitment result file: '{unit_commitment_result_file}'")
-            execute_case_studies(folder, unit_commitment_result_file, args.no_sqlite, args.no_excel, args.calculate_regret, not args.dont_write_unit_commitment_result_file, args.relax_step_size)
+            unit_commitment_result_file_template = f"unitCommitmentResult-{folder_name}.xlsx"
+            printer.information(f"Unit commitment result file template: '{unit_commitment_result_file_template}'")
+            unit_commitment_result_files = execute_case_studies(folder, unit_commitment_result_file_template, args.no_sqlite, args.no_excel, args.calculate_regret, not args.dont_write_unit_commitment_result_file, args.relax_step_size)
 
             if args.plot:
-                printer.information("Plotting unit commitment")
-                plot_unit_commitment(unit_commitment_result_file, folder, 6 * 24, 1, not args.no_regret_plot)
+                printer.information(f"Plotting unit commitment(s): {unit_commitment_result_files}")
+                for unit_commitment_result_file in unit_commitment_result_files:
+                    printer.information(f"Plotting '{unit_commitment_result_file}'")
+                    plot_unit_commitment(unit_commitment_result_file, folder, 6 * 24, 1, not args.no_regret_plot)
         except Exception as e:
             printer.error(f"Exception while executing case study '{folder}': {e}")
             if args.debug:
