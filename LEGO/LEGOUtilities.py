@@ -6,6 +6,7 @@ from typing import Union, List
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import py7zr
 import pyomo.environ as pyo
 
 from InOutModule import ExcelReader
@@ -341,32 +342,33 @@ def getUnitCommitmentSlackCost(lego: LEGO, thermalGen_df: pd.DataFrame, PNS_cost
 
 def decompress_mps_file(mps_file_path: Union[str, Path]) -> str:
     """
-    Decompresses a .mps.zip file to extract the corresponding .mps file.
+    Decompresses a .mps.7z file to extract the corresponding .mps file.
 
     Args:
-        mps_file_path: Path to the .mps file (the function will look for .mps.zip)
+        mps_file_path: Path to the .mps file (the function will look for .mps.7z)
 
     Returns:
         str: Path to the extracted .mps file
 
     Raises:
-        FileNotFoundError: If the .mps.zip file doesn't exist
-        zipfile.BadZipFile: If the zip file is corrupted
+        FileNotFoundError: If the .mps.7z file doesn't exist
+        OSError: If decompression fails
     """
-    mps_path = Path(mps_file_path)
-    zip_path = mps_path.with_suffix(mps_path.suffix + '.zip')  # .mps -> .mps.zip
+    mps_path = Path(mps_file_path).resolve()
+    seven_zip_path = mps_path.with_suffix(mps_path.suffix + ".7z")
 
     # If .mps file already exists, assume it's already decompressed
     if mps_path.exists():
         return str(mps_path)
 
-    if not zip_path.exists():
-        raise FileNotFoundError(f"Compressed file not found: {zip_path}")
+    # Check 7z file exists
+    if not seven_zip_path.exists():
+        raise FileNotFoundError(f"Compressed file not found: {seven_zip_path}")
 
     try:
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            # Extract to the same directory as the zip file
-            zip_ref.extractall(mps_path.parent)
+        with py7zr.SevenZipFile(seven_zip_path, mode='r') as archive:
+            # Extract to the parent directory
+            archive.extract(path=mps_path.parent)
 
         if not mps_path.exists():
             raise FileNotFoundError(f"Expected .mps file not found after extraction: {mps_path}")
@@ -379,14 +381,14 @@ def decompress_mps_file(mps_file_path: Union[str, Path]) -> str:
 
 def compress_mps_file(mps_file_path: Union[str, Path], remove_original: bool = True) -> str:
     """
-    Compresses a .mps file to a .mps.zip file.
+    Compresses a .mps file to a .mps.7z file.
 
     Args:
         mps_file_path: Path to the .mps file to compress
         remove_original: Whether to remove the original .mps file after compression
 
     Returns:
-        str: Path to the created .mps.zip file
+        str: Path to the created .mps.7z file
 
     Raises:
         FileNotFoundError: If the .mps file doesn't exist
@@ -396,28 +398,28 @@ def compress_mps_file(mps_file_path: Union[str, Path], remove_original: bool = T
     if not mps_path.exists():
         raise FileNotFoundError(f"MPS file not found: {mps_path}")
 
-    zip_path = mps_path.with_suffix(mps_path.suffix + '.zip')  # .mps -> .mps.zip
+    seven_zip_path = Path(str(mps_path) + ".7z")
 
     try:
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zip_ref:
-            # Add file with just the filename (not the full path) inside the zip
-            zip_ref.write(mps_path, mps_path.name)
+        # Compress using py7zr
+        with py7zr.SevenZipFile(seven_zip_path, 'w') as archive:
+            archive.write(mps_path, mps_path.name)
 
         if remove_original and mps_path.exists():
             mps_path.unlink()
 
-        return str(zip_path)
+        return str(seven_zip_path)
 
     except Exception as e:
-        # Clean up partially created zip file on error
-        if zip_path.exists():
-            zip_path.unlink()
-        raise e
+        # Clean up partially created 7z file on error
+        if seven_zip_path.exists():
+            seven_zip_path.unlink()
+        raise OSError(f"Compression failed: {str(e)}")
 
 
 class MPSFileManager:
     """
-    Context manager that automatically handles MPS file compression/decompression.
+    Context manager that automatically handles MPS file compression/decompression using 7zip.
 
     Usage:
         # Single file - returns string path directly
@@ -449,10 +451,10 @@ class MPSFileManager:
 
     def __enter__(self):
         for mps_path in self.mps_file_paths:
-            zip_path = mps_path.with_suffix(mps_path.suffix + '.zip')
+            seven_zip_path = mps_path.with_suffix(mps_path.suffix + '.7z')
 
-            # Check if file was originally compressed (.zip exists, .mps doesn't)
-            if zip_path.exists() and not mps_path.exists():
+            # Check if file was originally compressed (.7z exists, .mps doesn't)
+            if seven_zip_path.exists() and not mps_path.exists():
                 # File is compressed - decompress it for use
                 self.originally_compressed.append(mps_path)
                 extracted_path = decompress_mps_file(mps_path)
@@ -461,7 +463,7 @@ class MPSFileManager:
                 # File is already uncompressed - use as is
                 self.extracted_files.append(mps_path)
             else:
-                raise FileNotFoundError(f"Neither {mps_path} nor {zip_path} exists")
+                raise FileNotFoundError(f"Neither {mps_path} nor {seven_zip_path} exists")
 
         # Return single path or list based on input type
         extracted_paths = [str(f) for f in self.extracted_files]

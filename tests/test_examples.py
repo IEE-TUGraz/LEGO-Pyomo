@@ -80,8 +80,8 @@ def test_documentationMPSArchive():
                 continue  # Skip comment lines and empty lines
             split = line.split(" ", 1)
             filename = split[0]
-            if filename.endswith('.mps.zip'):
-                filename = filename[:-4]  # Remove '.zip'
+            if filename.endswith('.mps.7z'):  # Changed from .mps.gz
+                filename = filename[:-3]  # Remove '.7z'
             entries[filename] = split[1]
     printer.information(f"Found {len(entries)} MPS file descriptions in 'data/mps-archive/mps-file-descriptions.txt'")
 
@@ -92,9 +92,9 @@ def test_documentationMPSArchive():
     for archive_file in archive_files:
         if archive_file.endswith(".mps"):
             mps_filename = archive_file
-        elif archive_file.endswith(".mps.zip"):
-            # Remove .zip extension to get the .mps filename
-            mps_filename = archive_file[:-4]  # Remove '.zip'
+        elif archive_file.endswith(".mps.7z"):  # Changed from .mps.gz
+            # Remove .7z extension to get the .mps filename
+            mps_filename = archive_file[:-3]  # Remove '.7z'
         elif archive_file == "mps-file-descriptions.txt":
             continue  # Skip the description file itself
         else:
