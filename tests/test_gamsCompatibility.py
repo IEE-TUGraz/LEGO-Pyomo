@@ -2,7 +2,7 @@ import shutil
 
 from openpyxl import load_workbook
 
-from CompareModels import compareModels, ModelTypeForComparison
+from LEGO.helpers.CompareModels import compareModels, ModelTypeForComparison
 from InOutModule.printer import Printer
 
 printer = Printer.getInstance()

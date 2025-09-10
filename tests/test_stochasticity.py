@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from openpyxl import load_workbook
 
-from CompareModels import compareModels, ModelTypeForComparison
+from LEGO.helpers.CompareModels import compareModels, ModelTypeForComparison
 from InOutModule import ExcelReader
 from InOutModule.ExcelWriter import ExcelWriter
 from InOutModule.printer import Printer

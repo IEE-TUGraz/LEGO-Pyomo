@@ -132,7 +132,7 @@ def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | p
                 gams_executable_path = "C:/GAMS/50/gams.exe"
                 printer.warning(f"Using default GAMS executable path: {gams_executable_path}")
             if lego_gams_path is None:
-                lego_gams_path = "../LEGO-GAMS/LEGO.gms"
+                lego_gams_path = "../../LEGO-GAMS/LEGO.gms"
                 printer.warning(f"Using default LEGO GAMS model path: {lego_gams_path}")
             if max_gams_runtime_in_seconds is None:
                 max_gams_runtime_in_seconds = 60
@@ -140,7 +140,7 @@ def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | p
 
             # If data_path is relative path, add "../" to it
             if not pathlib.Path(data_path).is_absolute():
-                data_path = pathlib.Path("../") / data_path
+                data_path = pathlib.Path("../../../") / data_path
 
             mps_path, objective_value = execute_gams(data_path, gams_console_log_path, gams_executable_path, lego_gams_path, max_gams_runtime_in_seconds)
         case ModelTypeForComparison.DETERMINISTIC | ModelTypeForComparison.EXTENSIVE_FORM | ModelTypeForComparison.BENDERS | ModelTypeForComparison.PROGRESSIVE_HEDGING:
