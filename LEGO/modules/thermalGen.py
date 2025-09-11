@@ -53,15 +53,15 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     second_stage_variables += [model.vGenP1]
 
     if cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov":
-        model.vMarkovPushStartup1 = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to force startup to be one of [0, maximum possible value (due to MinDownTime constraints), 1]")
-        second_stage_variables += [model.vMarkovPushStartup1]
-        model.vMarkovPushStartup2 = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to force startup to be one of [0, maximum possible value (due to MinDownTime constraints), 1]")
-        second_stage_variables += [model.vMarkovPushStartup2]
+        model.vU0 = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to indicate that vStartup is 0")
+        second_stage_variables += [model.vU0]
+        model.vUX = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to indicate that vStartup is X (the maximum it can be due to MinDownTime)")
+        second_stage_variables += [model.vUX]
 
-        model.vMarkovPushShutdown1 = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to force shutdown to be one of [0, maximum possible value (due to MinUpTime constraints), 1]")
-        second_stage_variables += [model.vMarkovPushShutdown1]
-        model.vMarkovPushShutdown2 = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to force shutdown to be one of [0, maximum possible value (due to MinUpTime constraints), 1]")
-        second_stage_variables += [model.vMarkovPushShutdown2]
+        model.vD0 = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to indicate that vShutdown is 0")
+        second_stage_variables += [model.vD0]
+        model.vDY = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to indicate that vShutdown is Y (the maximum it can be due to MinUpTime)")
+        second_stage_variables += [model.vDY]
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
@@ -210,30 +210,31 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         model.eMarkovPushShutdown = pyo.ConstraintList(doc="Markov constraint to force vShutdown to be either 0 or the maximum it can be due to MinUpTime")
 
         for t in model.thermalGenerators:
-            if model.pMinDownTime[t] == 0:
-                raise ValueError(f"Minimum down time must be at least 1, got 0 instead for generator '{t}'")
-            elif model.pMinDownTime[t] != 1:  # If MinDownTime is 1, no constraint is required
+            if model.pMinDownTime[t] != 1 or model.pMinUpTime[t] != 1:  # If MinDownTime is 1 and MinUpTime is 1, no constraint is required
                 for k in model.k:
-                    if model.k.ord(k) > model.pMinDownTime[t]:
-                        break
+                    if model.k.ord(k) > max(model.pMinDownTime[t], model.pMinUpTime[t]):
+                        break  # No need to continue, since constraints are only required for the first max(MinUpTime, MinDownTime) timesteps
                     for rp in model.rp:
-                        model.eMarkovPushStartup.add(model.vStartup[rp, k, t] <= model.vMarkovPushStartup1[rp, k, t] + model.vMarkovPushStartup2[rp, k, t])
-                        model.eMarkovPushStartup.add(model.vStartup[rp, k, t] >= model.vMarkovPushStartup2[rp, k, t])
-                        model.eMarkovPushStartup.add(model.vStartup[rp, k, t] <= LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k, model.pMinDownTime[t] + 1), model.vShutdown, cs.rpTransitionMatrixRelativeFrom, t) + (1 - model.vMarkovPushStartup1[rp, k, t]))
-                        model.eMarkovPushStartup.add(model.vStartup[rp, k, t] >= LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k, model.pMinDownTime[t] + 1), model.vShutdown, cs.rpTransitionMatrixRelativeFrom, t) - (1 - model.vMarkovPushStartup1[rp, k, t]))
-                        model.eMarkovPushStartup.add(model.vStartup[rp, k, t] <= model.vMarkovPushStartup1[rp, k, t] + model.vMarkovPushStartup2[rp, k, t])
-                        model.eMarkovPushStartup.add(model.vMarkovPushStartup1[rp, k, t] + model.vMarkovPushStartup2[rp, k, t] <= 1)
+                        if model.k.ord(k) == 1:
+                            prev_commit = LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k), model.vCommit, cs.rpTransitionMatrixRelativeFrom, t)
+                        else:
+                            prev_commit = model.vCommit[rp, model.k.prev(k), t]
 
-                for k in model.k:
-                    if model.k.ord(k) > model.pMinUpTime[t]:
-                        break
-                    for rp in model.rp:
-                        model.eMarkovPushShutdown.add(model.vShutdown[rp, k, t] <= model.vMarkovPushShutdown1[rp, k, t] + model.vMarkovPushShutdown2[rp, k, t])
-                        model.eMarkovPushShutdown.add(model.vShutdown[rp, k, t] >= model.vMarkovPushShutdown2[rp, k, t])
-                        model.eMarkovPushShutdown.add(model.vShutdown[rp, k, t] <= LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k, model.pMinUpTime[t] + 1), model.vCommit, cs.rpTransitionMatrixRelativeFrom, t) + (1 - model.vMarkovPushShutdown1[rp, k, t]))
-                        model.eMarkovPushShutdown.add(model.vShutdown[rp, k, t] >= LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k, model.pMinUpTime[t] + 1), model.vCommit, cs.rpTransitionMatrixRelativeFrom, t) - (1 - model.vMarkovPushShutdown1[rp, k, t]))
-                        model.eMarkovPushShutdown.add(model.vShutdown[rp, k, t] <= model.vMarkovPushShutdown1[rp, k, t] + model.vMarkovPushShutdown2[rp, k, t])
-                        model.eMarkovPushShutdown.add(model.vMarkovPushShutdown1[rp, k, t] + model.vMarkovPushShutdown2[rp, k, t] <= 1)
+                        X = 1 - prev_commit - LEGOUtilities.markov_sum(model.rp, rp, model.k, model.k.ord(k) - model.pMinDownTime[t] + 1, model.k.ord(k), model.vShutdown, cs.rpTransitionMatrixRelativeFrom, t)
+                        model.eMarkovPushStartup.add(model.vStartup[rp, k, t] <= 1 - model.vU0[rp, k, t])  # u0 -> vStartup = 0
+                        model.eMarkovPushStartup.add(model.vStartup[rp, k, t] <= X + (1 - model.vUX[rp, k, t]))  # uX -> vStartup = X
+                        model.eMarkovPushStartup.add(model.vStartup[rp, k, t] >= X - (1 - model.vUX[rp, k, t]))  # uX -> vStartup = X
+                        model.eMarkovPushStartup.add(model.vU0[rp, k, t] <= model.vDY[rp, k, t] + (1 - prev_commit))  # u0 -> vDY or prev_commit=0
+                        model.eMarkovPushStartup.add(model.vUX[rp, k, t] <= model.vD0[rp, k, t])  # uX -> vD0
+
+                        Y = prev_commit - LEGOUtilities.markov_sum(model.rp, rp, model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k), model.vStartup, cs.rpTransitionMatrixRelativeFrom, t)
+                        model.eMarkovPushShutdown.add(model.vShutdown[rp, k, t] <= 1 - model.vD0[rp, k, t])  # d0 -> vShutdown = 0
+                        model.eMarkovPushShutdown.add(model.vShutdown[rp, k, t] <= Y + (1 - model.vDY[rp, k, t]))  # dY -> vShutdown = Y
+                        model.eMarkovPushShutdown.add(model.vShutdown[rp, k, t] >= Y - (1 - model.vDY[rp, k, t]))  # dY -> vShutdown = Y
+                        model.eMarkovPushShutdown.add(model.vD0[rp, k, t] <= model.vUX[rp, k, t] + prev_commit)  # d0 -> vUX or prev_commit=1
+                        model.eMarkovPushShutdown.add(model.vDY[rp, k, t] <= model.vU0[rp, k, t])  # dY -> vU0
+
+                        model.eMarkovPushStartup.add(1 <= model.vU0[rp, k, t] / 2 + model.vUX[rp, k, t] + model.vD0[rp, k, t] / 2 + model.vDY[rp, k, t])  # Either UX or DY or (U0 and D0)
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0

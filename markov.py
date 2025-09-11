@@ -96,12 +96,24 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
 
         printer.information(f"Relaxing {count_relaxed} thermal generators: {[g for g in thermalGenerators if thermalGeneratorRelaxed[g]]}")
         for case_name, lego in lego_models.items():
-            for rp in lego.model.rp:
-                for k in lego.model.k:
-                    for g in lego.model.thermalGenerators:
-                        lego.model.vCommit[rp, k, g].domain = pyo.PercentFraction if thermalGeneratorRelaxed[g] else pyo.Binary
-                        lego.model.vStartup[rp, k, g].domain = pyo.PercentFraction if thermalGeneratorRelaxed[g] else pyo.Binary
-                        lego.model.vShutdown[rp, k, g].domain = pyo.PercentFraction if thermalGeneratorRelaxed[g] else pyo.Binary
+            for g in lego.model.thermalGenerators:
+                if thermalGeneratorRelaxed[g]:
+                    # Relax unit commitment variables for this generator
+                    for rp in lego.model.rp:
+                        for k in lego.model.k:
+                            lego.model.vCommit[rp, k, g].domain = pyo.PercentFraction
+                            lego.model.vStartup[rp, k, g].domain = pyo.PercentFraction
+                            lego.model.vShutdown[rp, k, g].domain = pyo.PercentFraction
+
+                    # Deactivate pushing constraints for this generator
+                    if lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov":
+                        for constraint in lego.model.eMarkovPushStartup.values():
+                            if g in str(constraint.expr):
+                                constraint.deactivate()
+                        for constraint in lego.model.eMarkovPushShutdown.values():
+                            if g in str(constraint.expr):
+                                constraint.deactivate()
+
         printer.information(f"Relaxing {count_relaxed} thermal generators took {time.time() - start_time:.2f} seconds")
 
         unit_commitment_result_file = unit_commitment_result_file_template.replace(".xlsx", f"-relaxed{count_relaxed}.xlsx")
