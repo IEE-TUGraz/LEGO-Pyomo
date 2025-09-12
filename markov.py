@@ -3,6 +3,7 @@ import logging
 import os
 import time
 import typing
+from collections import defaultdict
 
 import pandas as pd
 import pyomo.environ as pyo
@@ -279,8 +280,14 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
             "vShutdown": sum(model.vShutdown[rp, k, g].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vShutdown[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.thermalGenerators),
             "vPNS": sum(model.vPNS[rp, k, i].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "vEPS": sum(model.vEPS[rp, k, i].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
+            "vGenInvest": sum(model.vGenInvest[g].value if model.vGenInvest[g].value is not None else 0 for g in model.g),
             "model": model
         }
+        ddict = defaultdict(int)
+        for g, tec in model.gtec:
+            ddict[f"vGenInvest[{tec}]"] += model.vGenInvest[g].value if model.vGenInvest[g].value is not None else 0
+        for k, v in ddict.items():
+            entry[k] = v
         results.append(entry)
 
         # Write entry to solutions logfile
@@ -352,6 +359,7 @@ if __name__ == "__main__":
             if args.debug:
                 raise e
             else:
+                printer.console.print_exception()
                 printer.error(f"Continuing with next case study")
 
     printer.success("Done")

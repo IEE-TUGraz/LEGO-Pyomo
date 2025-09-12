@@ -14,6 +14,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.thermalGenerators = pyo.Set(doc='Thermal Generators', initialize=cs.dPower_ThermalGen.index.tolist())
     LEGO.addToSet(model, "g", model.thermalGenerators)
     LEGO.addToSet(model, "gi", cs.dPower_ThermalGen.reset_index().set_index(['g', 'i']).index)
+    LEGO.addToSet(model, "tec", cs.dPower_ThermalGen['tec'].unique().tolist())
+    LEGO.addToSet(model, "gtec", cs.dPower_ThermalGen.reset_index().set_index(['g', 'tec']).index)
 
     # Parameters
     LEGO.addToParameter(model, "pOMVarCost", cs.dPower_ThermalGen['pSlopeVarCostEUR'])

@@ -25,6 +25,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     model.g = pyo.Set(doc='Generators')
     model.gi = pyo.Set(doc='Generator g connected to bus i', within=model.g * model.i)
+    model.tec = pyo.Set(doc='All generator technologies')
+    model.gtec = pyo.Set(doc='Technology of generator g', within=model.g * model.tec)
 
     model.p = pyo.Set(doc='Periods', initialize=cs.dPower_Hindex.index.get_level_values('p').unique().tolist())
     model.rp = pyo.Set(doc='Representative periods', initialize=cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
@@ -129,7 +131,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         model.vLineInvest[i, j, c].fix(0)  # Set existing lines to not investable
     first_stage_variables += [model.vLineInvest]
 
-    model.vGenInvest = pyo.Var(model.g, doc="Integer generation investment", bounds=lambda model, g: (0, model.pMaxInvest[g] * model.pEnabInv[g]))
+    model.vGenInvest = pyo.Var(model.g, doc="Integer generation investment", bounds=lambda model, g: (0, model.pMaxInvest[g] * model.pEnabInv[g]), domain=pyo.NonNegativeIntegers)
     first_stage_variables += [model.vGenInvest]
 
     model.vPNS = pyo.Var(model.rp, model.k, model.i, doc='Slack variable power not served', bounds=lambda model, rp, k, i: (0, model.pDemandP[rp, k, i]))

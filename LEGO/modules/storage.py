@@ -17,6 +17,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     LEGO.addToSet(model, "g", storageUnits)
     LEGO.addToSet(model, "gi", cs.dPower_Storage.reset_index().set_index(['g', 'i']).index)  # Note: Add gi after g since it depends on g
     model.longDurationStorageUnits = pyo.Set(doc='Long-duration storage units (subset of storage units)', initialize=cs.dPower_Storage[cs.dPower_Storage['IsLDS'] == 1].index.tolist(), within=model.storageUnits)
+    LEGO.addToSet(model, "tec", cs.dPower_Storage['tec'].unique().tolist())
+    LEGO.addToSet(model, "gtec", cs.dPower_Storage.reset_index().set_index(['g', 'tec']).index)
 
     # Parameters
     model.pEnableChDisPower = cs.dPower_Parameters['pEnableChDisPower']  # Avoid simultaneous charging and discharging

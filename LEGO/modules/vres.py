@@ -18,6 +18,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vresGenerators = pyo.Set(doc='Variable renewable energy sources', initialize=cs.dPower_VRES.index.tolist())
     LEGO.addToSet(model, "g", model.vresGenerators)
     LEGO.addToSet(model, "gi", cs.dPower_VRES.reset_index().set_index(['g', 'i']).index)
+    LEGO.addToSet(model, "tec", cs.dPower_VRES['tec'].unique().tolist())
+    LEGO.addToSet(model, "gtec", cs.dPower_VRES.reset_index().set_index(['g', 'tec']).index)
 
     # Parameters
     LEGO.addToParameter(model, "pOMVarCost", cs.dPower_VRES['OMVarCost'])
