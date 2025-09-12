@@ -26,7 +26,8 @@ pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
 
-def execute_case_studies(case_study_path: str, unit_commitment_result_file_template: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False, calculate_regret: bool = False, write_unit_commitment_result_file: bool = True, step_size: int = 0) -> typing.List[str]:
+def execute_case_studies(case_study_path: str, unit_commitment_result_file_template: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False,
+                         calculate_regret: bool = False, write_unit_commitment_result_file: bool = True, step_size: int = 0, skip_truth: bool = False) -> typing.List[str]:
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
@@ -55,13 +56,21 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
     cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "markov"
     cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "markov"
     cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"] = "markov"
+
+    cs_markov_light = cs_notEnforced.copy()
+    cs_markov_light.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "markov"
+    cs_markov_light.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "markov"
+    cs_markov_light.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"] = "markov"
     printer.information(f"Creating varied case studies took {time.time() - start_time:.2f} seconds")
 
     # Create "truth" case study for comparison
-    start_time = time.time()
-    printer.information(f"Creating truth case study (full-hourly)")
-    cs_truth = cs.to_full_hourly_model(inplace=False)  # Create a full hourly model (which copies from notEnforced)
-    printer.information(f"Creating truth case study (full-hourly) took {time.time() - start_time:.2f} seconds")
+    if skip_truth:
+        printer.information(f"Skipping truth case study as requested")
+    else:
+        start_time = time.time()
+        printer.information(f"Creating truth case study (full-hourly)")
+        cs_truth = cs.to_full_hourly_model(inplace=False)  # Create a full hourly model (which copies from notEnforced)
+        printer.information(f"Creating truth case study (full-hourly) took {time.time() - start_time:.2f} seconds")
 
     thermalGenerators = cs.dPower_ThermalGen.index.tolist()
 
@@ -75,7 +84,9 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
             count_relaxed = 0
         start_time = time.time()
         printer.information(f"Building the LEGO models for adjustments")  # Note this is actually faster (1.5-2x) than copying already built models to re-use them
-        lego_models = {"NoEnf.": LEGO(cs_notEnforced), "Cyclic": LEGO(cs_cyclic), "Markov": LEGO(cs_markov), "Truth ": LEGO(cs_truth)}
+        lego_models = {"NoEnf.": LEGO(cs_notEnforced), "Cyclic": LEGO(cs_cyclic), "Markli": LEGO(cs_markov_light), "Markov": LEGO(cs_markov)}
+        if not skip_truth:
+            lego_models["Truth "] = LEGO(cs_truth)
         for name, lego in lego_models.items():
             _, build_time = lego.build_model()
             printer.information(f"Building model for case study '{name}' took {build_time:.2f} seconds")
@@ -113,6 +124,9 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
                         for constraint in lego.model.eMarkovPushShutdown.values():
                             if g in str(constraint.expr):
                                 constraint.deactivate()
+                if case_name == "Markli":  # Deactivate all pushing constraints for Markli
+                    lego.model.eMarkovPushStartup.deactivate()
+                    lego.model.eMarkovPushShutdown.deactivate()
 
         printer.information(f"Relaxing {count_relaxed} thermal generators took {time.time() - start_time:.2f} seconds")
 
@@ -310,6 +324,7 @@ if __name__ == "__main__":
     parser.add_argument("--calculate-regret", action="store_true", help="Calculate regret by re-solving the truth model with fixed unit commitment from the other models (can take a while)")
     parser.add_argument("--dont-write-unit-commitment-result-file", action="store_true", help="Write unit commitment result file (can take a while)")
     parser.add_argument("--relax-step-size", type=int, default=0, help="Step size for relaxing unit commitment variables (default: 0 = no relaxation, all binary)")
+    parser.add_argument("--skip-truth", action="store_true", help="Skip solving the truth model")
     args = parser.parse_args()
 
     for folder in args.caseStudyFolder.split(","):
@@ -323,7 +338,7 @@ if __name__ == "__main__":
 
             unit_commitment_result_file_template = f"unitCommitmentResult-{folder_name}.xlsx"
             printer.information(f"Unit commitment result file template: '{unit_commitment_result_file_template}'")
-            unit_commitment_result_files = execute_case_studies(folder, unit_commitment_result_file_template, args.no_sqlite, args.no_excel, args.calculate_regret, not args.dont_write_unit_commitment_result_file, args.relax_step_size)
+            unit_commitment_result_files = execute_case_studies(folder, unit_commitment_result_file_template, args.no_sqlite, args.no_excel, args.calculate_regret, not args.dont_write_unit_commitment_result_file, args.relax_step_size, args.skip_truth)
 
             if args.plot:
                 printer.information(f"Plotting unit commitment(s): {unit_commitment_result_files}")

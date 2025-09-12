@@ -199,13 +199,6 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     model.eMinDownTime = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Minimum down time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=lambda m, rp, k, t: eMinDownTime_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
 
     if cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov":
-        # Y ≤ z2 + z1                       # Upper bound
-        # Y ≥ z2                            # When z2=1: Y ≥ 1, so Y=1
-        # Y ≤ X + (1-z1)                    # When z1=1: Y ≤ X
-        # Y ≥ X - (1-z1)                    # When z1=1: Y ≥ X, so Y=X
-        # Y ≤ z1 + z2                       # When both=0: Y ≤ 0, so Y=0
-        # z1 + z2 ≤ 1
-        # z1, z2 ∈ {0,1}
         model.eMarkovPushStartup = pyo.ConstraintList(doc="Markov constraint to force vStartup to be either 0 or the maximum it can be due to MinDownTime")
         model.eMarkovPushShutdown = pyo.ConstraintList(doc="Markov constraint to force vShutdown to be either 0 or the maximum it can be due to MinUpTime")
 
