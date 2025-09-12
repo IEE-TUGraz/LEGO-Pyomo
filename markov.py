@@ -107,26 +107,27 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
 
         printer.information(f"Relaxing {count_relaxed} thermal generators: {[g for g in thermalGenerators if thermalGeneratorRelaxed[g]]}")
         for case_name, lego in lego_models.items():
+            # Relax unit commitment variables for selected generators
             for g in lego.model.thermalGenerators:
                 if thermalGeneratorRelaxed[g]:
-                    # Relax unit commitment variables for this generator
                     for rp in lego.model.rp:
                         for k in lego.model.k:
                             lego.model.vCommit[rp, k, g].domain = pyo.PercentFraction
                             lego.model.vStartup[rp, k, g].domain = pyo.PercentFraction
                             lego.model.vShutdown[rp, k, g].domain = pyo.PercentFraction
 
-                    # Deactivate pushing constraints for this generator
-                    if lego.cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov":
-                        for constraint in lego.model.eMarkovPushStartup.values():
-                            if g in str(constraint.expr):
-                                constraint.deactivate()
-                        for constraint in lego.model.eMarkovPushShutdown.values():
-                            if g in str(constraint.expr):
-                                constraint.deactivate()
-                if case_name == "Markli":  # Deactivate all pushing constraints for Markli
-                    lego.model.eMarkovPushStartup.deactivate()
-                    lego.model.eMarkovPushShutdown.deactivate()
+            # Deactivate Markov push constraints for relaxed generators (or for all generators in case of Markov-light)
+            if case_name == "Markli":
+                lego.model.ePushMarkov.deactivate()
+            elif case_name == "Markov":
+                for g in lego.model.thermalGenerators:
+                    if thermalGeneratorRelaxed[g]:
+                        for rp in lego.model.rp:
+                            for k in lego.model.k:
+                                if lego.model.k.ord(k) > max(lego.model.pMinDownTime[g], lego.model.pMinUpTime[g]):
+                                    break  # No need to continue, since constraints are only required for the first max(MinUpTime, MinDownTime) timesteps
+                                for i in lego.model.pushMarkovCounter:
+                                    lego.model.ePushMarkov[rp, k, g, i].deactivate()
 
         printer.information(f"Relaxing {count_relaxed} thermal generators took {time.time() - start_time:.2f} seconds")
 
