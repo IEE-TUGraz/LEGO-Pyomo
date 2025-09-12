@@ -121,7 +121,7 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
                 lego.model.ePushMarkov.deactivate()
             elif case_name == "Markov":
                 for g in lego.model.thermalGenerators:
-                    if thermalGeneratorRelaxed[g]:
+                    if thermalGeneratorRelaxed[g] and not (lego.model.pMinDownTime[g] == 1 and lego.model.pMinUpTime[g] == 1):  # If the generator is relaxed and not both MinDownTime and MinUpTime are 1
                         for rp in lego.model.rp:
                             for k in lego.model.k:
                                 if lego.model.k.ord(k) > max(lego.model.pMinDownTime[g], lego.model.pMinUpTime[g]):
@@ -132,7 +132,7 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
         printer.information(f"Relaxing {count_relaxed} thermal generators took {time.time() - start_time:.2f} seconds")
 
         unit_commitment_result_file = unit_commitment_result_file_template.replace(".xlsx", f"-relaxed{count_relaxed}.xlsx")
-        execute_case_study(lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file, no_sqlite, no_excel, calculate_regret, write_unit_commitment_result_file)
+        execute_case_study(lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file, no_sqlite, no_excel, calculate_regret, write_unit_commitment_result_file, skip_truth)
         unit_commitment_result_files.append(unit_commitment_result_file)
 
         if step_size == 0:
@@ -140,13 +140,14 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
     return unit_commitment_result_files
 
 
-def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit_commitment_result_file: str, no_sqlite: bool, no_excel: bool, calculate_regret: bool, write_unit_commitment_result_file: bool):
+def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit_commitment_result_file: str, no_sqlite: bool, no_excel: bool, calculate_regret: bool, write_unit_commitment_result_file: bool, skip_truth: bool):
     ########################################################################################################################
     # Evaluation
     ########################################################################################################################
     results = []
 
-    truth_lego = lego_models["Truth "]
+    if not skip_truth:
+        truth_lego = lego_models["Truth "]
 
     df = pd.DataFrame()
     for edgeHandlingType, lego in lego_models.items():
@@ -209,7 +210,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
                                  "vEPS": sum([pyo.value(model.vEPS[i[0], i[1], node]) for node in model.i])}) for i in list(model.vCommit)]:
                 df = pd.concat([df, x], axis=1)
 
-            if calculate_regret and edgeHandlingType != "Truth ":
+            if calculate_regret and edgeHandlingType != "Truth " and not skip_truth:
                 regret_lego = truth_lego.copy()
 
                 add_UnitCommitmentSlack_And_FixVariables(regret_lego, model, lego.cs.dPower_Hindex, lego.cs.dPower_ThermalGen, lego.cs.dPower_Parameters["pENSCost"])
