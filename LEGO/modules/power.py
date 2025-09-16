@@ -205,12 +205,18 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         
         model.pPmaxLink = pyo.Param(model.links, initialize=cs.dPower_Links['pPmaxLink'], doc='Max Power between HV and LV Node') 
         model.pExpCost = pyo.Param(model.links, initialize=cs.dPower_Links['pExpCost'], doc='Costs of an Link Expansion')
+        model.pExpTrafoP = pyo.Param(model.links, initialize=cs.dPower_Links['pExpTrafoP'], doc='Additional Link Power with one additional Trafo')
 
         model.vLinkExpPower = pyo.Var(model.links, doc='Power Expansion of Link', domain=pyo.Binary) 
         first_stage_variables += [model.vLinkExpPower]
 
         model.vLinkP = pyo.Var(model.rp, model.k, model.links, doc='Power flow from bus HV to LV', bounds=(None, None))
         second_stage_variables += [model.vLinkP]
+
+        #Link Trafo
+        if cs.dPower_Parameters["pEnableLinksTrafo"]:
+            model.vNonNegativeInteger = pyo.Var(model.links,domain=pyo.NonNegativeIntegers,doc='Limit for N * Trafo')
+            second_stage_variables += [model.vNonNegativeInteger]
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
@@ -422,7 +428,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         def eDC_PositivLinkExpansion_rule(model, i, j, c): 
             return model.vLinkExpPower[i, j, c]  >= 0
         
-        model.eDC_PositiveLinkExpansion = pyo.Constraint(model.links, doc="Power Exansion must be positiv", rule=eDC_PositivLinkExpansion_rule)
+        model.eDC_PositiveLinkExpansion = pyo.Constraint(model.links, doc="Power Expansion must be positiv", rule=eDC_PositivLinkExpansion_rule)
         
         def eDC_posLinkExpansion_rule(model, rp, k, i, j, c):
             return model.vLinkP[rp, k, i, j, c]  <=  model.pPmaxLink[i, j, c] + model.vLinkExpPower[i, j, c]
@@ -433,6 +439,15 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             return model.vLinkP[rp, k, i, j, c]  >=  -(model.pPmaxLink[i, j, c] + model.vLinkExpPower[i, j, c])
 
         model.eDC_negLinkExpansion = pyo.Constraint(model.rp, model.k, model.links, doc="Link Expansion Calculation with negative Sign", rule=eDC_negLinkExpansion_rule)
+
+        #Link Trafo
+        if cs.dPower_Parameters["pEnableLinksTrafo"]:
+            def eDC_LinkTrafo_rule(model, i, j, c): 
+                return model.vLinkExpPower[i, j, c]  == model.vNonNegativeInteger[i, j, c] * model.pExpTrafoP[i, j, c]
+    
+            model.eDC_LinkTrafo = pyo.Constraint(model.links, doc="Power Expansion must be N times Trafo Power", rule=eDC_LinkTrafo_rule)
+    
+
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
                              sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
