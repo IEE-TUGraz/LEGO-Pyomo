@@ -207,7 +207,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         model.pExpCost = pyo.Param(model.links, initialize=cs.dPower_Links['pExpCost'], doc='Costs of an Link Expansion')
         model.pExpTrafoP = pyo.Param(model.links, initialize=cs.dPower_Links['pExpTrafoP'], doc='Additional Link Power with one additional Trafo')
 
-        model.vLinkExpPower = pyo.Var(model.links, doc='Power Expansion of Link', domain=pyo.Binary) 
+        model.vLinkExpPower = pyo.Var(model.links, doc='Power Expansion of Link') 
         first_stage_variables += [model.vLinkExpPower]
 
         model.vLinkP = pyo.Var(model.rp, model.k, model.links, doc='Power flow from bus HV to LV', bounds=(None, None))
