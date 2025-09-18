@@ -57,8 +57,8 @@ def test_deterministicVsExtensiveWithTwoEqualScenarios(tmp_path):
         ("Power_Network", f"{tmp_path_scenarioData}/Power_Network.xlsx", ExcelReader.get_dPower_Network, ew.write_dPower_Network),
         ("Power_Demand", f"{tmp_path_scenarioData}/Power_Demand.xlsx", ExcelReader.get_dPower_Demand, ew.write_dPower_Demand),
         ("Power_ThermalGen", f"{tmp_path_scenarioData}/Power_ThermalGen.xlsx", ExcelReader.get_dPower_ThermalGen, ew.write_dPower_ThermalGen),
-        ("Power_VRES", f"{tmp_path_scenarioData}/Power_VRES.xlsx", ExcelReader.get_dPower_VRES, ew.write_VRES),
-        ("Power_VRESProfiles", f"{tmp_path_scenarioData}/Power_VRESProfiles.xlsx", ExcelReader.get_dPower_VRESProfiles, ew.write_VRESProfiles),
+        ("Power_VRES", f"{tmp_path_scenarioData}/Power_VRES.xlsx", ExcelReader.get_dPower_VRES, ew.write_Power_VRES),
+        ("Power_VRESProfiles", f"{tmp_path_scenarioData}/Power_VRESProfiles.xlsx", ExcelReader.get_dPower_VRESProfiles, ew.write_Power_VRESProfiles),
     ]
 
     for excel_definition_id, file_path, read, write in combinations:
