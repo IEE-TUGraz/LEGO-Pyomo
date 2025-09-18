@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import shutil
 import time
 import typing
 from collections import defaultdict
@@ -10,8 +11,9 @@ import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
-from InOutModule import SQLiteWriter, ExcelWriter
+from InOutModule import SQLiteWriter, ExcelWriter, Utilities
 from InOutModule.CaseStudy import CaseStudy
+from InOutModule.ExcelWriter import ExcelWriter
 from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO
 from LEGO.LEGOUtilities import plot_unit_commitment, add_UnitCommitmentSlack_And_FixVariables, getUnitCommitmentSlackCost
@@ -334,26 +336,47 @@ if __name__ == "__main__":
     parser.add_argument("--dont-write-unit-commitment-result-file", action="store_true", help="Write unit commitment result file (can take a while)")
     parser.add_argument("--relax-step-size", type=int, default=0, help="Step size for relaxing unit commitment variables (default: 0 = no relaxation, all binary)")
     parser.add_argument("--skip-truth", action="store_true", help="Skip solving the truth model")
+    parser.add_argument("--clusters", type=int, default=1, help="Number of clusters (default: 1, i.e., no clustering)")
+    parser.add_argument("--cluster-stepsize", type=int, default=0, help="If in-/decreasing number of clusters should be used (default: 0 = no in-/decreasing)")
+    parser.add_argument("--cluster-steps", type=int, default=10, help="Number of steps for in-/decreasing number of clusters (default: 10)")
     args = parser.parse_args()
+
+    ew = ExcelWriter()
 
     for folder in args.caseStudyFolder.split(","):
         try:
             if not folder.endswith("/"):
                 folder += "/"
             folder_name = os.path.basename(os.path.normpath(folder))
-            printer.set_logfile(f"markov-{folder_name}.log")
-            printer.information(f"Loading case study from '{folder}'")
-            printer.information(f"Logfile: '{printer.get_logfile()}'")
 
-            unit_commitment_result_file_template = f"unitCommitmentResult-{folder_name}.xlsx"
-            printer.information(f"Unit commitment result file template: '{unit_commitment_result_file_template}'")
-            unit_commitment_result_files = execute_case_studies(folder, unit_commitment_result_file_template, args.no_sqlite, args.no_excel, args.calculate_regret, not args.dont_write_unit_commitment_result_file, args.relax_step_size, args.skip_truth)
+            clusters = list(range(args.clusters, args.clusters + args.cluster_steps * args.cluster_stepsize + 1, args.cluster_stepsize))
+            for cluster in clusters:
+                cluster_folder = folder
+                if cluster > 1:
+                    cluster_folder = cluster_folder[:-1] + f"-{cluster} clusters/"
+                    shutil.copytree(folder, cluster_folder)  # Copy original data to new folder
 
-            if args.plot:
-                printer.information(f"Plotting unit commitment(s): {unit_commitment_result_files}")
-                for unit_commitment_result_file in unit_commitment_result_files:
-                    printer.information(f"Plotting '{unit_commitment_result_file}'")
-                    plot_unit_commitment(unit_commitment_result_file, folder, 6 * 24, 1, not args.no_regret_plot)
+                    cs = CaseStudy(cluster_folder, do_not_scale_units=True)
+                    cs_clustered = Utilities.apply_kmedoids_aggregation(cs, cluster)
+                    ew.write_caseStudy(cs_clustered, cluster_folder)
+
+                    printer.set_logfile(f"markov-{folder_name}-{cluster}clusters.log")
+                    unit_commitment_result_file_template = f"unitCommitmentResult-{folder_name}-{cluster}clusters.xlsx"
+                else:
+                    printer.set_logfile(f"markov-{folder_name}.log")
+                    unit_commitment_result_file_template = f"unitCommitmentResult-{folder_name}.xlsx"
+
+                printer.information(f"Loading case study from '{cluster_folder}'")
+                printer.information(f"Logfile: '{printer.get_logfile()}'")
+
+                printer.information(f"Unit commitment result file template: '{unit_commitment_result_file_template}'")
+                unit_commitment_result_files = execute_case_studies(cluster_folder, unit_commitment_result_file_template, args.no_sqlite, args.no_excel, args.calculate_regret, not args.dont_write_unit_commitment_result_file, args.relax_step_size, args.skip_truth)
+
+                if args.plot:
+                    printer.information(f"Plotting unit commitment(s): {unit_commitment_result_files}")
+                    for unit_commitment_result_file in unit_commitment_result_files:
+                        printer.information(f"Plotting '{unit_commitment_result_file}'")
+                        plot_unit_commitment(unit_commitment_result_file, cluster_folder, 6 * 24, 1, not args.no_regret_plot)
         except Exception as e:
             printer.error(f"Exception while executing case study '{folder}': {e}")
             if args.debug:
