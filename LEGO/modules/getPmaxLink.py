@@ -2,7 +2,7 @@ import pandas as pd
 import os
 
 # Set the data path relative to current working directory
-data_path = os.path.join("data", "example")
+data_path = os.path.join("data", "Szenario_Trafo")
 
 # 1. Load Power_Demand.xlsx
 demand_raw = pd.read_excel(os.path.join(data_path, "Power_Demand.xlsx"), header=None)
