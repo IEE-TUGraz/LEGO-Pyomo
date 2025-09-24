@@ -1,5 +1,6 @@
 import argparse
 import logging
+import math
 import os
 import shutil
 import time
@@ -30,7 +31,7 @@ pyomo_logger.setLevel(logging.INFO)
 
 
 def execute_case_studies(case_study_path: str, unit_commitment_result_file_template: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False,
-                         calculate_regret: bool = False, write_unit_commitment_result_file: bool = True, step_size: int = 0, skip_truth: bool = False) -> typing.List[str]:
+                         calculate_regret: bool = False, write_unit_commitment_result_file: bool = True, relax_percentage: float = 0, skip_truth: bool = False) -> typing.List[str]:
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
@@ -75,40 +76,33 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
         cs_truth = cs.to_full_hourly_model(inplace=False)  # Create a full hourly model (which copies from notEnforced)
         printer.information(f"Creating truth case study (full-hourly) took {time.time() - start_time:.2f} seconds")
 
-    thermalGenerators = cs.dPower_ThermalGen.index.tolist()
+    start_time = time.time()
+    printer.information(f"Building the LEGO models for adjustments")  # Note this is actually faster (1.5-2x) than copying already built models to re-use them
+    lego_models = {"NoEnf.": LEGO(cs_notEnforced), "Cyclic": LEGO(cs_cyclic), "Markli": LEGO(cs_markov_light), "Markov": LEGO(cs_markov)}
+    if not skip_truth:
+        lego_models["Truth "] = LEGO(cs_truth)
+    for name, lego in lego_models.items():
+        _, build_time = lego.build_model()
+        printer.information(f"Building model for case study '{name}' took {build_time:.2f} seconds")
+    printer.information(f"Building the LEGO models took {time.time() - start_time:.2f} seconds overall")
 
-    if step_size == 0:
-        printer.information(f"Not relaxing any unit commitment variables, all {len(thermalGenerators)} thermal generators stay binary")
+    if relax_percentage == 0:
+        printer.information(f"Not relaxing any unit commitment variables, all thermal generators stay binary")
     else:
-        printer.information(f"Relaxing with step size: {step_size}")
-
-    for count_relaxed in range(len(thermalGenerators), -1, -step_size if step_size > 0 else -1):
-        if step_size == 0:
-            count_relaxed = 0
+        thermalGenerators = cs.dPower_ThermalGen.copy()
         start_time = time.time()
-        printer.information(f"Building the LEGO models for adjustments")  # Note this is actually faster (1.5-2x) than copying already built models to re-use them
-        lego_models = {"NoEnf.": LEGO(cs_notEnforced), "Cyclic": LEGO(cs_cyclic), "Markli": LEGO(cs_markov_light), "Markov": LEGO(cs_markov)}
-        if not skip_truth:
-            lego_models["Truth "] = LEGO(cs_truth)
-        for name, lego in lego_models.items():
-            _, build_time = lego.build_model()
-            printer.information(f"Building model for case study '{name}' took {build_time:.2f} seconds")
-        printer.information(f"Building the LEGO models took {time.time() - start_time:.2f} seconds overall")
+        printer.information(f"Relaxing {relax_percentage * 100:.1f}% of unit commitment variables for thermal generators")
+        count_relaxed = math.ceil(len(thermalGenerators.index) * relax_percentage)
 
-        start_time = time.time()
-        printer.information(f"Relaxing {count_relaxed} thermal generators, keeping {len(thermalGenerators) - count_relaxed} binary")
-        thermalGeneratorRelaxed = {g: False for g in thermalGenerators}
-        offset = 0
-        for i in range(count_relaxed):
-            if all(thermalGeneratorRelaxed[g] == True for g in thermalGenerators):
-                break  # Safety check if all generators are already relaxed
-            index = (i * (len(thermalGenerators) // step_size) + offset) % len(thermalGenerators)
-            while thermalGeneratorRelaxed[thermalGenerators[index]]:  # Skip already relaxed generators
-                index = (index + 1) % len(thermalGenerators)
-                offset += 1
-            thermalGeneratorRelaxed[thermalGenerators[index]] = True
+        printer.information(f"Relaxing {count_relaxed} thermal generator(s), keeping {len(thermalGenerators.index) - count_relaxed} binary")
+        thermalGenerators["MinUpDownTime-Sum"] = thermalGenerators["MinUpTime"] + thermalGenerators["MinDownTime"]
+        thermalGenerators.sort_values(by=["MinUpDownTime-Sum"], inplace=True)
 
-        printer.information(f"Relaxing {count_relaxed} thermal generators: {[g for g in thermalGenerators if thermalGeneratorRelaxed[g]]}")
+        thermalGeneratorRelaxed = {}
+        for i, t in enumerate(thermalGenerators.index):
+            thermalGeneratorRelaxed[t] = True if i < count_relaxed else False
+
+        printer.information(f"Relaxing {count_relaxed} thermal generators: {[g for g in thermalGenerators.index if thermalGeneratorRelaxed[g]]}")
         for case_name, lego in lego_models.items():
             # Relax unit commitment variables for selected generators
             for g in lego.model.thermalGenerators:
@@ -138,8 +132,6 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
         execute_case_study(lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file, no_sqlite, no_excel, calculate_regret, write_unit_commitment_result_file, skip_truth)
         unit_commitment_result_files.append(unit_commitment_result_file)
 
-        if step_size == 0:
-            break
     return unit_commitment_result_files
 
 
@@ -334,7 +326,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-regret-plot", action="store_true", help="Do not plot regret results")
     parser.add_argument("--calculate-regret", action="store_true", help="Calculate regret by re-solving the truth model with fixed unit commitment from the other models (can take a while)")
     parser.add_argument("--dont-write-unit-commitment-result-file", action="store_true", help="Write unit commitment result file (can take a while)")
-    parser.add_argument("--relax-step-size", type=int, default=0, help="Step size for relaxing unit commitment variables (default: 0 = no relaxation, all binary)")
+    parser.add_argument("--relax-percentage", type=float, default=0, help="Percentage of thermal-generators to be relaxed (default: 0 = no relaxation, all binary)")
     parser.add_argument("--skip-truth", action="store_true", help="Skip solving the truth model")
     parser.add_argument("--clusters", type=int, default=1, help="Number of clusters (default: 1, i.e., no clustering)")
     parser.add_argument("--cluster-stepsize", type=int, default=0, help="If in-/decreasing number of clusters should be used (default: 0 = no in-/decreasing)")
@@ -354,7 +346,7 @@ if __name__ == "__main__":
                 cluster_folder = folder
                 if cluster > 1:
                     cluster_folder = cluster_folder[:-1] + f"-{cluster} clusters/"
-                    shutil.copytree(folder, cluster_folder)  # Copy original data to new folder
+                    shutil.copytree(folder, cluster_folder, dirs_exist_ok=True)  # Copy original data to new folder
 
                     cs = CaseStudy(cluster_folder, do_not_scale_units=True)
                     cs_clustered = Utilities.apply_kmedoids_aggregation(cs, cluster)
@@ -370,7 +362,7 @@ if __name__ == "__main__":
                 printer.information(f"Logfile: '{printer.get_logfile()}'")
 
                 printer.information(f"Unit commitment result file template: '{unit_commitment_result_file_template}'")
-                unit_commitment_result_files = execute_case_studies(cluster_folder, unit_commitment_result_file_template, args.no_sqlite, args.no_excel, args.calculate_regret, not args.dont_write_unit_commitment_result_file, args.relax_step_size, args.skip_truth)
+                unit_commitment_result_files = execute_case_studies(cluster_folder, unit_commitment_result_file_template, args.no_sqlite, args.no_excel, args.calculate_regret, not args.dont_write_unit_commitment_result_file, args.relax_percentage, args.skip_truth)
 
                 if args.plot:
                     printer.information(f"Plotting unit commitment(s): {unit_commitment_result_files}")
