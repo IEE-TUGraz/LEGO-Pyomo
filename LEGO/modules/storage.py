@@ -29,7 +29,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     for g in model.longDurationStorageUnits:
         if g in cs.dPower_Inflows.index.get_level_values("g"):
             dInflows.append(cs.dPower_Inflows.loc[(slice(None), slice(None), g), 'value'])
-    dInflows = pd.concat(dInflows, axis=0)
+    #dInflows = pd.concat(dInflows, axis=0)
 
     model.pLDSInflows = pyo.Param(model.rp, model.k, model.longDurationStorageUnits, initialize=dInflows, doc="Inflows of long-duration storage units [power/timestep]", default=0)
 

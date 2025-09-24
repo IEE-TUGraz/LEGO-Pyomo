@@ -454,8 +454,8 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
                              sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
-    second_stage_objective = (sum(sum(model.vPNS[rp, k, :]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost for rp in model.rp for k in model.k) +  # Power not served
-                              sum(sum(model.vEPS[rp, k, :]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost * 2 for rp in model.rp for k in model.k) +  # Excess power served
+    second_stage_objective = (sum(model.vPNS[rp, k, i] * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost  +  # Power not served
+                              model.vEPS[rp, k, i] * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pENSCost * 2 for rp in model.rp for k in model.k for i in model.i) +  # Excess power served
                               sum(model.vGenP[rp, k, g] * model.pOMVarCost[g] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for g in model.g))  # Production cost of generators
 
     # Adjust objective and return first_stage_objective expression

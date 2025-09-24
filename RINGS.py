@@ -43,7 +43,7 @@ args = parser.parse_args()
 df_case_studies = pd.DataFrame(columns=["invervall","solvetime","objval","totalPVgen","totalCurtailment","totalImport", "totalDemand"])
 
 # set values for the time intervals
-df_case_studies["invervall"] = [1]
+df_case_studies["invervall"] = [60]
 
 for index, row in df_case_studies.iterrows():
     # Load case study
@@ -147,7 +147,7 @@ for index, row in df_case_studies.iterrows():
         printer.warning(f"Excess power supplied value {total_EPS} exceeds threshold {eps}")
 
     #SQLiteWriter.model_to_sqlite(model, "model.sqlite")
-    ExcelWriter.model_to_excel(model, os.path.join("data","rings_base_example","results","results_intv" + str(rings_settings["aggregation"]["intervall"]) + ".xlsx"))
+    ExcelWriter.model_to_excel(model, os.path.join(args.caseStudyDirectory, "results", "results_" + str(rings_settings["aggregation"]["intervall"]) + ".xlsx"))
     #model.write("model.mps", io_options={'labeler': NameLabeler()})
 
-df_case_studies.to_excel("data/rings_base_example/results/case_studies.xlsx")
+df_case_studies.to_excel("data/rings_base_invest/results/case_studies.xlsx")
