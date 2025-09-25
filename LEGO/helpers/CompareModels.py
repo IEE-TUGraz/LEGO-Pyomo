@@ -138,7 +138,7 @@ def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | p
                 max_gams_runtime_in_seconds = 60
                 printer.warning(f"Using default maximum GAMS runtime: {max_gams_runtime_in_seconds} seconds")
 
-            # If data_path is relative path, add "../" to it
+            # If data_path is relative path, add relative part to front 
             if not pathlib.Path(data_path).is_absolute():
                 data_path = pathlib.Path("../../../") / data_path
 

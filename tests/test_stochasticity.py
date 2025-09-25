@@ -5,10 +5,10 @@ import numpy as np
 import pandas as pd
 from openpyxl import load_workbook
 
-from LEGO.helpers.CompareModels import compareModels, ModelTypeForComparison
 from InOutModule import ExcelReader
 from InOutModule.ExcelWriter import ExcelWriter
 from InOutModule.printer import Printer
+from LEGO.helpers.CompareModels import compareModels, ModelTypeForComparison
 
 printer = Printer.getInstance()
 
@@ -50,15 +50,16 @@ def test_deterministicVsExtensiveWithTwoEqualScenarios(tmp_path):
     ew = ExcelWriter("InOutModule/TableDefinitions.xml")
 
     combinations = [
-        ("Power_Hindex", f"{tmp_path_scenarioData}/Power_Hindex.xlsx", ExcelReader.get_dPower_Hindex, ew.write_dPower_Hindex),
-        ("Power_WeightsRP", f"{tmp_path_scenarioData}/Power_WeightsRP.xlsx", ExcelReader.get_dPower_WeightsRP, ew.write_dPower_WeightsRP),
-        ("Power_WeightsK", f"{tmp_path_scenarioData}/Power_WeightsK.xlsx", ExcelReader.get_dPower_WeightsK, ew.write_dPower_WeightsK),
-        ("Power_BusInfo", f"{tmp_path_scenarioData}/Power_BusInfo.xlsx", ExcelReader.get_dPower_BusInfo, ew.write_dPower_BusInfo),
-        ("Power_Network", f"{tmp_path_scenarioData}/Power_Network.xlsx", ExcelReader.get_dPower_Network, ew.write_dPower_Network),
-        ("Power_Demand", f"{tmp_path_scenarioData}/Power_Demand.xlsx", ExcelReader.get_dPower_Demand, ew.write_dPower_Demand),
-        ("Power_ThermalGen", f"{tmp_path_scenarioData}/Power_ThermalGen.xlsx", ExcelReader.get_dPower_ThermalGen, ew.write_dPower_ThermalGen),
-        ("Power_VRES", f"{tmp_path_scenarioData}/Power_VRES.xlsx", ExcelReader.get_dPower_VRES, ew.write_VRES),
-        ("Power_VRESProfiles", f"{tmp_path_scenarioData}/Power_VRESProfiles.xlsx", ExcelReader.get_dPower_VRESProfiles, ew.write_VRESProfiles),
+        ("Power_Hindex", f"{tmp_path_scenarioData}/Power_Hindex.xlsx", ExcelReader.get_Power_Hindex, ew.write_Power_Hindex),
+        ("Power_WeightsRP", f"{tmp_path_scenarioData}/Power_WeightsRP.xlsx", ExcelReader.get_Power_WeightsRP, ew.write_Power_WeightsRP),
+        ("Power_WeightsK", f"{tmp_path_scenarioData}/Power_WeightsK.xlsx", ExcelReader.get_Power_WeightsK, ew.write_Power_WeightsK),
+        ("Power_BusInfo", f"{tmp_path_scenarioData}/Power_BusInfo.xlsx", ExcelReader.get_Power_BusInfo, ew.write_Power_BusInfo),
+        ("Power_Network", f"{tmp_path_scenarioData}/Power_Network.xlsx", ExcelReader.get_Power_Network, ew.write_Power_Network),
+        ("Power_Demand", f"{tmp_path_scenarioData}/Power_Demand.xlsx", ExcelReader.get_Power_Demand, ew.write_Power_Demand),
+        ("Power_ThermalGen", f"{tmp_path_scenarioData}/Power_ThermalGen.xlsx", ExcelReader.get_Power_ThermalGen, ew.write_Power_ThermalGen),
+        ("Power_VRES", f"{tmp_path_scenarioData}/Power_VRES.xlsx", ExcelReader.get_Power_VRES, ew.write_VRES),
+        ("Power_VRESProfiles", f"{tmp_path_scenarioData}/Power_VRESProfiles.xlsx", ExcelReader.get_Power_VRESProfiles, ew.write_VRESProfiles),
+        # TODO: Check for Inflows & Storage
     ]
 
     for excel_definition_id, file_path, read, write in combinations:
@@ -76,9 +77,9 @@ def test_deterministicVsExtensiveWithTwoEqualScenarios(tmp_path):
         write(data, tmp_path_scenarioData)
 
     # Add ScenarioB to the Global_Scenarios.xlsx
-    data = ExcelReader.get_dGlobal_Scenarios(f"{tmp_path_scenarioData}/Global_Scenarios.xlsx", True, True)
+    data = ExcelReader.get_Global_Scenarios(f"{tmp_path_scenarioData}/Global_Scenarios.xlsx", True, True)
     data.loc['ScenarioB'] = [np.nan, None, 1.0, "Example Scenario B added by pytest", "Scenarios"]
-    ew.write_dGlobal_Scenarios(data, tmp_path_scenarioData)
+    ew.write_Global_Scenarios(data, tmp_path_scenarioData)
 
     mps_equal = compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_path_originalData, True,
                               ModelTypeForComparison.EXTENSIVE_FORM, tmp_path_scenarioData, True,

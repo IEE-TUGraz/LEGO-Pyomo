@@ -56,7 +56,6 @@ def test_socp(tmp_path):
         sheet[f"O{i}"] = "SOCP"  # Set all lines to use SOCP
     workbook.save(filename=tmp_path_originalData + "/Power_Network.xlsx")
 
-    # Use context manager for automatic compression/decompression
     with MPSFileManager(comparison_mps) as decompressed_mps_path:
         assert compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_path_originalData, False,
                              ModelTypeForComparison.MPS_FILE, decompressed_mps_path, False,
