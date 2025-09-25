@@ -68,7 +68,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def eReMaxProd_rule(model, rp, k, r):
-        return model.vGenP[rp, k, r] + model.vCurtailment[rp, k, r] == model.pMaxProd[r] * (model.vGenInvest[r] + model.pExisUnits[r]) * model.pCapacityFactors[rp, k, r]
+        return model.vGenP[rp, k, r] + model.vCurtailment[rp, k, r] == model.pMaxProd[r] * (model.pExisUnits[r] + model.vGenInvest[r]) * model.pCapacityFactors[rp, k, r]
 
     model.eReMaxProd = pyo.Constraint(model.rp, model.k, model.vresGenerators, rule=eReMaxProd_rule)
 

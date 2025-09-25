@@ -3,6 +3,7 @@ import enum
 import logging
 import pathlib
 import time
+import typing
 from typing import Optional
 
 import pyomo.environ as pyo
@@ -107,7 +108,8 @@ def execute_gams(data_folder: str, gams_console_log_path: str, gams_executable_p
 
 
 def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | pathlib.Path, solve_model: bool, tmp_folder_path: Optional[str] = None,
-                          gams_console_log_path: Optional[str] = None, gams_executable_path: Optional[str] = None, lego_gams_path: Optional[str] = None, max_gams_runtime_in_seconds: Optional[int] = None) -> (str, float):
+                          gams_console_log_path: Optional[str] = None, gams_executable_path: Optional[str] = None, lego_gams_path: Optional[str] = None, max_gams_runtime_in_seconds: Optional[int] = None,
+                          cs: Optional[CaseStudy] = None) -> typing.Tuple[str, float]:
     """
     Build and solve a model based on the given model type and data path. Returns the path to the MPS file and the objective value.
     :param model_type: Model type to be used for building the model. Can be one of ModelTypeForComparison.
@@ -118,10 +120,13 @@ def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | p
     :param gams_executable_path: Path to the GAMS executable. Required if model_type is GAMS.
     :param lego_gams_path: Path to the LEGO GAMS model file. Required if model_type is GAMS.
     :param max_gams_runtime_in_seconds: Maximum runtime in seconds for the GAMS model. Required if model_type is GAMS.
+    :param cs: Optional CaseStudy object to use instead of creating a new one from data_path.
     :return: Tuple containing the path to the MPS file and the objective value.
     """
     match model_type:
         case ModelTypeForComparison.GAMS:
+            if cs is not None:
+                printer.warning("CaseStudy object is provided, but will be ignored since model_type is GAMS")
             if gams_console_log_path is None:
                 if tmp_folder_path is not None:
                     gams_console_log_path = pathlib.Path(tmp_folder_path) / "gams_console.log"
@@ -145,7 +150,9 @@ def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | p
             mps_path, objective_value = execute_gams(data_path, gams_console_log_path, gams_executable_path, lego_gams_path, max_gams_runtime_in_seconds)
         case ModelTypeForComparison.DETERMINISTIC | ModelTypeForComparison.EXTENSIVE_FORM | ModelTypeForComparison.BENDERS | ModelTypeForComparison.PROGRESSIVE_HEDGING:
             mps_path = ((tmp_folder_path if tmp_folder_path is not None else pathlib.Path("")) / f"pyomo-{model_type}-{time.strftime('%y%m%d-%H%M%S')}.mps") if model_type in [ModelTypeForComparison.DETERMINISTIC, ModelTypeForComparison.EXTENSIVE_FORM] else None
-            cs = CaseStudy(data_path, do_not_merge_single_node_buses=True)
+            if cs is not None:
+                printer.information("Using provided CaseStudy object")
+            cs = CaseStudy(data_path, do_not_merge_single_node_buses=True) if cs is None else cs
             lego = LEGO(cs)
             if model_type in [ModelTypeForComparison.DETERMINISTIC, ModelTypeForComparison.EXTENSIVE_FORM]:
                 model, timing = lego.build_model(model_type=LEGOModelType(model_type.value))
@@ -191,6 +198,7 @@ def compareModels(model_type1: ModelTypeForComparison, folder_path1: str | pathl
                   constraint_skip_model1: list[str] = None, constraint_keep_model1: list[str] = None, coefficients_skip_model1: list[str] = None,
                   constraint_skip_model2: list[str] = None, constraint_keep_model2: list[str] = None, coefficients_skip_model2: list[str] = None, constraint_enforce_model2: list[str] = None,
                   remove_scenario_prefix1: bool = False, remove_scenario_prefix2: bool = False,
+                  cs1: Optional[CaseStudy] = None, cs2: Optional[CaseStudy] = None,
                   print_additional_information: bool = False, tmp_folder_path: str | pathlib.Path = None,
                   gams_console_log_path: Optional[str] = None, gams_executable_path: Optional[str] = None, lego_gams_path: Optional[str] = None, max_gams_runtime_in_seconds: Optional[int] = None) -> bool:
     """
@@ -245,7 +253,7 @@ def compareModels(model_type1: ModelTypeForComparison, folder_path1: str | pathl
         printer.information("MPS files can not be solved, ignoring 'solve_model1' argument")
 
     mps_path1, objective_value1 = build_and_solve_model(model_type1, folder_path1, solve_model1, tmp_folder_path,
-                                                        gams_console_log_path, gams_executable_path, lego_gams_path, max_gams_runtime_in_seconds)
+                                                        gams_console_log_path, gams_executable_path, lego_gams_path, max_gams_runtime_in_seconds, cs1)
 
     printer.information(f"--------- Working on model2: '{model_type2}' ---------")
     if model_type2 == ModelTypeForComparison.GAMS and not solve_model2:
@@ -254,7 +262,7 @@ def compareModels(model_type1: ModelTypeForComparison, folder_path1: str | pathl
         printer.information("MPS files can not be solved, ignoring 'solve_model2' argument")
 
     mps_path2, objective_value2 = build_and_solve_model(model_type2, folder_path2, solve_model2, tmp_folder_path,
-                                                        gams_console_log_path, gams_executable_path, lego_gams_path, max_gams_runtime_in_seconds)
+                                                        gams_console_log_path, gams_executable_path, lego_gams_path, max_gams_runtime_in_seconds, cs2)
 
     printer.information("--------- Comparing models ---------")
     printer.information(f"Model1: '{model_type1}' - {mps_path1} - Objective value: {objective_value1}")
