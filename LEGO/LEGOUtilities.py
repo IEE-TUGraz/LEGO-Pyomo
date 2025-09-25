@@ -11,7 +11,6 @@ import pyomo.environ as pyo
 
 from InOutModule import ExcelReader
 from InOutModule.printer import Printer
-from LEGO import LEGO
 
 printer = Printer.getInstance()
 
@@ -284,7 +283,7 @@ def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: st
     plt.show()
 
 
-def add_UnitCommitmentSlack_And_FixVariables(regret_lego: LEGO, original_model: pyo.Model, hindex_df: pd.DataFrame, thermalGen_df: pd.DataFrame, PNS_cost: float):
+def add_UnitCommitmentSlack_And_FixVariables(regret_lego, original_model: pyo.Model, hindex_df: pd.DataFrame, thermalGen_df: pd.DataFrame, PNS_cost: float):
     """
     Adds unit commitment slack variables and constraints to the provided model. This function modifies
     the provided `regret_lego` model by introducing slack variables for startup and shutdown
@@ -328,7 +327,7 @@ def add_UnitCommitmentSlack_And_FixVariables(regret_lego: LEGO, original_model: 
     regret_lego.model.objective += sum(sum(sum((regret_lego.model.vCommitCorrectHigher[rp, k, t] + regret_lego.model.vCommitCorrectLower[rp, k, t]) * regret_lego.model.pWeight_rp[rp] for rp in regret_lego.model.rp) * regret_lego.model.pWeight_k[k] for k in regret_lego.model.k) * thermalGen_df.loc[t]["MaxProd"] * PNS_cost for t in regret_lego.model.thermalGenerators)
 
 
-def getUnitCommitmentSlackCost(lego: LEGO, thermalGen_df: pd.DataFrame, PNS_cost: float) -> float:
+def getUnitCommitmentSlackCost(lego, thermalGen_df: pd.DataFrame, PNS_cost: float) -> float:
     """
     Calculate the unit commitment slack cost based on corrections for startup and
     shutdown values in the model.

@@ -1,5 +1,6 @@
 import typing
 from collections import OrderedDict
+from itertools import islice
 
 import cplex
 
@@ -395,7 +396,9 @@ def compare_linear_constraints(constraints1: dict[str, OrderedDict[str, float]],
         if length not in constraint_dicts2:
             counter_missing2_total += len(group1)
             if print_additional_information:
-                printer.information(f"No constraints of length {length} in Model2; skipping {len(group1)} constraints.")
+                printer.information(f"No constraints of length {length} in Model2; skipping {len(group1)} constraints, e.g.: ")
+                for k, v in islice(group1.items(), 5):
+                    printer.information(f"  - {k}: {[c for c in v]}")
             continue
 
         group2 = constraint_dicts2[length]
@@ -459,19 +462,16 @@ def compare_linear_constraints(constraints1: dict[str, OrderedDict[str, float]],
             if not matched:
                 counter_missing2_total += 1
                 if print_additional_information:
-                    printer.information(f"No match for constraint: {cname1}")
+                    printer.information(f"No match for constraint in Model2: {cname1}")
 
         unmatched_2 = len(group2) - len(matched_in_group2)
         counter_missing1_total += unmatched_2
 
         if unmatched_2 > 0 and print_additional_information:
-            printer.information(f"{unmatched_2} constraints of length {length} in Model2 unmatched for in Model1")
-
-            # Print missing constraint names or keys
+            printer.information(f"{unmatched_2} constraints of length {length} in Model2 unmatched for in Model1, e.g.:")
             missing_constraints = [key for key in group2 if key not in matched_in_group2]
-            printer.information("Example unmatched constraints of Model2 missing in Model1:")
-            for key in missing_constraints[:50]:
-                printer.information(f"  - {key}")
+            for key in missing_constraints[:5]:
+                printer.information(f"  - {key}: {[c for c in group2[key]]}")
 
     extra_lengths_in_model2 = set(constraint_dicts2.keys()) - set(constraint_dicts1.keys())
     for length in extra_lengths_in_model2:
@@ -480,7 +480,9 @@ def compare_linear_constraints(constraints1: dict[str, OrderedDict[str, float]],
         num_unmatched = len(unmatched_group)
         counter_missing1_total += num_unmatched
         if num_unmatched > 0 and print_additional_information:
-            printer.information(f"{num_unmatched} constraints in Model2 of length {length} missing in Model1.")
+            printer.information(f"{num_unmatched} constraints in Model2 of length {length} missing in Model1, e.g.:")
+            for key in islice(unmatched_group.keys(), 5):
+                printer.information(f"  - {key} with coefficients: {[c for c in unmatched_group[key]]}")
 
     if constraints_to_enforce_from2:
         for enforced_name in constraints_to_enforce_from2:
@@ -671,12 +673,16 @@ def compare_variables(vars1, vars2, vars_fixed_to_zero=None, precision: float = 
 
     if counter > 0:
         printer.success(f"{counter} variables matched perfectly")
+    if counter_missing2_total > 0:
+        printer.error(f"{counter_missing2_total} variables missing in Model2 in total")
 
     if len(vars2) > 0:  # If there are still variables left in Model2 that were not found in Model1
         if print_additional_information:
             missing_var_names = [v[0] for v in vars2]
             formatted_var_list = ", ".join(missing_var_names)
-            printer.error(f"Variables missing in Pyomo model ({len(vars2)} total): {formatted_var_list}")
+            printer.error(f"Variables missing in Model1 ({len(vars2)} total): {formatted_var_list}")
+        else:
+            printer.error(f"{len(vars2)} variables missing in Model1 in total")
 
         counter_missing1_total += len(vars2)
 
