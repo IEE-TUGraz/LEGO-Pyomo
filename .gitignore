@@ -21,9 +21,6 @@ LEGO*.log*
 *.gsp
 *.gdx
 
-# Model files
-*.mps
-
 # Standard output files for LEGO.py
 model.sqlite
 model.xlsx

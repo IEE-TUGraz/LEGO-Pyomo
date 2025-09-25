@@ -11,8 +11,8 @@ from LEGO.LEGOUtilities import MPSFileManager
 printer = Printer.getInstance()
 
 mps_compare_combinations = [
-    ("data/example", ModelTypeForComparison.DETERMINISTIC, f"data/mps-archive/example-d36490e1746b919fde87c68515303e30e9881305.mps"),
-    ("data/exampleStochastic", ModelTypeForComparison.EXTENSIVE_FORM, f"data/mps-archive/exampleStochastic-ExtensiveForm-bb1583fd2cf295e8cadc6b303c385788bf118818.mps"),
+    ("data/example", ModelTypeForComparison.DETERMINISTIC, f"tests/data/mps-archive/example-d36490e1746b919fde87c68515303e30e9881305.mps"),
+    ("data/exampleStochastic", ModelTypeForComparison.EXTENSIVE_FORM, f"tests/data/mps-archive/exampleStochastic-ExtensiveForm-bb1583fd2cf295e8cadc6b303c385788bf118818.mps"),
 ]
 
 
@@ -37,7 +37,7 @@ def test_socp(tmp_path):
     :return: None
     """
     data_folder = "data/example"
-    comparison_mps = "data/mps-archive/example-SOCP-LEGOGAMS-5cb285a21d6f277891d943d4b036f4b05cad6107.mps"
+    comparison_mps = "tests/data/mps-archive/example-SOCP-LEGOGAMS-5cb285a21d6f277891d943d4b036f4b05cad6107.mps"
 
     # Copy the data folder to a temporary path
     tmp_path_originalData = str(tmp_path / "originalData")
@@ -71,7 +71,7 @@ def test_documentationMPSArchive():
     descriptionMissing = []
 
     # Get all descriptions of MPS files
-    with open("data/mps-archive/mps-file-descriptions.txt", "r") as description_file:
+    with open("tests/data/mps-archive/mps-file-descriptions.txt", "r") as description_file:
         lines = [line.rstrip() for line in description_file]
         entries = {}
         for line in lines:
@@ -82,11 +82,11 @@ def test_documentationMPSArchive():
             if filename.endswith('.mps.7z'):  # Changed from .mps.gz
                 filename = filename[:-3]  # Remove '.7z'
             entries[filename] = split[1]
-    printer.information(f"Found {len(entries)} MPS file descriptions in 'data/mps-archive/mps-file-descriptions.txt'")
+    printer.information(f"Found {len(entries)} MPS file descriptions in 'tests/data/mps-archive/mps-file-descriptions.txt'")
 
     # Check if all MPS files (compressed or uncompressed) in the archive have a description
     counter_correct = 0
-    archive_files = os.listdir("data/mps-archive")
+    archive_files = os.listdir("tests/data/mps-archive")
 
     for archive_file in archive_files:
         if archive_file.endswith(".mps"):
