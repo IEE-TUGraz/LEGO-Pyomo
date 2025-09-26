@@ -266,7 +266,10 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
         model.first_stage_varlist += vres.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableStorage"]:
         model.first_stage_varlist += storage.add_element_definitions_and_bounds(model, cs)
-    model.first_stage_varlist += secondReserve.add_element_definitions_and_bounds(model, cs)
+
+    if cs.dPower_Parameters["p2ndResUp"] > 0.0 or cs.dPower_Parameters["p2ndResDW"] > 0.0:
+        model.first_stage_varlist += secondReserve.add_element_definitions_and_bounds(model, cs)
+
     if cs.dPower_Parameters["pEnablePowerImportExport"]:
         model.first_stage_varlist += importExport.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
@@ -284,7 +287,10 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
         model.first_stage_objective += vres.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableStorage"]:
         model.first_stage_objective += storage.add_constraints(model, cs)
-    model.first_stage_objective += secondReserve.add_constraints(model, cs)
+
+    if cs.dPower_Parameters["p2ndResUp"] > 0.0 or cs.dPower_Parameters["p2ndResDW"] > 0.0:
+        model.first_stage_objective += secondReserve.add_constraints(model, cs)
+
     if cs.dPower_Parameters["pEnablePowerImportExport"]:
         model.first_stage_objective += importExport.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
