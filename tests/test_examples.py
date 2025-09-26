@@ -11,8 +11,8 @@ from LEGO.LEGOUtilities import MPSFileManager
 printer = Printer.getInstance()
 
 mps_compare_combinations = [
-    ("data/example", ModelTypeForComparison.DETERMINISTIC, f"tests/data/mps-archive/example-d36490e1746b919fde87c68515303e30e9881305.mps"),
-    ("data/exampleStochastic", ModelTypeForComparison.EXTENSIVE_FORM, f"tests/data/mps-archive/exampleStochastic-ExtensiveForm-bb1583fd2cf295e8cadc6b303c385788bf118818.mps"),
+    ("data/example", ModelTypeForComparison.DETERMINISTIC, f"tests/data/mps-archive/example-02d0e5c039a4894bbc68ff866920ba1e33908e3a.mps"),
+    ("data/exampleStochastic", ModelTypeForComparison.EXTENSIVE_FORM, f"tests/data/mps-archive/exampleStochastic-ExtensiveForm-addc96124b5ee0162dadd12be9fe649a537d9e41.mps"),
 ]
 
 
@@ -27,7 +27,7 @@ def test_comparisonAgainstMPS(tmp_path, folder_path, model_type, comparison_mps)
     with MPSFileManager(comparison_mps) as mps_file:
         assert compareModels(model_type, folder_path, True,
                              ModelTypeForComparison.MPS_FILE, mps_file, False,
-                             tmp_folder_path=tmp_path)
+                             tmp_folder_path=tmp_path, print_additional_information=True)
 
 
 def test_socp(tmp_path):

@@ -363,18 +363,18 @@ def compare_linear_constraints(constraints1: dict[str, OrderedDict[str, float]],
             cleaned[cname] = new_coeffs
         return cleaned
 
+    printer.information("Removing variables fixed to zero from Model1...")
     cleaned_constraints1_raw = clear_linear_constraints(constraints1)
-    cleaned_constraints2_raw = clear_linear_constraints(constraints2)
-
     removed1 = [k for k, v in cleaned_constraints1_raw.items() if len(v) == 0]
-    removed2 = [k for k, v in cleaned_constraints2_raw.items() if len(v) == 0]
-
     if len(removed1) > 0:
         printer.information(f"Removed {len(removed1)} constraints of 0 length from Model1 after eliminating fixed-to-zero vars.")
         printer.information("Example constraints removed from Model1: " + ", ".join(removed1[:5]))
     else:
         printer.information("No constraints of 0 length removed from Model1 after eliminating fixed-to-zero vars.")
 
+    printer.information("Removing variables fixed to zero from Model2...")
+    cleaned_constraints2_raw = clear_linear_constraints(constraints2)
+    removed2 = [k for k, v in cleaned_constraints2_raw.items() if len(v) == 0]
     if len(removed2) > 0:
         printer.information(f"Removed {len(removed2)} constraints of 0 length from Model2 after eliminating fixed-to-zero vars.")
         printer.information("Example constraints removed from Model2: " + ", ".join(removed2[:5]))
@@ -393,6 +393,7 @@ def compare_linear_constraints(constraints1: dict[str, OrderedDict[str, float]],
     counter_missing2_total = 0
 
     for length, group1 in constraint_dicts1.items():
+        printer.information("Comparing constraints of length " + str(length) + f" (total {len(group1)})")
         if length not in constraint_dicts2:
             counter_missing2_total += len(group1)
             if print_additional_information:
@@ -837,13 +838,17 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
             coefficients_to_skip_from2 = coefficients_to_skip_from2 + ["constobj"] if coefficients_to_skip_from2 else ["constobj"]
 
     # Load MPS files
+    printer.information(f"Loading MPS files, starting with {file1}...")
     model1 = get_model_data(load_mps(str(file1)))
+    printer.information(f"First MPS file loaded, now loading second MPS file from {file2}...")
     model2 = get_model_data(load_mps(str(file2)))
+    printer.information("Both MPS files loaded.")
 
     comparison_results = {}
 
     # Variables
     if check_vars:
+        printer.information(f"Comparing variables...")
         vars1 = set()
         for i, var in enumerate(model1["variables"]):
             norm_var = normalize_variable_names(var, file1_removeScenarioPrefix)
@@ -864,8 +869,10 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
 
         comparison_results["variables"] = compare_variables(vars1, vars2, vars_fixed_to_zero=vars_fixed_to_zero, print_additional_information=print_additional_information)
 
+        printer.information("Variable comparison done.")
     # Constraints
     if check_constraints:
+        printer.information(f"Comparing linear constraints...")
         # If any of enforce is in skip, raise error
         if constraints_to_skip_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)):
             raise ValueError(f"constraints_to_skip_from2 contains elements of constraints_to_enforce_from2: {set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)}")
@@ -882,7 +889,10 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
         # Check if constraints are the same
         comparison_results['constraints'] = compare_linear_constraints(constraints1, constraints2, vars_fixed_to_zero=vars_fixed_to_zero, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
 
+        printer.information("Constraints comparison done.")
+
     if check_quadratic_constraints:
+        printer.information(f"Comparing quadratic constraints...")
         # If any of enforce is in skip, raise error
         if constraints_to_skip_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)):
             raise ValueError(f"constraints_to_skip_from2 contains elements of constraints_to_enforce_from2: {set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)}")
@@ -899,8 +909,11 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
         # Check if constraints are the same
         comparison_results['quadratic_constraints'] = compare_quadratic_constraints(quad_constraints1, quad_constraints2, vars_fixed_to_zero=vars_fixed_to_zero, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
 
+        printer.information("Quadratic constraints comparison done.")
+
     # Objective
     if check_objectives:
+        printer.information(f"Comparing objective functions...")
         vars_fixed_to_zero = get_fixed_zero_variables(model1, remove_scenario_prefix=file1_removeScenarioPrefix)
 
         objective1, quad_objective1 = normalize_objective(model1,
@@ -917,6 +930,8 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
         if len(quad_objective1) > 0 or len(quad_objective2) > 0:
             printer.information("Also comparing quadratic objective coefficients...")
             comparison_results['quadratic coefficients of objective'] = compare_objectives(quad_objective1, quad_objective2)
+
+        printer.information(f"Objective coefficients comparison done.")
 
     # Print results
     printer.information("\n   ---------   \n\nResults of MPS Comparison:")
