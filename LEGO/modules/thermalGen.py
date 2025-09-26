@@ -53,6 +53,16 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vGenP1 = pyo.Var(model.rp, model.k, model.thermalGenerators, doc='Power output of generator g above minimum production', bounds=lambda model, rp, k, g: (0, (model.pMaxProd[g] - model.pMinProd[g]) * (model.pExisUnits[g] + model.pMaxInvest[g] * model.pEnabInv[g])))
     second_stage_variables += [model.vGenP1]
 
+    # Fix vCommit, vStartup and vShutdown to 0 for generators that are not existing and cannot be invested in (will then be removed in pre-solve)
+    # Note: The generators can not simply be removed overall, as this would break stochastic models with different existing generators in different scenarios
+    for g in model.thermalGenerators:
+        if cs.dPower_ThermalGen.loc[g, 'ExisUnits'] == 0 and cs.dPower_ThermalGen.loc[g, 'EnableInvest'] == 0:
+            for rp in model.rp:
+                for k in model.k:
+                    model.vCommit[rp, k, g].fix(0)
+                    model.vStartup[rp, k, g].fix(0)
+                    model.vShutdown[rp, k, g].fix(0)
+
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
 
