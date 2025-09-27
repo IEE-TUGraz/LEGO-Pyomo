@@ -118,7 +118,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     for i, j, c in model.le:
         model.vLineInvest[i, j, c].fix(0)  # Set existing lines to not investable
 
-    model.vGenInvest = pyo.Var(model.g, doc="Integer generation investment", bounds=lambda model, g: (0, model.pMaxInvest[g] * model.pEnabInv[g]))
+    model.vGenInvest = pyo.Var(model.g, doc="Integer generation investment", bounds=lambda model, g: (0, model.pMaxInvest[g] * model.pEnabInv[g]), domain=pyo.NonNegativeIntegers)
     first_stage_variables += [model.vGenInvest]
 
     # For each DC-OPF "island", set node with highest demand as slack node
