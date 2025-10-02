@@ -1,9 +1,7 @@
 import shutil
-import warnings
 
 import numpy as np
 import pandas as pd
-from openpyxl import load_workbook
 
 from InOutModule import ExcelReader
 from InOutModule.ExcelWriter import ExcelWriter
@@ -37,29 +35,23 @@ def test_deterministicVsExtensiveWithTwoEqualScenarios(tmp_path):
     tmp_path_originalData = str(tmp_path / "originalData")
     shutil.copytree(data_folder, tmp_path_originalData)
 
-    # Deactivate use of storage for this test. TODO: Implement storage handling (once read and write methods are implemented)
-    printer.warning("TODO: Activate use of storage for this test")
-    workbook = load_workbook(filename=tmp_path_originalData + "/Power_Parameters.xlsx")
-    sheet = workbook.active
-    sheet["C27"] = "No"
-    workbook.save(filename=tmp_path_originalData + "/Power_Parameters.xlsx")
-
     tmp_path_scenarioData = str(tmp_path / "scenarioData")
     shutil.copytree(tmp_path_originalData, tmp_path_scenarioData)
 
-    ew = ExcelWriter("InOutModule/TableDefinitions.xml")
+    ew = ExcelWriter()
 
     combinations = [
-        ("Power_Hindex", f"{tmp_path_scenarioData}/Power_Hindex.xlsx", ExcelReader.get_Power_Hindex, ew.write_Power_Hindex),
-        ("Power_WeightsRP", f"{tmp_path_scenarioData}/Power_WeightsRP.xlsx", ExcelReader.get_Power_WeightsRP, ew.write_Power_WeightsRP),
-        ("Power_WeightsK", f"{tmp_path_scenarioData}/Power_WeightsK.xlsx", ExcelReader.get_Power_WeightsK, ew.write_Power_WeightsK),
         ("Power_BusInfo", f"{tmp_path_scenarioData}/Power_BusInfo.xlsx", ExcelReader.get_Power_BusInfo, ew.write_Power_BusInfo),
-        ("Power_Network", f"{tmp_path_scenarioData}/Power_Network.xlsx", ExcelReader.get_Power_Network, ew.write_Power_Network),
         ("Power_Demand", f"{tmp_path_scenarioData}/Power_Demand.xlsx", ExcelReader.get_Power_Demand, ew.write_Power_Demand),
+        ("Power_Hindex", f"{tmp_path_scenarioData}/Power_Hindex.xlsx", ExcelReader.get_Power_Hindex, ew.write_Power_Hindex),
+        ("Power_Inflows", f"{tmp_path_scenarioData}/Power_Inflows.xlsx", ExcelReader.get_Power_Inflows, ew.write_Power_Inflows),
+        ("Power_Network", f"{tmp_path_scenarioData}/Power_Network.xlsx", ExcelReader.get_Power_Network, ew.write_Power_Network),
+        ("Power_Storage", f"{tmp_path_scenarioData}/Power_Storage.xlsx", ExcelReader.get_Power_Storage, ew.write_Power_Storage),
         ("Power_ThermalGen", f"{tmp_path_scenarioData}/Power_ThermalGen.xlsx", ExcelReader.get_Power_ThermalGen, ew.write_Power_ThermalGen),
-        ("Power_VRES", f"{tmp_path_scenarioData}/Power_VRES.xlsx", ExcelReader.get_Power_VRES, ew.write_VRES),
-        ("Power_VRESProfiles", f"{tmp_path_scenarioData}/Power_VRESProfiles.xlsx", ExcelReader.get_Power_VRESProfiles, ew.write_VRESProfiles),
-        # TODO: Check for Inflows & Storage
+        ("Power_VRES", f"{tmp_path_scenarioData}/Power_VRES.xlsx", ExcelReader.get_Power_VRES, ew.write_Power_VRES),
+        ("Power_VRESProfiles", f"{tmp_path_scenarioData}/Power_VRESProfiles.xlsx", ExcelReader.get_Power_VRESProfiles, ew.write_Power_VRESProfiles),
+        ("Power_WeightsK", f"{tmp_path_scenarioData}/Power_WeightsK.xlsx", ExcelReader.get_Power_WeightsK, ew.write_Power_WeightsK),
+        ("Power_WeightsRP", f"{tmp_path_scenarioData}/Power_WeightsRP.xlsx", ExcelReader.get_Power_WeightsRP, ew.write_Power_WeightsRP),
     ]
 
     for excel_definition_id, file_path, read, write in combinations:
