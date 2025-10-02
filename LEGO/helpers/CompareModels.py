@@ -137,7 +137,7 @@ def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | p
                 gams_executable_path = "C:/GAMS/50/gams.exe"
                 printer.warning(f"Using default GAMS executable path: {gams_executable_path}")
             if lego_gams_path is None:
-                lego_gams_path = "../../LEGO-GAMS/LEGO.gms"
+                lego_gams_path = "../LEGO-GAMS/LEGO.gms"
                 printer.warning(f"Using default LEGO GAMS model path: {lego_gams_path}")
             if max_gams_runtime_in_seconds is None:
                 max_gams_runtime_in_seconds = 60

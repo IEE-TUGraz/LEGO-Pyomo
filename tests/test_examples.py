@@ -4,9 +4,11 @@ import shutil
 import pytest
 from openpyxl import load_workbook
 
-from LEGO.helpers.CompareModels import compareModels, ModelTypeForComparison
+from InOutModule import ExcelReader
+from InOutModule.ExcelWriter import ExcelWriter
 from InOutModule.printer import Printer
 from LEGO.LEGOUtilities import MPSFileManager
+from LEGO.helpers.CompareModels import compareModels, ModelTypeForComparison
 
 printer = Printer.getInstance()
 
@@ -60,6 +62,39 @@ def test_socp(tmp_path):
         assert compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_path_originalData, False,
                              ModelTypeForComparison.MPS_FILE, decompressed_mps_path, False,
                              coefficients_skip_model2=["constobj"], tmp_folder_path=tmp_path)
+
+
+@pytest.mark.parametrize("folder", [folder for folder in os.listdir("data/")])
+def test_example_formats_and_versions(tmp_path, folder):
+    """
+    Tests if all example folders have the expected versions and are in the correct format
+    :return: None
+    """
+    ew = ExcelWriter()
+    inequal_files = []
+
+    printer.information(f"Checking folder '{folder}'")
+    for file in os.listdir(f"data/{folder}"):
+        if file.endswith(".xlsx"):
+            file_path = os.path.join(f"data/{folder}", file)
+            excel_definition_id = file.replace(".xlsx", "")
+            if not hasattr(ExcelReader, f"get_{excel_definition_id}"):
+                printer.warning(f"Skipping '{file_path}' since no reader function found for '{excel_definition_id}'")
+                continue
+
+            printer.information(f"Writing '{excel_definition_id}', read from '{file_path}'")
+
+            data = getattr(ExcelReader, f"get_{excel_definition_id}")(file_path, True)
+            getattr(ew, f"write_{excel_definition_id}")(data, str(tmp_path))
+
+            printer.information(f"Comparing '{tmp_path}/{excel_definition_id}.xlsx' against source file '{file_path}'")
+            filesEqual = ExcelReader.compare_Excels(file_path, f"{tmp_path}/{excel_definition_id}.xlsx", dont_check_formatting=False)
+
+            if not filesEqual:
+                inequal_files.append((folder, excel_definition_id))
+                printer.error(f"Files {file_path} and {tmp_path}/{excel_definition_id}.xlsx are not equal!")
+
+    assert len(inequal_files) == 0, f"The following files in folder {folder} do not have the required version and/or format: {inequal_files}"
 
 
 def test_documentationMPSArchive():
