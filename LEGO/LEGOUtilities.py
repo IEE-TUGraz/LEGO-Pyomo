@@ -1,4 +1,5 @@
 import functools
+import os
 import typing
 import zipfile
 from pathlib import Path
@@ -493,3 +494,24 @@ class MPSFileManager:
             for mps_path in self.originally_compressed:
                 if mps_path.exists():
                     mps_path.unlink()  # Delete the decompressed file
+
+
+if __name__ == "__main__":
+    import argparse
+    from rich_argparse import RichHelpFormatter
+
+    parser = argparse.ArgumentParser(description="Utility functions for LEGO", formatter_class=RichHelpFormatter)
+    parser.add_argument("function", choices=["compress", "decompress"], help="Select function to execute")
+    parser.add_argument("mpsFile", help="Path to .mps file (for compress) or .mps.7z file (for decompress)")
+    args = parser.parse_args()
+
+    if args.function == "compress":
+        printer.information(f"Compressing file: {args.mpsFile}")
+        output_path = compress_mps_file(args.mpsFile, remove_original=False)
+        printer.information(f"Compressed file created at: {output_path}")
+    elif args.function == "decompress":
+        printer.information(f"Decompressing file: {args.mpsFile}")
+        if os.path.exists(args.mpsFile):
+            printer.warning(f"Decompressed file already exists: {args.mpsFile}, decompressing anyway and overwriting.")
+        output_path = decompress_mps_file(args.mpsFile, overwrite_existing_mps=True)
+        printer.information(f"Decompressed file created at: {output_path}")
