@@ -17,7 +17,6 @@ def test_comparisonExampleAgainstGAMS(tmp_path):
     :param tmp_path: Temporary path for the test (provided by pytest).
     :return: None
     """
-
     data_folder = "data/example"
     tmp_folder = tmp_path / "modified"
 
@@ -65,7 +64,7 @@ def test_comparisonExampleSOCPAgainstGAMS(tmp_path):
     # Activate SOCP in Power Parameters
     workbook = load_workbook(filename=tmp_path_originalData + "/Power_Parameters.xlsx")
     sheet = workbook.active
-    sheet["C37"] = "Yes"  # Enable SOCP
+    sheet["C34"] = "Yes"  # Enable SOCP
     workbook.save(filename=tmp_path_originalData + "/Power_Parameters.xlsx")
 
     # Use SOCP for all lines
@@ -75,7 +74,20 @@ def test_comparisonExampleSOCPAgainstGAMS(tmp_path):
         sheet[f"O{i}"] = "SOCP"  # Set all lines to use SOCP
     workbook.save(filename=tmp_path_originalData + "/Power_Network.xlsx")
 
+    # Adjust case study to have all inflows already as capacity factors for GAMS compatibility
+    cs = CaseStudy(tmp_path_originalData)
+    cs.dPower_VRESProfiles = InOutModule.Utilities.inflowsToCapacityFactors(cs.dPower_Inflows, cs.dPower_VRES, cs.dPower_VRESProfiles)
+    cs.dPower_Inflows = cs.dPower_Inflows[0:0]
+
+    cs.dPower_Storage.drop("StorageHydro", inplace=True)  # Remove StorageHydro as it is implemented differently in GAMS version
+
+    ew = ExcelWriter()
+    ew.write_caseStudy(cs, tmp_path_originalData)
+
     mps_equal = compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_path_originalData, True,
-                              ModelTypeForComparison.GAMS, tmp_path_originalData, True, tmp_folder_path=tmp_path)
+                              ModelTypeForComparison.GAMS, tmp_path_originalData, True,
+                              coefficients_skip_model1=["vCurtailment", "vStorageSpillage", "vStIntraRes", "vStInterRes"], constraint_skip_model1=["eStInterRes", "eStMaxInterRes"],
+                              coefficients_skip_model2=["vStIntraRes", "vStInterRes"], constraint_skip_model2=["eStInterRes", "eStMaxInterRes"],
+                              tmp_folder_path=tmp_path, print_additional_information=True)
 
     assert mps_equal
