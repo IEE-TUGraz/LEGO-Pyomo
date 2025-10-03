@@ -50,7 +50,7 @@ for index, row in df_case_studies.iterrows():
     printer.information(f"Loading case study from '{args.caseStudyDirectory}'")
     start_time = time.time()
     # load settings for RINGS specific data
-    rings_data_folder = os.path.join("data", "rings")
+    rings_data_folder = args.caseStudyDirectory
     rings_settings = TabSepReader.read_data_settings(os.path.join(rings_data_folder, "DataSettings.yaml"))
 
     rings_settings["aggregation"]["intervall"] = row["invervall"]
@@ -69,14 +69,14 @@ for index, row in df_case_studies.iterrows():
     df_kWeights = TabSepReader.create_kWeights(num_elements)
 
     # write the dataframes to a excel in a temp folder
-    output_folder = os.path.join("temp", "rings")
-    os.makedirs(output_folder, exist_ok=True)
+    #output_folder = os.path.join("temp", "rings")
+    #os.makedirs(output_folder, exist_ok=True)
 
-    df_VRES_profiles.to_excel(os.path.join(output_folder, "VRES_profiles.xlsx"))
-    df_power_demand.to_excel(os.path.join(output_folder, "power_demand.xlsx"))
-    df_ImpExpLim.to_excel(os.path.join(output_folder, "ImpExp_limits.xlsx"))
-    df_hindex.to_excel(os.path.join(output_folder, "H_index.xlsx"))
-    df_kWeights.to_excel(os.path.join(output_folder, "k_weights.xlsx"))
+    #df_VRES_profiles.to_excel(os.path.join(output_folder, "VRES_profiles.xlsx"))
+    #df_power_demand.to_excel(os.path.join(output_folder, "power_demand.xlsx"))
+    #df_ImpExpLim.to_excel(os.path.join(output_folder, "ImpExp_limits.xlsx"))
+    #df_hindex.to_excel(os.path.join(output_folder, "H_index.xlsx"))
+    #df_kWeights.to_excel(os.path.join(output_folder, "k_weights.xlsx"))
 
     cs = CaseStudy(args.caseStudyDirectory, dPower_VRESProfiles=df_VRES_profiles, dPower_Demand=df_power_demand, dPower_ImpExpProfiles=df_ImpExpLim, dPower_Hindex=df_hindex, dPower_WeightsK=df_kWeights)
     #cs = cs.filter_timesteps("k3005", "k3005")
@@ -147,7 +147,11 @@ for index, row in df_case_studies.iterrows():
         printer.warning(f"Excess power supplied value {total_EPS} exceeds threshold {eps}")
 
     #SQLiteWriter.model_to_sqlite(model, "model.sqlite")
+    # check if folder exists
+    if not os.path.exists(os.path.join(args.caseStudyDirectory, "results")):
+        os.makedirs(os.path.join(args.caseStudyDirectory, "results"))
+
     ExcelWriter.model_to_excel(model, os.path.join(args.caseStudyDirectory, "results", "results_" + str(rings_settings["aggregation"]["intervall"]) + ".xlsx"))
     #model.write("model.mps", io_options={'labeler': NameLabeler()})
 
-df_case_studies.to_excel("data/rings_base_invest/results/case_studies.xlsx")
+#df_case_studies.to_excel(os.path.join(args.caseStudyDirectory, "case_studies_stats.xlsx"))

@@ -10,7 +10,7 @@ from bokeh.layouts import column, row
 
 # load some data for rings
 path_results = os.path.join("data", "rings_base_example", "results")
-scenario = "results_intv5"
+scenario = "results_intv15"
 
 # load results excel
 df_vGenInvest = pd.read_excel(os.path.join(path_results, f"{scenario}.xlsx"), sheet_name="vGenInvest")
