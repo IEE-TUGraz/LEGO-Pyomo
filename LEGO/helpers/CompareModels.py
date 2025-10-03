@@ -45,7 +45,7 @@ def modelSelection(string: str) -> str:
         raise argparse.ArgumentTypeError(f"Model selection not valid: '{string}'. Options are 'gams', 'pyomoSimpleSolve', 'pyomoSimpleNoSolve', 'pyomoExtensive', 'pyomoBenders', 'pyomoProgressiveHedging' or a path to a .mps file")
 
 
-def execute_gams(data_folder: str, gams_console_log_path: str, gams_executable_path: str, lego_gams_path: str, max_gams_runtime_in_seconds: int) -> (str, float):
+def execute_gams(data_folder: str, gams_console_log_path: str, gams_executable_path: str, lego_gams_path: str, max_gams_runtime_in_seconds: int) -> typing.Tuple[typing.Optional[str], float]:
     """
     Executes the GAMS model with the given parameters and returns the path to the MPS file and the objective value.
     :param data_folder: Folder containing the data for the GAMS model.
@@ -57,6 +57,8 @@ def execute_gams(data_folder: str, gams_console_log_path: str, gams_executable_p
     """
     import subprocess
     import psutil
+
+    output_mps_path = "LEGO-GAMS/LEGO-GAMS.mps"
 
     with open(gams_console_log_path, "w") as GAMSConsoleLogFile:
 
@@ -88,7 +90,7 @@ def execute_gams(data_folder: str, gams_console_log_path: str, gams_executable_p
         timing = stop_time - start_time
         printer.information(f"Executing GAMS took {timing:.2f} seconds")
 
-        with open("LEGO-Gams/gams_console.log", "r") as file:
+        with open(gams_console_log_path, "r") as file:
             for line in file:
                 line_lower = line.lower()
 
@@ -96,15 +98,15 @@ def execute_gams(data_folder: str, gams_console_log_path: str, gams_executable_p
                 if "found incumbent of value" in line_lower:
                     try:
                         objective_value_gams = float(line.strip().split()[-1])
-                        return "LEGO-GAMS/model.mps", objective_value_gams
+                        return output_mps_path, objective_value_gams
                     except ValueError:
                         continue
                 # Pattern 2: 'Objective:' for rMIP and LP models
                 elif "Objective:" in line:
                     objective_value_gams = float(line.split()[-1])
                     printer.information(f"Objective value: {objective_value_gams}")
-                    return "LEGO-GAMS/model.mps", objective_value_gams
-    return "LEGO-GAMS/LEGO-GAMS.mps", -1
+                    return output_mps_path, objective_value_gams
+    return output_mps_path, -1
 
 
 def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | pathlib.Path, solve_model: bool, tmp_folder_path: Optional[str] = None,
@@ -145,7 +147,7 @@ def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | p
 
             # If data_path is relative path, add relative part to front 
             if not pathlib.Path(data_path).is_absolute():
-                data_path = pathlib.Path("../../../") / data_path
+                data_path = pathlib.Path("../") / data_path
 
             mps_path, objective_value = execute_gams(data_path, gams_console_log_path, gams_executable_path, lego_gams_path, max_gams_runtime_in_seconds)
         case ModelTypeForComparison.DETERMINISTIC | ModelTypeForComparison.EXTENSIVE_FORM | ModelTypeForComparison.BENDERS | ModelTypeForComparison.PROGRESSIVE_HEDGING:

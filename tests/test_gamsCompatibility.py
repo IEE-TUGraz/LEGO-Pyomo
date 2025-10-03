@@ -2,8 +2,11 @@ import shutil
 
 from openpyxl import load_workbook
 
-from LEGO.helpers.CompareModels import compareModels, ModelTypeForComparison
+import InOutModule.Utilities
+from InOutModule.CaseStudy import CaseStudy
+from InOutModule.ExcelWriter import ExcelWriter
 from InOutModule.printer import Printer
+from LEGO.helpers.CompareModels import compareModels, ModelTypeForComparison
 
 printer = Printer.getInstance()
 
@@ -14,8 +17,29 @@ def test_comparisonExampleAgainstGAMS(tmp_path):
     :param tmp_path: Temporary path for the test (provided by pytest).
     :return: None
     """
-    mps_equal = compareModels(ModelTypeForComparison.DETERMINISTIC, "data/example", True,
-                              ModelTypeForComparison.GAMS, "data/example", True, tmp_folder_path=tmp_path)
+
+    data_folder = "data/example"
+    tmp_folder = tmp_path / "modified"
+
+    # Copy everything so that Parameter files are also present
+    shutil.copytree(data_folder, tmp_folder)
+
+    # Adjust case study to have all inflows already as capacity factors for GAMS compatibility
+    cs = CaseStudy(data_folder)
+    cs.dPower_VRESProfiles = InOutModule.Utilities.inflowsToCapacityFactors(cs.dPower_Inflows, cs.dPower_VRES, cs.dPower_VRESProfiles)
+    cs.dPower_Inflows = cs.dPower_Inflows[0:0]
+
+    cs.dPower_Storage.drop("StorageHydro", inplace=True)  # Remove StorageHydro as it is implemented differently in GAMS version
+
+    ew = ExcelWriter()
+    ew.write_caseStudy(cs, tmp_folder)
+
+    # Note: Storage is slightly different in GAMS version, so skip related variables/constraints
+    mps_equal = compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_folder, True,
+                              ModelTypeForComparison.GAMS, tmp_folder, True,
+                              coefficients_skip_model1=["vCurtailment", "vStorageSpillage", "vStIntraRes", "vStInterRes"], constraint_skip_model1=["eStInterRes", "eStMaxInterRes"],
+                              coefficients_skip_model2=["vStIntraRes", "vStInterRes"], constraint_skip_model2=["eStInterRes", "eStMaxInterRes"],
+                              tmp_folder_path=tmp_path, print_additional_information=True)
 
     assert mps_equal
 

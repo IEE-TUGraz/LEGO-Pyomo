@@ -636,40 +636,40 @@ $onEmbeddedCode Connect:
             # Module enable-flags not used
               
             - name: pEnableTransNet
-              range: Power Parameters!C34
+              range: Power Parameters!C31
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
     
             - name: pEnableSOCP
-              range: Power Parameters!C37
+              range: Power Parameters!C34
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}  
     
             - name: pMaxAngleDiff
-              range: Power Parameters!C40
+              range: Power Parameters!C37
               rowDimension: 0
               columnDimension: 0
               
             - name: pMaxAngleDCOPF
-              range: Power Parameters!C43
+              range: Power Parameters!C40
               rowDimension: 0
               columnDimension: 0
            
             - name: pEnableMaxLineLoad
-              range: Power Parameters!C46
+              range: Power Parameters!C43
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
               
             - name: pMaxLineLoad
-              range: Power Parameters!C49
+              range: Power Parameters!C46
               rowDimension: 0
               columnDimension: 0
               
             - name: pLOLCost
-              range: Power Parameters!C52
+              range: Power Parameters!C49
               rowDimension: 0
               columnDimension: 0
     
@@ -765,7 +765,7 @@ $onEmbeddedCode Connect:
 #              columnDimension: 0
               
             - name: pEnableChDisPower
-              range: Power Parameters!C56
+              range: Power Parameters!C53
               rowDimension: 0
               columnDimension: 0
               valueSubstitutions: {'Yes': true, 'No': false}
@@ -788,22 +788,22 @@ $onEmbeddedCode Connect:
 #              valueSubstitutions: {'Yes': true, 'No': false}
 
             - name: p2ndResUp
-              range: Power Parameters!C63
+              range: Power Parameters!C60
               rowDimension: 0
               columnDimension: 0
                 
             - name: p2ndResDw
-              range: Power Parameters!C66
+              range: Power Parameters!C63
               rowDimension: 0
               columnDimension: 0
               
             - name: p2ndResUpCost
-              range: Power Parameters!C69
+              range: Power Parameters!C66
               rowDimension: 0
               columnDimension: 0
                 
             - name: p2ndResDwCost
-              range: Power Parameters!C72
+              range: Power Parameters!C69
               rowDimension: 0
               columnDimension: 0
 
@@ -983,23 +983,19 @@ $onEmbeddedCode Connect:
         gtec_storage_ror_storageunits = next((x for x in gamsParameters if x.name == "gtec_storage_ror_storageunits"), None)
         gi_help_storage_storage_units = next((x for x in gamsParameters if x.name == "gi_help_storage_storage_units"), None)
 
-        df = xls.parse(sheet_name="Power Storage",
-                       skiprows=[0, 1, 3, 4, 5])
-        
-        # Rename columns and set scenario name for each entry of this sheet
-        df = df.rename(columns={df.columns[0]: "Excl.", df.columns[1]: "g", df.columns[2]: "tec", df.columns[3]: "i"})
-        
-        # Drop rows where "Excl."-Column is filled, only keep empty ones
-        df = df[pd.isna(df['Excl.'])]
-        
+        df = xls.parse(skiprows=[0, 1, 2, 4, 5, 6])
+
+        # Drop rows where "excl"-Column is filled, only keep empty ones
+        df = df[pd.isna(df['excl'])]
+
         # Drop all columns starting from given column (and all to the right of it)
-        df = df.drop(columns=df.columns[df.columns.get_loc("PPName"):], axis=1)
-        
+        df = df.drop(columns=df.columns[df.columns.get_loc("YearCom"):], axis=1)
+
         # Replace empty cells with 0
-        df = df.fillna(0)
-        
+        df = df.infer_objects(copy=False).fillna(0)
+
         # Skip columns "tec" and "i" & transpose table for tStorage
-        tStorage.setRecords(pd.melt(df.drop(['Excl.', 'tec', 'i'], axis=1), id_vars=["g"],
+        tStorage.setRecords(pd.melt(df.drop(['excl', 'tec', 'i'], axis=1), id_vars=["g"],
                                        var_name="tStorageColumns", value_name="Value"))
                                        
         # Create df for gtec_storage_ror_storageunits & gi_help_storage_storage_units and set records
@@ -1014,79 +1010,79 @@ $offEmbeddedCode
 $if not errorFree $abort 'Error reading Power_Storage.xlsx';
 $offFold
 
-$onFold // Read Power_RoR ------------------------------------------------------
-$log Reading Power_RoR.xlsx
-$onEmbeddedCode Connect:
-- GAMSReader:
-    symbols:
-        - name: tRunOfRiver
-        - name: gtec_storage_ror_run_of_river
-        - name: gi_help_storage_run_of_river
-- PythonCode:
-    code: |
-        import pandas as pd
-        
-        filePath = r"%scenarioFolder%/Power_RoR.xlsx"
-        xls = pd.ExcelFile(filePath)
-        
-        # Get the Gams-Parameters
-        gamsParameters = connect.container.getSymbols()
-        tRunOfRiver = next((x for x in gamsParameters if x.name == "tRunOfRiver"), None)
-        gtec_storage_ror_run_of_river = next((x for x in gamsParameters if x.name == "gtec_storage_ror_run_of_river"), None)
-        gi_help_storage_run_of_river = next((x for x in gamsParameters if x.name == "gi_help_storage_run_of_river"), None)
+*$onFold // Read Power_RoR ------------------------------------------------------
+*$log Reading Power_RoR.xlsx
+*$onEmbeddedCode Connect:
+*- GAMSReader:
+*    symbols:
+*        - name: tRunOfRiver
+*        - name: gtec_storage_ror_run_of_river
+*        - name: gi_help_storage_run_of_river
+*- PythonCode:
+*    code: |
+*        import pandas as pd
+*        
+*        filePath = r"%scenarioFolder%/Power_RoR.xlsx"
+*        xls = pd.ExcelFile(filePath)
+*        
+*        # Get the Gams-Parameters
+*        gamsParameters = connect.container.getSymbols()
+*        tRunOfRiver = next((x for x in gamsParameters if x.name == "tRunOfRiver"), None)
+*        gtec_storage_ror_run_of_river = next((x for x in gamsParameters if x.name == "gtec_storage_ror_run_of_river"), None)
+*        gi_help_storage_run_of_river = next((x for x in gamsParameters if x.name == "gi_help_storage_run_of_river"), None)
+*
+*        df = xls.parse(sheet_name="Power RoR",
+*                       skiprows=[0, 1, 3, 4, 5])
+*        
+*        # Rename columns and set scenario name for each entry of this sheet
+*        df = df.rename(columns={df.columns[0]: "excl", df.columns[1]: "g", df.columns[2]: "tec", df.columns[3]: "i"})
+*        
+*        # Drop rows where "excl"-Column is filled, only keep empty ones
+*        df = df[pd.isna(df['excl'])]
+*        
+*        # Drop all columns starting from given column (and all to the right of it)
+*        df = df.drop(columns=df.columns[df.columns.get_loc("PPName"):], axis=1)
+*        
+*        # Replace empty cells with 0
+*        df = df.fillna(0)
+*        
+*        # Skip columns "tec" and "i" & transpose table for tRunOfRiver
+*        tRunOfRiver.setRecords(pd.melt(df.drop(['excl', 'tec', 'i'], axis=1), id_vars=["g"],
+*                                       var_name="tStorageColumns", value_name="Value"))
+*                                       
+*        # Create df for gtec_storage_ror_run_of_river & gi_help_storage_run_of_river and set records
+*        gtec_storage_ror_run_of_river.setRecords(df[['g', 'tec']])
+*        gi_help_storage_run_of_river.setRecords(df[['g', 'tec', 'i']])
+*- GAMSWriter:
+*    symbols:
+*        - name: tRunOfRiver
+*        - name: gtec_storage_ror_run_of_river
+*        - name: gi_help_storage_run_of_river
+*$offEmbeddedCode
+*$if not errorFree $abort 'Error reading Power_RoR.xlsx';
+*$offFold
 
-        df = xls.parse(sheet_name="Power RoR",
-                       skiprows=[0, 1, 3, 4, 5])
-        
-        # Rename columns and set scenario name for each entry of this sheet
-        df = df.rename(columns={df.columns[0]: "excl", df.columns[1]: "g", df.columns[2]: "tec", df.columns[3]: "i"})
-        
-        # Drop rows where "excl"-Column is filled, only keep empty ones
-        df = df[pd.isna(df['excl'])]
-        
-        # Drop all columns starting from given column (and all to the right of it)
-        df = df.drop(columns=df.columns[df.columns.get_loc("PPName"):], axis=1)
-        
-        # Replace empty cells with 0
-        df = df.fillna(0)
-        
-        # Skip columns "tec" and "i" & transpose table for tRunOfRiver
-        tRunOfRiver.setRecords(pd.melt(df.drop(['excl', 'tec', 'i'], axis=1), id_vars=["g"],
-                                       var_name="tStorageColumns", value_name="Value"))
-                                       
-        # Create df for gtec_storage_ror_run_of_river & gi_help_storage_run_of_river and set records
-        gtec_storage_ror_run_of_river.setRecords(df[['g', 'tec']])
-        gi_help_storage_run_of_river.setRecords(df[['g', 'tec', 'i']])
-- GAMSWriter:
-    symbols:
-        - name: tRunOfRiver
-        - name: gtec_storage_ror_run_of_river
-        - name: gi_help_storage_run_of_river
-$offEmbeddedCode
-$if not errorFree $abort 'Error reading Power_RoR.xlsx';
-$offFold
-
-$onFold // Read Power_Inflows --------------------------------------------------
-
-$log Reading Power_Inflows.xlsx
-$onEmbeddedCode Connect:
-
-- ExcelReader:
-    file: %scenarioFolder%/Power_Inflows.xlsx
-    symbols:          
-        - name: tInflows
-          range: Power Inflows!B3
-          rowDimension: 2
-          columnDimension: 1
-          ignoreRows: [4, 5, 6]
-          type: par
-
-- GAMSWriter:
-    symbols: all
-
-$offEmbeddedCode
-$if not errorFree $abort 'Error reading Power_Inflows.xlsx';
-$offFold
+*$onFold // Read Power_Inflows --------------------------------------------------
+*
+*$log Reading Power_Inflows.xlsx
+*$onEmbeddedCode Connect:
+*
+*- ExcelReader:
+*    file: %scenarioFolder%/Power_Inflows.xlsx
+*    symbols:          
+*        - name: tInflows
+*          range: Power Inflows!B3
+*          rowDimension: 2
+*          columnDimension: 1
+*          ignoreRows: [4, 5, 6]
+*          type: par
+*
+*- GAMSWriter:
+*    symbols: all
+*
+*$offEmbeddedCode
+*$if not errorFree $abort 'Error reading Power_Inflows.xlsx';
+*$offFold
 
 $onFold // Read Power_VRES -----------------------------------------------------
 $log Reading Power_VRES.xlsx
@@ -1909,7 +1905,7 @@ $onFold // Declaration Demand and Production per Zone Constraints --------------
    eZMinSolar  (z)              "minimum production  of solar         per zone        "
    eZMinWind   (z)              "minimum production  of wind          per zone        "               
    eZMinBio    (z)              "minimum production  of biomass       per zone        "
-   eZMinWater  (z)              "minimum production  of Hydro+RoR     per zone        "
+*   eZMinWater  (z)              "minimum production  of Hydro+RoR     per zone        "
    eZMaxGas    (z)              "maximum consumtion  of gas           per zone        "
    
 $offFold
@@ -2187,7 +2183,7 @@ eStIntraRes(rpk(rp,k),   s) $[[card(rp)=1] or [card(rp)>1 and not hydro(s)] and 
    + pIniReserve(        s) $[ card(rp)=1 and ord(k)=1]
    - vStIntraRes(rp,k   ,s)
    - vSpillag   (rp,k   ,s)                $[pIsHydro (s)]
-   + pInflows   (rp,k   ,s)                $[pIsHydro (s)]
+*   + pInflows   (rp,k   ,s)                $[pIsHydro (s)]
    - vGenP      (rp,k   ,s) * pWeight_k(k) / pDisEffic(s)
    + vConsump   (rp,k   ,s) * pWeight_k(k) * pChEffic (s)
    + vWaterSell (rp,k   ,s) $[pRegretCalc and pIsHydro(s)]
@@ -2202,7 +2198,7 @@ eStInterRes     (p           ,s) $[[card(rp)>1] and [mod(ord(p),pMovWindow)=0]].
    + sum[hindex(pp,rpk(rp,k))$[[ord(pp)>  ord(p)-pMovWindow] and
                               [ ord(pp)<= ord(p)         ]],
         - vSpillag (rp,k,s)                $[pIsHydro (s)]
-        + pInflows (rp,k,s)                $[pIsHydro (s)]
+*        + pInflows (rp,k,s)                $[pIsHydro (s)]
         - vGenP    (rp,k,s) * pWeight_k(k) / pDisEffic(s)
         + vConsump (rp,k,s) * pWeight_k(k) * pChEffic (s)
         ]
@@ -2374,13 +2370,13 @@ eZMinBio(z)$[pEnableMinProdRESTech]..
    pMinBio(z)
 ;
 
-eZMinWater(z)$[pEnableMinProdRESTech]..
-   + sum[rpk(rp,k),pWeight_rp(rp)*pWeight_k(k)*sum[gz(ror  ,z)  , vGenP   (rp,k,ror  )               ]]
-   + sum[rpk(rp,k),pWeight_rp(rp)*pWeight_k(k)*sum[gz(hydro,z)  , vGenP   (rp,k,hydro)               ]]
-   - sum[rpk(rp,k),pWeight_rp(rp)*pWeight_k(k)*sum[gz(s    ,z)  , vConsump(rp,k,s    )$[pIsHydro (s)]]]
-   =g=
-   pMinWater(z)
-;
+*eZMinWater(z)$[pEnableMinProdRESTech]..
+*   + sum[rpk(rp,k),pWeight_rp(rp)*pWeight_k(k)*sum[gz(ror  ,z)  , vGenP   (rp,k,ror  )               ]]
+*   + sum[rpk(rp,k),pWeight_rp(rp)*pWeight_k(k)*sum[gz(hydro,z)  , vGenP   (rp,k,hydro)               ]]
+*   - sum[rpk(rp,k),pWeight_rp(rp)*pWeight_k(k)*sum[gz(s    ,z)  , vConsump(rp,k,s    )$[pIsHydro (s)]]]
+*   =g=
+*   pMinWater(z)
+*;
 
 eZMaxGas (z)$[pEnableMaxGas]..
    + sum[rpk(rp,k),pWeight_rp(rp)*pWeight_k(k)*sum[gz(gas  ,z)  , vGenP   (rp,k,gas  )]]
@@ -2881,13 +2877,13 @@ t    (g) $[ tThermalGen(g,'MaxProd'     )  and
            [tThermalGen(g,'ExisUnits'   )  or
             tThermalGen(g,'EnableInvest')]]   = yes ;
         
-ror  (g) $[ tRunOfRiver(g,'MaxProd'     )  and
-           [tRunOfRiver(g,'ExisUnits'   )  or
-            tRunOfRiver(g,'EnableInvest')  *
-            tRunOfRiver(g,'MaxInvest'   )]]   = yes ;
+*ror  (g) $[ tRunOfRiver(g,'MaxProd'     )  and
+*           [tRunOfRiver(g,'ExisUnits'   )  or
+*            tRunOfRiver(g,'EnableInvest')  *
+*            tRunOfRiver(g,'MaxInvest'   )]]   = yes ;
 
-s    (g) $[ ror(g)                         or
-           [tStorage    (g,'MaxProd'     ) and
+*s    (g) $[ ror(g)                         or
+s    (g) $[[tStorage    (g,'MaxProd'     ) and
             [tStorage   (g,'ExisUnits'   ) or
              tStorage   (g,'EnableInvest')  *
              tStorage   (g,'MaxInvest'   )]]] = yes ;
@@ -2899,8 +2895,8 @@ r    (g) $[ tRenewable (g,'MaxProd'     )  and
 
 
 v    (r) $[ tRenewable (r,'InertiaConst') ]   = yes ;
-v    (s) $[[ tStorage   (s,'InertiaConst') ] or
-           [ tRunOfRiver(s,'InertiaConst')]]  = yes ;
+v    (s) $[[ tStorage   (s,'InertiaConst') ]] = yes ;
+*           [ tRunOfRiver(s,'InertiaConst')]]  = yes ;
  
 * assignment biomass only          
 b    (g) $[ gtec(g,'Biomass') and 
@@ -3004,7 +3000,7 @@ loop[g,
 pENSCost                     =                            pENSCost                   * 1e-3 ;
 pLOLCost                     =                            pLOLCost                   * 1e-3 ;
 pDSMShiftCost(rpk(rp,k),i  ) =                            tDSMshiftcost(rp,i,k)      * 1e-3 ;
-pInflows     (rpk(rp,k),  s) =                            tInflows     (rp,s,k)      * 1e-3 ;
+*pInflows     (rpk(rp,k),  s) =                            tInflows     (rp,s,k)      * 1e-3 ;
 pResProfile  (rpk(rp,k),i,r) = sum[(gtec(r,tec),gi(r,i)), tVRESProfiles(rp,r,k)]            ;
 
 
@@ -3034,54 +3030,54 @@ pMaxInvest        (t) $[pExisUnits(t)=1] = 0              ;
 pMaxInvest        (t) $[pExisUnits(t)=0] = 1              ;
 
 * Storage units parameters
-pExisUnits   (s) =  [tStorage   (s,'ExisUnits'   )]$[not ror(s)]
-                  + [tRunOfRiver(s,'ExisUnits'   )]$[    ror(s)];
-pMaxInvest   (s) =  [tStorage   (s,'MaxInvest'   )]$[not ror(s)]
-                  + [tRunOfRiver(s,'MaxInvest'   )]$[    ror(s)];
-pMaxProd     (s) =  [tStorage   (s,'MaxProd'     )]$[not ror(s)] * 1e-3
-                  + [tRunOfRiver(s,'MaxProd'     )]$[    ror(s)] * 1e-3;
-pMinProd     (s) =  [tStorage   (s,'MinProd'     )]$[not ror(s)] * 1e-3
-                  + [tRunOfRiver(s,'MinProd'     )]$[    ror(s)] * 1e-3;
-pMaxCons     (s) =  [tStorage   (s,'MaxCons'     )]$[not ror(s)] * 1e-3
-                  + [tRunOfRiver(s,'MaxCons'     )]$[    ror(s)] * 1e-3;
-pOMVarCost   (s) =  [tStorage   (s,'OMVarCost'   )]$[not ror(s)] * 1e-3
-                  + [tRunOfRiver(s,'OMVarCost'   )]$[    ror(s)] * 1e-3;
-pMaxGenQ     (s) =  [tStorage   (s,'Qmax'        )]$[not ror(s)] * 1e-3
-                  + [tRunOfRiver(s,'Qmax'        )]$[    ror(s)] * 1e-3;
-pMinGenQ     (s) =  [tStorage   (s,'Qmin'        )]$[not ror(s)] * 1e-3
-                  + [tRunOfRiver(s,'Qmin'        )]$[    ror(s)] * 1e-3;
-pReplaceCost (s) =  [tStorage   (s,'ReplaceCost' )]$[not ror(s)] * 1e-3
-                  + [tRunOfRiver(s,'ReplaceCost' )]$[    ror(s)] * 1e-3;
-pInertiaConst(s) =  [tStorage   (s,'InertiaConst')]$[not ror(s)]
-                  + [tRunOfRiver(s,'InertiaConst')]$[    ror(s)];
-pDisEffic    (s) =  [tStorage   (s,'DisEffic'    )]$[not ror(s)]
-                  + [tRunOfRiver(s,'DisEffic'    )]$[    ror(s)];
-pChEffic     (s) =  [tStorage   (s,'ChEffic'     )]$[not ror(s)]
-                  + [tRunOfRiver(s,'ChEffic'     )]$[    ror(s)];
-pIsHydro     (s) =  [tStorage   (s,'IsHydro'     )]$[not ror(s)]
-                  + [tRunOfRiver(s,'IsHydro'     )]$[    ror(s)];
-pEnabInv     (s) =  [tStorage   (s,'EnableInvest')]$[not ror(s)]
-                  + [tRunOfRiver(s,'EnableInvest')]$[    ror(s)];
-pE2PRatio    (s) =  [tStorage   (s,'Ene2PowRatio')]$[not ror(s)]
-                  + [tRunOfRiver(s,'Ene2PowRatio')]$[    ror(s)];
-pShelfLife   (s) =  [tStorage   (s,'ShelfLife'   )]$[not ror(s)]
-                  + [tRunOfRiver(s,'ShelfLife'   )]$[    ror(s)];
-pCDSF_alpha  (s) =  [tStorage   (s,'CDSF_alpha'  )]$[not ror(s)]
-                  + [tRunOfRiver(s,'CDSF_alpha'  )]$[    ror(s)];
-pCDSF_beta   (s) =  [tStorage   (s,'CDSF_beta '  )]$[not ror(s)]
-                  + [tRunOfRiver(s,'CDSF_beta '  )]$[    ror(s)];
-pMinReserve  (s) =  [tStorage   (s,'MinReserve'  )]$[not ror(s)]
-                  + [tRunOfRiver(s,'MinReserve'  )]$[    ror(s)];
-pIniReserve  (s) = [[tStorage   (s,'IniReserve'  )]$[not ror(s)]
-                  + [tRunOfRiver(s,'IniReserve'  )]$[    ror(s)]] *
+pExisUnits   (s) =  [tStorage   (s,'ExisUnits'   )];
+*                  + [tRunOfRiver(s,'ExisUnits'   )]$[    ror(s)];
+pMaxInvest   (s) =  [tStorage   (s,'MaxInvest'   )];
+*                 + [tRunOfRiver(s,'MaxInvest'   )]$[    ror(s)];
+pMaxProd     (s) =  [tStorage   (s,'MaxProd'     )] * 1e-3;
+*                  + [tRunOfRiver(s,'MaxProd'     )]$[    ror(s)] * 1e-3;
+pMinProd     (s) =  [tStorage   (s,'MinProd'     )] * 1e-3;
+*                  + [tRunOfRiver(s,'MinProd'     )]$[    ror(s)] * 1e-3;
+pMaxCons     (s) =  [tStorage   (s,'MaxCons'     )] * 1e-3;
+*                  + [tRunOfRiver(s,'MaxCons'     )]$[    ror(s)] * 1e-3;
+pOMVarCost   (s) =  [tStorage   (s,'OMVarCost'   )] * 1e-3;
+*                  + [tRunOfRiver(s,'OMVarCost'   )]$[    ror(s)] * 1e-3;
+pMaxGenQ     (s) =  [tStorage   (s,'Qmax'        )] * 1e-3;
+*                  + [tRunOfRiver(s,'Qmax'        )]$[    ror(s)] * 1e-3;
+pMinGenQ     (s) =  [tStorage   (s,'Qmin'        )] * 1e-3;
+*                  + [tRunOfRiver(s,'Qmin'        )]$[    ror(s)] * 1e-3;
+pReplaceCost (s) =  [tStorage   (s,'ReplaceCost' )] * 1e-3;
+*                  + [tRunOfRiver(s,'ReplaceCost' )]$[    ror(s)] * 1e-3;
+pInertiaConst(s) =  [tStorage   (s,'InertiaConst')];
+*                  + [tRunOfRiver(s,'InertiaConst')]$[    ror(s)];
+pDisEffic    (s) =  [tStorage   (s,'DisEffic'    )];
+*                  + [tRunOfRiver(s,'DisEffic'    )]$[    ror(s)];
+pChEffic     (s) =  [tStorage   (s,'ChEffic'     )];
+*                  + [tRunOfRiver(s,'ChEffic'     )]$[    ror(s)];
+pIsHydro     (s) =  [tStorage   (s,'IsHydro'     )];
+*                  + [tRunOfRiver(s,'IsHydro'     )]$[    ror(s)];
+pEnabInv     (s) =  [tStorage   (s,'EnableInvest')];
+*                  + [tRunOfRiver(s,'EnableInvest')]$[    ror(s)];
+pE2PRatio    (s) =  [tStorage   (s,'Ene2PowRatio')];
+*                  + [tRunOfRiver(s,'Ene2PowRatio')]$[    ror(s)];
+pShelfLife   (s) =  [tStorage   (s,'ShelfLife'   )];
+*                  + [tRunOfRiver(s,'ShelfLife'   )]$[    ror(s)];
+pCDSF_alpha  (s) =  [tStorage   (s,'CDSF_alpha'  )];
+*                  + [tRunOfRiver(s,'CDSF_alpha'  )]$[    ror(s)];
+pCDSF_beta   (s) =  [tStorage   (s,'CDSF_beta '  )];
+*                  + [tRunOfRiver(s,'CDSF_beta '  )]$[    ror(s)];
+pMinReserve  (s) =  [tStorage   (s,'MinReserve'  )];
+*                  + [tRunOfRiver(s,'MinReserve'  )]$[    ror(s)];
+pIniReserve  (s) = [[tStorage   (s,'IniReserve'  )]] *
+*                  + [tRunOfRiver(s,'IniReserve'  )]$[    ror(s)]] *
                      pMaxProd   (s               )                *
                      pE2PRatio  (s               )              ;
-pFirmCapCoef (s) =  [tStorage   (s,'FirmCapCoef' )]$[not ror(s)]
-                  + [tRunOfRiver(s,'FirmCapCoef' )]$[    ror(s)];
+pFirmCapCoef (s) =  [tStorage   (s,'FirmCapCoef' )];
+*                  + [tRunOfRiver(s,'FirmCapCoef' )]$[    ror(s)];
 
-pInvestCost  (s) =  [[tStorage   (s,'MaxProd'         )$[not ror(s)]] + [tRunOfRiver   (s,'MaxProd'         )$[    ror(s)]]] * 1e-3 *
-                   [[[tStorage   (s,'InvestCostPerMW' )$[not ror(s)]] + [tRunOfRiver   (s,'InvestCostPerMW' )$[    ror(s)]]] * 1e-3 +
-                    [[tStorage   (s,'InvestCostPerMWh')$[not ror(s)]] + [tRunOfRiver   (s,'InvestCostPerMWh')$[    ror(s)]]] * 1e-3 *
+pInvestCost  (s) =  [[tStorage   (s,'MaxProd'         )]] * 1e-3 *
+                   [[[tStorage   (s,'InvestCostPerMW' )]] * 1e-3 +
+                    [[tStorage   (s,'InvestCostPerMWh')]] * 1e-3 *
                       pE2PRatio  (s                   ) ]      ;
 
 pDisEffic(s) $[pDisEffic(s) = 0] = 1 ; // if the efficiency of a storage unit is 0, it is changed to 1
@@ -3258,10 +3254,10 @@ vCDSF_SoC.up  (rpk(rp,k),s,a) $[cdsf(s)] = pE2PRatio(s) *
                                            pMaxCons (s) *[(pMaxInvest (s) * pEnabInv(s))+pExisUnits(s)] ;
 
 vSpillag.up   (rpk(rp,k),s) =  [ vStIntraRes.up(rp,k,s) -
-                                 vStIntraRes.lo(rp,k,s)]$ [not ror(s)]
-                               + pInflows      (rp,k,s) $ [    ror(s)];
-vWaterSell.up (rpk(rp,k),s) =  vStIntraRes.up(rp,k,s) -
-                               vStIntraRes.lo(rp,k,s) ;
+                                 vStIntraRes.lo(rp,k,s)];
+*                               + pInflows      (rp,k,s) $ [    ror(s)];
+*vWaterSell.up (rpk(rp,k),s) =  vStIntraRes.up(rp,k,s) -
+*                               vStIntraRes.lo(rp,k,s) ;
 
 vStInterRes.up(p,s) $[mod(ord(p),pMovWindow)=0] = pMaxProd(s)*[(pMaxInvest(s) * pEnabInv(s))+pExisUnits(s)]*pE2PRatio(s)                ;
 vStInterRes.lo(p,s) $[mod(ord(p),pMovWindow)=0] = pMaxProd(s)*[(pMaxInvest(s) * pEnabInv(s))+pExisUnits(s)]*pE2PRatio(s)*pMinReserve(s) ;
