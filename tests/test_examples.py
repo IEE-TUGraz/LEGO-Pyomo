@@ -39,16 +39,16 @@ def test_socp(tmp_path):
     :return: None
     """
     data_folder = "data/example"
-    comparison_mps = "tests/data/mps-archive/example-SOCP-LEGOGAMS-5cb285a21d6f277891d943d4b036f4b05cad6107.mps"
+    comparison_mps = "tests/data/mps-archive/example-SOCP-fa7dc14c2c814953ef0dcb93e98c4dd78dee6b78.mps"
 
     # Copy the data folder to a temporary path
     tmp_path_originalData = str(tmp_path / "originalData")
-    shutil.copytree(data_folder, tmp_path_originalData)
+    shutil.copytree(data_folder, tmp_path_originalData, dirs_exist_ok=True)
 
     # Activate SOCP in Power Parameters
     workbook = load_workbook(filename=tmp_path_originalData + "/Power_Parameters.xlsx")
     sheet = workbook.active
-    sheet["C37"] = "Yes"  # Enable SOCP
+    sheet["C34"] = "Yes"  # Enable SOCP
     workbook.save(filename=tmp_path_originalData + "/Power_Parameters.xlsx")
 
     # Use SOCP for all lines
@@ -61,7 +61,7 @@ def test_socp(tmp_path):
     with MPSFileManager(comparison_mps) as decompressed_mps_path:
         assert compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_path_originalData, False,
                              ModelTypeForComparison.MPS_FILE, decompressed_mps_path, False,
-                             coefficients_skip_model2=["constobj"], tmp_folder_path=tmp_path)
+                             tmp_folder_path=tmp_path, print_additional_information=True)
 
 
 @pytest.mark.parametrize("folder", [folder for folder in os.listdir("data/")])
