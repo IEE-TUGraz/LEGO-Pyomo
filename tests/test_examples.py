@@ -4,14 +4,17 @@ import shutil
 import pytest
 from openpyxl import load_workbook
 
-from CompareModels import compareModels, ModelTypeForComparison
+from InOutModule import ExcelReader
+from InOutModule.ExcelWriter import ExcelWriter
 from InOutModule.printer import Printer
+from LEGO.LEGOUtilities import MPSFileManager
+from LEGO.helpers.CompareModels import compareModels, ModelTypeForComparison
 
 printer = Printer.getInstance()
 
 mps_compare_combinations = [
-    ("data/example", ModelTypeForComparison.DETERMINISTIC, f"data/mps-archive/example-d36490e1746b919fde87c68515303e30e9881305.mps"),
-    ("data/exampleStochastic", ModelTypeForComparison.EXTENSIVE_FORM, f"data/mps-archive/exampleStochastic-ExtensiveForm-bb1583fd2cf295e8cadc6b303c385788bf118818.mps"),
+    ("data/example", ModelTypeForComparison.DETERMINISTIC, f"tests/data/mps-archive/example-02d0e5c039a4894bbc68ff866920ba1e33908e3a.mps"),
+    ("data/exampleStochastic", ModelTypeForComparison.EXTENSIVE_FORM, f"tests/data/mps-archive/exampleStochastic-ExtensiveForm-addc96124b5ee0162dadd12be9fe649a537d9e41.mps"),
 ]
 
 
@@ -22,10 +25,11 @@ def test_comparisonAgainstMPS(tmp_path, folder_path, model_type, comparison_mps)
     :param tmp_path: Temporary path for the test (provided by pytest).
     :return: None
     """
-    mps_equal = compareModels(model_type, folder_path, True,
-                              ModelTypeForComparison.MPS_FILE, comparison_mps, False, tmp_folder_path=tmp_path)
-
-    assert mps_equal
+    # Use context manager for automatic compression/decompression
+    with MPSFileManager(comparison_mps) as mps_file:
+        assert compareModels(model_type, folder_path, True,
+                             ModelTypeForComparison.MPS_FILE, mps_file, False,
+                             tmp_folder_path=tmp_path, print_additional_information=True)
 
 
 def test_socp(tmp_path):
@@ -35,15 +39,16 @@ def test_socp(tmp_path):
     :return: None
     """
     data_folder = "data/example"
+    comparison_mps = "tests/data/mps-archive/example-SOCP-fa7dc14c2c814953ef0dcb93e98c4dd78dee6b78.mps"
 
     # Copy the data folder to a temporary path
     tmp_path_originalData = str(tmp_path / "originalData")
-    shutil.copytree(data_folder, tmp_path_originalData)
+    shutil.copytree(data_folder, tmp_path_originalData, dirs_exist_ok=True)
 
     # Activate SOCP in Power Parameters
     workbook = load_workbook(filename=tmp_path_originalData + "/Power_Parameters.xlsx")
     sheet = workbook.active
-    sheet["C37"] = "Yes"  # Enable SOCP
+    sheet["C34"] = "Yes"  # Enable SOCP
     workbook.save(filename=tmp_path_originalData + "/Power_Parameters.xlsx")
 
     # Use SOCP for all lines
@@ -53,44 +58,88 @@ def test_socp(tmp_path):
         sheet[f"O{i}"] = "SOCP"  # Set all lines to use SOCP
     workbook.save(filename=tmp_path_originalData + "/Power_Network.xlsx")
 
-    mps_equal = compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_path_originalData, False,
-                              ModelTypeForComparison.MPS_FILE, "data/mps-archive/example-SOCP-LEGOGAMS-5cb285a21d6f277891d943d4b036f4b05cad6107.mps", False,
-                              coefficients_skip_model2=["constobj"], tmp_folder_path=tmp_path)
+    with MPSFileManager(comparison_mps) as decompressed_mps_path:
+        assert compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_path_originalData, False,
+                             ModelTypeForComparison.MPS_FILE, decompressed_mps_path, False,
+                             tmp_folder_path=tmp_path, print_additional_information=True)
 
-    assert mps_equal
+
+@pytest.mark.parametrize("folder", [folder for folder in os.listdir("data/")])
+def test_example_formats_and_versions(tmp_path, folder):
+    """
+    Tests if all example folders have the expected versions and are in the correct format
+    :return: None
+    """
+    ew = ExcelWriter()
+    inequal_files = []
+
+    printer.information(f"Checking folder '{folder}'")
+    for file in os.listdir(f"data/{folder}"):
+        if file.endswith(".xlsx"):
+            file_path = os.path.join(f"data/{folder}", file)
+            excel_definition_id = file.replace(".xlsx", "")
+            if not hasattr(ExcelReader, f"get_{excel_definition_id}"):
+                printer.warning(f"Skipping '{file_path}' since no reader function found for '{excel_definition_id}'")
+                continue
+
+            printer.information(f"Writing '{excel_definition_id}', read from '{file_path}'")
+
+            data = getattr(ExcelReader, f"get_{excel_definition_id}")(file_path, True)
+            getattr(ew, f"write_{excel_definition_id}")(data, str(tmp_path))
+
+            printer.information(f"Comparing '{tmp_path}/{excel_definition_id}.xlsx' against source file '{file_path}'")
+            filesEqual = ExcelReader.compare_Excels(file_path, f"{tmp_path}/{excel_definition_id}.xlsx", dont_check_formatting=False)
+
+            if not filesEqual:
+                inequal_files.append((folder, excel_definition_id))
+                printer.error(f"Files {file_path} and {tmp_path}/{excel_definition_id}.xlsx are not equal!")
+
+    assert len(inequal_files) == 0, f"The following files in folder {folder} do not have the required version and/or format: {inequal_files}"
 
 
 def test_documentationMPSArchive():
     """
     Checks if all MPS files in the archive have a description and if all descriptions are found in the archive.
+    Handles both compressed (.mps.zip) and uncompressed (.mps) files.
     :return: None
     """
     descriptionMissing = []
 
     # Get all descriptions of MPS files
-    with open("data/mps-archive/mps-file-descriptions.txt", "r") as description_file:
+    with open("tests/data/mps-archive/mps-file-descriptions.txt", "r") as description_file:
         lines = [line.rstrip() for line in description_file]
         entries = {}
         for line in lines:
             if line.startswith("#") or not line.strip():
                 continue  # Skip comment lines and empty lines
             split = line.split(" ", 1)
-            entries[split[0]] = split[1]
-    printer.information(f"Found {len(entries)} MPS file descriptions in 'data/mps-archive/mps-file-descriptions.txt'")
+            filename = split[0]
+            if filename.endswith('.mps.7z'):
+                filename = filename[:-3]  # Remove '.7z'
+            entries[filename] = split[1]
+    printer.information(f"Found {len(entries)} MPS file descriptions in 'tests/data/mps-archive/mps-file-descriptions.txt'")
 
-    # Check if all MPS files in the archive have a description
+    # Check if all MPS files (compressed or uncompressed) in the archive have a description
     counter_correct = 0
-    for mpsFile in os.listdir("data/mps-archive"):
-        if mpsFile.endswith(".mps"):
-            if mpsFile not in entries:
-                descriptionMissing.append(mpsFile)
-            else:
-                del entries[mpsFile]
-                counter_correct += 1
-        elif mpsFile == "mps-file-descriptions.txt":
+    archive_files = os.listdir("tests/data/mps-archive")
+
+    for archive_file in archive_files:
+        if archive_file.endswith(".mps"):
+            mps_filename = archive_file
+        elif archive_file.endswith(".mps.7z"):
+            mps_filename = archive_file[:-3]  # Remove '.7z'
+        elif archive_file == "mps-file-descriptions.txt":
             continue  # Skip the description file itself
         else:
-            printer.information(f"Skipping non-MPS file '{mpsFile}'")
+            printer.information(f"Skipping non-MPS file '{archive_file}'")
+            continue
+
+        if mps_filename not in entries:
+            descriptionMissing.append(mps_filename)
+        else:
+            del entries[mps_filename]
+            counter_correct += 1
+
     printer.information(f"Found {counter_correct} MPS files with a description in the archive")
 
     if len(descriptionMissing) > 0:

@@ -1,5 +1,6 @@
 import typing
 from collections import OrderedDict
+from itertools import islice
 
 import cplex
 
@@ -362,18 +363,18 @@ def compare_linear_constraints(constraints1: dict[str, OrderedDict[str, float]],
             cleaned[cname] = new_coeffs
         return cleaned
 
+    printer.information("Removing variables fixed to zero from Model1...")
     cleaned_constraints1_raw = clear_linear_constraints(constraints1)
-    cleaned_constraints2_raw = clear_linear_constraints(constraints2)
-
     removed1 = [k for k, v in cleaned_constraints1_raw.items() if len(v) == 0]
-    removed2 = [k for k, v in cleaned_constraints2_raw.items() if len(v) == 0]
-
     if len(removed1) > 0:
         printer.information(f"Removed {len(removed1)} constraints of 0 length from Model1 after eliminating fixed-to-zero vars.")
         printer.information("Example constraints removed from Model1: " + ", ".join(removed1[:5]))
     else:
         printer.information("No constraints of 0 length removed from Model1 after eliminating fixed-to-zero vars.")
 
+    printer.information("Removing variables fixed to zero from Model2...")
+    cleaned_constraints2_raw = clear_linear_constraints(constraints2)
+    removed2 = [k for k, v in cleaned_constraints2_raw.items() if len(v) == 0]
     if len(removed2) > 0:
         printer.information(f"Removed {len(removed2)} constraints of 0 length from Model2 after eliminating fixed-to-zero vars.")
         printer.information("Example constraints removed from Model2: " + ", ".join(removed2[:5]))
@@ -392,10 +393,13 @@ def compare_linear_constraints(constraints1: dict[str, OrderedDict[str, float]],
     counter_missing2_total = 0
 
     for length, group1 in constraint_dicts1.items():
+        printer.information("Comparing constraints of length " + str(length) + f" (total {len(group1)})")
         if length not in constraint_dicts2:
             counter_missing2_total += len(group1)
             if print_additional_information:
-                printer.information(f"No constraints of length {length} in Model2; skipping {len(group1)} constraints.")
+                printer.information(f"No constraints of length {length} in Model2; skipping {len(group1)} constraints, e.g.: ")
+                for k, v in islice(group1.items(), 5):
+                    printer.information(f"  - {k}: {[c for c in v]}")
             continue
 
         group2 = constraint_dicts2[length]
@@ -459,19 +463,16 @@ def compare_linear_constraints(constraints1: dict[str, OrderedDict[str, float]],
             if not matched:
                 counter_missing2_total += 1
                 if print_additional_information:
-                    printer.information(f"No match for constraint: {cname1}")
+                    printer.information(f"No match for constraint in Model2: {cname1}")
 
         unmatched_2 = len(group2) - len(matched_in_group2)
         counter_missing1_total += unmatched_2
 
         if unmatched_2 > 0 and print_additional_information:
-            printer.information(f"{unmatched_2} constraints of length {length} in Model2 unmatched for in Model1")
-
-            # Print missing constraint names or keys
+            printer.information(f"{unmatched_2} constraints of length {length} in Model2 unmatched for in Model1, e.g.:")
             missing_constraints = [key for key in group2 if key not in matched_in_group2]
-            printer.information("Example unmatched constraints of Model2 missing in Model1:")
-            for key in missing_constraints[:50]:
-                printer.information(f"  - {key}")
+            for key in missing_constraints[:5]:
+                printer.information(f"  - {key}: {[c for c in group2[key]]}")
 
     extra_lengths_in_model2 = set(constraint_dicts2.keys()) - set(constraint_dicts1.keys())
     for length in extra_lengths_in_model2:
@@ -480,7 +481,9 @@ def compare_linear_constraints(constraints1: dict[str, OrderedDict[str, float]],
         num_unmatched = len(unmatched_group)
         counter_missing1_total += num_unmatched
         if num_unmatched > 0 and print_additional_information:
-            printer.information(f"{num_unmatched} constraints in Model2 of length {length} missing in Model1.")
+            printer.information(f"{num_unmatched} constraints in Model2 of length {length} missing in Model1, e.g.:")
+            for key in islice(unmatched_group.keys(), 5):
+                printer.information(f"  - {key} with coefficients: {[c for c in unmatched_group[key]]}")
 
     if constraints_to_enforce_from2:
         for enforced_name in constraints_to_enforce_from2:
@@ -671,12 +674,16 @@ def compare_variables(vars1, vars2, vars_fixed_to_zero=None, precision: float = 
 
     if counter > 0:
         printer.success(f"{counter} variables matched perfectly")
+    if counter_missing2_total > 0:
+        printer.error(f"{counter_missing2_total} variables missing in Model2 in total")
 
     if len(vars2) > 0:  # If there are still variables left in Model2 that were not found in Model1
         if print_additional_information:
             missing_var_names = [v[0] for v in vars2]
             formatted_var_list = ", ".join(missing_var_names)
-            printer.error(f"Variables missing in Pyomo model ({len(vars2)} total): {formatted_var_list}")
+            printer.error(f"Variables missing in Model1 ({len(vars2)} total): {formatted_var_list}")
+        else:
+            printer.error(f"{len(vars2)} variables missing in Model1 in total")
 
         counter_missing1_total += len(vars2)
 
@@ -831,13 +838,17 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
             coefficients_to_skip_from2 = coefficients_to_skip_from2 + ["constobj"] if coefficients_to_skip_from2 else ["constobj"]
 
     # Load MPS files
+    printer.information(f"Loading MPS files, starting with {file1}...")
     model1 = get_model_data(load_mps(str(file1)))
+    printer.information(f"First MPS file loaded, now loading second MPS file from {file2}...")
     model2 = get_model_data(load_mps(str(file2)))
+    printer.information("Both MPS files loaded.")
 
     comparison_results = {}
 
     # Variables
     if check_vars:
+        printer.information(f"Comparing variables...")
         vars1 = set()
         for i, var in enumerate(model1["variables"]):
             norm_var = normalize_variable_names(var, file1_removeScenarioPrefix)
@@ -858,8 +869,10 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
 
         comparison_results["variables"] = compare_variables(vars1, vars2, vars_fixed_to_zero=vars_fixed_to_zero, print_additional_information=print_additional_information)
 
+        printer.information("Variable comparison done.")
     # Constraints
     if check_constraints:
+        printer.information(f"Comparing linear constraints...")
         # If any of enforce is in skip, raise error
         if constraints_to_skip_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)):
             raise ValueError(f"constraints_to_skip_from2 contains elements of constraints_to_enforce_from2: {set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)}")
@@ -876,7 +889,10 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
         # Check if constraints are the same
         comparison_results['constraints'] = compare_linear_constraints(constraints1, constraints2, vars_fixed_to_zero=vars_fixed_to_zero, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
 
+        printer.information("Constraints comparison done.")
+
     if check_quadratic_constraints:
+        printer.information(f"Comparing quadratic constraints...")
         # If any of enforce is in skip, raise error
         if constraints_to_skip_from2 and len(constraints_to_enforce_from2) != len(set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)):
             raise ValueError(f"constraints_to_skip_from2 contains elements of constraints_to_enforce_from2: {set(constraints_to_enforce_from2).difference(constraints_to_skip_from2)}")
@@ -893,8 +909,11 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
         # Check if constraints are the same
         comparison_results['quadratic_constraints'] = compare_quadratic_constraints(quad_constraints1, quad_constraints2, vars_fixed_to_zero=vars_fixed_to_zero, constraints_to_enforce_from2=constraints_to_enforce_from2, print_additional_information=print_additional_information)
 
+        printer.information("Quadratic constraints comparison done.")
+
     # Objective
     if check_objectives:
+        printer.information(f"Comparing objective functions...")
         vars_fixed_to_zero = get_fixed_zero_variables(model1, remove_scenario_prefix=file1_removeScenarioPrefix)
 
         objective1, quad_objective1 = normalize_objective(model1,
@@ -911,6 +930,8 @@ def compare_mps(*, file1, file1_isPyomoFormat: bool, file1_removeScenarioPrefix:
         if len(quad_objective1) > 0 or len(quad_objective2) > 0:
             printer.information("Also comparing quadratic objective coefficients...")
             comparison_results['quadratic coefficients of objective'] = compare_objectives(quad_objective1, quad_objective2)
+
+        printer.information(f"Objective coefficients comparison done.")
 
     # Print results
     printer.information("\n   ---------   \n\nResults of MPS Comparison:")

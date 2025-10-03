@@ -2,7 +2,10 @@ import pandas as pd
 import pyomo.environ as pyo
 
 from InOutModule.CaseStudy import CaseStudy
+from InOutModule.printer import Printer
 from LEGO import LEGOUtilities, LEGO
+
+printer = Printer.getInstance()
 
 
 @LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
@@ -28,11 +31,35 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     LEGO.addToParameter(model, 'pMaxGenQ', cs.dPower_VRES['Qmax'])
     LEGO.addToParameter(model, 'pMinGenQ', cs.dPower_VRES['Qmin'])
 
+    dCapacityFactor = cs.dPower_VRESProfiles["value"]
+    ror_with_spillage = []  # List of ror generators that have spillage (i.e., inflow > maximum production)
+    for g in model.vresGenerators:
+        if g in cs.dPower_Inflows.index.get_level_values("g"):
+            if g in cs.dPower_VRESProfiles.index.get_level_values("g"):
+                raise ValueError(f"Generator '{g}' has both VRES profiles and inflows defined - please provide only one of them.")
+
+            capacityFactors = cs.dPower_Inflows.loc[(slice(None), slice(None), g), 'value'] / model.pMaxProd[g]
+            if capacityFactors.max() > 1.0:
+                capacityFactors.loc[(slice(None), slice(None), g), 'value'] = capacityFactors.loc[(slice(None), slice(None), g), 'value'].clip(upper=1.0)  # If inflows exceed maximum production, forced spillage occurs and we need to clip the values
+                ror_with_spillage.append(g)
+            dCapacityFactor = pd.concat([dCapacityFactor, capacityFactors], axis=0)
+        elif g not in cs.dPower_VRESProfiles.index.get_level_values("g"):
+            raise ValueError(f"Generator '{g}' does not have VRES profiles or inflows defined - please provide one of them.")
+
+    if len(ror_with_spillage):
+        printer.warning(f"The following generators have inflows that exceed maximum production - it got capped to 1: {ror_with_spillage}")
+    model.pCapacityFactors = pyo.Param(model.rp, model.k, model.vresGenerators, initialize=dCapacityFactor, doc="Capacity factor of VRES generators (from VRES profiles and inflows)")
+
     # Variables
+    model.vCurtailment = pyo.Var(model.rp, model.k, model.vresGenerators, doc="Curtailment of VRES generators", bounds=(0, None))
+    second_stage_variables.append(model.vCurtailment)
+
     for g in model.vresGenerators:
         for rp in model.rp:
             for k in model.k:
-                model.vGenP[rp, k, g].setub((model.pMaxProd[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])) * cs.dPower_VRESProfiles.loc[rp, k, g]['value']))
+                maximumProduction = model.pMaxProd[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])) * model.pCapacityFactors[rp, k, g]
+                model.vCurtailment[rp, k, g].setub(maximumProduction)
+                model.vGenP[rp, k, g].setub(maximumProduction)
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
@@ -41,9 +68,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def eReMaxProd_rule(model, rp, k, r):
-        capacity = cs.dPower_VRESProfiles.loc[rp, k, r]['value']
-        capacity = capacity.values[0] if isinstance(capacity, pd.Series) else capacity
-        return model.vGenP[rp, k, r] <= model.pMaxProd[r] * (model.vGenInvest[r] + model.pExisUnits[r]) * capacity
+        return model.vGenP[rp, k, r] + model.vCurtailment[rp, k, r] == model.pMaxProd[r] * (model.pExisUnits[r] + model.vGenInvest[r]) * model.pCapacityFactors[rp, k, r]
 
     model.eReMaxProd = pyo.Constraint(model.rp, model.k, model.vresGenerators, rule=eReMaxProd_rule)
 
