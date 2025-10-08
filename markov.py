@@ -316,6 +316,17 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
         df.T.to_excel(unit_commitment_result_file)
 
 
+def copy_files_non_recursive(src_folder: str, dst_folder: str):
+    if not os.path.exists(dst_folder):
+        os.makedirs(dst_folder)
+
+    for item in os.listdir(src_folder):
+        s = os.path.join(src_folder, item)
+        d = os.path.join(dst_folder, item)
+        if os.path.isfile(s):
+            shutil.copy2(s, d)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compare edge-handling for given case-study", formatter_class=RichHelpFormatter)
     parser.add_argument("caseStudyFolder", type=str, help="Path to folder containing data for LEGO model. Can be a comma-separated list of multiple folders (executed after each other)")
@@ -329,8 +340,12 @@ if __name__ == "__main__":
     parser.add_argument("--relax-percentage", type=float, default=0, help="Percentage of thermal-generators to be relaxed (default: 0 = no relaxation, all binary)")
     parser.add_argument("--skip-truth", action="store_true", help="Skip solving the truth model")
     parser.add_argument("--clusters", type=int, default=1, help="Number of clusters (default: 1, i.e., no clustering)")
-    parser.add_argument("--cluster-stepsize", type=int, default=0, help="If in-/decreasing number of clusters should be used (default: 0 = no in-/decreasing)")
-    parser.add_argument("--cluster-steps", type=int, default=10, help="Number of steps for in-/decreasing number of clusters (default: 10)")
+    parser.add_argument("--cluster-stepsize", type=int, default=1, help="If in-/decreasing number of clusters should be used (default: 1, leave cluster-steps default to not use in-/decreasing number of clusters)")
+    parser.add_argument("--cluster-steps", type=int, default=0, help="Number of steps for in-/decreasing number of clusters (default: 0, i.e., leave clusters as given)")
+    parser.add_argument("--shorten-until-k", type=int, default=None, help="Shorten the case study to only consider k=1..N (for faster testing), e.g., 24 for one day, 168 for one week")
+    parser.add_argument("--shift", type=int, default=0, help="Shift the time series by N hours (for testing purposes), e.g., 15 to shift by 15 hours")
+    parser.add_argument("--stretch-demand", type=float, default=1.0, help="Stretch the demand by a factor (for testing purposes), e.g., 1.1 to increase max of demand by 5% and decrease min by 5%")
+    parser.add_argument("--reuse-inputfiles", action="store_true", help="Reuse input files (e.g., after shortening) instead of copying them to a new folder")
     args = parser.parse_args()
 
     ew = ExcelWriter()
@@ -341,16 +356,89 @@ if __name__ == "__main__":
                 folder += "/"
             folder_name = os.path.basename(os.path.normpath(folder))
 
+            if args.shorten_until_k is not None:
+                printer.information(f"Shortening case study to k<={args.shorten_until_k}")
+                new_folder = folder + f"untilK{args.shorten_until_k}/"
+                if args.reuse_inputfiles and os.path.exists(new_folder):
+                    printer.information(f"Reusing already shortened case study in '{new_folder}'")
+                    folder = new_folder
+                else:
+                    copy_files_non_recursive(folder, new_folder)  # Copy original data to new folder
+                    folder = new_folder
+                    printer.information(f"Copied original case study to '{folder}'")
+
+                    cs = CaseStudy(folder, do_not_scale_units=True)
+                    printer.information(f"Case study loaded, now shortening")
+                    cs = cs.filter_timesteps("k0001", f"k{args.shorten_until_k:04}")
+                    if not os.path.exists(folder):
+                        os.makedirs(folder)
+                    printer.information(f"Shortened, now writing to '{folder}'")
+                    ew.write_caseStudy(cs, folder)
+                    printer.information(f"Saved shortened case study to '{folder}'")
+
+            if args.shift != 0:
+                printer.information(f"Shifting case study by {args.shift} hours")
+                new_folder = folder + f"shift{args.shift}/"
+                if args.reuse_inputfiles and os.path.exists(new_folder):
+                    printer.information(f"Reusing already shifted case study in '{new_folder}'")
+                    folder = new_folder
+                else:
+                    copy_files_non_recursive(folder, new_folder)  # Copy original data
+                    folder = new_folder
+                    printer.information(f"Copied original case study to '{folder}'")
+
+                    cs = CaseStudy(folder, do_not_scale_units=True)
+                    printer.information(f"Case study loaded, now shifting")
+                    cs = cs.shift_ks(args.shift)
+                    printer.information(f"Shifted by {args.shift}")
+                    if not os.path.exists(folder):
+                        os.makedirs(folder)
+                    ew.write_caseStudy(cs, folder)
+                    printer.information(f"Wrote shifted case study to '{folder}'")
+
+            if args.stretch_demand != 1.0:
+                printer.information(f"Stretching demand by factor {args.stretch_demand}")
+                new_folder = folder + f"stretchDemand{args.stretch_demand:.2f}/"
+                if args.reuse_inputfiles and os.path.exists(new_folder):
+                    printer.information(f"Reusing already demand-stretched case study in '{new_folder}'")
+                    folder = new_folder
+                else:
+                    copy_files_non_recursive(folder, new_folder)  # Copy original data
+                    folder = new_folder
+                    printer.information(f"Copied original case study to '{folder}'")
+
+                    cs = CaseStudy(folder, do_not_scale_units=True)
+                    printer.information(f"Case study loaded, now stretching demand for each bus around center")
+                    minimum = cs.dPower_Demand.groupby("i")["value"].min()
+                    maximum = cs.dPower_Demand.groupby("i")["value"].max()
+                    center = (minimum + maximum) / 2
+                    scaler = 1 + (args.stretch_demand - 1) / 2
+                    for rp, k, i in cs.dPower_Demand.index:
+                        cs.dPower_Demand.at[(rp, k, i), "value"] = center[i] + (cs.dPower_Demand.at[(rp, k, i), "value"] - center[i]) * scaler
+
+                    # Fail if any of the values is negative
+                    if (cs.dPower_Demand["value"] < 0).any():
+                        raise ValueError(f"Stretching demand by factor {args.stretch_demand} leads to negative demand values, aborting")
+
+                    printer.information(f"Stretched demand by factor {args.stretch_demand}")
+                    if not os.path.exists(folder):
+                        os.makedirs(folder)
+                    ew.write_caseStudy(cs, folder)
+                    printer.information(f"Wrote demand-stretched case study to '{folder}'")
+
             clusters = list(range(args.clusters, args.clusters + args.cluster_steps * args.cluster_stepsize + 1, args.cluster_stepsize))
             for cluster in clusters:
                 cluster_folder = folder
                 if cluster > 1:
-                    cluster_folder = cluster_folder[:-1] + f"-{cluster} clusters/"
-                    shutil.copytree(folder, cluster_folder, dirs_exist_ok=True)  # Copy original data to new folder
+                    cluster_folder = cluster_folder + f"{cluster} clusters/"
+                    if args.reuse_inputfiles and os.path.exists(cluster_folder):
+                        printer.information(f"Reusing already clustered case study in '{cluster_folder}'")
+                    else:
+                        copy_files_non_recursive(folder, cluster_folder)  # Copy original data to new folder
 
-                    cs = CaseStudy(cluster_folder, do_not_scale_units=True)
-                    cs_clustered = Utilities.apply_kmedoids_aggregation(cs, cluster)
-                    ew.write_caseStudy(cs_clustered, cluster_folder)
+                        cs = CaseStudy(cluster_folder, do_not_scale_units=True)
+                        cs_clustered = Utilities.apply_kmedoids_aggregation(cs, cluster)
+                        ew.write_caseStudy(cs_clustered, cluster_folder)
 
                     printer.set_logfile(f"markov-{folder_name}-{cluster}clusters.log")
                     unit_commitment_result_file_template = f"unitCommitmentResult-{folder_name}-{cluster}clusters.xlsx"
