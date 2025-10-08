@@ -1,0 +1,7 @@
+# Descriptions of MPS files in the archive, one entry per MPS file in the archive is required
+# Empty lines and lines beginning with '#' are ignored
+# Format: <filename> <description>
+
+example-02d0e5c039a4894bbc68ff866920ba1e33908e3a.mps.7z Commit from 25.09.2025, introduced Storage & RoR, improved building-time (using pre-computed sets, lists and dictionaries)
+example-SOCP-fa7dc14c2c814953ef0dcb93e98c4dd78dee6b78.mps.7z Commit from 03.10.2025, reference solution with new storage and RoR formulation, solving example as SOCP
+exampleStochastic-ExtensiveForm-addc96124b5ee0162dadd12be9fe649a537d9e41.mps.7z Commit from 26.09.2025, added an actual second scenario
