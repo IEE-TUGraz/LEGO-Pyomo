@@ -409,16 +409,17 @@ if __name__ == "__main__":
 
                     cs = CaseStudy(folder, do_not_scale_units=True)
                     printer.information(f"Case study loaded, now stretching demand for each bus around center")
-                    minimum = cs.dPower_Demand.groupby("i")["value"].min()
-                    maximum = cs.dPower_Demand.groupby("i")["value"].max()
-                    center = (minimum + maximum) / 2
+                    center = cs.dPower_Demand.groupby("i")["value"].mean()
                     scaler = 1 + (args.stretch_demand - 1) / 2
                     for rp, k, i in cs.dPower_Demand.index:
                         cs.dPower_Demand.at[(rp, k, i), "value"] = center[i] + (cs.dPower_Demand.at[(rp, k, i), "value"] - center[i]) * scaler
 
                     # Fail if any of the values is negative
                     if (cs.dPower_Demand["value"] < 0).any():
-                        raise ValueError(f"Stretching demand by factor {args.stretch_demand} leads to negative demand values, aborting")
+                        to_clip = cs.dPower_Demand[cs.dPower_Demand['value'] < 0]
+                        printer.warning(f"Stretching demand by factor {args.stretch_demand} leads to negative demand values, clipping {to_clip.shape[0]} values for {len(to_clip.index.get_level_values('i').unique())} nodes to 0")
+                        printer.warning(f"Clipping for nodes: {", ".join([f"{i} for {to_clip[to_clip.index.get_level_values("i") == i].shape[0]} values" for i in to_clip.index.get_level_values('i').unique().tolist()])}")
+                        cs.dPower_Demand["value"] = cs.dPower_Demand["value"].clip(lower=0)
 
                     printer.information(f"Stretched demand by factor {args.stretch_demand}")
                     if not os.path.exists(folder):
