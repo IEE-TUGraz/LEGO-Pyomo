@@ -5,12 +5,12 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "LEGO data/Szenario_Trafo",
+            "name": "LEGO data/Szenario_Default",
             "type": "debugpy",
             "request": "launch",
             "program": "LEGO.py",
             "console": "integratedTerminal",
-            "args": "data/Szenario_Trafo"
+            "args": "data/Szenario_Default"
         },
         {
             "name": "LEGO data/Szenario_Link_staggered_different",
@@ -37,6 +37,24 @@
             "program": "LEGO.py",
             "console": "integratedTerminal",
             "args": "data/Szenario_Trafo_Full"
+        },
+
+        {
+            "name": "LEGO data/Szenario_Link_equal",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "LEGO.py",
+            "console": "integratedTerminal",
+            "args": "data/Szenario_Link_equal"
+        },
+
+        {
+            "name": "LEGO data/Szenario_Link_different",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "LEGO.py",
+            "console": "integratedTerminal",
+            "args": "data/Szenario_Link_different"
         },
 
     ]
