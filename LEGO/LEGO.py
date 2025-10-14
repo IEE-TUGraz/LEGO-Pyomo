@@ -87,11 +87,18 @@ class LEGO:
         elif self.cs.dGlobal_Parameters["pSolver"] != solver_name:
             printer.warning(f"Solver name {solver_name} does not match the one used in the case study ({self.cs.dGlobal_Parameters['pSolver']}) - using {solver_name}")
 
+        enable_RMIP = self.cs.dGlobal_Parameters["pEnableRMIP"]
+        mip_gap = self.cs.dGlobal_Parameters["pMIPGap"]
         start_time = time.time()
         match model_type:
             case ModelType.DETERMINISTIC:
                 optimizer = pyo.SolverFactory(solver_name)
-                results = optimizer.solve(self.model, tee=True)
+                if solver_name == "gurobi" and mip_gap is not None and enable_RMIP == 0:
+                    results = optimizer.solve(self.model, tee=True, options={"MIPGap": mip_gap})
+                elif solver_name == "highs" and mip_gap is not None and enable_RMIP == 0:
+                    results = optimizer.solve(self.model, tee=True, options={"mip_rel_gap": mip_gap})
+                else:
+                    results = optimizer.solve(self.model, tee=True)
                 objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
             case ModelType.EXTENSIVE_FORM:
                 if solver_name != self.solver_name:
