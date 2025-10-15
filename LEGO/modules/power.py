@@ -191,7 +191,11 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         model.vTheta[:, :, slack_node].fix(0)
         if cs.dPower_Parameters['pEnableSOCP']:
             printer.information("Fixed voltage magnitude at slack node: ", pyo.value(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage'])))
+            for v in model.vSOCP_cii[:, :, slack_node]:
+                v.setub(None)
+                v.setlb(None)
             model.vSOCP_cii[:, :, slack_node].fix(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage']))
+
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
