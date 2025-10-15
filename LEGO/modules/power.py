@@ -158,6 +158,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         model.vGenQ = pyo.Var(model.rp, model.k, model.g, doc='Reactive power output of ge', bounds=lambda model, rp, k, g: (model.pMinGenQ[g] * (model.pExisUnits[g] + model.pMaxInvest[g] * model.pEnabInv[g]), model.pMaxGenQ[g] * (model.pExisUnits[g] + model.pMaxInvest[g] * model.pEnabInv[g])))
         second_stage_variables.append(model.vGenQ)
 
+        model.vQNS = pyo.Var(model.rp, model.k, model.i, doc='Slack variable reactive power not served', bounds=lambda model, rp, k, i: (0, model.pDemandP[rp, k, i]))
+        second_stage_variables += [model.vQNS]
+
+        model.vEQS = pyo.Var(model.rp, model.k, model.i, doc='Slack variable excess reactive power served', bounds=(0, None))
+        second_stage_variables += [model.vEQS]
+
     # For each DC-OPF/SOCP "island", set node with highest demand as slack node
     dTechnicalReprIslands = pd.DataFrame(index=cs.dPower_BusInfo.index, columns=[cs.dPower_BusInfo.index], data=False)
 
@@ -281,7 +287,9 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     + m.vSOCP_cii[rp, k, i] * m.pBusB[i] * m.pSBase
                     - m.pDemandQ[rp, k, i]
                     + m.vPNS[rp, k, i] * m.pRatioDemQP[i]
-                    - m.vEPS[rp, k, i] * m.pRatioDemQP[i])
+                    - m.vEPS[rp, k, i] * m.pRatioDemQP[i]
+                    + m.vQNS[rp, k, i]
+                    - m.vEQS[rp, k, i])
 
         def eSOCP_ExiLinePij_rule(m, rp, k, i, j, c):
             return (m.vLineP[rp, k, i, j, c] == m.pSBase * (
@@ -451,11 +459,27 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
                              sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
+    if not cs.dPower_Parameters["pEnableSOCP"]:
+        # Reactive slack node terms included when SOCP active
+        def ens_terms(rp, k):
+            return sum(
+                model.vPNS[rp, k, i] * model.pENSCost
+                + model.vEPS[rp, k, i] * model.pENSCost * 2
+                for i in model.i
+            )
+    else:
+        def ens_terms(rp, k):
+            return sum(
+                model.vPNS[rp, k, i] * model.pENSCost
+                + model.vEPS[rp, k, i] * model.pENSCost * 2
+                + model.vQNS[rp, k, i] * model.pENSCost
+                + model.vEQS[rp, k, i] * model.pENSCost * 2
+                for i in model.i
+            )
+
     second_stage_objective = sum(model.pWeight_rp[rp] *  # Weight of representative periods
                                  sum(model.pWeight_k[k] *  # Weight of time steps
-                                     (+ sum(+ model.vPNS[rp, k, i] * model.pENSCost  # Power not served
-                                            + model.vEPS[rp, k, i] * model.pENSCost * 2  # Excess power served
-                                            for i in model.i)
+                                     (ens_terms(rp, k) # Power non supplied terms
                                       + sum(+ model.vGenP[rp, k, g] * model.pOMVarCost[g]  # Production cost of generators
                                             for g in model.g))
                                      for k in model.k)

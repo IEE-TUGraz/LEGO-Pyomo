@@ -35,12 +35,12 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         for k in model.k:
             for hub, i in model.hubConnections:
                 model.eDC_BalanceP_expr[rp, k, i] += model.vImpExp[rp, k, hub, i]
-
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0
 
     # Add import/export cost/revenues to total cost
     second_stage_objective = sum(model.vImpExp[rp, k, hub, i] * model.pImpExpPrice[rp, k, hub, i] for rp in model.rp for k in model.k for hub, i in model.hubConnections)
+
 
     # Adjust objective and return first_stage_objective expression
     model.objective.expr += first_stage_objective + second_stage_objective

@@ -102,7 +102,7 @@ else:
     model_old = None
     total_timesteps = len(cs.dPower_WeightsK.index.unique())
 
-    for end in range(rh_length, total_timesteps, rh_length - rh_overlap):
+    for end in range(rh_length, total_timesteps + 1, rh_length - rh_overlap):
         start_time_iteration = time.time()
 
         start = "k00001"
@@ -126,7 +126,7 @@ else:
 
                     if "k" in indices:
                         new_component = getattr(model, str(component))
-                        new_end = f"k{int(end[1:]) - rh_length:04}"
+                        new_end = f"k{int(end[1:]) - rh_length:05}"
                         for n, v in list(component.items()):
                             if start <= n[(indices.index('k'))] <= new_end:
                                 if v.value is not None:
