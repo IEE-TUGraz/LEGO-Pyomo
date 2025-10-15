@@ -22,7 +22,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.pImpExpPrice = pyo.Param(model.rp, model.k, model.hubConnections, doc='Imp-/Export price at hub', initialize=cs.dPower_ImportExport['ImpExpPrice'].reorder_levels(["rp", "k", "hub", "i"]))
 
     model.vImpExp = pyo.Var(model.rp, model.k, model.hubConnections, doc='Import/Export at hub connection', bounds=lambda m, rp, k, hub, i: (model.pImpExpMinimum[rp, k, hub, i], model.pImpExpMaximum[rp, k, hub, i]))
-    second_stage_variables += [model.vImpExp]
+    model.vImpExpQ = pyo.Var(model.rp, model.k, model.hubConnections, doc='Reactive power associated with Import/Export at hub connection', bounds=lambda m, rp, k, hub, i: (model.pImpExpMinimum[rp, k, hub, i], model.pImpExpMaximum[rp, k, hub, i]))
+    second_stage_variables += [model.vImpExp, model.vImpExpQ]
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
@@ -35,11 +36,12 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         for k in model.k:
             for hub, i in model.hubConnections:
                 model.eDC_BalanceP_expr[rp, k, i] += model.vImpExp[rp, k, hub, i]
+                model.eSOCP_BalanceQ_expr[rp, k, i] += model.vImpExpQ[rp, k, hub, i]
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0
 
     # Add import/export cost/revenues to total cost
-    second_stage_objective = sum(model.vImpExp[rp, k, hub, i] * model.pImpExpPrice[rp, k, hub, i] for rp in model.rp for k in model.k for hub, i in model.hubConnections)
+    second_stage_objective = sum((model.vImpExp[rp, k, hub, i] + model.vImpExpQ[rp, k, hub, i]) * model.pImpExpPrice[rp, k, hub, i] for rp in model.rp for k in model.k for hub, i in model.hubConnections)
 
 
     # Adjust objective and return first_stage_objective expression
