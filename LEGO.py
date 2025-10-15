@@ -105,8 +105,8 @@ else:
     for end in range(rh_length, total_timesteps, rh_length - rh_overlap):
         start_time_iteration = time.time()
 
-        start = "k0001"
-        end = f"k{end:04}"
+        start = "k00001"
+        end = f"k{end:05}"
         printer.information(f"[Runtime] Moving window until {end} took {time.time() - start_time:.2f} seconds")
 
         cut_cs = cs.filter_timesteps(start, end)
