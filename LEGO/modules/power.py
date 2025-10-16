@@ -190,8 +190,15 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         printer.information(f"Zone {i:>2} - Slack node: {slack_node}")
         model.vTheta[:, :, slack_node].fix(0)
         if cs.dPower_Parameters['pEnableSOCP']:
-            printer.information("Fixed voltage magnitude at slack node: ", pyo.value(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage'])))
-            model.vSOCP_cii[:, :, slack_node].fix(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage']))
+            slack_voltage_squared = cs.dPower_Parameters['pSlackVoltage'] ** 2
+            printer.information(" Fixed voltage magnitude at slack node: ", pyo.value(slack_voltage_squared))
+
+            for v in model.vSOCP_cii[:, :, slack_node]:
+                v.setub(slack_voltage_squared)
+                v.setlb(slack_voltage_squared)
+
+            model.vSOCP_cii[:, :, slack_node].fix(slack_voltage_squared)
+
 
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
@@ -290,7 +297,8 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     + m.vPNS[rp, k, i] * m.pRatioDemQP[i]
                     - m.vEPS[rp, k, i] * m.pRatioDemQP[i]
                     + m.vQNS[rp, k, i]
-                    - m.vEQS[rp, k, i])
+                    - m.vEQS[rp, k, i]
+            )
 
         def eSOCP_ExiLinePij_rule(m, rp, k, i, j, c):
             return (m.vLineP[rp, k, i, j, c] == m.pSBase * (
