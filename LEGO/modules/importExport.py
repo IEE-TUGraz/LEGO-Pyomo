@@ -24,6 +24,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         model.vImpExp = pyo.Var(model.rp, model.k, model.hubConnections, doc='Import/Export at hub connection', bounds=lambda m, rp, k, hub, i: (model.pImpExpMinimum[rp, k, hub, i], model.pImpExpMaximum[rp, k, hub, i]))
         second_stage_variables += [model.vImpExp]
     else:
+        model.vImpExp = pyo.Var(model.rp, model.k, model.hubConnections, doc='Import/Export at hub connection', bounds=lambda m, rp, k, hub, i: (model.pImpExpMinimum[rp, k, hub, i], model.pImpExpMaximum[rp, k, hub, i]))
         model.vImpExpQ = pyo.Var(model.rp, model.k, model.hubConnections, doc='Reactive power associated with Import/Export at hub connection', bounds=lambda m, rp, k, hub, i: (model.pImpExpMinimum[rp, k, hub, i], model.pImpExpMaximum[rp, k, hub, i]))
         second_stage_variables += [model.vImpExp, model.vImpExpQ]
 
