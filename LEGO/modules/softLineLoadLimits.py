@@ -28,20 +28,20 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
-    model.eSoftLineLoadLimitPos = pyo.Constraint(model.rp, model.k, model.le, doc='Positive soft limit for line load of existing lines',
+    model.eSoftLineLoadLimitPos = pyo.Constraint(model.rp, model.constraintsActiveK, model.le, doc='Positive soft limit for line load of existing lines',
                                                  rule=lambda model, rp, k, i, j, c: model.vLineP[rp, k, i, j, c] <= model.pPmax[i, j, c] * model.pMaxLineLoad + model.vLineOverload[rp, k, i, j, c] * model.pPmax[i, j, c])
 
-    model.eSoftLineLoadLimitNeg = pyo.Constraint(model.rp, model.k, model.le, doc='Negative soft limit for line load of existing lines',
+    model.eSoftLineLoadLimitNeg = pyo.Constraint(model.rp, model.constraintsActiveK, model.le, doc='Negative soft limit for line load of existing lines',
                                                  rule=lambda model, rp, k, i, j, c: model.vLineP[rp, k, i, j, c] >= -model.pPmax[i, j, c] * model.pMaxLineLoad - model.vLineOverload[rp, k, i, j, c] * model.pPmax[i, j, c])
 
-    model.eSoftLineLoadLimitCanPos = pyo.Constraint(model.rp, model.k, model.lc, doc='Positive soft limit for line load of candidate lines',
+    model.eSoftLineLoadLimitCanPos = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc, doc='Positive soft limit for line load of candidate lines',
                                                     rule=lambda model, rp, k, i, j, c: model.vLineP[rp, k, i, j, c] <= model.pPmax[i, j, c] * model.pMaxLineLoad * model.vLineInvest[i, j, c] + model.vLineOverload[rp, k, i, j, c] * model.pPmax[i, j, c])
 
-    model.eSoftLineLoadLimitCanNeg = pyo.Constraint(model.rp, model.k, model.lc, doc='Negative soft limit for line load of candidate lines',
+    model.eSoftLineLoadLimitCanNeg = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc, doc='Negative soft limit for line load of candidate lines',
                                                     rule=lambda model, rp, k, i, j, c: model.vLineP[rp, k, i, j, c] >= -model.pPmax[i, j, c] * model.pMaxLineLoad * model.vLineInvest[i, j, c] - model.vLineOverload[rp, k, i, j, c] * model.pPmax[i, j, c])
 
     # Note: The term (1 - pMaxLineLoad) ensures that this also makes sense in an rMIP context (e.g., 50% vLineInvest with 70% pMaxLineLoad (=> 30% vLineOverload) limits vLineOverload to 15% (= 30% * 50%))
-    model.eSoftLineLoadLimitCanInv = pyo.Constraint(model.rp, model.k, model.lc, doc='Limit for vLineOverload if candidate line is not invested in',
+    model.eSoftLineLoadLimitCanInv = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc, doc='Limit for vLineOverload if candidate line is not invested in',
                                                     rule=lambda model, rp, k, i, j, c: model.vLineInvest[i, j, c] >= model.vLineOverload[rp, k, i, j, c] / (1 - model.pMaxLineLoad))
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
@@ -52,7 +52,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                                  sum(model.pWeight_k[k] *
                                      sum(model.vLineOverload[rp, k, i, j, c]
                                          for i, j, c in model.la)
-                                     for k in model.k)
+                                     for k in model.constraintsActiveK)
                                  for rp in model.rp) * model.pLOLCost
 
     # Adjust objective and return first_stage_objective expression

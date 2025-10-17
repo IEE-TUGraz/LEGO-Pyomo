@@ -36,7 +36,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # Add import/export to power-balance of each node in each hour
     for rp in model.rp:
-        for k in model.k:
+        for k in model.constraintsActiveK:
             for hub, i in model.hubConnections:
                 model.eDC_BalanceP_expr[rp, k, i] += model.vImpExp[rp, k, hub, i]
                 if cs.dPower_Parameters['pEnableSOCP']:
@@ -46,9 +46,9 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     # Add import/export cost/revenues to total cost
     if not cs.dPower_Parameters['pEnableSOCP']:
-        second_stage_objective = sum(model.vImpExp[rp, k, hub, i] * model.pImpExpPrice[rp, k, hub, i] for rp in model.rp for k in model.k for hub, i in model.hubConnections)
+        second_stage_objective = sum(model.vImpExp[rp, k, hub, i] * model.pImpExpPrice[rp, k, hub, i] for rp in model.rp for k in model.constraintsActiveK for hub, i in model.hubConnections)
     else:
-        second_stage_objective = sum((model.vImpExp[rp, k, hub, i] + model.vImpExpQ[rp, k, hub, i]) * model.pImpExpPrice[rp, k, hub, i] for rp in model.rp for k in model.k for hub, i in model.hubConnections)
+        second_stage_objective = sum((model.vImpExp[rp, k, hub, i] + model.vImpExpQ[rp, k, hub, i]) * model.pImpExpPrice[rp, k, hub, i] for rp in model.rp for k in model.constraintsActiveK for hub, i in model.hubConnections)
 
 
     # Adjust objective and return first_stage_objective expression

@@ -74,7 +74,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def eReMaxProd_rule(model, rp, k, r):
         return model.vGenP[rp, k, r] + model.vCurtailment[rp, k, r] == model.pMaxProd[r] * (model.pExisUnits[r] + model.vGenInvest[r]) * model.pCapacityFactors[rp, k, r]
 
-    model.eReMaxProd = pyo.Constraint(model.rp, model.k, model.vresGenerators, rule=eReMaxProd_rule)
+    model.eReMaxProd = pyo.Constraint(model.rp, model.constraintsActiveK, model.vresGenerators, rule=eReMaxProd_rule)
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0

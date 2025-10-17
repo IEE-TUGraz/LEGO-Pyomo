@@ -72,89 +72,89 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def eThRampUp_rule(model, rp, k, g, transition_matrix):
         match cs.dPower_Parameters["pReprPeriodEdgeHandlingRamping"]:
             case "notEnforced":
-                if model.k.first() == k:
+                if model.constraintsActiveK.first() == k:
                     return None  # Is not enforced and should therefore be turned into pyo.Constraint.Skip in constraint construction
                 else:
-                    return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prev(k), g] - model.vCommit[rp, k, g] * model.pRampUp[g]
+                    return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.constraintsActiveK.prev(k), g] - model.vCommit[rp, k, g] * model.pRampUp[g]
             case "cyclic":
-                return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prevw(k), g] - model.vCommit[rp, k, g] * model.pRampUp[g]
+                return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.constraintsActiveK.prevw(k), g] - model.vCommit[rp, k, g] * model.pRampUp[g]
             case "markov":
-                if model.k.first() == k:
-                    return model.vGenP1[rp, k, g] - LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k), model.vGenP1, transition_matrix, g) - model.vCommit[rp, k, g] * model.pRampUp[g]
+                if model.constraintsActiveK.first() == k:
+                    return model.vGenP1[rp, k, g] - LEGOUtilities.markov_summand(model.rp, rp, False, model.constraintsActiveK.prevw(k), model.vGenP1, transition_matrix, g) - model.vCommit[rp, k, g] * model.pRampUp[g]
                 else:
-                    return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prev(k), g] - model.vCommit[rp, k, g] * model.pRampUp[g]
+                    return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.constraintsActiveK.prev(k), g] - model.vCommit[rp, k, g] * model.pRampUp[g]
             case _:
                 raise ValueError(f"Period edge handling ramping '{cs.dPower_Parameters['pReprPeriodEdgeHandlingRamping']}' not recognized - please check input file 'Power_Parameters.xlsx'!")
 
-    model.eThRampUp_expr = pyo.Expression(model.rp, model.k, model.thermalGenerators, rule=lambda m, rp, k, t: eThRampUp_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
-    model.eThRampUp = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Ramp up for thermal generators (based on doi:10.1007/s10107-015-0919-9)', rule=lambda model, rp, k, t: model.eThRampUp_expr[rp, k, t] <= 0 if not ((cs.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] == "notEnforced") and (model.k.first() == k)) else pyo.Constraint.Skip)
+    model.eThRampUp_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.thermalGenerators, rule=lambda m, rp, k, t: eThRampUp_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
+    model.eThRampUp = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc='Ramp up for thermal generators (based on doi:10.1007/s10107-015-0919-9)', rule=lambda model, rp, k, t: model.eThRampUp_expr[rp, k, t] <= 0 if not ((cs.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] == "notEnforced") and (model.constraintsActiveK.first() == k)) else pyo.Constraint.Skip)
 
     def eThRampDw_rule(model, rp, k, g, transition_matrix):
         match cs.dPower_Parameters["pReprPeriodEdgeHandlingRamping"]:
             case "notEnforced":
-                if model.k.first() == k:
+                if model.constraintsActiveK.first() == k:
                     return None  # Is not enforced and should therefore be turned into pyo.Constraint.Skip in constraint construction
                 else:
-                    return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prev(k), g] + model.vCommit[rp, model.k.prevw(k), g] * model.pRampDw[g]
+                    return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.constraintsActiveK.prev(k), g] + model.vCommit[rp, model.constraintsActiveK.prevw(k), g] * model.pRampDw[g]
             case "cyclic":
-                return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prevw(k), g] + model.vCommit[rp, model.k.prevw(k), g] * model.pRampDw[g]
+                return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.constraintsActiveK.prevw(k), g] + model.vCommit[rp, model.constraintsActiveK.prevw(k), g] * model.pRampDw[g]
             case "markov":
-                if model.k.first() == k:
-                    return model.vGenP1[rp, k, g] - LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k), model.vGenP1, transition_matrix, g) + LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k), model.vCommit, transition_matrix, g) * model.pRampDw[g]
+                if model.constraintsActiveK.first() == k:
+                    return model.vGenP1[rp, k, g] - LEGOUtilities.markov_summand(model.rp, rp, False, model.constraintsActiveK.prevw(k), model.vGenP1, transition_matrix, g) + LEGOUtilities.markov_summand(model.rp, rp, False, model.constraintsActiveK.prevw(k), model.vCommit, transition_matrix, g) * model.pRampDw[g]
                 else:
-                    return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.k.prev(k), g] + model.vCommit[rp, model.k.prev(k), g] * model.pRampDw[g]
+                    return model.vGenP1[rp, k, g] - model.vGenP1[rp, model.constraintsActiveK.prev(k), g] + model.vCommit[rp, model.constraintsActiveK.prev(k), g] * model.pRampDw[g]
             case _:
                 raise ValueError(f"Period edge handling ramping '{cs.dPower_Parameters['pReprPeriodEdgeHandlingRamping']}' not recognized - please check input file 'Power_Parameters.xlsx'!")
 
-    model.eThRampDw_expr = pyo.Expression(model.rp, model.k, model.thermalGenerators, rule=lambda m, rp, k, t: eThRampDw_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
-    model.eThRampDw = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Ramp down for thermal generators (based on doi:10.1007/s10107-015-0919-9)', rule=lambda model, rp, k, t: model.eThRampDw_expr[rp, k, t] >= 0 if not ((cs.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] == "notEnforced") and (model.k.first() == k)) else pyo.Constraint.Skip)
+    model.eThRampDw_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.thermalGenerators, rule=lambda m, rp, k, t: eThRampDw_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
+    model.eThRampDw = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc='Ramp down for thermal generators (based on doi:10.1007/s10107-015-0919-9)', rule=lambda model, rp, k, t: model.eThRampDw_expr[rp, k, t] >= 0 if not ((cs.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] == "notEnforced") and (model.constraintsActiveK.first() == k)) else pyo.Constraint.Skip)
 
     # Thermal Generator production with unit commitment & ramping constraints
-    model.eUCTotOut = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Total production of thermal generators (from doi:10.1109/TPWRS.2013.2251373)', rule=lambda model, rp, k, g: model.vGenP[rp, k, g] == model.pMinProd[g] * model.vCommit[rp, k, g] + model.vGenP1[rp, k, g])
-    model.eThMaxUC = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Maximum number of active units for thermal generators', rule=lambda m, rp, k, t: m.vCommit[rp, k, t] <= m.vGenInvest[t] + m.pExisUnits[t])
+    model.eUCTotOut = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc='Total production of thermal generators (from doi:10.1109/TPWRS.2013.2251373)', rule=lambda model, rp, k, g: model.vGenP[rp, k, g] == model.pMinProd[g] * model.vCommit[rp, k, g] + model.vGenP1[rp, k, g])
+    model.eThMaxUC = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc='Maximum number of active units for thermal generators', rule=lambda m, rp, k, t: m.vCommit[rp, k, t] <= m.vGenInvest[t] + m.pExisUnits[t])
 
-    model.eUCMaxOut1_expr = pyo.Expression(model.rp, model.k, model.thermalGenerators, rule=lambda m, rp, k, t: m.vGenP1[rp, k, t] - (m.pMaxProd[t] - m.pMinProd[t]) * (m.vCommit[rp, k, t] - m.vStartup[rp, k, t]))
-    model.eUCMaxOut1 = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Maximum production for startup of thermal generators (from doi:10.1109/TPWRS.2013.2251373)', rule=lambda model, rp, k, t: model.eUCMaxOut1_expr[rp, k, t] <= 0)
+    model.eUCMaxOut1_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.thermalGenerators, rule=lambda m, rp, k, t: m.vGenP1[rp, k, t] - (m.pMaxProd[t] - m.pMinProd[t]) * (m.vCommit[rp, k, t] - m.vStartup[rp, k, t]))
+    model.eUCMaxOut1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc='Maximum production for startup of thermal generators (from doi:10.1109/TPWRS.2013.2251373)', rule=lambda model, rp, k, t: model.eUCMaxOut1_expr[rp, k, t] <= 0)
 
     def eUCMaxOut2_rule(model, rp, k, t, transition_matrix):
         match cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]:
             case "notEnforced":
-                if model.k.last() == k:
+                if model.constraintsActiveK.last() == k:
                     return None  # Is not enforced and should therefore be turned into pyo.Constraint.Skip in constraint construction
                 else:
-                    return model.vGenP1[rp, k, t] - (model.pMaxProd[t] - model.pMinProd[t]) * (model.vCommit[rp, k, t] - model.vShutdown[rp, model.k.nextw(k), t])
+                    return model.vGenP1[rp, k, t] - (model.pMaxProd[t] - model.pMinProd[t]) * (model.vCommit[rp, k, t] - model.vShutdown[rp, model.constraintsActiveK.nextw(k), t])
             case "cyclic":
-                return model.vGenP1[rp, k, t] - (model.pMaxProd[t] - model.pMinProd[t]) * (model.vCommit[rp, k, t] - model.vShutdown[rp, model.k.nextw(k), t])
+                return model.vGenP1[rp, k, t] - (model.pMaxProd[t] - model.pMinProd[t]) * (model.vCommit[rp, k, t] - model.vShutdown[rp, model.constraintsActiveK.nextw(k), t])
             case "markov":
-                if model.k.last() == k:  # Markov summand only required for very last timestep
-                    return model.vGenP1[rp, k, t] - (model.pMaxProd[t] - model.pMinProd[t]) * (model.vCommit[rp, k, t] - LEGOUtilities.markov_summand(model.rp, rp, True, model.k.nextw(k), model.vShutdown, transition_matrix, t))
+                if model.constraintsActiveK.last() == k:  # Markov summand only required for very last timestep
+                    return model.vGenP1[rp, k, t] - (model.pMaxProd[t] - model.pMinProd[t]) * (model.vCommit[rp, k, t] - LEGOUtilities.markov_summand(model.rp, rp, True, model.constraintsActiveK.nextw(k), model.vShutdown, transition_matrix, t))
                 else:
-                    return model.vGenP1[rp, k, t] - (model.pMaxProd[t] - model.pMinProd[t]) * (model.vCommit[rp, k, t] - model.vShutdown[rp, model.k.nextw(k), t])
+                    return model.vGenP1[rp, k, t] - (model.pMaxProd[t] - model.pMinProd[t]) * (model.vCommit[rp, k, t] - model.vShutdown[rp, model.constraintsActiveK.nextw(k), t])
             case _:
                 raise ValueError(f"Period edge handling unit commitment '{cs.dPower_Parameters['pReprPeriodEdgeHandlingUnitCommitment']}' not recognized - please check input file 'Power_Parameters.xlsx'!")
 
-    model.eUCMaxOut2_expr = pyo.Expression(model.rp, model.k, model.thermalGenerators, rule=lambda m, rp, k, t: eUCMaxOut2_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeTo))
-    model.eUCMaxOut2 = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Maximum production for shutdown of thermal generators (from doi:10.1109/TPWRS.2013.2251373)',
-                                      rule=lambda model, rp, k, t: model.eUCMaxOut2_expr[rp, k, t] <= 0 if not ((cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "notEnforced") and (model.k.last() == k)) else pyo.Constraint.Skip)
+    model.eUCMaxOut2_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.thermalGenerators, rule=lambda m, rp, k, t: eUCMaxOut2_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeTo))
+    model.eUCMaxOut2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc='Maximum production for shutdown of thermal generators (from doi:10.1109/TPWRS.2013.2251373)',
+                                      rule=lambda model, rp, k, t: model.eUCMaxOut2_expr[rp, k, t] <= 0 if not ((cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "notEnforced") and (model.constraintsActiveK.last() == k)) else pyo.Constraint.Skip)
 
     def eUCStrShut_rule(model, rp, k, t, transition_matrix):
         match cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]:
             case "notEnforced":
-                if model.k.ord(k) == 1:
+                if model.constraintsActiveK.ord(k) == 1:
                     return pyo.Constraint.Skip
                 else:
-                    return model.vCommit[rp, k, t] - model.vCommit[rp, model.k.prevw(k), t] == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t]
+                    return model.vCommit[rp, k, t] - model.vCommit[rp, model.constraintsActiveK.prevw(k), t] == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t]
             case "cyclic":
-                return model.vCommit[rp, k, t] - model.vCommit[rp, model.k.prevw(k), t] == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t]
+                return model.vCommit[rp, k, t] - model.vCommit[rp, model.constraintsActiveK.prevw(k), t] == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t]
             case "markov":
-                if model.k.ord(k) == 1:  # Markov summand only required for very first timestep
-                    return model.vCommit[rp, k, t] - LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k), model.vCommit, transition_matrix, t) == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t]
+                if model.constraintsActiveK.ord(k) == 1:  # Markov summand only required for very first timestep
+                    return model.vCommit[rp, k, t] - LEGOUtilities.markov_summand(model.rp, rp, False, model.constraintsActiveK.prevw(k), model.vCommit, transition_matrix, t) == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t]
                 else:
-                    return model.vCommit[rp, k, t] - model.vCommit[rp, model.k.prevw(k), t] == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t]
+                    return model.vCommit[rp, k, t] - model.vCommit[rp, model.constraintsActiveK.prevw(k), t] == model.vStartup[rp, k, t] - model.vShutdown[rp, k, t]
             case _:
                 raise ValueError(f"Period edge handling unit commitment '{cs.dPower_Parameters['pReprPeriodEdgeHandlingUnitCommitment']}' not recognized - please check input file 'Power_Parameters.xlsx'!")
 
-    model.eUCStrShut = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Start-up and shut-down logic for thermal generators (from doi:10.1109/TPWRS.2013.2251373)', rule=lambda model, rp, k, t: eUCStrShut_rule(model, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
+    model.eUCStrShut = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc='Start-up and shut-down logic for thermal generators (from doi:10.1109/TPWRS.2013.2251373)', rule=lambda model, rp, k, t: eUCStrShut_rule(model, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
 
     def eMinUpTime_rule(model, rp, k, t, transition_matrix):
         if model.pMinUpTime[t] == 0:
@@ -164,18 +164,18 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         else:
             match cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]:
                 case "notEnforced":
-                    if model.k.ord(k) < model.pMinUpTime[t]:
+                    if model.constraintsActiveK.ord(k) < model.pMinUpTime[t]:
                         return pyo.Constraint.Skip  # Constraint is not active until the minimum up-time is reached
                     else:
-                        return sum(model.vStartup[rp, k2, t] for k2 in LEGOUtilities.set_range_non_cyclic(model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k))) <= model.vCommit[rp, k, t]
+                        return sum(model.vStartup[rp, k2, t] for k2 in LEGOUtilities.set_range_non_cyclic(model.constraintsActiveK, model.constraintsActiveK.ord(k) - model.pMinUpTime[t] + 1, model.constraintsActiveK.ord(k))) <= model.vCommit[rp, k, t]
                 case "cyclic":
-                    return sum(model.vStartup[rp, k2, t] for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k))) <= model.vCommit[rp, k, t]
+                    return sum(model.vStartup[rp, k2, t] for k2 in LEGOUtilities.set_range_cyclic(model.constraintsActiveK, model.constraintsActiveK.ord(k) - model.pMinUpTime[t] + 1, model.constraintsActiveK.ord(k))) <= model.vCommit[rp, k, t]
                 case "markov":
-                    return LEGOUtilities.markov_sum(model.rp, rp, model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k), model.vStartup, transition_matrix, t) <= model.vCommit[rp, k, t]
+                    return LEGOUtilities.markov_sum(model.rp, rp, model.constraintsActiveK, model.constraintsActiveK.ord(k) - model.pMinUpTime[t] + 1, model.constraintsActiveK.ord(k), model.vStartup, transition_matrix, t) <= model.vCommit[rp, k, t]
                 case _:
                     raise ValueError(f"Invalid value for 'pReprPeriodEdgeHandlingUnitCommitment' in 'Global_Parameters.xlsx': {cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]} - please choose from 'notEnforced', 'cyclic' or 'markov'!")
 
-    model.eMinUpTime = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Minimum up time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=lambda m, rp, k, t: eMinUpTime_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
+    model.eMinUpTime = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc='Minimum up time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=lambda m, rp, k, t: eMinUpTime_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
 
     def eMinDownTime_rule(model, rp, k, t, transition_matrix):
         if model.pMinDownTime[t] == 0:
@@ -185,18 +185,18 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         else:
             match cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]:
                 case "notEnforced":
-                    if model.k.ord(k) < model.pMinDownTime[t]:
+                    if model.constraintsActiveK.ord(k) < model.pMinDownTime[t]:
                         return pyo.Constraint.Skip  # Constraint is not active until the minimum down-time is reached
                     else:
-                        return sum(model.vShutdown[rp, k2, t] for k2 in LEGOUtilities.set_range_non_cyclic(model.k, model.k.ord(k) - model.pMinDownTime[t] + 1, model.k.ord(k))) <= 1 - model.vCommit[rp, k, t]
+                        return sum(model.vShutdown[rp, k2, t] for k2 in LEGOUtilities.set_range_non_cyclic(model.constraintsActiveK, model.constraintsActiveK.ord(k) - model.pMinDownTime[t] + 1, model.constraintsActiveK.ord(k))) <= 1 - model.vCommit[rp, k, t]
                 case "cyclic":
-                    return sum(model.vShutdown[rp, k2, t] for k2 in LEGOUtilities.set_range_cyclic(model.k, model.k.ord(k) - model.pMinDownTime[t] + 1, model.k.ord(k))) <= 1 - model.vCommit[rp, k, t]
+                    return sum(model.vShutdown[rp, k2, t] for k2 in LEGOUtilities.set_range_cyclic(model.constraintsActiveK, model.constraintsActiveK.ord(k) - model.pMinDownTime[t] + 1, model.constraintsActiveK.ord(k))) <= 1 - model.vCommit[rp, k, t]
                 case "markov":
-                    return LEGOUtilities.markov_sum(model.rp, rp, model.k, model.k.ord(k) - model.pMinDownTime[t] + 1, model.k.ord(k), model.vShutdown, transition_matrix, t) <= 1 - model.vCommit[rp, k, t]
+                    return LEGOUtilities.markov_sum(model.rp, rp, model.constraintsActiveK, model.constraintsActiveK.ord(k) - model.pMinDownTime[t] + 1, model.constraintsActiveK.ord(k), model.vShutdown, transition_matrix, t) <= 1 - model.vCommit[rp, k, t]
                 case _:
                     raise ValueError(f"Invalid value for 'pReprPeriodEdgeHandlingUnitCommitment' in 'Global_Parameters.xlsx': {cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]} - please choose from 'notEnforced', 'cyclic' or 'markov'!")
 
-    model.eMinDownTime = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Minimum down time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=lambda m, rp, k, t: eMinDownTime_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
+    model.eMinDownTime = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc='Minimum down time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=lambda m, rp, k, t: eMinDownTime_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0
@@ -205,7 +205,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                                      sum(+ model.vStartup[rp, k, t] * model.pStartupCost[t]  # Startup cost of thermal generators
                                          + model.vCommit[rp, k, t] * model.pInterVarCost[t]  # Commit cost of thermal generators)
                                          for t in model.thermalGenerators)
-                                     for k in model.k)
+                                     for k in model.constraintsActiveK)
                                  for rp in model.rp)
 
     # Adjust objective and return first_stage_objective expression

@@ -53,31 +53,31 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             return ((sum(model.v2ndResUP[rp, k, t] for t in model.thermalGenerators) if hasattr(model, "thermalGenerators") else 0) +
                     (sum(model.v2ndResUP[rp, k, s] for s in model.storageUnits) if hasattr(model, "storageUnits") else 0) >= model.p2ndResUp * sum(model.pDemandP[rp, k, i] for i in model.i))
 
-        model.e2ReserveUp = pyo.Constraint(model.rp, model.k, doc="2nd reserve up", rule=e2ReserveUp_rule)
+        model.e2ReserveUp = pyo.Constraint(model.rp, model.constraintsActiveK, doc="2nd reserve up", rule=e2ReserveUp_rule)
 
         def e2ReserveDw_rule(model, rp, k):
             return ((sum(model.v2ndResDW[rp, k, t] for t in model.thermalGenerators) if hasattr(model, "thermalGenerators") else 0) +
                     (sum(model.v2ndResDW[rp, k, s] for s in model.storageUnits) if hasattr(model, "storageUnits") else 0) >= model.p2ndResDW * sum(model.pDemandP[rp, k, i] for i in model.i))
 
-        model.e2ReserveDw = pyo.Constraint(model.rp, model.k, doc="2nd reserve down", rule=e2ReserveDw_rule)
+        model.e2ReserveDw = pyo.Constraint(model.rp, model.constraintsActiveK, doc="2nd reserve down", rule=e2ReserveDw_rule)
 
     if hasattr(model, "thermalGenerators"):
-        model.eUCMinOut = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc="Output limit of a committed unit", rule=lambda model, rp, k, t: model.vGenP1[rp, k, t] - model.v2ndResDW[rp, k, t] >= 0)
+        model.eUCMinOut = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc="Output limit of a committed unit", rule=lambda model, rp, k, t: model.vGenP1[rp, k, t] - model.v2ndResDW[rp, k, t] >= 0)
 
     # Add 2nd reserve to power balance and unit commitment constraints
     if hasattr(model, "thermalGenerators"):
         for rp in model.rp:
-            for k in model.k:
+            for k in model.constraintsActiveK:
                 for g in model.thermalGenerators:
                     model.eUCMaxOut1_expr[rp, k, g] += model.v2ndResUP[rp, k, g]
 
                     match cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]:
                         case "notEnforced":
-                            if k != model.k.first():  # Skip first timestep if constraint is not enforced
+                            if k != model.constraintsActiveK.first():  # Skip first timestep if constraint is not enforced
                                 model.eThRampDw_expr[rp, k, g] -= model.v2ndResDW[rp, k, g]
                                 model.eThRampUp_expr[rp, k, g] += model.v2ndResUP[rp, k, g]
 
-                            if k != model.k.last():  # Skip last timestep if constraint is not enforced
+                            if k != model.constraintsActiveK.last():  # Skip last timestep if constraint is not enforced
                                 model.eUCMaxOut2_expr[rp, k, g] += model.v2ndResUP[rp, k, g]
 
                         case "cyclic" | "markov":
@@ -88,13 +88,13 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # Add 2nd reserve to storage constraints
     if hasattr(model, "storageUnits"):
         for rp in model.rp:
-            for k in model.k:
+            for k in model.constraintsActiveK:
                 for s in model.storageUnits:
                     model.eStMaxProd_expr[rp, k, s] += model.v2ndResUP[rp, k, s]
                     model.eStMaxCons_expr[rp, k, s] -= model.v2ndResDW[rp, k, s]
                 for s in model.intraStorageUnits:
-                    model.eStMaxIntraRes_expr[rp, k, s] += model.v2ndResDW[rp, k, s] + model.v2ndResDW[rp, model.k.prevw(k), s] * model.pWeight_k[k]
-                    model.eStMinIntraRes_expr[rp, k, s] -= model.v2ndResUP[rp, k, s] + model.v2ndResUP[rp, model.k.prevw(k), s] * model.pWeight_k[k]
+                    model.eStMaxIntraRes_expr[rp, k, s] += model.v2ndResDW[rp, k, s] + model.v2ndResDW[rp, model.constraintsActiveK.prevw(k), s] * model.pWeight_k[k]
+                    model.eStMinIntraRes_expr[rp, k, s] -= model.v2ndResUP[rp, k, s] + model.v2ndResUP[rp, model.constraintsActiveK.prevw(k), s] * model.pWeight_k[k]
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0
@@ -107,7 +107,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                                           (+ model.v2ndResUP[rp, k, g] * model.p2ndResUpCost  # Cost for 2nd reserve up
                                            + model.v2ndResDW[rp, k, g] * model.p2ndResDWCost)  # Cost for 2nd reserve down
                                           for g in model.secondReserveGenerators)
-                                      for k in model.k)
+                                      for k in model.constraintsActiveK)
                                   for rp in model.rp)
 
     # Adjust objective and return first_stage_objective expression
