@@ -105,7 +105,7 @@ else:
     for end in range(rh_length, total_timesteps + 1, rh_length - rh_overlap):
         start_time_iteration = time.time()
 
-        cs.constraints_active_k = cs.constraints_active_k = [f"k{i:05}" for i in range(end - rh_length, end + 1)]
+        cs.constraints_active_k = cs.constraints_active_k = [f"k{i:05}" for i in range(end - (rh_length-1), end + 1)]
 
         start = "k00001"
         end = f"k{end:05}"

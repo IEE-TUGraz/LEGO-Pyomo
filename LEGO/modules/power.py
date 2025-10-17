@@ -31,7 +31,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.rp = pyo.Set(doc='Representative periods', initialize=cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
     model.k = pyo.Set(doc='Timestep within representative period', initialize=cs.dPower_Demand.index.get_level_values('k').unique().tolist())
 
-    if cs.dGlobal_Parameters["pMovingWindowLength"] > 0 and cs.dGlobal_Parameters["pMovingWindowOverlap"] > 0:
+    if cs.dGlobal_Parameters["pMovingWindowLength"] > 0 and cs.dGlobal_Parameters["pMovingWindowOverlap"] >= 0:
         model.constraintsActiveK = pyo.Set(doc='Timesteps where constraints are active during the actual time window', initialize=cs.constraints_active_k)
     else:
         model.constraintsActiveK = pyo.Set(doc='Timesteps where constraints are active', initialize=model.k)
