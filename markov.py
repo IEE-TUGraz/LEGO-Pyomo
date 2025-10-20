@@ -92,6 +92,7 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
 
     if relax_percentage == 0:
         printer.information(f"Not relaxing any unit commitment variables, all thermal generators stay binary")
+        count_relaxed = 0
     else:
         thermalGenerators = cs.dPower_ThermalGen.copy()
         start_time = time.time()
@@ -116,25 +117,25 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
                             lego.model.vCommit[rp, k, g].domain = pyo.PercentFraction
                             lego.model.vStartup[rp, k, g].domain = pyo.PercentFraction
                             lego.model.vShutdown[rp, k, g].domain = pyo.PercentFraction
-
-            # Deactivate Markov push constraints for relaxed generators (or for all generators in case of Markov-light)
-            if case_name == "Markli":
-                lego.model.ePushMarkov.deactivate()
-            elif case_name == "Markov":
-                for g in lego.model.thermalGenerators:
-                    if thermalGeneratorRelaxed[g] and not (lego.model.pMinDownTime[g] == 1 and lego.model.pMinUpTime[g] == 1):  # If the generator is relaxed and not both MinDownTime and MinUpTime are 1
-                        for rp in lego.model.rp:
-                            for k in lego.model.k:
-                                if lego.model.k.ord(k) > max(lego.model.pMinDownTime[g], lego.model.pMinUpTime[g]):
-                                    break  # No need to continue, since constraints are only required for the first max(MinUpTime, MinDownTime) timesteps
-                                for i in lego.model.pushMarkovCounter:
-                                    lego.model.ePushMarkov[rp, k, g, i].deactivate()
-
         printer.information(f"Relaxing {count_relaxed} thermal generators took {time.time() - start_time:.2f} seconds")
 
-        unit_commitment_result_file = unit_commitment_result_file_template.replace(".xlsx", f"-relaxed{count_relaxed}.xlsx")
-        execute_case_study(lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file, no_sqlite, no_excel, calculate_regret, write_unit_commitment_result_file, skip_truth)
-        unit_commitment_result_files.append(unit_commitment_result_file)
+    for case_name, lego in lego_models.items():
+        # Deactivate Markov push constraints for relaxed generators (or for all generators in case of Markov-light)
+        if case_name == "Markli":
+            lego.model.ePushMarkov.deactivate()
+        elif case_name == "Markov":
+            for g in lego.model.thermalGenerators:
+                if thermalGeneratorRelaxed[g] and not (lego.model.pMinDownTime[g] == 1 and lego.model.pMinUpTime[g] == 1):  # If the generator is relaxed and not both MinDownTime and MinUpTime are 1
+                    for rp in lego.model.rp:
+                        for k in lego.model.k:
+                            if lego.model.k.ord(k) > max(lego.model.pMinDownTime[g], lego.model.pMinUpTime[g]):
+                                break  # No need to continue, since constraints are only required for the first max(MinUpTime, MinDownTime) timesteps
+                            for i in lego.model.pushMarkovCounter:
+                                lego.model.ePushMarkov[rp, k, g, i].deactivate()
+
+    unit_commitment_result_file = unit_commitment_result_file_template.replace(".xlsx", f"-relaxed{count_relaxed}.xlsx")
+    execute_case_study(lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file, no_sqlite, no_excel, calculate_regret, write_unit_commitment_result_file, skip_truth)
+    unit_commitment_result_files.append(unit_commitment_result_file)
 
     return unit_commitment_result_files
 
