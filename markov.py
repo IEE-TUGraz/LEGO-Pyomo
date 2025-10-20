@@ -31,7 +31,8 @@ pyomo_logger.setLevel(logging.INFO)
 
 
 def execute_case_studies(case_study_path: str, unit_commitment_result_file_template: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False,
-                         calculate_regret: bool = False, write_unit_commitment_result_file: bool = True, relax_percentage: float = 0, skip_truth: bool = False) -> typing.List[str]:
+                         calculate_regret: bool = False, write_unit_commitment_result_file: bool = True, relax_percentage: float = 0, skip_truth: bool = False,
+                         markov_light_only: bool = False) -> typing.List[str]:
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
@@ -56,10 +57,11 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
     cs_cyclic.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "cyclic"
     cs_cyclic.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"] = "cyclic"
 
-    cs_markov = cs_notEnforced.copy()
-    cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "markov"
-    cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "markov"
-    cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"] = "markov"
+    if not markov_light_only:
+        cs_markov = cs_notEnforced.copy()
+        cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "markov"
+        cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "markov"
+        cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"] = "markov"
 
     cs_markov_light = cs_notEnforced.copy()
     cs_markov_light.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "markov"
@@ -78,7 +80,9 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
 
     start_time = time.time()
     printer.information(f"Building the LEGO models for adjustments")  # Note this is actually faster (1.5-2x) than copying already built models to re-use them
-    lego_models = {"NoEnf.": LEGO(cs_notEnforced), "Cyclic": LEGO(cs_cyclic), "Markli": LEGO(cs_markov_light), "Markov": LEGO(cs_markov)}
+    lego_models = {"NoEnf.": LEGO(cs_notEnforced), "Cyclic": LEGO(cs_cyclic), "Markli": LEGO(cs_markov_light)}
+    if not markov_light_only:
+        lego_models["Markov"] = LEGO(cs_markov)
     if not skip_truth:
         lego_models["Truth "] = LEGO(cs_truth)
     for name, lego in lego_models.items():
@@ -346,6 +350,7 @@ if __name__ == "__main__":
     parser.add_argument("--shift", type=int, default=0, help="Shift the time series by N hours (for testing purposes), e.g., 15 to shift by 15 hours")
     parser.add_argument("--stretch-demand", type=float, default=1.0, help="Stretch the demand by a factor (for testing purposes), e.g., 1.1 to increase max of demand by 5% and decrease min by 5%")
     parser.add_argument("--reuse-inputfiles", action="store_true", help="Reuse input files (e.g., after shortening) instead of copying them to a new folder")
+    parser.add_argument("--markov-light-only", action="store_true", help="Only execute the Markov-light-version of Markov")
     args = parser.parse_args()
 
     ew = ExcelWriter()
@@ -451,7 +456,7 @@ if __name__ == "__main__":
                 printer.information(f"Logfile: '{printer.get_logfile()}'")
 
                 printer.information(f"Unit commitment result file template: '{unit_commitment_result_file_template}'")
-                unit_commitment_result_files = execute_case_studies(cluster_folder, unit_commitment_result_file_template, args.no_sqlite, args.no_excel, args.calculate_regret, not args.dont_write_unit_commitment_result_file, args.relax_percentage, args.skip_truth)
+                unit_commitment_result_files = execute_case_studies(cluster_folder, unit_commitment_result_file_template, args.no_sqlite, args.no_excel, args.calculate_regret, not args.dont_write_unit_commitment_result_file, args.relax_percentage, args.skip_truth, args.markov_light_only)
 
                 if args.plot:
                     printer.information(f"Plotting unit commitment(s): {unit_commitment_result_files}")
