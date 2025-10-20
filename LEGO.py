@@ -127,17 +127,23 @@ else:
         printer.information(f"Building LEGO model took {timing:.2f} seconds")
 
         if model_old is not None:
-            for component in list(model_old.component_objects()):
-                if isinstance(component, IndexedVar):
+            fix_until_timestep = start_timestep - 1
+            if fix_until_timestep > 0:
+                fix_until_k = f"k{fix_until_timestep:05}"
+                for component in list(model_old.component_objects(IndexedVar)):
                     indices = [str(i) for i in component.index_set().subsets()]
-
                     if "k" in indices:
+                        k_index_pos = indices.index('k')
                         new_component = getattr(model, str(component))
-                        new_end = f"k{int(end[1:]) - rh_length:05}"
-                        for n, v in list(component.items()):
-                            if start <= n[(indices.index('k'))] <= new_end:
-                                if v.value is not None:
-                                    new_component[n].fix(pyo.value(v))  # TODO skip validation
+                        for n, v in component.items():
+                            timestep_k = n[k_index_pos]
+                            if timestep_k <= fix_until_k and v.value is not None:
+                                try:
+                                    # Fix the variable in the new model to its previous optimal value
+                                    new_component[n].fix(pyo.value(v))
+                                except KeyError:
+                                    # This can happen if the component/index doesn't exist in the new window, which is safe to ignore
+                                    pass
 
         # Solve LEGO model
         printer.information("Solving LEGO model")
