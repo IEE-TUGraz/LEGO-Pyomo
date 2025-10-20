@@ -102,16 +102,21 @@ else:
     model_old = None
     total_timesteps = len(cs.dPower_WeightsK.index.unique())
 
-    for end in range(rh_length, total_timesteps + 1, rh_length - rh_overlap):
+    start_timestep = 1
+    while start_timestep <= total_timesteps:
         start_time_iteration = time.time()
 
-        cs.constraints_active_k = cs.constraints_active_k = [f"k{i:05}" for i in range(end - (rh_length-1), end + 1)]
+        # Calculate the end of the window
+        end_timestep = min(start_timestep + rh_length - 1, total_timesteps)
 
-        start = "k00001"
-        end = f"k{end:05}"
-        printer.information(f"[Runtime] Moving window until {end} took {time.time() - start_time:.2f} seconds")
+        # Format timestep strings for filtering and printing
+        start_k = f"k{start_timestep:05}"
+        end_k = f"k{end_timestep:05}"
 
-        cut_cs = cs.filter_timesteps(start, end)
+        cs.constraints_active_k = [f"k{i:05}" for i in range(start_timestep, end_timestep + 1)]
+        printer.information(f"Processing window from {start_k} to {end_k}...")
+
+        cut_cs = cs.filter_timesteps(start_k, end_k)
 
         lego = LEGO(cut_cs)
         printer.information(f"Loading case study took {time.time() - start_time_iteration:.2f} seconds")
@@ -141,11 +146,12 @@ else:
             printer.information(f"Solving LEGO model took {timing:.2f} seconds")
             process_results(results)
         except NoFeasibleSolutionError:
-            printer.error(f"No feasible solution found for window {start} to {end}!")
+            printer.error(f"No feasible solution found for window {start_k} to {end_k}!")
             analyze_infeasible_constraints(model)
             exit(1)
 
         model_old = model
+        start_timestep += rh_length - rh_overlap
 
 printer.information(f"Finished in {time.time() - start_time:.2f} seconds")
 
