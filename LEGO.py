@@ -101,6 +101,7 @@ else:
 
     model_old = None
     total_timesteps = len(cs.dPower_WeightsK.index.unique())
+    k_padding = len(cs.dPower_WeightsK.index.unique()[0]) - 1
 
     start_timestep = 1
     while start_timestep <= total_timesteps:
@@ -110,10 +111,10 @@ else:
         end_timestep = min(start_timestep + rh_length - 1, total_timesteps)
 
         # Format timestep strings for filtering and printing
-        start_k = f"k{start_timestep:05}"
-        end_k = f"k{end_timestep:05}"
+        start_k = f"k{start_timestep:0{k_padding}}"
+        end_k = f"k{end_timestep:0{k_padding}}"
 
-        cs.constraints_active_k = [f"k{i:05}" for i in range(start_timestep, end_timestep + 1)]
+        cs.constraints_active_k = [f"k{i:0{k_padding}}" for i in range(start_timestep, end_timestep + 1)]
         printer.information(f"Processing window from {start_k} to {end_k}...")
 
         cut_cs = cs.filter_timesteps(start_k, end_k)
@@ -129,7 +130,7 @@ else:
         if model_old is not None:
             fix_until_timestep = start_timestep - 1
             if fix_until_timestep > 0:
-                fix_until_k = f"k{fix_until_timestep:05}"
+                fix_until_k = f"k{fix_until_timestep:0{k_padding}}"
                 for component in list(model_old.component_objects(IndexedVar)):
                     indices = [str(i) for i in component.index_set().subsets()]
                     if "k" in indices:
