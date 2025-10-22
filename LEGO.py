@@ -117,7 +117,7 @@ else:
         cs.constraints_active_k = [f"k{i:0{k_padding}}" for i in range(start_timestep, end_timestep + 1)]
         printer.information(f"Processing window from {start_k} to {end_k}...")
 
-        cut_cs = cs.filter_timesteps(start_k, end_k)
+        cut_cs = cs.filter_timesteps(cs.dPower_WeightsK.index.unique()[0], end_k)
 
         lego = LEGO(cut_cs)
         printer.information(f"Loading case study took {time.time() - start_time_iteration:.2f} seconds")
@@ -142,6 +142,7 @@ else:
                                 try:
                                     # Fix the variable in the new model to its previous optimal value
                                     new_component[n].fix(pyo.value(v))
+                                    print("ALARMALARMALARM")
                                 except KeyError:
                                     # This can happen if the component/index doesn't exist in the new window, which is safe to ignore
                                     pass

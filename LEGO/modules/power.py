@@ -297,8 +297,6 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     - sum(m.vLineQ[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i)
                     + m.vSOCP_cii[rp, k, i] * m.pBusB[i] * m.pSBase
                     - m.pDemandQ[rp, k, i]
-                    + m.vPNS[rp, k, i] * m.pRatioDemQP[i]
-                    - m.vEPS[rp, k, i] * m.pRatioDemQP[i]
                     + m.vQNS[rp, k, i]
                     - m.vEQS[rp, k, i]
                     )
