@@ -31,7 +31,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         printer.information("No hydro storage units defined.")
 
     # Subset of p with only the elements at 'movingWindow' intervals
-    model.movingWindowP = pyo.Set(doc='Set of periods at moving window intervals', initialize=[p for p in model.p if model.p.ord(p) % model.pMovWindow == 0])
+    model.movingWindowP = pyo.Set(doc='Set of periods at moving window intervals', initialize=[p for p in model.p if model.p.ord(p) % model.pMovWindowLDS == 0])
 
     # Parameters
     model.pEnableChDisPower = cs.dPower_Parameters['pEnableChDisPower']  # Avoid simultaneous charging and discharging
@@ -129,9 +129,9 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     model.eStMinIntraRes_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.intraStorageUnits, doc='Min intra-reserve expression for storage units', rule=lambda model, rp, k, s: model.vStIntraRes[rp, k, s] - model.pMinReserve[s] * (model.pExisUnits[s] + model.vGenInvest[s]))
     model.eStMinIntraRes = pyo.Constraint(model.rp, model.constraintsActiveK, model.intraStorageUnits, doc='Min intra-reserve constraint for storage units', rule=lambda model, rp, k, s: model.eStMinIntraRes_expr[rp, k, s] >= 0)
 
-    if len(model.rp) == 1:
+    if len(model.rp) == 1 and cs.dGlobal_Parameters["pMovingWindowLength"] == 0:
         # If there is only one rp and k is the last period of the representative period, limit the final storage level to initial storage level
-        model.eStFinIntraRes = pyo.Constraint(model.rp, model.constraintsActiveK.at(-1), model.intraStorageUnits, doc='Final intra-reserve storage level constraint', rule=lambda m, rp, k, g: (m.vStIntraRes[rp, k, g] >= m.pIniReserve[g] * (m.pExisUnits[g] + m.vGenInvest[g])))
+        model.eStFinIntraRes = pyo.Constraint(model.rp, [model.constraintsActiveK.at(-1)], model.intraStorageUnits, doc='Final intra-reserve storage level constraint', rule=lambda m, rp, k, g: (m.vStIntraRes[rp, k, g] >= m.pIniReserve[g] * (m.pExisUnits[g] + m.vGenInvest[g])))
 
     if len(model.rp) > 1:  # Only add inter-day constraints if there are multiple representative periods
         model.eStMaxInterRes = pyo.Constraint(model.movingWindowP, model.interStorageUnits, doc='Max inter-reserve constraint for storage units', rule=lambda m, p, s: m.vStInterRes[p, s] <= m.pMaxReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s]))
@@ -143,7 +143,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             if model.movingWindowP.ord(p) == 1:
                 return model.vStInterRes[p, storage_unit] == model.pIniReserve[storage_unit] * (model.pExisUnits[storage_unit] + model.vGenInvest[storage_unit])
             else:
-                relevant_hindeces = model.hindex[model.p.ord(p) - model.pMovWindow:model.p.ord(p)]
+                relevant_hindeces = model.hindex[model.p.ord(p) - model.pMovWindowLDS:model.p.ord(p)]
                 hindex_count = relevant_hindeces.to_frame(index=False).groupby(['rp', 'k']).size()
 
                 return (model.vStInterRes[model.movingWindowP.prev(p), storage_unit]
