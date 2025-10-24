@@ -113,6 +113,7 @@ else:
         # Format timestep strings for filtering and printing
         start_k = f"k{start_timestep:0{k_padding}}"
         end_k = f"k{end_timestep:0{k_padding}}"
+        print(f"Start k: {start_k}, End k: {end_k}")
 
         cs.constraints_active_k = [f"k{i:0{k_padding}}" for i in range(start_timestep, end_timestep + 1)]
         printer.information(f"Processing window from {start_k} to {end_k}...")
@@ -125,27 +126,22 @@ else:
         # Build LEGO model
         printer.information("Building LEGO model")
         model, timing = lego.build_model(model_type=args.modelType)
+
         printer.information(f"Building LEGO model took {timing:.2f} seconds")
 
         if model_old is not None:
-            fix_until_timestep = start_timestep - 1
-            if fix_until_timestep > 0:
-                fix_until_k = f"k{fix_until_timestep:0{k_padding}}"
-                for component in list(model_old.component_objects(IndexedVar)):
+            new_end = f"k{start_timestep-1:05}"
+            print(f"New end: {new_end}")
+            for component in list(model_old.component_objects()):
+                if isinstance(component, IndexedVar):
                     indices = [str(i) for i in component.index_set().subsets()]
+
                     if "k" in indices:
-                        k_index_pos = indices.index('k')
                         new_component = getattr(model, str(component))
-                        for n, v in component.items():
-                            timestep_k = n[k_index_pos]
-                            if timestep_k <= fix_until_k and v.value is not None:
-                                try:
-                                    # Fix the variable in the new model to its previous optimal value
-                                    new_component[n].fix(pyo.value(v))
-                                    print("ALARMALARMALARM")
-                                except KeyError:
-                                    # This can happen if the component/index doesn't exist in the new window, which is safe to ignore
-                                    pass
+                        for n, v in list(component.items()):
+                            if n[(indices.index('k'))] <= new_end:
+                                if v.value is not None:
+                                    new_component[n].fix(pyo.value(v))  # TODO skip validation
 
         # Solve LEGO model
         printer.information("Solving LEGO model")
@@ -158,6 +154,8 @@ else:
             analyze_infeasible_constraints(model)
             exit(1)
 
+        if start_timestep + rh_length >= total_timesteps:
+            break
         model_old = model
         start_timestep += rh_length - rh_overlap
 

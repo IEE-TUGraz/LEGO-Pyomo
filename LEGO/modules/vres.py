@@ -75,6 +75,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         return model.vGenP[rp, k, r] + model.vCurtailment[rp, k, r] == model.pMaxProd[r] * (model.pExisUnits[r] + model.vGenInvest[r]) * model.pCapacityFactors[rp, k, r]
 
     model.eReMaxProd = pyo.Constraint(model.rp, model.constraintsActiveK, model.vresGenerators, rule=eReMaxProd_rule)
+    model.eSOCP_QMaxOut_RES = pyo.Constraint(model.rp, model.constraintsActiveK, model.vresGenerators, doc="Max reactive power output of generator unit", rule=lambda m, rp, k, g: (m.vGenQ[rp, k, g] <= m.pMaxGenQ[g] * model.pCapacityFactors[rp, k, g]) if m.pMaxGenQ[g] != 0 and (m.pExisUnits[g] > 0 or m.pEnabInv[g] == 1) else pyo.Constraint.Skip)
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0
