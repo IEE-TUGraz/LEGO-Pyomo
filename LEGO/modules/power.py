@@ -22,8 +22,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.la = pyo.Set(doc='All lines', initialize=cs.dPower_Network.index.tolist(), within=model.i * model.i * model.c)
     model.la_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.la if node == i or node == j] for node in model.i}
     model.le = pyo.Set(doc='Existing lines', initialize=cs.dPower_Network[(cs.dPower_Network["pEnableInvest"] == 0)].index.tolist(), within=model.la)
+    model.le_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.le if node == i or node == j] for node in model.i}
     model.lc = pyo.Set(doc='Candidate lines', initialize=cs.dPower_Network[(cs.dPower_Network["pEnableInvest"] == 1)].index.tolist(), within=model.la)
-
+    model.lc_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.lc if node == i or node == j] for node in model.i}
     model.g = pyo.Set(doc='Generators')
     model.gi = pyo.Set(doc='Generator g connected to bus i', within=model.g * model.i)
 
@@ -223,9 +224,8 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def eDC_BalanceP_rule(m, rp, k, i):
         if cs.dPower_Parameters["pEnableSOCP"]:
             return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi)  # Gen at bus i
-                    - sum(m.vLineP[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i)  # Only outflows from i
-                    #'- sum(m.vLineP[rp, k, i2, j, c] if i2 == i else m.vLineP[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])  # Only outflows from i
-
+                    # - sum(m.vLineP[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i)  # Only outflows from i, Old indexing format
+                    - sum(m.vLineP[rp, k, i2, j, c] if i2 == i else m.vLineP[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])  # Only outflows from i
                     - m.vSOCP_cii[rp, k, i] * m.pBusG[i] * m.pSBase
                     - m.pDemandP[rp, k, i]
                     + m.vPNS[rp, k, i]
@@ -306,7 +306,8 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             return (sum(m.vGenQ[rp, k, g] for g in m.g if (g, i) in m.gi)
                     # todo: sum(m.vGenQ[rp, k, g] for g in m.gi_helper[i])
                     # Only vLineQ where i is the sending end (i → j)
-                    - sum(m.vLineQ[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i)
+                    # - sum(m.vLineQ[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i) Old indexing format
+                    - sum(m.vLineQ[rp, k, i2, j, c] if i2 == i else m.vLineQ[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])
                     + m.vSOCP_cii[rp, k, i] * m.pBusB[i] * m.pSBase
                     - m.pDemandQ[rp, k, i]
                     + m.vQNS[rp, k, i]
@@ -433,28 +434,28 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         model.eSOCP_CanLine_sij1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="SOCP constraint for candidate lines (only if in le)", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] <= m.pBigM_SOCP * m.vSOCP_IndicConnecNodes[i, j] if (i, j, m.first_circuit_map[i, j]) in m.lc and (i, j, m.first_circuit_map[i, j]) in m.le else pyo.Constraint.Skip)
         model.eSOCP_CanLine_sij2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="SOCP constraint for candidate lines (only if in le)", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] >= -m.pBigM_SOCP * m.vSOCP_IndicConnecNodes[i, j] if (i, j, m.first_circuit_map[i, j]) in m.lc and (i, j, m.first_circuit_map[i, j]) in m.le else pyo.Constraint.Skip)
 
-        model.eSOCP_IndicConnecNodes1 = pyo.Constraint(model.lc_no_c, doc="SOCP constraint for candidate lines (only if in le)", rule=lambda m, i, j: sum(m.vSOCP_IndicConnecNodes[i, j, c_] for (i_, j_, c_) in m.lc if i_ == i and j_ == j) == 1 if (i, j, m.first_circuit_map[i, j]) in m.lc and (i, j, m.first_circuit_map[i, j]) in m.le else pyo.Constraint.Skip)
-        model.eSOCP_IndicConnecNodes2 = pyo.Constraint(model.lc_no_c, doc="SOCP constraint for candidate lines (only if not in le)", rule=lambda m, i, j: m.vSOCP_IndicConnecNodes[i, j] == m.vLineInvest[i, j, m.first_circuit_map[i, j]] if (i, j, m.first_circuit_map[i, j]) in m.lc and (i, j, m.first_circuit_map[i, j]) not in m.le else pyo.Constraint.Skip)
+        model.eSOCP_IndicConnecNodes1 = pyo.Constraint(model.lc_no_c, doc="SOCP constraint for candidate lines (only if in le)", rule=lambda m, i, j: sum(m.vSOCP_IndicConnecNodes[i, j, c_] for (i_, j_, c_) in m.lc_nodeRelevant if i_ == i and j_ == j) == 1 if (i, j, m.first_circuit_map[i, j]) in m.lc_nodeRelevant and (i, j, m.first_circuit_map[i, j]) in m.le else pyo.Constraint.Skip)
+        model.eSOCP_IndicConnecNodes2 = pyo.Constraint(model.lc_no_c, doc="SOCP constraint for candidate lines (only if not in le)", rule=lambda m, i, j: m.vSOCP_IndicConnecNodes[i, j] == m.vLineInvest[i, j, m.first_circuit_map[i, j]] if (i, j, m.first_circuit_map[i, j]) in m.lc_nodeRelevant and (i, j, m.first_circuit_map[i, j]) not in m.le_nodeRelevant else pyo.Constraint.Skip)
 
-        model.eSOCP_CanLineCijUpLim = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="Limits for SOCP variables lines (only if not in le)", rule=lambda m, rp, k, i, j: m.vSOCP_cij[rp, k, i, j] <= ((m.pBusMaxV[i] ** 2) + m.pBigM_SOCP * (1 - m.vSOCP_IndicConnecNodes[i, j])) if (i, j, m.first_circuit_map_bidir[i, j]) in m.lc and (i, j, m.first_circuit_map_bidir[i, j]) not in m.le else pyo.Constraint.Skip)
-        model.eSOCP_CanLineCijLoLim = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="Limits for SOCP variables (only if not in le)", rule=lambda m, rp, k, i, j: m.vSOCP_cij[rp, k, i, j] >= max(0.1, m.pBusMinV[i] ** 2) - m.pBigM_SOCP * (1 - m.vSOCP_IndicConnecNodes[i, j]) if (i, j, m.first_circuit_map_bidir[i, j]) in m.lc and (i, j, m.first_circuit_map_bidir[i, j]) not in m.le else pyo.Constraint.Skip)
-        model.eSOCP_CanLineSijUpLim = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="Limits for SOCP variables (only if not in le)", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] <= (m.pBusMaxV[i] ** 2) + m.pBigM_SOCP * (1 - m.vSOCP_IndicConnecNodes[i, j]) if (i, j, m.first_circuit_map_bidir[i, j]) in m.lc and (i, j, m.first_circuit_map_bidir[i, j]) not in m.le else pyo.Constraint.Skip)
-        model.eSOCP_CanLineSijLoLim = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="Limits for SOCP variables (only if not in le)", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] >= -(m.pBusMaxV[i] ** 2) - m.pBigM_SOCP * (1 - m.vSOCP_IndicConnecNodes[i, j]) if (i, j, m.first_circuit_map_bidir[i, j]) in m.lc and (i, j, m.first_circuit_map_bidir[i, j]) not in m.le else pyo.Constraint.Skip)
+        model.eSOCP_CanLineCijUpLim = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="Limits for SOCP variables lines (only if not in le)", rule=lambda m, rp, k, i, j: m.vSOCP_cij[rp, k, i, j] <= ((m.pBusMaxV[i] ** 2) + m.pBigM_SOCP * (1 - m.vSOCP_IndicConnecNodes[i, j])) if (i, j, m.first_circuit_map_bidir[i, j]) in m.lc_nodeRelevant and (i, j, m.first_circuit_map_bidir[i, j]) not in m.le_nodeRelevant else pyo.Constraint.Skip)
+        model.eSOCP_CanLineCijLoLim = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="Limits for SOCP variables (only if not in le)", rule=lambda m, rp, k, i, j: m.vSOCP_cij[rp, k, i, j] >= max(0.1, m.pBusMinV[i] ** 2) - m.pBigM_SOCP * (1 - m.vSOCP_IndicConnecNodes[i, j]) if (i, j, m.first_circuit_map_bidir[i, j]) in m.lc_nodeRelevant and (i, j, m.first_circuit_map_bidir[i, j]) not in m.le_nodeRelevant else pyo.Constraint.Skip)
+        model.eSOCP_CanLineSijUpLim = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="Limits for SOCP variables (only if not in le)", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] <= (m.pBusMaxV[i] ** 2) + m.pBigM_SOCP * (1 - m.vSOCP_IndicConnecNodes[i, j]) if (i, j, m.first_circuit_map_bidir[i, j]) in m.lc_nodeRelevant and (i, j, m.first_circuit_map_bidir[i, j]) not in m.le_nodeRelevant else pyo.Constraint.Skip)
+        model.eSOCP_CanLineSijLoLim = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="Limits for SOCP variables (only if not in le)", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] >= -(m.pBusMaxV[i] ** 2) - m.pBigM_SOCP * (1 - m.vSOCP_IndicConnecNodes[i, j]) if (i, j, m.first_circuit_map_bidir[i, j]) in m.lc_nodeRelevant and (i, j, m.first_circuit_map_bidir[i, j]) not in m.le_nodeRelevant else pyo.Constraint.Skip)
 
-        model.eSOCP_ExiLineAngDif1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.le_no_c, doc="Angle difference upper bounds existing lines", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] <= m.vSOCP_cij[rp, k, i, j] * pyo.tan(m.pMaxAngleDiff) if any((i, j, c) in m.le for c in m.c) else pyo.Constraint.Skip)
-        model.eSOCP_ExiLineAngDif2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.le_no_c, doc="Angle difference lower bounds existing lines", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] >= -m.vSOCP_cij[rp, k, i, j] * pyo.tan(m.pMaxAngleDiff) if any((i, j, c) in m.le for c in m.c) else pyo.Constraint.Skip)
+        model.eSOCP_ExiLineAngDif1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.le_no_c, doc="Angle difference upper bounds existing lines", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] <= m.vSOCP_cij[rp, k, i, j] * pyo.tan(m.pMaxAngleDiff) if any((i, j, c) in m.le_nodeRelevant for c in m.c) else pyo.Constraint.Skip)
+        model.eSOCP_ExiLineAngDif2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.le_no_c, doc="Angle difference lower bounds existing lines", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] >= -m.vSOCP_cij[rp, k, i, j] * pyo.tan(m.pMaxAngleDiff) if any((i, j, c) in m.le_nodeRelevant for c in m.c) else pyo.Constraint.Skip)
 
-        model.eSOCP_CanLineAngDif1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="Angle difference upper bounds candidate lines", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] <= m.vSOCP_cij[rp, k, i, j] * pyo.tan(m.pMaxAngleDiff) + m.pBigM_Flow * (1 - m.vSOCP_IndicConnecNodes[i, j]) if (i, j, m.first_circuit_map[i, j]) in m.lc and (i, j, m.first_circuit_map[i, j]) not in m.le else pyo.Constraint.Skip)
-        model.eSOCP_CanLineAngDif2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="Angle difference lowerf bounds candidate lines ", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] >= - m.vSOCP_cij[rp, k, i, j] * pyo.tan(m.pMaxAngleDiff) - m.pBigM_Flow * (1 - m.vSOCP_IndicConnecNodes[i, j]) if (i, j, m.first_circuit_map[i, j]) in m.lc and (i, j, m.first_circuit_map[i, j]) not in m.le else pyo.Constraint.Skip)
+        model.eSOCP_CanLineAngDif1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="Angle difference upper bounds candidate lines", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] <= m.vSOCP_cij[rp, k, i, j] * pyo.tan(m.pMaxAngleDiff) + m.pBigM_Flow * (1 - m.vSOCP_IndicConnecNodes[i, j]) if (i, j, m.first_circuit_map[i, j]) in m.lc_nodeRelevant and (i, j, m.first_circuit_map[i, j]) not in m.le_nodeRelevant else pyo.Constraint.Skip)
+        model.eSOCP_CanLineAngDif2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="Angle difference lowerf bounds candidate lines ", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] >= - m.vSOCP_cij[rp, k, i, j] * pyo.tan(m.pMaxAngleDiff) - m.pBigM_Flow * (1 - m.vSOCP_IndicConnecNodes[i, j]) if (i, j, m.first_circuit_map[i, j]) in m.lc_nodeRelevant and (i, j, m.first_circuit_map[i, j]) not in m.le_nodeRelevant else pyo.Constraint.Skip)
 
         if cs.dPower_Parameters["pEnableSOCP"] == 99999:  # Deactivated
             # Apparent power constraints for existing and candidate lines (Disabled in the LEGO model due to increased solving time)
-            # Constraints might need to be redefined for only the le set
+            # Constraints might need to be redefined for only the le setl
 
             def eSOCP_ExiLineSLimit_rule(m, rp, k, i, j, c):
-                if (i, j, c) in m.le:
+                if (i, j, c) in m.le_nodeRelevant:
                     return m.vLineP[rp, k, i, j, c] ** 2 + m.vLineQ[rp, k, i, j, c] ** 2 <= pyo.sqrt(m.pPmax[i, j, c] ** 2 + m.pQmax[i, j, c] ** 2)
-                elif (j, i, c) in m.le:
+                elif (j, i, c) in m.le_nodeRelevant:
                     # For the Reverse direction, the rhs should be 0 but this does not work with the solver. If this constraint is to be used, skip the reverse direction (will lead to error in the compare tool)
                     return m.vLineP[rp, k, i, j, c] ** 2 + m.vLineQ[rp, k, i, j, c] ** 2 <= 1
                 else:
@@ -463,9 +464,9 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             model.eSOCP_ExiLineSLimit = pyo.Constraint(model.rp, model.constraintsActiveK, model.le_full, doc="Apparent power constraints for existing lines ", rule=eSOCP_ExiLineSLimit_rule)
 
             def eSOCP_CanLineSLimit_rule(m, rp, k, i, j, c):
-                if (i, j, c) in m.lc:
+                if (i, j, c) in m.lc_nodeRelevant:
                     return m.vLineP[rp, k, i, j, c] ** 2 + m.vLineQ[rp, k, i, j, c] ** 2 <= pyo.sqrt(m.pPmax[i, j, c] ** 2 + m.pQmax[i, j, c] ** 2) * m.vLineInvest[i, j, c]
-                elif (j, i, c) in m.lc:
+                elif (j, i, c) in m.lc_nodeRelevant:
                     # For the Reverse direction, the rhs should be 0 but this does not work with the solver. If this constraint is to be used skip the reverse direction (will lead to error in the compare tool)
                     return m.vLineP[rp, k, i, j, c] ** 2 + m.vLineQ[rp, k, i, j, c] ** 2 <= 1
                 else:
