@@ -71,6 +71,15 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
         # Get the first circuit per (i, j) based on this order
         first_circuit_map = df_circuits.sort_values("c_order").drop_duplicates(subset=["i", "j"]).set_index(["i", "j"])["c"].to_dict()
+        # todo da kommt der fehler
+        # DEPRECATED: Param 'first_circuit_map' declared with an implicit
+        # domain of 'Any'. The default domain for Param objects is 'Any'.  However, we
+        # will be changing that default to 'Reals' in the future.  If you really intend
+        # the domain of this Paramto be 'Any', you can suppress this warning by
+        # explicitly specifying 'within=Any' to the Param constructor.  (deprecated in
+        # 5.6.9, will be removed in (or after) 6.0) (called from
+        # C:\Users\Stephan\anaconda3\envs\LEGO-Pyomo_env\Lib\site-
+        # packages\pyomo\core\base\indexed_component.py:718)
         model.first_circuit_map = pyo.Param(model.la_no_c, initialize=first_circuit_map, doc='First circuit for each line (i, j)')
         model.first_circuit_map_bidir = pyo.Param(model.la_full_no_c, initialize={(i, j): c for (i, j), c in model.first_circuit_map.items()} | {(j, i): c for (i, j), c in model.first_circuit_map.items()}, doc='First circuit for each line (i, j) bidirectional')
 
@@ -215,12 +224,14 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         if cs.dPower_Parameters["pEnableSOCP"]:
             return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi)  # Gen at bus i
                     - sum(m.vLineP[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i)  # Only outflows from i
+                    #'- sum(m.vLineP[rp, k, i2, j, c] if i2 == i else m.vLineP[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])  # Only outflows from i
+
                     - m.vSOCP_cii[rp, k, i] * m.pBusG[i] * m.pSBase
                     - m.pDemandP[rp, k, i]
                     + m.vPNS[rp, k, i]
                     - m.vEPS[rp, k, i])
         else:
-            return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi)  # Production of generators at bus i
+            return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi)  # Production of generators at bus i todo please also make quick
                     + sum(m.vLineP[rp, k, e] if (e[1] == i) else -m.vLineP[rp, k, e] for e in model.la_nodeRelevant[i])  # Add power flow from bus j to bus i and subtract from bus i to bus j
                     - m.pDemandP[rp, k, i]  # Demand at bus i
                     + m.vPNS[rp, k, i]  # Slack variable for demand not served
@@ -293,6 +304,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     else:  # SOCP formulation
         def eSOCP_BalanceQ_rule(m, rp, k, i):
             return (sum(m.vGenQ[rp, k, g] for g in m.g if (g, i) in m.gi)
+                    # todo: sum(m.vGenQ[rp, k, g] for g in m.gi_helper[i])
                     # Only vLineQ where i is the sending end (i → j)
                     - sum(m.vLineQ[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i)
                     + m.vSOCP_cii[rp, k, i] * m.pBusB[i] * m.pSBase
