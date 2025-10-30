@@ -192,7 +192,8 @@ def normalize_constraints(data,
 
         normalized_coeffs = OrderedDict()
         for var, val in coeffs.items():
-            if any(skip in var for skip in coefficients_to_skip):
+            temp_var = var.split("[")[0]
+            if any(temp_var.endswith(skip) for skip in coefficients_to_skip):
                 continue
 
             normalized_var = normalize_variable_names(var, remove_scenario_prefix)
@@ -588,7 +589,7 @@ def compare_quadratic_constraints(quad_constraints1: dict[str, dict[tuple[str, s
         if print_additional_information:
             printer.information(f"[✘] Quadratic constraint {cname} missing in Model1.")
 
-    printer.information(f"[✔] {counter_perfect} quadratic constraints matched perfectly.")
+    printer.success(f"    {counter_perfect} quadratic constraints matched perfectly.")
     if counter_partial:
         printer.information(f"[⚠] {counter_partial} quadratic constraints partially mismatched.")
     if counter_missing1:
@@ -790,7 +791,7 @@ def compare_objectives(objective1, objective2, precision: float = 1e-12) -> dict
         coefficients_missing_in_model1.append(f"{name2}: {value2}")
 
     # Summary logging
-    printer.information(f"[✔] {counter_perfect_matches} objective coefficients matched perfectly.")
+    printer.success(f"    {counter_perfect_matches} objective coefficients matched perfectly.")
     if partial_matches:
         printer.information("[⚠] Partial mismatches found:")
         for entry in partial_matches:
