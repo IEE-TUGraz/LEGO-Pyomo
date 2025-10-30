@@ -12,7 +12,6 @@ import pyomo.environ as pyo
 
 from InOutModule import ExcelReader
 from InOutModule.printer import Printer
-from LEGO import LEGO
 
 printer = Printer.getInstance()
 printer.set_width(300)
