@@ -1,8 +1,13 @@
 import functools
+import os
 import typing
+import zipfile
+from pathlib import Path
+from typing import Union, List
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import py7zr
 import pyomo.environ as pyo
 
 from InOutModule import ExcelReader
@@ -318,7 +323,7 @@ def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: st
     plt.show()
 
 
-def add_UnitCommitmentSlack_And_FixVariables(regret_lego: LEGO, original_model: pyo.Model, hindex_df: pd.DataFrame, thermalGen_df: pd.DataFrame, PNS_cost: float):
+def add_UnitCommitmentSlack_And_FixVariables(regret_lego, original_model: pyo.Model, hindex_df: pd.DataFrame, thermalGen_df: pd.DataFrame, PNS_cost: float):
     """
     Adds unit commitment slack variables and constraints to the provided model. This function modifies
     the provided `regret_lego` model by introducing slack variables for startup and shutdown
@@ -362,7 +367,7 @@ def add_UnitCommitmentSlack_And_FixVariables(regret_lego: LEGO, original_model: 
     regret_lego.model.objective += sum(sum(sum((regret_lego.model.vCommitCorrectHigher[rp, k, t] + regret_lego.model.vCommitCorrectLower[rp, k, t]) * regret_lego.model.pWeight_rp[rp] for rp in regret_lego.model.rp) * regret_lego.model.pWeight_k[k] for k in regret_lego.model.k) * thermalGen_df.loc[t]["MaxProd"] * PNS_cost for t in regret_lego.model.thermalGenerators)
 
 
-def getUnitCommitmentSlackCost(lego: LEGO, thermalGen_df: pd.DataFrame, PNS_cost: float) -> float:
+def getUnitCommitmentSlackCost(lego, thermalGen_df: pd.DataFrame, PNS_cost: float) -> float:
     """
     Calculate the unit commitment slack cost based on corrections for startup and
     shutdown values in the model.
@@ -375,3 +380,177 @@ def getUnitCommitmentSlackCost(lego: LEGO, thermalGen_df: pd.DataFrame, PNS_cost
     :return: The total unit commitment slack cost weighted by the given factors.
     """
     return sum(sum(sum((pyo.value(lego.model.vCommitCorrectHigher[rp, k, t]) + pyo.value(lego.model.vCommitCorrectLower[rp, k, t])) * lego.model.pWeight_rp[rp] for rp in lego.model.rp) * lego.model.pWeight_k[k] for k in lego.model.k) * thermalGen_df.loc[t]["MaxProd"] * PNS_cost for t in lego.model.thermalGenerators)
+
+
+def decompress_mps_file(mps_file_path: Union[str, Path], overwrite_existing_mps: bool = True) -> str:
+    """
+    Decompresses a .mps.7z file to extract the corresponding .mps file.
+
+    Args:
+        mps_file_path: Path to the .mps file (the function will look for .mps.7z)
+        overwrite_existing_mps: Whether to overwrite the existing .mps file if it already exists
+
+    Returns:
+        str: Path to the extracted .mps file
+
+    Raises:
+        FileNotFoundError: If the .mps.7z file doesn't exist
+        OSError: If decompression fails
+    """
+    mps_path = Path(mps_file_path).resolve()
+    seven_zip_path = mps_path.with_suffix(mps_path.suffix + ".7z")
+
+    # If .mps file already exists, assume it's already decompressed
+    if mps_path.exists():
+        if overwrite_existing_mps:
+            printer.information(f"Decompressed file already exists: {mps_path}, decompressing anyway and overwriting.")
+            mps_path.unlink()  # Remove existing file to allow overwriting
+        else:
+            printer.information(f"Decompressed file already exists: {mps_path}, skipping decompression as per user request.")
+            return str(mps_path)
+
+    # Check 7z file exists
+    if not seven_zip_path.exists():
+        raise FileNotFoundError(f"Compressed file not found: {seven_zip_path}")
+
+    try:
+        with py7zr.SevenZipFile(seven_zip_path, mode='r') as archive:
+            # Extract to the parent directory
+            archive.extract(path=mps_path.parent)
+
+        if not mps_path.exists():
+            raise FileNotFoundError(f"Expected .mps file not found after extraction: {mps_path}")
+
+        return str(mps_path)
+
+    except zipfile.BadZipFile as e:
+        raise zipfile.BadZipFile(f"Corrupted zip file: {seven_zip_path}") from e
+
+
+def compress_mps_file(mps_file_path: Union[str, Path], remove_original: bool = False) -> str:
+    """
+    Compresses a .mps file to a .mps.7z file.
+
+    Args:
+        mps_file_path: Path to the .mps file to compress
+        remove_original: Whether to remove the original .mps file after compression
+
+    Returns:
+        str: Path to the created .mps.7z file
+
+    Raises:
+        FileNotFoundError: If the .mps file doesn't exist
+    """
+    mps_path = Path(mps_file_path)
+
+    if not mps_path.exists():
+        raise FileNotFoundError(f"MPS file not found: {mps_path}")
+
+    seven_zip_path = Path(str(mps_path) + ".7z")
+
+    try:
+        # Compress using py7zr
+        with py7zr.SevenZipFile(seven_zip_path, 'w') as archive:
+            archive.write(mps_path, mps_path.name)
+
+        if remove_original:
+            mps_path.unlink()
+
+        return str(seven_zip_path)
+
+    except Exception as e:
+        # Clean up partially created 7z file on error
+        if seven_zip_path.exists():
+            seven_zip_path.unlink()
+        raise OSError(f"Compression failed: {str(e)}") from e
+
+
+class MPSFileManager:
+    """
+    Context manager that automatically handles MPS file compression/decompression using 7zip.
+
+    Usage:
+        # Single file - returns string path directly
+        with MPSFileManager('path1.mps') as mps_file:
+            # Use the decompressed file (mps_file is a string)
+            pass
+
+        # Multiple files - returns list of paths
+        with MPSFileManager(['path1.mps', 'path2.mps']) as mps_files:
+            # Use the decompressed files (mps_files is a list)
+            pass
+
+        # Files are automatically cleaned up when exiting the context
+
+    Args:
+        mps_file_paths: Path or list of paths to .mps files (will look for .mps.7z if .mps doesn't exist)
+        remove_decompressed_on_exit: Whether to remove decompressed .mps files on exit
+        decompress_even_if_mps_exists: Whether to decompress even if .mps file already exists
+    """
+
+    def __init__(self, mps_file_paths: Union[str, Path, List[Union[str, Path]]],
+                 remove_decompressed_on_exit: bool = True, decompress_even_if_mps_exists: bool = True):
+        # Handle single file or list of files
+        if isinstance(mps_file_paths, (str, Path)):
+            self.mps_file_paths = [Path(mps_file_paths)]
+            self.is_single_file = True
+        else:
+            self.mps_file_paths = [Path(p) for p in mps_file_paths]
+            self.is_single_file = False
+
+        self.remove_decompressed_on_exit = remove_decompressed_on_exit
+        self.decompress_even_if_mps_exists = decompress_even_if_mps_exists
+        self.extracted_files = []
+        self.originally_compressed = []  # Files that were compressed and we decompressed
+
+    def __enter__(self):
+        for mps_path in self.mps_file_paths:
+            seven_zip_path = mps_path.with_suffix(mps_path.suffix + '.7z')
+
+            if mps_path.exists() and not self.decompress_even_if_mps_exists:
+                printer.information(f"Decompressed file already exists: {mps_path}, skipping decompression as per user request.")
+                self.extracted_files.append(mps_path)
+            elif seven_zip_path.exists():
+                # File is compressed - decompress it for use
+                self.originally_compressed.append(mps_path)
+                extracted_path = decompress_mps_file(mps_path)
+                self.extracted_files.append(Path(extracted_path))
+            elif mps_path.exists() and self.decompress_even_if_mps_exists:
+                printer.warning(f"Compressed file not found: {seven_zip_path}, but decompressed file exists: {mps_path} - using it, please check!")
+                self.extracted_files.append(mps_path)
+            else:
+                raise FileNotFoundError(f"Neither {mps_path} nor {seven_zip_path} exists")
+
+        # Return single path or list based on input type
+        extracted_paths = [str(f) for f in self.extracted_files]
+        if self.is_single_file:
+            return extracted_paths[0]
+        else:
+            return extracted_paths
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.remove_decompressed_on_exit:
+            for mps_path in self.originally_compressed:
+                if mps_path.exists():
+                    mps_path.unlink()  # Delete the decompressed file
+
+
+if __name__ == "__main__":
+    import argparse
+    from rich_argparse import RichHelpFormatter
+
+    parser = argparse.ArgumentParser(description="Utility functions for LEGO", formatter_class=RichHelpFormatter)
+    parser.add_argument("function", choices=["compress", "decompress"], help="Select function to execute")
+    parser.add_argument("mpsFile", help="Path to .mps file (for compress) or .mps.7z file (for decompress)")
+    args = parser.parse_args()
+
+    if args.function == "compress":
+        printer.information(f"Compressing file: {args.mpsFile}")
+        output_path = compress_mps_file(args.mpsFile, remove_original=False)
+        printer.information(f"Compressed file created at: {output_path}")
+    elif args.function == "decompress":
+        printer.information(f"Decompressing file: {args.mpsFile}")
+        if os.path.exists(args.mpsFile):
+            printer.warning(f"Decompressed file already exists: {args.mpsFile}, decompressing anyway and overwriting.")
+        output_path = decompress_mps_file(args.mpsFile, overwrite_existing_mps=True)
+        printer.information(f"Decompressed file created at: {output_path}")

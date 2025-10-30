@@ -45,7 +45,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         else:
             return pyo.Binary
 
-    model.vCommit = pyo.Var(model.rp, model.k, model.thermalGenerators, doc='Unit commitment of generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, max(model.pMinUpTime[t], model.pMinDownTime[t])) if cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov" else pyo.Binary)
+    maxTime = {t: max(model.pMinUpTime[t], model.pMinDownTime[t]) for t in model.thermalGenerators}  # Pre-calculate maximum time for each generator to speed up the domain function
+    model.vCommit = pyo.Var(model.rp, model.k, model.thermalGenerators, doc='Unit commitment of generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, maxTime[t]) if cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov" else pyo.Binary)
     second_stage_variables += [model.vCommit]
     model.vStartup = pyo.Var(model.rp, model.k, model.thermalGenerators, doc='Start-up of thermal generator g', domain=lambda model, rp, k, t: vUC_domain(model, k, model.pMinDownTime[t]) if cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov" else pyo.Binary)
     second_stage_variables += [model.vStartup]
@@ -64,6 +65,16 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         second_stage_variables += [model.vD0]
         model.vDY = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to indicate that vShutdown is Y (the maximum it can be due to MinUpTime)")
         second_stage_variables += [model.vDY]
+
+    # Fix vCommit, vStartup and vShutdown to 0 for generators that are not existing and cannot be invested in (will then be removed in pre-solve)
+    # Note: The generators can not simply be removed overall, as this would break stochastic models with different existing generators in different scenarios
+    for g in model.thermalGenerators:
+        if cs.dPower_ThermalGen.loc[g, 'ExisUnits'] == 0 and cs.dPower_ThermalGen.loc[g, 'EnableInvest'] == 0:
+            for rp in model.rp:
+                for k in model.k:
+                    model.vCommit[rp, k, g].fix(0)
+                    model.vStartup[rp, k, g].fix(0)
+                    model.vShutdown[rp, k, g].fix(0)
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
@@ -233,8 +244,13 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0
-    second_stage_objective = (sum(model.vStartup[rp, k, t] * model.pStartupCost[t] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for t in model.thermalGenerators) +  # Startup cost of thermal generators
-                              sum(model.vCommit[rp, k, t] * model.pInterVarCost[t] * model.pWeight_rp[rp] * model.pWeight_k[k] for rp in model.rp for k in model.k for t in model.thermalGenerators))  # Commit cost of thermal generators
+    second_stage_objective = sum(model.pWeight_rp[rp] *  # Weight of representative periods
+                                 sum(model.pWeight_k[k] *  # Weight of time steps
+                                     sum(+ model.vStartup[rp, k, t] * model.pStartupCost[t]  # Startup cost of thermal generators
+                                         + model.vCommit[rp, k, t] * model.pInterVarCost[t]  # Commit cost of thermal generators)
+                                         for t in model.thermalGenerators)
+                                     for k in model.k)
+                                 for rp in model.rp)
 
     # Adjust objective and return first_stage_objective expression
     model.objective.expr += first_stage_objective + second_stage_objective

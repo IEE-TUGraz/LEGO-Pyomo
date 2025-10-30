@@ -166,6 +166,17 @@ class LEGO:
         self.timings["model_solving"] = stop_time - start_time
         self.results = results
 
+        eps = 1e-5
+        try:
+            total_PNS = sum(pyo.value(self.model.vPNS[rp, k, i]) for rp in self.model.rp for k in self.model.k for i in self.model.i)
+            total_EPS = sum(pyo.value(self.model.vEPS[rp, k, i]) for rp in self.model.rp for k in self.model.k for i in self.model.i)
+            if total_PNS > eps:
+                printer.warning(f"Power not supplied value {total_PNS} exceeds threshold {eps}")
+            if total_EPS > eps:
+                printer.warning(f"Excess power supplied value {total_EPS} exceeds threshold {eps}")
+        except Exception as e:
+            printer.warning(f"Could not check slack variables automatically: {e}")
+
         return results, self.timings["model_solving"], objective_value
 
     def get_number_of_variables(self, dont_multiply_by_indices=False) -> int:
@@ -266,7 +277,10 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
         model.first_stage_varlist += vres.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableStorage"]:
         model.first_stage_varlist += storage.add_element_definitions_and_bounds(model, cs)
-    model.first_stage_varlist += secondReserve.add_element_definitions_and_bounds(model, cs)
+
+    if cs.dPower_Parameters["p2ndResUp"] > 0.0 or cs.dPower_Parameters["p2ndResDW"] > 0.0:
+        model.first_stage_varlist += secondReserve.add_element_definitions_and_bounds(model, cs)
+
     if cs.dPower_Parameters["pEnablePowerImportExport"]:
         model.first_stage_varlist += importExport.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
@@ -284,7 +298,10 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
         model.first_stage_objective += vres.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableStorage"]:
         model.first_stage_objective += storage.add_constraints(model, cs)
-    model.first_stage_objective += secondReserve.add_constraints(model, cs)
+
+    if cs.dPower_Parameters["p2ndResUp"] > 0.0 or cs.dPower_Parameters["p2ndResDW"] > 0.0:
+        model.first_stage_objective += secondReserve.add_constraints(model, cs)
+
     if cs.dPower_Parameters["pEnablePowerImportExport"]:
         model.first_stage_objective += importExport.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
