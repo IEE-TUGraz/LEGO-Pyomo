@@ -10,6 +10,7 @@ from pyomo.core import TransformationFactory
 
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
+from LEGO.LEGOUtilities import reset_execution_safety_dict
 from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits, thermalGen, vres
 
 printer = Printer.getInstance()
@@ -263,6 +264,7 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     :return: A pyomo ConcreteModel object.
     """
     model = pyo.ConcreteModel()
+    reset_execution_safety_dict(model)  # Reset the execution safety dict to ensure that decorators work correctly
     model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=0.0)  # Initialize objective function
 
     # Initialize first_stage variables and objective required for stochasticity

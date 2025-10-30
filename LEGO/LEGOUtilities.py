@@ -106,6 +106,14 @@ def markov_sum(rp_set: pyo.Set, rp_target: str, k_set: pyo.Set, k_start_index: i
 execution_safety_dict = {}
 
 
+# Function to reset safety dict (since there can be cases where multiple models are created in the same run and have the same identity)
+def reset_execution_safety_dict(model: pyo.ConcreteModel):
+    if id(model) in execution_safety_dict:
+        printer.warning(f"Resetting execution safety dict for model id {id(model)}, which already existed")
+        printer.warning(f"Please double-check that no model-building functions are called multiple times for the same model instance")
+        del execution_safety_dict[id(model)]
+
+
 # Decorator to check that function has not been executed and add it to executionSafetyList
 def safetyCheck_AddElementDefinitionsAndBounds(func):
     @functools.wraps(func)  # Preserve the original function's name

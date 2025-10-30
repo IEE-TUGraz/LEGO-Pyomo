@@ -1,3 +1,5 @@
+import typing
+
 import pandas as pd
 import pyomo.environ as pyo
 
@@ -9,7 +11,7 @@ printer = Printer.getInstance()
 
 
 @LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
-def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> (list[pyo.Var], list[pyo.Var]):
+def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> typing.Tuple[list[pyo.Var], list[pyo.Var]]:
     # Lists for defining stochastic behavior. First stage variables are common for all scenarios, second stage variables are scenario-specific.
     first_stage_variables = []
     second_stage_variables = []
@@ -20,7 +22,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     LEGO.addToSet(model, "g", storageUnits)
     model.gi_storage = pyo.Set(doc="Storage unit g connected to node i", initialize=cs.dPower_Storage.reset_index().set_index(['g', 'i']).index, within=model.storageUnits * model.i)
     LEGO.addToSet(model, "gi", cs.dPower_Storage.reset_index().set_index(['g', 'i']).index)  # Note: Add gi after g since it depends on g
-    model.longDurationStorageUnits = pyo.Set(doc='Long-duration storage units (subset of storage units)', initialize=cs.dPower_Storage[cs.dPower_Storage['IsLDES'] == 1].index.tolist(), within=model.storageUnits)
+    model.longDurationEnergyStorageUnits = pyo.Set(doc='Long-duration storage units (subset of storage units)', initialize=cs.dPower_Storage[cs.dPower_Storage['IsLDES'] == 1].index.tolist(), within=model.storageUnits)
     LEGO.addToSet(model, "tec", cs.dPower_Storage['tec'].unique().tolist())
     LEGO.addToSet(model, "gtec", cs.dPower_Storage.reset_index().set_index(['g', 'tec']).index)
 
@@ -106,12 +108,12 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                         model.eStIntraRes.add(0 == model.pIniReserve[g] * (model.pExisUnits[g] + model.vGenInvest[g])
                                               - model.vStIntraRes[rp, k, g]
                                               - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
-                                              + ((model.pLDSInflows[rp, k, g] * model.pWeight_k[k] - model.vLDSSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationStorageUnits else 0))
+                                              + ((model.pStorageInflows[rp, k, g] * model.pWeight_k[k] - model.vStorageSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationEnergyStorageUnits else 0))
                     else:
                         model.eStIntraRes.add(0 == model.vStIntraRes[rp, model.k.prev(k), g]
                                               - model.vStIntraRes[rp, k, g]
                                               - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
-                                              + ((model.pLDSInflows[rp, k, g] * model.pWeight_k[k] - model.vLDSSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationStorageUnits else 0))
+                                              + ((model.pStorageInflows[rp, k, g] * model.pWeight_k[k] - model.vStorageSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationEnergyStorageUnits else 0))
                 elif len(model.rp) > 1:  # Only cyclic if it has multiple representative periods
                     match cs.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"]:
                         case "notEnforced":
@@ -131,7 +133,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     model.eStIntraRes.add(0 == vStIntraRes_prev
                                           - model.vStIntraRes[rp, k, g]
                                           - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
-                                          + ((model.pLDSInflows[rp, k, g] * model.pWeight_k[k] - model.vLDSSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationStorageUnits else 0))
+                                          + ((model.pStorageInflows[rp, k, g] * model.pWeight_k[k] - model.vStorageSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationEnergyStorageUnits else 0))
 
                 for g in model.storageUnits:
                     model.eExclusiveChargeDischarge.add(model.vConsump[rp, k, g] <= model.bChargeDisCharge[rp, k, g] * model.pMaxCons[g] * (model.pExisUnits[g] + model.vGenInvest[g]))

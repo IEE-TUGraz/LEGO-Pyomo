@@ -32,5 +32,5 @@ paper [[1]](https://doi.org/10.1016/j.softx.2022.101141) if you do.
 3. Test if it works
     - Run the following command in the now opened terminal:
       ```bash
-      python LEGO.py data/exmaple
+      python LEGO.py data/example
       ```

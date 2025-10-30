@@ -1,3 +1,5 @@
+import typing
+
 import pyomo.environ as pyo
 
 from InOutModule.CaseStudy import CaseStudy
@@ -5,7 +7,7 @@ from LEGO import LEGOUtilities
 
 
 @LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
-def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> (list[pyo.Var], list[pyo.Var]):
+def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> typing.Tuple[list[pyo.Var], list[pyo.Var]]:
     # Lists for defining stochastic behavior. First stage variables are common for all scenarios, second stage variables are scenario-specific.
     first_stage_variables = []
     second_stage_variables = []
