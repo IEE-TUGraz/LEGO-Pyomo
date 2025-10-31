@@ -192,7 +192,7 @@ def normalize_constraints(data,
 
         normalized_coeffs = OrderedDict()
         for var, val in coeffs.items():
-            temp_var = var.split("[")[0]
+            temp_var = var.replace('[', '(').replace(']', ')').split("(")[0]
             if any(temp_var.endswith(skip) for skip in coefficients_to_skip):
                 continue
 

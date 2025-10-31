@@ -120,8 +120,15 @@ def test_documentationMPSArchive():
         for line in lines:
             if line.startswith("#") or not line.strip():
                 continue  # Skip comment lines and empty lines
-            split = line.split(" ", 1)
-            filename = split[0]
+            split = line.split(" ")
+            filename = ""
+            counter = 0
+            while not filename.endswith(".mps") and not filename.endswith(".mps.7z"):
+                filename += " " if counter > 0 else ""
+                filename += split[counter]
+                counter += 1
+                if counter >= len(split):
+                    break
             if filename.endswith('.mps.7z'):
                 filename = filename[:-3]  # Remove '.7z'
             entries[filename] = split[1]
