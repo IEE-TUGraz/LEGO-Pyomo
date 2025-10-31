@@ -15,7 +15,7 @@ from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO
 from LEGO.LEGO import ModelType as LEGOModelType
-from tools.mpsCompare import compare_mps
+from LEGO.helpers.mpsCompare import compare_mps
 
 ########################################################################################################################
 # Setup

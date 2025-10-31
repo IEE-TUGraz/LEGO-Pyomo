@@ -1,3 +1,5 @@
+import typing
+
 import numpy as np
 import pandas as pd
 import pyomo.environ as pyo
@@ -10,7 +12,7 @@ printer = Printer.getInstance()
 
 
 @LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
-def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> (list[pyo.Var], list[pyo.Var]):
+def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> typing.Tuple[list[pyo.Var], list[pyo.Var]]:
     # Lists for defining stochastic behavior. First stage variables are common for all scenarios, second stage variables are scenario-specific.
     first_stage_variables = []
     second_stage_variables = []
@@ -26,6 +28,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     model.g = pyo.Set(doc='Generators')
     model.gi = pyo.Set(doc='Generator g connected to bus i', within=model.g * model.i)
+    model.tec = pyo.Set(doc='All generator technologies')
+    model.gtec = pyo.Set(doc='Technology of generator g', within=model.g * model.tec)
 
     model.p = pyo.Set(doc='Periods', initialize=cs.dPower_Hindex.index.get_level_values('p').unique().tolist())
     model.rp = pyo.Set(doc='Representative periods', initialize=cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
@@ -120,7 +124,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         model.vLineInvest[i, j, c].fix(0)  # Set existing lines to not investable
     first_stage_variables += [model.vLineInvest]
 
-    model.vGenInvest = pyo.Var(model.g, doc="Integer generation investment", bounds=lambda model, g: (0, model.pMaxInvest[g] * model.pEnabInv[g]))
+    model.vGenInvest = pyo.Var(model.g, doc="Integer generation investment", bounds=lambda model, g: (0, model.pMaxInvest[g] * model.pEnabInv[g]), domain=pyo.NonNegativeIntegers)
     first_stage_variables += [model.vGenInvest]
 
     model.vPNS = pyo.Var(model.rp, model.k, model.i, doc='Slack variable power not served', bounds=lambda model, rp, k, i: (0, model.pDemandP[rp, k, i]))
@@ -158,7 +162,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     # For each DC-OPF/SOCP "island", set node with highest demand as slack node
     dTechnicalReprIslands = pd.DataFrame(index=cs.dPower_BusInfo.index, columns=[cs.dPower_BusInfo.index], data=False)
 
-    for index, entry in cs.dPower_Network.iterrows():
+    for index in cs.dPower_Network.index:
         if cs.dPower_Network.loc[(index[0], index[1], index[2])]["pTecRepr"] in ["DC-OPF", "SOCP"]:
             dTechnicalReprIslands.loc[index[0], index[1]] = True
             dTechnicalReprIslands.loc[index[1], index[0]] = True
@@ -174,15 +178,19 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         completed_buses.add(index)
 
         # Set slack node
-        slack_node = cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
+        # slack_node = cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
         slack_node = cs.dPower_Parameters["is"]  # TODO: Switch this again to be calculated (fixed to 'is' for compatibility)
         if i == 0: printer.information("Setting slack nodes for technical representation islands:")
         i += 1
         printer.information(f"Zone {i:>2} - Slack node: {slack_node}")
-        model.vTheta[:, :, slack_node].fix(0)
+        for rp in model.rp:
+            for k in model.k:
+                model.vTheta[rp, k, slack_node].fix(0)
         if cs.dPower_Parameters['pEnableSOCP']:
             printer.information("Fixed voltage magnitude at slack node: ", pyo.value(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage'])))
-            model.vSOCP_cii[:, :, slack_node].fix(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage']))
+            for rp in model.rp:
+                for k in model.k:
+                    model.vSOCP_cii[rp, k, slack_node].fix(pyo.sqrt(cs.dPower_Parameters['pSlackVoltage']))
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
@@ -191,22 +199,29 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # Power balance for nodes DC ann SOCP
-    def eDC_BalanceP_rule(m, rp, k, i):
+    def eDC_BalanceP_rule(m, rp, k, i, gi, la_full, la0, la1):
         if cs.dPower_Parameters["pEnableSOCP"]:
-            return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi)  # Gen at bus i
-                    - sum(m.vLineP[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i)  # Only outflows from i
+            return (sum(m.vGenP[rp, k, g] for g in gi)  # Gen at bus i
+                    - sum(m.vLineP[rp, k, i, j, c] for (i2, j, c) in la_full)  # Only outflows from i
                     - m.vSOCP_cii[rp, k, i] * m.pBusG[i] * m.pSBase
                     - m.pDemandP[rp, k, i]
                     + m.vPNS[rp, k, i]
                     - m.vEPS[rp, k, i])
         else:
-            return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi)  # Production of generators at bus i
-                    + sum(m.vLineP[rp, k, e] if (e[1] == i) else -m.vLineP[rp, k, e] for e in model.la_nodeRelevant[i])  # Add power flow from bus j to bus i and subtract from bus i to bus j
-                    - m.pDemandP[rp, k, i]  # Demand at bus i
-                    + m.vPNS[rp, k, i]  # Slack variable for demand not served
-                    - m.vEPS[rp, k, i])  # Slack variable for overproduction
+            return (sum(m.vGenP[rp, k, g] for g in gi) -  # Production of generators at bus i
+                    sum(m.vLineP[rp, k, e] for e in la0) +  # Power flow from bus i to bus j
+                    sum(m.vLineP[rp, k, e] for e in la1) -  # Power flow from bus j to bus i
+                    m.pDemandP[rp, k, i] +  # Demand at bus i
+                    m.vPNS[rp, k, i] -  # Slack variable for demand not served
+                    m.vEPS[rp, k, i])  # Slack variable for overproduction
 
-    model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.k, model.i, rule=eDC_BalanceP_rule)
+    # Precompute sets for faster access within rules
+    gi = {i: [g for g in model.g if (g, i) in model.gi] for i in model.i}  # Generators at bus i
+    la_full = {i: [(i2, j, c) for (i2, j, c) in model.la_full if i2 == i] for i in model.i} if cs.dPower_Parameters["pEnableSOCP"] else {}  # Lines starting at bus i for SOCP
+    la0 = {i: [e for e in model.la if (e[0] == i)] for i in model.i}  # Lines from i to j
+    la1 = {i: [e for e in model.la if (e[1] == i)] for i in model.i}  # Lines from j to i
+
+    model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.k, model.i, rule=lambda m, rp, k, i: eDC_BalanceP_rule(m, rp, k, i, gi[i], la_full[i] if cs.dPower_Parameters["pEnableSOCP"] else None, la0[i], la1[i]))
     model.eDC_BalanceP = pyo.Constraint(model.rp, model.k, model.i, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eDC_BalanceP_expr[rp, k, i] == 0)
 
     if not cs.dPower_Parameters["pEnableSOCP"]:

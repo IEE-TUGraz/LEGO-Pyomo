@@ -1,3 +1,5 @@
+import typing
+
 import pyomo.environ as pyo
 
 from InOutModule.CaseStudy import CaseStudy
@@ -5,7 +7,7 @@ from LEGO import LEGOUtilities, LEGO
 
 
 @LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
-def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> (list[pyo.Var], list[pyo.Var]):
+def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> typing.Tuple[list[pyo.Var], list[pyo.Var]]:
     # Lists for defining stochastic behavior. First stage variables are common for all scenarios, second stage variables are scenario-specific.
     first_stage_variables = []
     second_stage_variables = []
@@ -14,6 +16,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.thermalGenerators = pyo.Set(doc='Thermal Generators', initialize=cs.dPower_ThermalGen.index.tolist())
     LEGO.addToSet(model, "g", model.thermalGenerators)
     LEGO.addToSet(model, "gi", cs.dPower_ThermalGen.reset_index().set_index(['g', 'i']).index)
+    LEGO.addToSet(model, "tec", cs.dPower_ThermalGen['tec'].unique().tolist())
+    LEGO.addToSet(model, "gtec", cs.dPower_ThermalGen.reset_index().set_index(['g', 'tec']).index)
 
     # Parameters
     LEGO.addToParameter(model, "pOMVarCost", cs.dPower_ThermalGen['pSlopeVarCostEUR'])
@@ -52,6 +56,17 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     second_stage_variables += [model.vShutdown]
     model.vGenP1 = pyo.Var(model.rp, model.k, model.thermalGenerators, doc='Power output of generator g above minimum production', bounds=lambda model, rp, k, g: (0, (model.pMaxProd[g] - model.pMinProd[g]) * (model.pExisUnits[g] + model.pMaxInvest[g] * model.pEnabInv[g])))
     second_stage_variables += [model.vGenP1]
+
+    if cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov":
+        model.vU0 = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to indicate that vStartup is 0")
+        second_stage_variables += [model.vU0]
+        model.vUX = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to indicate that vStartup is X (the maximum it can be due to MinDownTime)")
+        second_stage_variables += [model.vUX]
+
+        model.vD0 = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to indicate that vShutdown is 0")
+        second_stage_variables += [model.vD0]
+        model.vDY = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to indicate that vShutdown is Y (the maximum it can be due to MinUpTime)")
+        second_stage_variables += [model.vDY]
 
     # Fix vCommit, vStartup and vShutdown to 0 for generators that are not existing and cannot be invested in (will then be removed in pre-solve)
     # Note: The generators can not simply be removed overall, as this would break stochastic models with different existing generators in different scenarios
@@ -197,6 +212,37 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     raise ValueError(f"Invalid value for 'pReprPeriodEdgeHandlingUnitCommitment' in 'Global_Parameters.xlsx': {cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"]} - please choose from 'notEnforced', 'cyclic' or 'markov'!")
 
     model.eMinDownTime = pyo.Constraint(model.rp, model.k, model.thermalGenerators, doc='Minimum down time for thermal generators (from doi:10.1109/TPWRS.2013.2251373, adjusted to be cyclic)', rule=lambda m, rp, k, t: eMinDownTime_rule(m, rp, k, t, cs.rpTransitionMatrixRelativeFrom))
+
+    if cs.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] == "markov":
+        model.pushMarkovCounter = pyo.Set(initialize=range(1, 11 + 1))
+        model.ePushMarkov = pyo.Constraint(model.rp, model.k, model.thermalGenerators, model.pushMarkovCounter, doc="Constraints to force vStartup and vShutdown to be either 0 or the maximum it can be due to MinUp/DownTime")
+
+        for t in model.thermalGenerators:
+            if model.pMinDownTime[t] != 1 or model.pMinUpTime[t] != 1:  # If MinDownTime is 1 and MinUpTime is 1, no constraint is required
+                for k in model.k:
+                    if model.k.ord(k) > max(model.pMinDownTime[t], model.pMinUpTime[t]):
+                        break  # No need to continue, since constraints are only required for the first max(MinUpTime, MinDownTime) timesteps
+                    for rp in model.rp:
+                        if model.k.ord(k) == 1:
+                            prev_commit = LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k), model.vCommit, cs.rpTransitionMatrixRelativeFrom, t)
+                        else:
+                            prev_commit = model.vCommit[rp, model.k.prev(k), t]
+
+                        X = 1 - prev_commit - LEGOUtilities.markov_sum(model.rp, rp, model.k, model.k.ord(k) - model.pMinDownTime[t] + 1, model.k.ord(k), model.vShutdown, cs.rpTransitionMatrixRelativeFrom, t)
+                        model.ePushMarkov[rp, k, t, 1] = (model.vStartup[rp, k, t] <= 1 - model.vU0[rp, k, t])  # u0 -> vStartup = 0
+                        model.ePushMarkov[rp, k, t, 2] = (model.vStartup[rp, k, t] <= X + (1 - model.vUX[rp, k, t]))  # uX -> vStartup = X
+                        model.ePushMarkov[rp, k, t, 3] = (model.vStartup[rp, k, t] >= X - (1 - model.vUX[rp, k, t]))  # uX -> vStartup = X
+                        model.ePushMarkov[rp, k, t, 4] = (model.vU0[rp, k, t] <= model.vDY[rp, k, t] + (1 - prev_commit))  # u0 -> vDY or prev_commit=0
+                        model.ePushMarkov[rp, k, t, 5] = (model.vUX[rp, k, t] <= model.vD0[rp, k, t])  # uX -> vD0
+
+                        Y = prev_commit - LEGOUtilities.markov_sum(model.rp, rp, model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k), model.vStartup, cs.rpTransitionMatrixRelativeFrom, t)
+                        model.ePushMarkov[rp, k, t, 6] = (model.vShutdown[rp, k, t] <= 1 - model.vD0[rp, k, t])  # d0 -> vShutdown = 0
+                        model.ePushMarkov[rp, k, t, 7] = (model.vShutdown[rp, k, t] <= Y + (1 - model.vDY[rp, k, t]))  # dY -> vShutdown = Y
+                        model.ePushMarkov[rp, k, t, 8] = (model.vShutdown[rp, k, t] >= Y - (1 - model.vDY[rp, k, t]))  # dY -> vShutdown = Y
+                        model.ePushMarkov[rp, k, t, 9] = (model.vD0[rp, k, t] <= model.vUX[rp, k, t] + prev_commit)  # d0 -> vUX or prev_commit=1
+                        model.ePushMarkov[rp, k, t, 10] = (model.vDY[rp, k, t] <= model.vU0[rp, k, t])  # dY -> vU0
+
+                        model.ePushMarkov[rp, k, t, 11] = (1 <= model.vU0[rp, k, t] / 2 + model.vUX[rp, k, t] + model.vD0[rp, k, t] / 2 + model.vDY[rp, k, t])  # Either UX or DY or (U0 and D0)
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0

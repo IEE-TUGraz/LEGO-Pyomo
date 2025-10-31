@@ -14,6 +14,7 @@ from InOutModule import ExcelReader
 from InOutModule.printer import Printer
 
 printer = Printer.getInstance()
+printer.set_width(300)
 
 
 # Returns a list of elements from a set, starting from 'first_index' and ending at 'last_index' (both inclusive) without wrapping around
@@ -32,8 +33,8 @@ def set_range_non_cyclic(set: pyo.Set, first_index: int, last_index: int):
 
 # Returns a list of elements from a set, starting from 'first_index' and ending at 'last_index' (both inclusive) with wrapping around
 def set_range_cyclic(set: pyo.Set, first_index: int, last_index: int):
-    if first_index > len(set) or first_index < -len(set):
-        raise ValueError(f"'first_index' must be <= len(set) and >= -len(set) (got {first_index} and {len(set)})")
+    if not (-len(set) <= first_index <= len(set)):
+        raise ValueError(f"Check failed: -{len(set)} <= 'first_index' <= {len(set)}, which is not true for {first_index}")
     elif last_index < 1:
         raise ValueError(f"'last_index' must be greater than 1 (got {last_index})")
 
@@ -72,7 +73,9 @@ def markov_summand(rp_set: pyo.Set, rp_target: str, from_target_to_others: bool,
         if transition_matrix.at[i, j] > 0:  # Only consider transitions with a probability > 0
             summand += transition_matrix.at[i, j] * relevant_variable[rp, k, *other_indices]
             safety_check += transition_matrix.at[i, j]
-    if safety_check != 1:
+    if safety_check < 1e-9:
+        printer.warning(f"Transition matrix has no transitions defined for representative period {rp_target} (all transition probabilities are 0)")
+    elif abs(safety_check - 1) > 1e-9:
         raise ValueError(f"Transition matrix is not correctly defined - sum of transition probabilities for representative period {rp_target} is not 1 (but {safety_check})")
     return summand
 
@@ -101,6 +104,14 @@ def markov_sum(rp_set: pyo.Set, rp_target: str, k_set: pyo.Set, k_start_index: i
 
 # Dictionary to store which functions have been executed for the given object
 execution_safety_dict = {}
+
+
+# Function to reset safety dict (since there can be cases where multiple models are created in the same run and have the same identity)
+def reset_execution_safety_dict(model: pyo.ConcreteModel):
+    if id(model) in execution_safety_dict:
+        printer.warning(f"Resetting execution safety dict for model id {id(model)}, which already existed")
+        printer.warning(f"Please double-check that no model-building functions are called multiple times for the same model instance")
+        del execution_safety_dict[id(model)]
 
 
 # Decorator to check that function has not been executed and add it to executionSafetyList
@@ -185,13 +196,14 @@ def safetyCheck_addConstraints(required_functions: list[typing.Callable]):
     return decorator
 
 
-def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: str, number_of_hours: int = 24 * 7, start_hour: int = 1):
+def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: str, number_of_hours: int = 24 * 7, start_hour: int = 1, plot_regret: bool = True):
     """
     Plot the unit commitment of a given output file
     :param unit_commitment_result_file: Path to Excel-File containing unit commitment results
     :param case_study_folder: Path to folder containing Power_Hindex file
     :param number_of_hours: Number of hours to plot (default: 24 * 7 = 168)
     :param start_hour: Start hour for the plot (default: 1)
+    :param plot_regret: If True, plots the regret solution as well (default: True)
     :return: Nothing (shows plot)
     """
     plt.rcParams['figure.dpi'] = 300  # Set resolution of the plot
@@ -199,7 +211,7 @@ def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: st
     df = df.set_index(["case", "rp", "k", "g"])
 
     # Get original mapping from Power_Hindex
-    hindex = ExcelReader.get_dPower_Hindex(case_study_folder + "Power_Hindex.xlsx")
+    hindex = ExcelReader.get_Power_Hindex(case_study_folder + "Power_Hindex.xlsx")
     hindex = hindex.reset_index()
     hindex["p_int"] = hindex["p"].str.extract(r'(\d+)').astype(int)  # Extract the integer part of the "p" column
     hindex["rp_int"] = hindex["rp"].str.extract(r'(\d+)').astype(int)  # Extract the integer part of the "rp" column
@@ -211,41 +223,75 @@ def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: st
     # Plot the data
     index = [i + 1 for i in range(len(hindex))]
 
-    fig, axs = plt.subplots(len(df.index.get_level_values("case").unique()), len(df.index.get_level_values("g").unique()), figsize=(6 * len(df.index.get_level_values("g").unique()), 2 * len(df.index.get_level_values("case").unique())))
+    if plot_regret:
+        nr_cases = len(df.index.get_level_values("case").unique())
+    else:
+        nr_cases = len([case for case in df.index.get_level_values("case").unique() if "regret" not in case])
+
+    fig, axs = plt.subplots(nr_cases, len(df.index.get_level_values("g").unique()), figsize=(6 * len(df.index.get_level_values("g").unique()), 2 * nr_cases))
+
+    i_correction = 0  # Correction for skipped regret cases in the loop below
     for i, case in enumerate(df.index.get_level_values("case").unique()):
+        if not plot_regret and "regret" in case:
+            i_correction += 1
+            continue
+        i = i - i_correction  # Adjust index if regret cases are skipped
         for j, g in enumerate(df.index.get_level_values("g").unique()):
 
-            data_plot = {}
+            data_vGenP = {}
             data_bar_startup = {}
             data_bar_shutdown = {}
             data_bar_min_uptime_height = {}
             data_bar_min_downtime_bottom = {}
-            data_plot_demand = {}
+            data_demand = {}
+            data_vPNS = {}
+            data_vEPS = {}
+            data_vCommit = {}
+
             for counter, (_, row) in enumerate(hindex.iterrows()):
                 counter += 1
                 rp = row["rp"] if case != "Truth " and "regret" not in case else "rp01"
                 k = row["k"] if case != "Truth " and "regret" not in case else row["p"].replace("h", "k")
-                data_plot[counter] = df.loc[case, rp, k, g]["vCommit"]
+                data_vGenP[counter] = df.loc[case, rp, k, g]["vGenP"]
+                data_vCommit[counter] = df.loc[case, rp, k, g]["vCommit"]
                 data_bar_startup[counter] = df.loc[case, rp, k, g]["vStartup"]
                 data_bar_shutdown[counter] = df.loc[case, rp, k, g]["vShutdown"]
-                data_plot_demand[counter] = df.loc[case, rp, k, g]["pDemandP"]
+                data_demand[counter] = df.loc[case, rp, k, g]["pDemandP"]
+                data_vPNS[counter] = df.loc[case, rp, k, g]["vPNS"]
+                data_vEPS[counter] = df.loc[case, rp, k, g]["vEPS"]
 
             for counter, (_, row) in enumerate(hindex.iterrows()):
                 counter += 1
                 data_bar_min_uptime_height[counter] = sum([data_bar_startup[a] for a in [counter - b for b in range(0, int(df.loc[case, rp, k, g]["pMinUpTime"] - 1)) if counter - b > 0]])
                 data_bar_min_downtime_bottom[counter] = 1 - sum([data_bar_shutdown[a] for a in [counter - b for b in range(0, int(df.loc[case, rp, k, g]["pMinDownTime"] - 1)) if counter - b > 0]])
 
-            axs[i, j].set_ylim(-0.05, 1.05)
-            axs[i, j].plot(index, data_plot.values(), color="black", alpha=0.3)
-            axs[i, j].bar(index, data_bar_startup.values(), color="green", alpha=0.5, bottom=[list(data_plot.values())[-1]] + list(data_plot.values())[:-1], width=1)
-            axs[i, j].bar(index, data_bar_shutdown.values(), color="red", alpha=0.5, bottom=data_plot.values(), width=1)
-            axs[i, j].bar(index, data_bar_min_uptime_height.values(), color="green", alpha=0.2, width=1)
-            axs[i, j].bar(index, bottom=data_bar_min_downtime_bottom.values(), height=[1 - x for x in data_bar_min_downtime_bottom.values()], color="red", alpha=0.2, width=1)
-            axs[i, j].set_title(f"{case} - {g}")
+            axs2 = axs[i].twinx()
+            axs2.set_title(f"{case.replace("-regret", ": Nearest Feasible Truth-Solution")}")
+            axs2.set_ylim(0, 3)
+            axs2.bar(index, data_bar_startup.values(), color="green", alpha=0.5, bottom=[list(data_vCommit.values())[-1]] + list(data_vCommit.values())[:-1], width=1, label="Startup")
+            axs2.bar(index, data_bar_shutdown.values(), color="red", alpha=0.5, bottom=data_vCommit.values(), width=1, label="Shutd.")
+            axs2.plot(index, data_vCommit.values(), color="gray", alpha=0.5, label="Commit", linewidth=1.5)
+            axs2.set_ylabel("Startup / Shutdown", color="black")
 
-            # Plot demand on second y-axis
-            axs2 = axs[i, j].twinx()
-            axs2.plot(index, data_plot_demand.values(), color="blue", alpha=0.3)
+            axs2.bar(index, data_bar_min_uptime_height.values(), color="green", alpha=0.2, width=1)
+            axs2.bar(index, bottom=data_bar_min_downtime_bottom.values(), height=[1 - x for x in data_bar_min_downtime_bottom.values()], color="red", alpha=0.2, width=1)
+
+            axs2.hlines(y=1, xmin=0, xmax=len(data_bar_shutdown.values()), color="gray", linestyle=(0, (1, 1)), alpha=0.5)
+            axs2.set_yticks([0, 1], ["0", "1"])
+            axs2.legend(loc='lower right', fontsize='x-small')
+
+            # Plot demand on second y-axis, add PNS and EPS
+            axs[i].set_ylim(-1, 1)
+            axs[i].plot(index, data_demand.values(), color="blue", alpha=0.3, label="Demand")
+            axs[i].plot(index, data_vGenP.values(), color="black", alpha=0.3, label="Prod.")
+
+            axs[i].bar(index, data_vPNS.values(), color="orange", alpha=0.3, label="PNS", bottom=data_vGenP.values())
+            axs[i].bar(index, data_vEPS.values(), color="purple", alpha=0.3, label="EPS", bottom=data_demand.values())
+            axs[i].legend(loc='upper right', fontsize='x-small')
+
+            axs[i].hlines(y=0, xmin=0, xmax=len(data_bar_shutdown.values()), color="gray", linestyle=(0, (1, 1)), alpha=0.5)
+            axs[i].set_ylabel("Generation / Demand", color="black")
+            axs[i].set_yticks([0, 0.5, 1], ["0.0", "0.5", "1.0"])
 
             # Set ticks and vertical lines
             index_labels = []
@@ -273,12 +319,12 @@ def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: st
                         index_labels.append(x + start_hour - 1)
                         index_positions.append(x)
 
-            axs[i, j].set_xticks(index_positions)
-            axs[i, j].set_xticklabels(index_labels)
+            axs[i].set_xticks(index_positions)
+            axs[i].set_xticklabels(index_labels)
             for x in axvline_thick_positions:
-                axs[i, j].axvline(x=x, color="gray", linestyle="--", alpha=0.5)
+                axs[i].axvline(x=x, color="gray", linestyle="--", alpha=0.5)
             for x in axvline_thin_positions:
-                axs[i, j].axvline(x=x, color="gray", linestyle="-", alpha=0.2)
+                axs[i].axvline(x=x, color="gray", linestyle="-", alpha=0.2)
 
     plt.tight_layout()
     plt.show()

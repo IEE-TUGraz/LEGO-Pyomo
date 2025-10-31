@@ -84,8 +84,8 @@ def test_comparisonExampleSOCPAgainstGAMS(tmp_path):
     ew = ExcelWriter()
     ew.write_caseStudy(cs, tmp_path_originalData)
 
-    mps_equal = compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_path_originalData, True,
-                              ModelTypeForComparison.GAMS, tmp_path_originalData, True,
+    mps_equal = compareModels(ModelTypeForComparison.DETERMINISTIC, tmp_path_originalData, False,
+                              ModelTypeForComparison.GAMS, tmp_path_originalData, False,
                               coefficients_skip_model1=["vCurtailment", "vStorageSpillage", "vStIntraRes", "vStInterRes"], constraint_skip_model1=["eStInterRes", "eStMaxInterRes"],
                               coefficients_skip_model2=["vStIntraRes", "vStInterRes"], constraint_skip_model2=["eStInterRes", "eStMaxInterRes"],
                               tmp_folder_path=tmp_path, print_additional_information=True)

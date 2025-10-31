@@ -64,6 +64,11 @@ def test_socp(tmp_path):
                              tmp_folder_path=tmp_path, print_additional_information=True)
 
 
+formatCheckSkipList = [
+    "data/markov/Power_Demand.xlsx",  # Calculates demand curve in Excel directly, so format and values differ
+]
+
+
 @pytest.mark.parametrize("folder", [folder for folder in os.listdir("data/")])
 def test_example_formats_and_versions(tmp_path, folder):
     """
@@ -78,6 +83,9 @@ def test_example_formats_and_versions(tmp_path, folder):
         if file.endswith(".xlsx"):
             file_path = os.path.join(f"data/{folder}", file)
             excel_definition_id = file.replace(".xlsx", "")
+            if file_path.replace("\\", "/") in formatCheckSkipList:
+                printer.warning(f"Skipping version/format check for '{file_path}' as it is in the skip list")
+                continue
             if not hasattr(ExcelReader, f"get_{excel_definition_id}"):
                 printer.warning(f"Skipping '{file_path}' since no reader function found for '{excel_definition_id}'")
                 continue
@@ -112,8 +120,15 @@ def test_documentationMPSArchive():
         for line in lines:
             if line.startswith("#") or not line.strip():
                 continue  # Skip comment lines and empty lines
-            split = line.split(" ", 1)
-            filename = split[0]
+            split = line.split(" ")
+            filename = ""
+            counter = 0
+            while not filename.endswith(".mps") and not filename.endswith(".mps.7z"):
+                filename += " " if counter > 0 else ""
+                filename += split[counter]
+                counter += 1
+                if counter >= len(split):
+                    break
             if filename.endswith('.mps.7z'):
                 filename = filename[:-3]  # Remove '.7z'
             entries[filename] = split[1]
