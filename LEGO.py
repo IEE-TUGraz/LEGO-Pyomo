@@ -67,6 +67,8 @@ args = parser.parse_args()
 printer.information(f"Loading case study from '{args.caseStudyDirectory}'\n")
 start_time = time.time()
 cs = CaseStudy(args.caseStudyDirectory)
+#cs = cs.filter_timesteps('k00001','k00002')
+
 
 rh_length = cs.dGlobal_Parameters["pMovingWindowLength"]
 rh_overlap = cs.dGlobal_Parameters["pMovingWindowOverlap"]
@@ -83,6 +85,8 @@ if not use_moving_window:
     # Build LEGO model
     printer.information("Building LEGO model")
     model, timing = lego.build_model(model_type=args.modelType)
+    # with open("pprint.txt", "w") as f:
+    #     model.objective.pprint(f)
     printer.information(f"Building LEGO model took {timing:.2f} seconds")
 
     # Solve LEGO model
@@ -126,6 +130,7 @@ else:
         # Build LEGO model
         printer.information("Building LEGO model")
         model, timing = lego.build_model(model_type=args.modelType)
+
 
         printer.information(f"Building LEGO model took {timing:.2f} seconds")
 

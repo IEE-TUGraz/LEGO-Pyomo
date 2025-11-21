@@ -40,15 +40,15 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             for hub, i in model.hubConnections:
                 model.eDC_BalanceP_expr[rp, k, i] += model.vImpExp[rp, k, hub, i]
                 if cs.dPower_Parameters['pEnableSOCP']:
-                    model.eSOCP_BalanceQ_expr[rp, k, i] += model.vImpExpQ[rp, k, hub, i]
+                     model.eSOCP_BalanceQ_expr[rp, k, i] += model.vImpExpQ[rp, k, hub, i]
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0
 
     # Add import/export cost/revenues to total cost
     if not cs.dPower_Parameters['pEnableSOCP']:
-        second_stage_objective = sum(model.vImpExp[rp, k, hub, i] * model.pImpExpPrice[rp, k, hub, i] for rp in model.rp for k in model.constraintsActiveK for hub, i in model.hubConnections)
+        second_stage_objective = sum(model.vImpExp[rp, k, hub, i] * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pImpExpPrice[rp, k, hub] for rp in model.rp for k in model.k for hub, i in model.hubConnections)
     else:
-        second_stage_objective = sum((model.vImpExp[rp, k, hub, i] + model.vImpExpQ[rp, k, hub, i]) * model.pImpExpPrice[rp, k, hub, i] for rp in model.rp for k in model.constraintsActiveK for hub, i in model.hubConnections)
+        second_stage_objective = sum((model.vImpExp[rp, k, hub, i] + model.vImpExpQ[rp, k, hub, i]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pImpExpPrice[rp, k, hub, i] for rp in model.rp for k in model.constraintsActiveK for hub, i in model.hubConnections)
 
 
     # Adjust objective and return first_stage_objective expression

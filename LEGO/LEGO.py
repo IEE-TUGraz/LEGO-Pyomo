@@ -79,6 +79,7 @@ class LEGO:
         return get_objective_value(self.model, zoi)
 
     def solve_model(self, model_type: ModelType = ModelType.DETERMINISTIC, solver_name: str = None, already_solved_ok=False) -> (pyomo.opt.results.results_.SolverResults, float, float):
+
         if not already_solved_ok and self.results is not None:
             raise RuntimeError("Model already solved, please set already_solved_ok to True if that's intentional")
 
@@ -90,8 +91,12 @@ class LEGO:
         start_time = time.time()
         match model_type:
             case ModelType.DETERMINISTIC:
-                optimizer = pyo.SolverFactory(solver_name)
-                results = optimizer.solve(self.model)
+                optimizer = pyo.SolverFactory(solver_name, tee = True)
+                optimizer.options['NumericFocus'] = 3
+                optimizer.options['Presolve'] = 2
+                optimizer.options['BarHomogeneous'] = 1
+                optimizer.options['OptimalityTol'] = 1e-4
+                results = optimizer.solve(self.model, tee = True)
                 objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
             case ModelType.EXTENSIVE_FORM:
                 if solver_name != self.solver_name:

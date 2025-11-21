@@ -179,6 +179,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         model.vEQS = pyo.Var(model.rp, model.k, model.i, doc='Slack variable excess reactive power served', bounds=(0, None))
         second_stage_variables += [model.vEQS]
 
+        model.alpha_p = pyo.Var(model.rp, model.k, model.la_full, doc='Linearization variable for absolute active power losses', bounds=(0, None))
+        second_stage_variables.append(model.alpha_p)
+
+        model.alpha_q = pyo.Var(model.rp, model.k, model.la_full, doc='Linearization variable for absolute reactive power losses', bounds=(0, None))
+        second_stage_variables.append(model.alpha_q)
+
     # For each DC-OPF/SOCP "island", set node with highest demand as slack node
     dTechnicalReprIslands = pd.DataFrame(index=cs.dPower_BusInfo.index, columns=[cs.dPower_BusInfo.index], data=False)
 
@@ -224,10 +230,10 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def eDC_BalanceP_rule(m, rp, k, i):
         if cs.dPower_Parameters["pEnableSOCP"]:
             return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi)  # Gen at bus i
-                    # - sum(m.vLineP[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i)  # Only outflows from i, Old indexing format
-                    - sum(m.vLineP[rp, k, i2, j, c] if i2 == i else m.vLineP[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])  # Only outflows from i
+                    - sum(m.vLineP[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i)  # Only outflows from i, Old indexing format
+                    # - sum(m.vLineP[rp, k, i2, j, c] if i2 == i else m.vLineP[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])  # Only outflows from i
                     - m.vSOCP_cii[rp, k, i] * m.pBusG[i] * m.pSBase
-                    - m.pDemandP[rp, k, i]
+                    - (m.pDemandP[rp, k, i]/250)
                     + m.vPNS[rp, k, i]
                     - m.vEPS[rp, k, i])
         else:
@@ -309,7 +315,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     # - sum(m.vLineQ[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i) Old indexing format
                     - sum(m.vLineQ[rp, k, i2, j, c] if i2 == i else m.vLineQ[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])
                     + m.vSOCP_cii[rp, k, i] * m.pBusB[i] * m.pSBase
-                    - m.pDemandQ[rp, k, i]
+                    - (m.pDemandQ[rp, k, i]/250)
                     + m.vQNS[rp, k, i]
                     - m.vEQS[rp, k, i]
                     )
@@ -394,6 +400,18 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     + (1 / m.pRatio[i, j, c]) * (m.pBline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) - m.pGline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_cij[rp, k, i, j])
                     + m.pBigM_Flow * (1 - m.vLineInvest[i, j, c]))
 
+        def eSOCP_PLosses_rule1(m, rp, k, i, j, c):
+            return model.alpha_p[rp, k, i, j, c] >= (m.vLineP[rp, k, i, j, c] + m.vLineP[rp, k, j, i, c])
+
+        def eSOCP_PLosses_rule2(m, rp, k, i, j, c):
+            return model.alpha_p[rp, k, i, j, c] >= -(m.vLineP[rp, k, i, j, c] + m.vLineP[rp, k, j, i, c])
+
+        def eSOCP_QLosses_rule1(m, rp, k, i, j, c):
+            return model.alpha_q[rp, k, i, j, c] >= (m.vLineQ[rp, k, i, j, c] + m.vLineQ[rp, k, j, i, c])
+
+        def eSOCP_QLosses_rule2(m, rp, k, i, j, c):
+            return model.alpha_q[rp, k, i, j, c] >= -(m.vLineQ[rp, k, i, j, c] + m.vLineQ[rp, k, j, i, c])
+
         model.eSOCP_QMaxOut = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc="Max reactive power output of generator unit", rule=lambda m, rp, k, g: (m.vGenQ[rp, k, g] / m.pMaxGenQ[g] <= m.vCommit[rp, k, g]) if m.pMaxGenQ[g] != 0 and (m.pExisUnits[g] > 0 or m.pEnabInv[g] == 1) else pyo.Constraint.Skip)
         model.eSOCP_QMinOut1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc="Min positive reactive power output of generator unit", rule=lambda m, rp, k, g: (m.vGenQ[rp, k, g] / m.pMinGenQ[g] >= m.vCommit[rp, k, g]) if m.pMinGenQ[g] >= 0 and (m.pExisUnits[g] > 0 or m.pEnabInv[g] == 1) else pyo.Constraint.Skip)
         model.eSOCP_QMinOut2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc="Min negative reactive power output of generator unit", rule=lambda m, rp, k, g: (m.vGenQ[rp, k, g] / m.pMinGenQ[g] <= m.vCommit[rp, k, g]) if m.pMinGenQ[g] <= 0 and (m.pExisUnits[g] > 0 or m.pEnabInv[g] == 1) else pyo.Constraint.Skip)
@@ -448,6 +466,11 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         model.eSOCP_CanLineAngDif1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="Angle difference upper bounds candidate lines", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] <= m.vSOCP_cij[rp, k, i, j] * pyo.tan(m.pMaxAngleDiff) + m.pBigM_Flow * (1 - m.vSOCP_IndicConnecNodes[i, j]) if (i, j, m.first_circuit_map[i, j]) in m.lc_nodeRelevant and (i, j, m.first_circuit_map[i, j]) not in m.le_nodeRelevant else pyo.Constraint.Skip)
         model.eSOCP_CanLineAngDif2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_no_c, doc="Angle difference lowerf bounds candidate lines ", rule=lambda m, rp, k, i, j: m.vSOCP_sij[rp, k, i, j] >= - m.vSOCP_cij[rp, k, i, j] * pyo.tan(m.pMaxAngleDiff) - m.pBigM_Flow * (1 - m.vSOCP_IndicConnecNodes[i, j]) if (i, j, m.first_circuit_map[i, j]) in m.lc_nodeRelevant and (i, j, m.first_circuit_map[i, j]) not in m.le_nodeRelevant else pyo.Constraint.Skip)
 
+        model.eSOCP_PLosses1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc="Active power losses approximation positive", rule=eSOCP_PLosses_rule1)
+        model.eSOCP_PLosses2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc="Active power losses approximation negative", rule=eSOCP_PLosses_rule2)
+        model.eSOCP_QLosses1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc="Reactive power losses approximation positive", rule=eSOCP_QLosses_rule1)
+        model.eSOCP_QLosses2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc="Reactive power losses approximation negative", rule=eSOCP_QLosses_rule2)
+
         if cs.dPower_Parameters["pEnableSOCP"] == 99999:  # Deactivated
             # Apparent power constraints for existing and candidate lines (Disabled in the LEGO model due to increased solving time)
             # Constraints might need to be redefined for only the le setl
@@ -483,14 +506,17 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
                              sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
     if not cs.dPower_Parameters["pEnableSOCP"]:
-        # Reactive slack node terms included when SOCP active
         def ens_terms(rp, k):
             return sum(
                 model.vPNS[rp, k, i] * model.pENSCost
                 + model.vEPS[rp, k, i] * model.pENSCost * 2
                 for i in model.i
             )
+
+        def line_losses_terms(rp, k):
+            return 0
     else:
+        # Reactive slack node terms included when SOCP active
         def ens_terms(rp, k):
             return sum(
                 model.vPNS[rp, k, i] * model.pENSCost
@@ -499,12 +525,18 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                 + model.vEQS[rp, k, i] * model.pENSCost * 2
                 for i in model.i
             )
+        def line_losses_terms(rp, k):
+            return sum(
+                (model.alpha_p[rp, k, i, j, c] + model.alpha_q[rp, k, i, j, c]) * 1000
+                for i, j, c in model.la
+            )
 
     second_stage_objective = sum(model.pWeight_rp[rp] *  # Weight of representative periods
                                  sum(model.pWeight_k[k] *  # Weight of time steps
                                      (ens_terms(rp, k)  # Power non supplied terms
                                       + sum(+ model.vGenP[rp, k, g] * model.pOMVarCost[g]  # Production cost of generators
                                             for g in model.g))
+                                        + line_losses_terms(rp, k)  # Penalty for line losses
                                      for k in model.constraintsActiveK)
                                  for rp in model.rp)
 
