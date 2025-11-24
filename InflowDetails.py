@@ -34,6 +34,7 @@ def directory_path(string):
 parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to folder containing data for LEGO model")
 parser.add_argument("--numberOfRPs", type=int, help="Number of representative periods to cluster data into", default=1)
 parser.add_argument("--lengthOfRPs", type=int, help="Length of representative periods (in number of time steps)", default=24)
+parser.add_argument("--scaleDemand", type=float, default=1.0, help="Scaling factor for demand (default: 1.0 = no scaling)")
 args = parser.parse_args()
 
 if args.numberOfRPs < 1:
@@ -47,6 +48,10 @@ printer.information(f"Loading original case study from '{args.caseStudyDirectory
 start_time = time.time()
 cs_inflow_detailed = CaseStudy(args.caseStudyDirectory)
 printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
+
+if args.scaleDemand != 1.0:
+    printer.information(f"Scaling demand by factor {args.scaleDemand}")
+    cs_inflow_detailed.dPower_Demand['value'] *= args.scaleDemand
 
 printer.information("Creating copy of case study with simplified inflow data")
 cs_inflow_simplified = cs_inflow_detailed.copy()
