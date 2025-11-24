@@ -8,7 +8,7 @@ from pyomo.core import NameLabeler
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
-from InOutModule import SQLiteWriter, ExcelWriter
+from InOutModule import SQLiteWriter
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO
@@ -36,6 +36,8 @@ parser.add_argument("--numberOfRPs", type=int, help="Number of representative pe
 parser.add_argument("--lengthOfRPs", type=int, help="Length of representative periods (in number of time steps)", default=24)
 parser.add_argument("--scaleDemand", type=float, default=1.0, help="Scaling factor for demand (default: 1.0 = no scaling)")
 args = parser.parse_args()
+
+caseStudyName = args.caseStudyDirectory.replace("/", "_").replace("\\", "_")
 
 if args.numberOfRPs < 1:
     printer.error("numberOfRPs must be at least 1")
@@ -90,9 +92,8 @@ match results_detailed.solver.termination_condition:
     case _:
         printer.warning(f"Solver terminated with condition: {results_detailed.solver.termination_condition}")
 
-SQLiteWriter.model_to_sqlite(model_inflow_detailed, "model_detailed.sqlite")
-ExcelWriter.ExcelWriter.model_to_excel(model_inflow_detailed, "model_detailed.xlsx")
-model_inflow_detailed.write("model_detailed.mps", io_options={'labeler': NameLabeler()})
+SQLiteWriter.model_to_sqlite(model_inflow_detailed, f"model_detailed-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}.sqlite")
+model_inflow_detailed.write(f"model_detailed-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}.mps", io_options={'labeler': NameLabeler()})
 
 results_simplified, timing, objective_value_simplified = lego_simplified.solve_model()
 printer.information(f"Solving simplified LEGO model took {timing:.2f} seconds")
@@ -106,9 +107,8 @@ match results_simplified.solver.termination_condition:
     case _:
         printer.warning(f"Solver terminated with condition: {results_simplified.solver.termination_condition}")
 
-SQLiteWriter.model_to_sqlite(model_inflow_simplified, "model_simplified.sqlite")
-ExcelWriter.ExcelWriter.model_to_excel(model_inflow_simplified, "model_simplified.xlsx")
-model_inflow_simplified.write("model_simplified.mps", io_options={'labeler': NameLabeler()})
+SQLiteWriter.model_to_sqlite(model_inflow_simplified, f"model_simplified-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}.sqlite")
+model_inflow_simplified.write(f"model_simplified-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}.mps", io_options={'labeler': NameLabeler()})
 
 logger = logging.getLogger('pyomo.util.infeasible')
 logger.setLevel(logging.INFO)
