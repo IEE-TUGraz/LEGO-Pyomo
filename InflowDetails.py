@@ -4,7 +4,6 @@ import os
 import time
 
 import pyomo.environ as pyo
-from pyomo.core import NameLabeler
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
@@ -35,6 +34,8 @@ parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to fol
 parser.add_argument("--numberOfRPs", type=int, help="Number of representative periods to cluster data into", default=1)
 parser.add_argument("--lengthOfRPs", type=int, help="Length of representative periods (in number of time steps)", default=24)
 parser.add_argument("--scaleDemand", type=float, default=1.0, help="Scaling factor for demand (default: 1.0 = no scaling)")
+parser.add_argument("--scaleVRESMaxProd", type=float, default=1.0, help="Scaling factor for VRES maximum production (default: 1.0 = no scaling)")
+parser.add_argument("--scaleInflows", type=float, default=1.0, help="Scaling factor for inflows (default: 1.0 = no scaling)")
 args = parser.parse_args()
 
 caseStudyName = args.caseStudyDirectory.replace("/", "_").replace("\\", "_")
@@ -54,6 +55,14 @@ printer.information(f"Loading case study took {time.time() - start_time:.2f} sec
 if args.scaleDemand != 1.0:
     printer.information(f"Scaling demand by factor {args.scaleDemand}")
     cs_inflow_detailed.dPower_Demand['value'] *= args.scaleDemand
+
+if args.scaleInflows != 1.0:
+    printer.information(f"Scaling inflows by factor {args.scaleInflows}")
+    cs_inflow_detailed.dPower_Inflows['value'] *= args.scaleInflows
+
+if args.scaleVRESMaxProd != 1.0:
+    printer.information(f"Scaling VRES maximum production by factor {args.scaleVRESMaxProd}")
+    cs_inflow_detailed.dPower_VRES['MaxProd'] *= args.scaleVRESMaxProd
 
 printer.information("Creating copy of case study with simplified inflow data")
 cs_inflow_simplified = cs_inflow_detailed.copy()
@@ -92,8 +101,7 @@ match results_detailed.solver.termination_condition:
     case _:
         printer.warning(f"Solver terminated with condition: {results_detailed.solver.termination_condition}")
 
-SQLiteWriter.model_to_sqlite(model_inflow_detailed, f"model_detailed-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}.sqlite")
-model_inflow_detailed.write(f"model_detailed-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}.mps", io_options={'labeler': NameLabeler()})
+SQLiteWriter.model_to_sqlite(model_inflow_detailed, f"model_detailed-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}-inflows{args.scaleInflows}-vresMaxProd{args.scaleVRESMaxProd}.sqlite")
 
 results_simplified, timing, objective_value_simplified = lego_simplified.solve_model()
 printer.information(f"Solving simplified LEGO model took {timing:.2f} seconds")
@@ -107,8 +115,7 @@ match results_simplified.solver.termination_condition:
     case _:
         printer.warning(f"Solver terminated with condition: {results_simplified.solver.termination_condition}")
 
-SQLiteWriter.model_to_sqlite(model_inflow_simplified, f"model_simplified-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}.sqlite")
-model_inflow_simplified.write(f"model_simplified-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}.mps", io_options={'labeler': NameLabeler()})
+SQLiteWriter.model_to_sqlite(model_inflow_simplified, f"model_simplified-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}-inflows{args.scaleInflows}-vresMaxProd{args.scaleVRESMaxProd}.sqlite")
 
 logger = logging.getLogger('pyomo.util.infeasible')
 logger.setLevel(logging.INFO)
