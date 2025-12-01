@@ -39,10 +39,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     if cs.dPower_Parameters["pEnableSOCP"]:
         # Helper function for creating reverse and bidirectional sets
         def make_reverse_set(original_set):
-            reverse = []
-            for (i, j, c) in original_set:
-                reverse.append((j, i, c))
-            return reverse
+            return [(j, i, c) for (i, j, c) in original_set]
 
         model.la_reverse = pyo.Set(doc='Reverse lines for la', initialize=lambda m: make_reverse_set(m.la), dimen=3)
         model.la_no_c = pyo.Set(doc='All lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.la}, dimen=2)
