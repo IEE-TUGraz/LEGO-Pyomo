@@ -77,5 +77,5 @@ match results.solver.termination_condition:
         printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
 
 SQLiteWriter.model_to_sqlite(model, "model.sqlite")
-ExcelWriter.model_to_excel(model, "model.xlsx")
+ExcelWriter.ExcelWriter.model_to_excel(model, "model.xlsx")
 model.write("model.mps", io_options={'labeler': NameLabeler()})
