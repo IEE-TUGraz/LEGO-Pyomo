@@ -236,7 +236,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     - sum(m.vLineP[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i)  # Only outflows from i, Old indexing format
                     # - sum(m.vLineP[rp, k, i2, j, c] if i2 == i else m.vLineP[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])  # Only outflows from i
                     - m.vSOCP_cii[rp, k, i] * m.pBusG[i] * m.pSBase
-                    - (m.pDemandP[rp, k, i]/250)
+                    - (m.pDemandP[rp, k, i])
                     + m.vPNS[rp, k, i]
                     - m.vEPS[rp, k, i])
         else:
@@ -318,7 +318,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     # - sum(m.vLineQ[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i) Old indexing format
                     - sum(m.vLineQ[rp, k, i2, j, c] if i2 == i else m.vLineQ[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])
                     + m.vSOCP_cii[rp, k, i] * m.pBusB[i] * m.pSBase
-                    - (m.pDemandQ[rp, k, i]/250)
+                    - (m.pDemandQ[rp, k, i])
                     + m.vQNS[rp, k, i]
                     - m.vEQS[rp, k, i]
                     )
