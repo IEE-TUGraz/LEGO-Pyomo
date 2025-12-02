@@ -148,6 +148,8 @@ else:
                                 if v.value is not None:
                                     new_component[n].fix(pyo.value(v))  # TODO skip validation
 
+        SQLiteWriter.model_to_sqlite(model, "Model_limits.sqlite")
+
         # Solve LEGO model
         printer.information("Solving LEGO model")
         try:

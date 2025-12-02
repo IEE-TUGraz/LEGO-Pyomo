@@ -232,8 +232,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def eDC_BalanceP_rule(m, rp, k, i):
         if cs.dPower_Parameters["pEnableSOCP"]:
             return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi)  # Gen at bus i
-                    - sum(m.vLineP[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i)  # Only outflows from i, Old indexing format
-                    # - sum(m.vLineP[rp, k, i2, j, c] if i2 == i else m.vLineP[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])  # Only outflows from i
+                    - sum(m.vLineP[rp, k, i2, j, c] if i2 == i else m.vLineP[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])  # Only outflows from i
                     - m.vSOCP_cii[rp, k, i] * m.pBusG[i]
                     - (m.pDemandP[rp, k, i])
                     + m.vPNS[rp, k, i]
@@ -312,7 +311,6 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             return (sum(m.vGenQ[rp, k, g] for g in m.g if (g, i) in m.gi)
                     # todo: sum(m.vGenQ[rp, k, g] for g in m.gi_helper[i])
                     # Only vLineQ where i is the sending end (i → j)
-                    # - sum(m.vLineQ[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i) Old indexing format
                     - sum(m.vLineQ[rp, k, i2, j, c] if i2 == i else m.vLineQ[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])
                     + m.vSOCP_cii[rp, k, i] * m.pBusB[i]
                     - m.pDemandQ[rp, k, i]
@@ -401,16 +399,16 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     + m.pBigM_Flow * (1 - m.vLineInvest[i, j, c]))
 
         def eSOCP_PLosses_rule1(m, rp, k, i, j, c):
-            return model.alpha_p[rp, k, i, j, c] >= (m.vLineP[rp, k, i, j, c] + m.vLineP[rp, k, j, i, c])
+            return m.alpha_p[rp, k, i, j, c] >= (m.vLineP[rp, k, i, j, c] + m.vLineP[rp, k, j, i, c])
 
         def eSOCP_PLosses_rule2(m, rp, k, i, j, c):
-            return model.alpha_p[rp, k, i, j, c] >= -(m.vLineP[rp, k, i, j, c] + m.vLineP[rp, k, j, i, c])
+            return m.alpha_p[rp, k, i, j, c] >= -(m.vLineP[rp, k, i, j, c] + m.vLineP[rp, k, j, i, c])
 
         def eSOCP_QLosses_rule1(m, rp, k, i, j, c):
-            return model.alpha_q[rp, k, i, j, c] >= (m.vLineQ[rp, k, i, j, c] + m.vLineQ[rp, k, j, i, c])
+            return m.alpha_q[rp, k, i, j, c] >= (m.vLineQ[rp, k, i, j, c] + m.vLineQ[rp, k, j, i, c])
 
         def eSOCP_QLosses_rule2(m, rp, k, i, j, c):
-            return model.alpha_q[rp, k, i, j, c] >= -(m.vLineQ[rp, k, i, j, c] + m.vLineQ[rp, k, j, i, c])
+            return m.alpha_q[rp, k, i, j, c] >= -(m.vLineQ[rp, k, i, j, c] + m.vLineQ[rp, k, j, i, c])
 
         model.eSOCP_QMaxOut = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc="Max reactive power output of generator unit", rule=lambda m, rp, k, g: (m.vGenQ[rp, k, g] / m.pMaxGenQ[g] <= m.vCommit[rp, k, g]) if m.pMaxGenQ[g] != 0 and (m.pExisUnits[g] > 0 or m.pEnabInv[g] == 1) else pyo.Constraint.Skip)
         model.eSOCP_QMinOut1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc="Min positive reactive power output of generator unit", rule=lambda m, rp, k, g: (m.vGenQ[rp, k, g] / m.pMinGenQ[g] >= m.vCommit[rp, k, g]) if m.pMinGenQ[g] >= 0 and (m.pExisUnits[g] > 0 or m.pEnabInv[g] == 1) else pyo.Constraint.Skip)
