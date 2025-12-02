@@ -103,7 +103,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.pRatio = pyo.Param(model.la, initialize=cs.dPower_Network['pRatio'], doc='Transformer ratio')
     model.pPmax = pyo.Param(model.la, initialize=cs.dPower_Network['pPmax'], doc='Maximum power flow on line la')
     model.pFixedCost = pyo.Param(model.la, initialize=cs.dPower_Network['pInvestCost'], doc='Fixed cost when investing in line la')  # TODO: Think about renaming this parameter (something related to 'investment cost')
-    model.pSBase = pyo.Param(initialize=cs.dPower_Parameters['pSBase'], doc='Base power')
     model.pBigM_Flow = pyo.Param(initialize=1e3, doc="Big M for power flow")
     model.pENSCost = pyo.Param(initialize=cs.dPower_Parameters['pENSCost'], doc='Cost used for Power Not Served (PNS) and Excess Power Served (EPS)')
     model.pWeight_rp = pyo.Param(model.rp, initialize=cs.dPower_WeightsRP["pWeight_rp"], doc='Weight of representative period rp')
@@ -235,7 +234,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi)  # Gen at bus i
                     - sum(m.vLineP[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i)  # Only outflows from i, Old indexing format
                     # - sum(m.vLineP[rp, k, i2, j, c] if i2 == i else m.vLineP[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])  # Only outflows from i
-                    - m.vSOCP_cii[rp, k, i] * m.pBusG[i] * m.pSBase
+                    - m.vSOCP_cii[rp, k, i] * m.pBusG[i]
                     - (m.pDemandP[rp, k, i])
                     + m.vPNS[rp, k, i]
                     - m.vEPS[rp, k, i])
@@ -253,7 +252,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         def eDC_ExiLinePij_rule(m, rp, k, i, j, c):
             match cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
                 case "DC-OPF":
-                    return m.vLineP[rp, k, i, j, c] == (m.vTheta[rp, k, i] - m.vTheta[rp, k, j] + m.vAngle[rp, k, i, j, c]) * m.pSBase / (m.pXline[i, j, c] * m.pRatio[i, j, c])
+                    return m.vLineP[rp, k, i, j, c] == (m.vTheta[rp, k, i] - m.vTheta[rp, k, j] + m.vAngle[rp, k, i, j, c]) / (m.pXline[i, j, c] * m.pRatio[i, j, c])
                 case "TP" | "SN" | "SOCP":
                     return pyo.Constraint.Skip
                 case _:
@@ -266,8 +265,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             match cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
                 case "DC-OPF":
                     return (m.vLineP[rp, k, i, j, c] / (m.pBigM_Flow * m.pPmax[i, j, c]) >=
-                            (m.vTheta[rp, k, i] - m.vTheta[rp, k, j] + m.vAngle[rp, k, i, j, c]) *
-                            m.pSBase / (m.pXline[i, j, c] * m.pRatio[i, j, c]) /
+                            (m.vTheta[rp, k, i] - m.vTheta[rp, k, j] + m.vAngle[rp, k, i, j, c]) / (m.pXline[i, j, c] * m.pRatio[i, j, c]) /
                             (m.pBigM_Flow * m.pPmax[i, j, c]) - 1 + m.vLineInvest[i, j, c])
                 case "TP" | "SN" | "SOCP":
                     return pyo.Constraint.Skip
@@ -280,8 +278,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             match cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
                 case "DC-OPF":
                     return (m.vLineP[rp, k, i, j, c] / (m.pBigM_Flow * m.pPmax[i, j, c]) <=
-                            (m.vTheta[rp, k, i] - m.vTheta[rp, k, j] + m.vAngle[rp, k, i, j, c]) *
-                            m.pSBase / (m.pXline[i, j, c] * m.pRatio[i, j, c]) /
+                            (m.vTheta[rp, k, i] - m.vTheta[rp, k, j] + m.vAngle[rp, k, i, j, c]) / (m.pXline[i, j, c] * m.pRatio[i, j, c]) /
                             (m.pBigM_Flow * m.pPmax[i, j, c]) + 1 - m.vLineInvest[i, j, c])
                 case "TP" | "SN" | "SOCP":
                     return pyo.Constraint.Skip
@@ -317,87 +314,87 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     # Only vLineQ where i is the sending end (i → j)
                     # - sum(m.vLineQ[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i) Old indexing format
                     - sum(m.vLineQ[rp, k, i2, j, c] if i2 == i else m.vLineQ[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])
-                    + m.vSOCP_cii[rp, k, i] * m.pBusB[i] * m.pSBase
-                    - (m.pDemandQ[rp, k, i])
+                    + m.vSOCP_cii[rp, k, i] * m.pBusB[i]
+                    - m.pDemandQ[rp, k, i]
                     + m.vQNS[rp, k, i]
                     - m.vEQS[rp, k, i]
                     )
 
         def eSOCP_ExiLinePij_rule(m, rp, k, i, j, c):
-            return (m.vLineP[rp, k, i, j, c] == m.pSBase * (
+            return (m.vLineP[rp, k, i, j, c] == (
                     + m.pGline[i, j, c] * m.vSOCP_cii[rp, k, i] / (m.pRatio[i, j, c] ** 2)
                     - (1 / m.pRatio[i, j, c]) * (m.pGline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) - m.pBline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_cij[rp, k, i, j]
                     - (1 / m.pRatio[i, j, c]) * (m.pBline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) + m.pGline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * - m.vSOCP_sij[rp, k, i, j]))
 
         def eSOCP_ExiLinePji_rule(m, rp, k, i, j, c):
-            return (m.vLineP[rp, k, j, i, c] == m.pSBase * (
+            return (m.vLineP[rp, k, j, i, c] == (
                     + (m.pGline[i, j, c] * m.vSOCP_cii[rp, k, j])
                     - (1 / m.pRatio[i, j, c]) * (m.pGline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) + m.pBline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_cij[rp, k, i, j]
                     - (1 / m.pRatio[i, j, c]) * (m.pBline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) - m.pGline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_sij[rp, k, i, j]))
 
         def eSOCP_ExiLineQij_rule(m, rp, k, i, j, c):
-            return (m.vLineQ[rp, k, i, j, c] == m.pSBase * (
+            return (m.vLineQ[rp, k, i, j, c] == (
                     - m.vSOCP_cii[rp, k, i] * (m.pBline[i, j, c] + m.pBcline[i, j, c] / 2) / (m.pRatio[i, j, c] ** 2)
                     - (1 / m.pRatio[i, j, c]) * (m.pGline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) - m.pBline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * -m.vSOCP_sij[rp, k, i, j]
                     + (1 / m.pRatio[i, j, c]) * (m.pBline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) + m.pGline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_cij[rp, k, i, j]))
 
         def eSOCP_ExiLineQji_rule(m, rp, k, i, j, c):
-            return (m.vLineQ[rp, k, j, i, c] == m.pSBase * (
+            return (m.vLineQ[rp, k, j, i, c] == (
                     - m.vSOCP_cii[rp, k, j] * (m.pBline[i, j, c] + m.pBcline[i, j, c] / 2)
                     - (1 / m.pRatio[i, j, c]) * (m.pGline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) + m.pBline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_sij[rp, k, i, j]
                     + (1 / m.pRatio[i, j, c]) * (m.pBline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) - m.pGline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_cij[rp, k, i, j]))
 
         def eSOCP_CanLinePij1_rule(m, rp, k, i, j, c):
-            return (m.vLineP[rp, k, i, j, c] >= m.pSBase * (
+            return (m.vLineP[rp, k, i, j, c] >= (
                     + m.pGline[i, j, c] * m.vSOCP_cii[rp, k, i] / (m.pRatio[i, j, c] ** 2)
                     - (1 / m.pRatio[i, j, c]) * (m.pGline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) - m.pBline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_cij[rp, k, i, j]
                     - (1 / m.pRatio[i, j, c]) * (m.pBline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) + m.pGline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * -m.vSOCP_sij[rp, k, i, j])
                     - m.pBigM_Flow * (1 - m.vLineInvest[i, j, c]))
 
         def eSOCP_CanLinePij2_rule(m, rp, k, i, j, c):
-            return (m.vLineP[rp, k, i, j, c] <= m.pSBase * (
+            return (m.vLineP[rp, k, i, j, c] <= (
                     + m.pGline[i, j, c] * m.vSOCP_cii[rp, k, i] / (m.pRatio[i, j, c] ** 2)
                     - (1 / m.pRatio[i, j, c]) * (m.pGline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) - m.pBline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_cij[rp, k, i, j]
                     - (1 / m.pRatio[i, j, c]) * (m.pBline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) + m.pGline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * -m.vSOCP_sij[rp, k, i, j])
                     + m.pBigM_Flow * (1 - m.vLineInvest[i, j, c]))
 
         def eSOCP_CanLinePji1_rule(m, rp, k, i, j, c):
-            return (m.vLineP[rp, k, j, i, c] >= m.pSBase * (
+            return (m.vLineP[rp, k, j, i, c] >= (
                     + m.pGline[i, j, c] * m.vSOCP_cii[rp, k, j]
                     - (1 / m.pRatio[i, j, c]) * (m.pGline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) + m.pBline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_cij[rp, k, i, j]
                     - (1 / m.pRatio[i, j, c]) * (m.pBline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) - m.pGline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_sij[rp, k, i, j])
                     - m.pBigM_Flow * (1 - m.vLineInvest[i, j, c]))
 
         def eSOCP_CanLinePji2_rule(m, rp, k, i, j, c):
-            return (m.vLineP[rp, k, j, i, c] <= m.pSBase * (
+            return (m.vLineP[rp, k, j, i, c] <= (
                     + m.pGline[i, j, c] * m.vSOCP_cii[rp, k, j]
                     - (1 / m.pRatio[i, j, c]) * (m.pGline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) + m.pBline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_cij[rp, k, i, j]
                     - (1 / m.pRatio[i, j, c]) * (m.pBline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) - m.pGline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_sij[rp, k, i, j])
                     + m.pBigM_Flow * (1 - m.vLineInvest[i, j, c]))
 
         def eSOCP_CanLineQij1_rule(m, rp, k, i, j, c):
-            return (m.vLineQ[rp, k, i, j, c] >= m.pSBase * (
+            return (m.vLineQ[rp, k, i, j, c] >= (
                     - m.vSOCP_cii[rp, k, i] * (m.pBline[i, j, c] + m.pBcline[i, j, c] / 2) / (m.pRatio[i, j, c] ** 2)
                     - (1 / m.pRatio[i, j, c]) * (m.pGline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) - m.pBline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * -m.vSOCP_sij[rp, k, i, j]
                     + (1 / m.pRatio[i, j, c]) * (m.pBline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) + m.pGline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_cij[rp, k, i, j])
                     - m.pBigM_Flow * (1 - m.vLineInvest[i, j, c]))
 
         def eSOCP_CanLineQij2_rule(m, rp, k, i, j, c):
-            return (m.vLineQ[rp, k, i, j, c] <= m.pSBase * (
+            return (m.vLineQ[rp, k, i, j, c] <= (
                     - m.vSOCP_cii[rp, k, i] * (m.pBline[i, j, c] + m.pBcline[i, j, c] / 2) / (m.pRatio[i, j, c] ** 2)
                     - (1 / m.pRatio[i, j, c]) * (m.pGline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) - m.pBline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * -m.vSOCP_sij[rp, k, i, j]
                     + (1 / m.pRatio[i, j, c]) * (m.pBline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) + m.pGline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_cij[rp, k, i, j])
                     + m.pBigM_Flow * (1 - m.vLineInvest[i, j, c]))
 
         def eSOCP_CanLineQji1_rule(m, rp, k, i, j, c):
-            return (m.vLineQ[rp, k, j, i, c] >= m.pSBase * (
+            return (m.vLineQ[rp, k, j, i, c] >= (
                     - m.vSOCP_cii[rp, k, j] * (m.pBline[i, j, c] + m.pBcline[i, j, c] / 2)
                     - (1 / m.pRatio[i, j, c]) * (m.pGline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) + m.pBline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_sij[rp, k, i, j]
                     + (1 / m.pRatio[i, j, c]) * (m.pBline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) - m.pGline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_cij[rp, k, i, j])
                     - m.pBigM_Flow * (1 - m.vLineInvest[i, j, c]))
 
         def eSOCP_CanLineQji2_rule(m, rp, k, i, j, c):
-            return (m.vLineQ[rp, k, j, i, c] <= m.pSBase * (
+            return (m.vLineQ[rp, k, j, i, c] <= (
                     - m.vSOCP_cii[rp, k, j] * (m.pBline[i, j, c] + m.pBcline[i, j, c] / 2)
                     - (1 / m.pRatio[i, j, c]) * (m.pGline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) + m.pBline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_sij[rp, k, i, j]
                     + (1 / m.pRatio[i, j, c]) * (m.pBline[i, j, c] * pyo.cos(m.pAngle[i, j, c]) - m.pGline[i, j, c] * pyo.sin(m.pAngle[i, j, c])) * m.vSOCP_cij[rp, k, i, j])
