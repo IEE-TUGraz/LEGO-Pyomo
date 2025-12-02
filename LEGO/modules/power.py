@@ -28,6 +28,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.g = pyo.Set(doc='Generators')
     model.gi = pyo.Set(doc='Generator g connected to bus i', within=model.g * model.i)
 
+    # NOTE: We initialize it here and update it in add_constraints when gi is complete
+    model.gi_node = {}  # bus i -> list of generators at that bus (for O(1) lookups)
+
     model.p = pyo.Set(doc='Periods', initialize=cs.dPower_Hindex.index.get_level_values('p').unique().tolist())
     model.rp = pyo.Set(doc='Representative periods', initialize=cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
     model.k = pyo.Set(doc='Timestep within representative period', initialize=cs.dPower_Demand.index.get_level_values('k').unique().tolist())
@@ -226,12 +229,33 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     return first_stage_variables, second_stage_variables
 
 
+def _build_gi_node_helper(model: pyo.ConcreteModel) -> dict:
+    """
+    Build helper dictionary mapping each bus to its connected generators.
+
+    This provides O(1) lookup instead of O(n) iteration over all generators
+    when building power balance constraints.
+
+    Args:
+        model: Pyomo model with gi set populated.
+
+    Returns:
+        Dictionary mapping bus i -> list of generators at that bus.
+    """
+    gi_node = {i: [] for i in model.i}
+    for (g, i) in model.gi:
+        gi_node[i].append(g)
+    return gi_node
+
+
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # Power balance for nodes DC ann SOCP
+    # Build helper dictionary for generator-to-bus mapping (now that gi is complete)
+    model.gi_node = _build_gi_node_helper(model)
     def eDC_BalanceP_rule(m, rp, k, i):
         if cs.dPower_Parameters["pEnableSOCP"]:
-            return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi)  # Gen at bus i
+            return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])  # Gen at bus i (O(1) lookup)
                     - sum(m.vLineP[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i)  # Only outflows from i, Old indexing format
                     # - sum(m.vLineP[rp, k, i2, j, c] if i2 == i else m.vLineP[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])  # Only outflows from i
                     - m.vSOCP_cii[rp, k, i] * m.pBusG[i]
@@ -239,7 +263,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     + m.vPNS[rp, k, i]
                     - m.vEPS[rp, k, i])
         else:
-            return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi)  # Production of generators at bus i todo please also make quick
+            return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])  # Production of generators at bus i (O(1) lookup)
                     + sum(m.vLineP[rp, k, e] if (e[1] == i) else -m.vLineP[rp, k, e] for e in model.la_nodeRelevant[i])  # Add power flow from bus j to bus i and subtract from bus i to bus j
                     - m.pDemandP[rp, k, i]  # Demand at bus i
                     + m.vPNS[rp, k, i]  # Slack variable for demand not served
@@ -309,10 +333,8 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     else:  # SOCP formulation
         def eSOCP_BalanceQ_rule(m, rp, k, i):
-            return (sum(m.vGenQ[rp, k, g] for g in m.g if (g, i) in m.gi)
-                    # todo: sum(m.vGenQ[rp, k, g] for g in m.gi_helper[i])
-                    # Only vLineQ where i is the sending end (i → j)
-                    # - sum(m.vLineQ[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i) Old indexing format
+            return (sum(m.vGenQ[rp, k, g] for g in m.gi_node[i])  # Generators at bus i (O(1) lookup)
+                    # Only vLineQ where i is involved - use la_nodeRelevant for proper flow direction
                     - sum(m.vLineQ[rp, k, i2, j, c] if i2 == i else m.vLineQ[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])
                     + m.vSOCP_cii[rp, k, i] * m.pBusB[i]
                     - m.pDemandQ[rp, k, i]
