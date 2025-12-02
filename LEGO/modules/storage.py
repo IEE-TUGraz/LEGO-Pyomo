@@ -67,6 +67,10 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     LEGO.addToParameter(model, 'pMaxGenQ', cs.dPower_Storage['Qmax'])
     LEGO.addToParameter(model, 'pMinGenQ', cs.dPower_Storage['Qmin'])
 
+    # Efficiency parameters
+    model.pDisEffic = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['DisEffic'], doc='Discharge efficiency')
+    model.pChEffic = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['ChEffic'], doc='Charge efficiency')
+
     # Variables
     if model.pEnableChDisPower:
         model.bChargeDisCharge = pyo.Var(model.storageUnits, model.rp, model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
@@ -181,8 +185,8 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                 return (model.vStInterRes[model.movingWindowP.prev(p), storage_unit]
                         ==
                         model.vStInterRes[p, storage_unit]
-                        + sum((+ model.vGenP[rp, k, storage_unit] * model.pWeight_k[k] / cs.dPower_Storage.loc[storage_unit, 'DisEffic']
-                               - model.vConsump[rp, k, storage_unit] * model.pWeight_k[k] * cs.dPower_Storage.loc[storage_unit, 'ChEffic']
+                        + sum((+ model.vGenP[rp, k, storage_unit] * model.pWeight_k[k] / model.pDisEffic[storage_unit]
+                               - model.vConsump[rp, k, storage_unit] * model.pWeight_k[k] * model.pChEffic[storage_unit]
                                - model.pStorageInflows[rp, k, storage_unit])
                               * hindex_count.loc[rp, k] for rp, k in hindex_count.index)
                         + (0 if storage_unit not in model.hydroStorageUnits else sum(model.vStorageSpillage[rp, k, storage_unit] * model.pWeight_k[k] * hindex_count.loc[rp, k] for rp, k in hindex_count.index)))
