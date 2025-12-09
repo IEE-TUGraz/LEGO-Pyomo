@@ -17,6 +17,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     # Sets
     model.i = pyo.Set(doc='Buses', initialize=cs.dPower_BusInfo.index.tolist())
+    model.slack_node = pyo.Set(doc='Slack bus', initialize=[cs.dPower_Parameters['is']])
 
     model.c = pyo.Set(doc='Circuits', initialize=cs.dPower_Network.index.get_level_values('c').unique().tolist())
     model.la = pyo.Set(doc='All lines', initialize=cs.dPower_Network.index.tolist(), within=model.i * model.i * model.c)
@@ -268,7 +269,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.i, rule=eDC_BalanceP_rule)
     # model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eDC_BalanceP_expr[rp, k, i] == 0)
 
-    def eDC_BalanceP_rule(m, rp, k, i, j, c):
+    def eSOCP_ActivePowerFlow_rule(m, rp, k, i, j, c):
         if cs.dPower_Parameters["pEnableSOCP"]:
             return (- m.vLineP[rp, k, i, j, c] 
                     + m.pRline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c] -
@@ -277,10 +278,12 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                        + m.vPNS[rp, k, j]
                        - m.vEPS[rp, k, j]
                        ) +
-                    sum(m.vLineP[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j))  # Only outflows from i, Old indexing format
+                    sum(m.vLineP[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j)
+                    == 0
+                    ) 
 
-    model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.la, rule=eDC_BalanceP_rule)
-    model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc='Active power flow on line ij', rule=lambda m, rp, k, i, j, c: m.eDC_BalanceP_expr[rp, k, i, j, c] == 0)
+    model.eSOCP_ActivePowerFlow = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc='Active power flow on line ij', rule=eSOCP_ActivePowerFlow_rule)
+    # model.eSOCP_ActivePowerFlow = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc='Active power flow on line ij', rule=lambda m, rp, k, i, j, c: m.eSOCP_ActivePowerFlow_rule[rp, k, i, j, c] == 0)
     #model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc='Active power flow on line ij', rule=eDC_BalanceP_rule)
 
     if not cs.dPower_Parameters["pEnableSOCP"]:
@@ -357,7 +360,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             #         - m.vEQS[rp, k, i]
             #         )
 
-        def eSOCP_BalanceQ_rule(m, rp, k, i, j, c):
+        def eSOCP_ReactivePowerFlow_rule(m, rp, k, i, j, c):
             return (m.vLineQ[rp, k, i, j, c] == m.pXline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c] -
              (sum(m.vGenQ[rp, k, g] for g in m.g if (g, j) in m.gi)
               - (m.pDemandQ[rp, k, j])
@@ -464,7 +467,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
         # model.eSOCP_BalanceQ_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.i, rule=eSOCP_BalanceQ_rule)
         # model.eSOCP_BalanceQ = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc='Reactive power balance for each bus (SOCP)', rule=lambda m, rp, k, i: m.eSOCP_BalanceQ_expr[rp, k, i] == 0)
-        model.eSOCP_BalanceQ = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc='Reactive power flow over line ij (SOCP)', rule=eSOCP_BalanceQ_rule)
+        model.eSOCP_ReactivePowerFlow = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc='Reactive power flow over line ij (SOCP)', rule=eSOCP_ReactivePowerFlow_rule)
 
         def eSOCP_VoltageDrop_rule(m, rp, k, i, j, c):
             return (m.vSOCP_ui[rp, k, j] ==
@@ -571,6 +574,22 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         if cs.dPower_Parameters["pEnableSOCP"] == 99999:
             model.eSOCP_QMinFACTS = pyo.Constraint(model.rp, model.constraintsActiveK, model.facts, doc='min reactive power output of FACTS unit', rule=lambda m, rp, k, i: m.vGenQ[rp, k, i] >= m.pMaxGenQ[i] * (m.pExisUnits[i] + m.vGenInvest[i]))
             model.eSOCP_QMaxFACTS = pyo.Constraint(model.rp, model.constraintsActiveK, model.facts, doc='max reactive power output of FACTS unit', rule=lambda m, rp, k, i: m.vGenQ[rp, k, i] <= m.pMaxGenQ[i] * (m.pExisUnits[i] + m.vGenInvest[i]))
+
+
+    # define a active and reactive power balance constraint for the slack bus to use the ImExport implementation (only called DC to be consistent with the rest of the model)
+    if cs.dPower_Parameters['pEnablePowerImportExport']:
+
+        def eDC_BalanceP_rule(m, rp, k, i):
+            return (- sum(m.vLineP[rp, k, j, m_con, c] for (j, m_con, c) in m.la if j == i))
+        
+        def eSOCP_ReactivePowerFlow_rule(m, rp, k, i):
+            return (- sum(m.vLineQ[rp, k, j, m_con, c] for (j, m_con, c) in m.la if j == i))
+        
+        model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.slack_node, rule=eDC_BalanceP_rule)
+        model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.slack_node, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eDC_BalanceP_expr[rp, k, i] == 0)
+
+        model.eSOCP_BalanceQ_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.slack_node, rule=eSOCP_ReactivePowerFlow_rule)
+        model.eSOCP_BalanceQ = pyo.Constraint(model.rp, model.constraintsActiveK, model.slack_node, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eSOCP_BalanceQ_expr[rp, k, i] == 0)
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines

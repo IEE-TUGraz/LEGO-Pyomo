@@ -92,10 +92,10 @@ class LEGO:
         match model_type:
             case ModelType.DETERMINISTIC:
                 optimizer = pyo.SolverFactory(solver_name, tee = True)
-                optimizer.options['NumericFocus'] = 3
-                optimizer.options['Presolve'] = 2
-                optimizer.options['BarHomogeneous'] = 1
-                optimizer.options['OptimalityTol'] = 1e-4
+                #optimizer.options['NumericFocus'] = 3
+                #optimizer.options['Presolve'] = 2
+                #optimizer.options['BarHomogeneous'] = 1
+                #optimizer.options['OptimalityTol'] = 1e-4
                 results = optimizer.solve(self.model, tee = True)
                 objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
             case ModelType.EXTENSIVE_FORM:
