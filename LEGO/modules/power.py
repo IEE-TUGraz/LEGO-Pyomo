@@ -230,15 +230,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
                 v.setlb(slack_voltage_squared)
 
             model.vSOCP_ui[:, :, slack_node].fix(slack_voltage_squared)
-
-            model.vLineP[:, :, slack_node, :, :].fix(0)
-            model.vLineQ[:, :, slack_node, :, :].fix(0)
-
-            #for v in model.vSOCP_cii[:, :, slack_node]:
-            #    v.setub(slack_voltage_squared)
-            #    v.setlb(slack_voltage_squared)
-#
-            #model.vSOCP_cii[:, :, slack_node].fix(slack_voltage_squared)
         else:
             model.vTheta[:, :, slack_node].fix(0)
 
