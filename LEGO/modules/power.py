@@ -131,10 +131,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.coordsLat = pyo.Param(model.i, initialize=cs.dPower_BusInfo['lat'], doc='Latitude of bus i')
     model.coordsLon = pyo.Param(model.i, initialize=cs.dPower_BusInfo['lon'], doc='Longitude of bus i')
 
-    model.vTheta = pyo.Var(model.rp, model.k, model.i, doc='Angle of bus i', bounds=(-cs.dPower_Parameters["pMaxAngleDCOPF"], cs.dPower_Parameters["pMaxAngleDCOPF"]))
-    second_stage_variables += [model.vTheta]
-    model.vAngle = pyo.Var(model.rp, model.k, model.la, doc='Angle phase shifting transformer', bounds=lambda m, rp, k, i, j, c: (-m.pAngle[i, j, c], m.pAngle[i, j, c]))
-    second_stage_variables += [model.vAngle]
+    if not cs.dPower_Parameters['pEnableSOCP']:
+
+        model.vTheta = pyo.Var(model.rp, model.k, model.i, doc='Angle of bus i', bounds=(-cs.dPower_Parameters["pMaxAngleDCOPF"], cs.dPower_Parameters["pMaxAngleDCOPF"]))
+        second_stage_variables += [model.vTheta]
+        model.vAngle = pyo.Var(model.rp, model.k, model.la, doc='Angle phase shifting transformer', bounds=lambda m, rp, k, i, j, c: (-m.pAngle[i, j, c], m.pAngle[i, j, c]))
+        second_stage_variables += [model.vAngle]
 
     model.vLineInvest = pyo.Var(model.la, doc='Transmission line investment', domain=pyo.Binary)
     for i, j, c in model.le:
@@ -152,17 +154,17 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vGenP = pyo.Var(model.rp, model.k, model.g, doc='Power output of generator g', bounds=lambda model, rp, k, g: (0, model.pMaxProd[g] * (model.pExisUnits[g] + model.pMaxInvest[g] * model.pEnabInv[g])))
     second_stage_variables += [model.vGenP]
 
-    model.vLineP = pyo.Var(model.rp, model.k, model.la_full if cs.dPower_Parameters["pEnableSOCP"] else model.la, doc='Power flow from bus i to j', bounds=lambda m, rp, k, i, j, c: (-model.pPmax[i, j, c], model.pPmax[i, j, c]) if (i, j, c) in m.la else (-model.pPmax[j, i, c], model.pPmax[j, i, c]))
+    model.vLineP = pyo.Var(model.rp, model.k, model.la if cs.dPower_Parameters["pEnableSOCP"] else model.la, doc='Power flow from bus i to j', bounds=lambda m, rp, k, i, j, c: (-m.pPmax[i,j,c], m.pPmax[i, j, c]) if (i, j, c) in m.la else (-m.pPmax[j, i, c], m.pPmax[j, i, c]))
     second_stage_variables += [model.vLineP]
 
     if cs.dPower_Parameters["pEnableSOCP"]:
-        model.vLineQ = pyo.Var(model.rp, model.k, model.la_full, doc="Reactive power flow from bus i to j", bounds=lambda m, rp, k, i, j, c: (-m.pQmax[i, j, c], m.pQmax[i, j, c]) if (i, j, c) in m.le else (-m.pQmax[j, i, c], m.pQmax[j, i, c]) if (i, j, c) in m.le_reverse else (None, None))
+        model.vLineQ = pyo.Var(model.rp, model.k, model.la, doc="Reactive power flow from bus i to j", bounds=lambda m, rp, k, i, j, c: (-m.pQmax[i,j,c], m.pQmax[i, j, c]) if (i, j, c) in m.le else (-m.pQmax[j, i, c], m.pQmax[j, i, c]) if (i, j, c) in m.le_reverse else (None, None))
         second_stage_variables.append(model.vLineQ)
 
         model.vSOCP_ui = pyo.Var(model.rp, model.k, model.i, bounds=lambda m, rp, k, i: (m.pBusMinV[i] ** 2, m.pBusMaxV[i] ** 2))
         second_stage_variables.append(model.vSOCP_ui)
 
-        model.vSOCP_lij = pyo.Var(model.rp, model.k, model.la_no_c, bounds=lambda m, rp, k, i, j: (0, None) if (i, j, c) in m.le else (None, None)) #m.pSijNom[i,j,c]/m.pBusMinV[i]
+        model.vSOCP_lij = pyo.Var(model.rp, model.k, model.la, bounds=lambda m, rp, k, i, j, c: (0, None) if (i, j, c) in m.la else (None, None)) #m.pSijNom[i,j,c]/m.pBusMinV[i]
         second_stage_variables.append(model.vSOCP_lij)
 
         #model.vSOCP_cii = pyo.Var(model.rp, model.k, model.i, bounds=lambda m, rp, k, i: (round(m.pBusMinV[i] ** 2, 4), round(m.pBusMaxV[i] ** 2, 4)))
@@ -218,16 +220,27 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         if i == 0: printer.information("Setting slack nodes for technical representation islands:")
         i += 1
         printer.information(f"Zone {i:>2} - Slack node: {slack_node}, other buses: {connected_buses}")
-        model.vTheta[:, :, slack_node].fix(0)
         if cs.dPower_Parameters['pEnableSOCP']:
             slack_voltage_squared = cs.dPower_Parameters['pSlackVoltage'] ** 2
             printer.information(" Fixed voltage magnitude at slack node: ", pyo.value(slack_voltage_squared))
-
-            for v in model.vSOCP_cii[:, :, slack_node]:
+            
+            for v in model.vSOCP_ui[:, :, slack_node]:
                 v.setub(slack_voltage_squared)
                 v.setlb(slack_voltage_squared)
 
-            model.vSOCP_cii[:, :, slack_node].fix(slack_voltage_squared)
+            model.vSOCP_ui[:, :, slack_node].fix(slack_voltage_squared)
+
+            model.vLineP[:, :, slack_node, :, :].fix(0)
+            model.vLineQ[:, :, slack_node, :, :].fix(0)
+
+            #for v in model.vSOCP_cii[:, :, slack_node]:
+            #    v.setub(slack_voltage_squared)
+            #    v.setlb(slack_voltage_squared)
+#
+            #model.vSOCP_cii[:, :, slack_node].fix(slack_voltage_squared)
+        else:
+            model.vTheta[:, :, slack_node].fix(0)
+
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
@@ -257,15 +270,18 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     def eDC_BalanceP_rule(m, rp, k, i, j, c):
         if cs.dPower_Parameters["pEnableSOCP"]:
-            return (m.vLineP[rp, k, i, j, c] == m.pRLine[i, j, c] * m.vSOCP_lij[i,j,c] -
+            return (- m.vLineP[rp, k, i, j, c] 
+                    + m.pRline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c] -
                     (sum(m.vGenP[rp, k, g] for g in m.g if (g, j) in m.gi)
                        - (m.pDemandP[rp, k, j])
                        + m.vPNS[rp, k, j]
                        - m.vEPS[rp, k, j]
                        ) +
-                    sum(m.vLineP[rp, k, j2, m, c] for (j2, m, c) in m.la_full if j2 == j))  # Only outflows from i, Old indexing format
+                    sum(m.vLineP[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j))  # Only outflows from i, Old indexing format
 
-    model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.le, doc='Active power flow on line ij', rule=lambda m, rp, k, i, j, c: eDC_BalanceP_rule)
+    model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.la, rule=eDC_BalanceP_rule)
+    model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc='Active power flow on line ij', rule=lambda m, rp, k, i, j, c: m.eDC_BalanceP_expr[rp, k, i, j, c] == 0)
+    #model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc='Active power flow on line ij', rule=eDC_BalanceP_rule)
 
     if not cs.dPower_Parameters["pEnableSOCP"]:
         def eDC_ExiLinePij_rule(m, rp, k, i, j, c):
@@ -342,13 +358,13 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             #         )
 
         def eSOCP_BalanceQ_rule(m, rp, k, i, j, c):
-            return (m.vLineQ[rp, k, i, j, c] == m.pXLine[i, j, c] * m.vSOCP_lij[i, j, c] -
+            return (m.vLineQ[rp, k, i, j, c] == m.pXline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c] -
              (sum(m.vGenQ[rp, k, g] for g in m.g if (g, j) in m.gi)
               - (m.pDemandQ[rp, k, j])
               + m.vQNS[rp, k, j]
               - m.vEQS[rp, k, j]
               ) +
-             sum(m.vLineQ[rp, k, j2, m, c] for (j2, m, c) in m.la_full if j2 == j))  # Only outflows from i, Old indexing format
+             sum(m.vLineQ[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j))  # Only outflows from i, Old indexing format
 
         def eSOCP_ExiLinePij_rule(m, rp, k, i, j, c):
             return (m.vLineP[rp, k, i, j, c] == m.pSBase * (
@@ -448,28 +464,28 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
         # model.eSOCP_BalanceQ_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.i, rule=eSOCP_BalanceQ_rule)
         # model.eSOCP_BalanceQ = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc='Reactive power balance for each bus (SOCP)', rule=lambda m, rp, k, i: m.eSOCP_BalanceQ_expr[rp, k, i] == 0)
-        model.eSOCP_BalanceQ = pyo.Constraint(model.rp, model.constraintsActiveK, model.le, doc='Reactive power flow over line ij (SOCP)', rule=lambda m, rp, k, i, j, c: eSOCP_BalanceQ_rule[rp, k, i, j, c])
+        model.eSOCP_BalanceQ = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc='Reactive power flow over line ij (SOCP)', rule=eSOCP_BalanceQ_rule)
 
         def eSOCP_VoltageDrop_rule(m, rp, k, i, j, c):
-            return ((m.vSOCP_ui[j] ==
-                    m.vSOCP_ui[i] -
-                    2*(m.pRLine[i,j,c]*m.vLineP[rp, k, i, j, c] + m.pXLine[i,j,c]*m.vLineQ[rp, k, i, j, c])) +
-                    (m.pRLine[i,j,c]^2 + m.pXLine[i,j,c]^2)*m.vSOCP_lij[rp, k, i, j, c])
+            return (m.vSOCP_ui[rp, k, j] ==
+                    m.vSOCP_ui[rp, k, i] -
+                    2 * (m.pRline[i,j,c] * m.vLineP[rp, k, i, j, c] + m.pXline[i,j,c] * m.vLineQ[rp, k, i, j, c]) +
+                    (m.pRline[i,j,c] ** 2 + m.pXline[i,j,c] ** 2) * m.vSOCP_lij[rp, k, i, j, c])
 
         model.eSOCP_VoltageDrop = pyo.Constraint(
-            model.rp, model.constraintsActiveK, model.le_no_c,
+            model.rp, model.constraintsActiveK, model.la,
             doc="SOCP constraints for voltage drop of line",
             rule=eSOCP_VoltageDrop_rule)
 
 
         def eSOCP_FlowDef_rule(m, rp, k, i, j, c):
-            if any((i, j, c) in m.le for c in m.c):
-                return m.vSOCP_lij[rp, k, i, j, c] * m.vSOCP_ui[i] >= m.vLineP[rp, k, i, j, c]^2 + m.vLineQ[rp, k, i, j, c]^2
+            if any((i, j, c) in m.la for c in m.c):
+                return m.vSOCP_lij[rp, k, i, j, c] * m.vSOCP_ui[rp, k, i] >= m.vLineP[rp, k, i, j, c] ** 2 + m.vLineQ[rp, k, i, j, c] ** 2
             else:
                 return pyo.Constraint.Skip
 
         model.eSOCP_FlowDef = pyo.Constraint(
-            model.rp, model.constraintsActiveK, model.le_no_c,
+            model.rp, model.constraintsActiveK, model.la,
             doc="SCOP constraints for existing lines (for AC-OPF) original set",
             rule=eSOCP_FlowDef_rule)
 
