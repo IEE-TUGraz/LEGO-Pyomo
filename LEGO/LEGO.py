@@ -92,7 +92,7 @@ class LEGO:
         match model_type:
             case ModelType.DETERMINISTIC:
                 optimizer = pyo.SolverFactory(solver_name, tee = True)
-                # optimizer.options['NumericFocus'] = 3
+                optimizer.options['NumericFocus'] = 3
                 # optimizer.options['Presolve'] = 2
                 optimizer.options['BarHomogeneous'] = 1
                 # optimizer.options['OptimalityTol'] = 1e-4
