@@ -454,7 +454,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                                      (ens_terms(rp, k)  # Power non supplied terms
                                       + sum(+ model.vGenP[rp, k, g] * model.pOMVarCost[g]  # Production cost of generators
                                             for g in model.g))
-                                        #+ line_losses_terms(rp, k)  # Penalty for line losses
+                                        + line_losses_terms(rp, k)  # Penalty for line losses
                                      for k in model.constraintsActiveK)
                                  for rp in model.rp)
 
