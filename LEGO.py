@@ -84,11 +84,15 @@ if not use_moving_window:
 
     # Build LEGO model
     printer.information("Building LEGO model")
+
+
     model, timing = lego.build_model(model_type=args.modelType)
     # with open("pprint.txt", "w") as f:
     #     model.objective.pprint(f)
     printer.information(f"Building LEGO model took {timing:.2f} seconds")
-
+    printer.information("Writing build non Rolling-Horizon model to mps file 'Build_Model.mps'")
+    model.write("Build_Model.mps", io_options={'labeler': NameLabeler()})
+    SQLiteWriter.model_to_sqlite(model, "Model_limits.sqlite")
     # Solve LEGO model
     printer.information("Solving LEGO model")
     try:
@@ -131,10 +135,11 @@ else:
         printer.information("Building LEGO model")
         model, timing = lego.build_model(model_type=args.modelType)
 
-
         printer.information(f"Building LEGO model took {timing:.2f} seconds")
-
+        printer.information("Writing build Rolling-Horizon model to mps file 'Build_Model.mps'")
+        model.write("Build_Model.mps", io_options={'labeler': NameLabeler()})
         if model_old is not None:
+            SQLiteWriter.model_to_sqlite(model, "Model_limits.sqlite", use_moving_window=True )
             new_end = f"k{start_timestep-1:05}"
             print(f"New end: {new_end}")
             for component in list(model_old.component_objects()):
@@ -148,7 +153,8 @@ else:
                                 if v.value is not None:
                                     new_component[n].fix(pyo.value(v))  # TODO skip validation
 
-        SQLiteWriter.model_to_sqlite(model, "Model_limits.sqlite")
+        else:
+            SQLiteWriter.model_to_sqlite(model, "Model_limits.sqlite" ,use_moving_window=False)
 
         # Solve LEGO model
         printer.information("Solving LEGO model")
