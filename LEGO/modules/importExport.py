@@ -46,7 +46,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     # Add import/export cost/revenues to total cost
     if not cs.dPower_Parameters['pEnableSOCP']:
-        second_stage_objective = sum(model.vImpExp[rp, k, hub, i] * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pImpExpPrice[rp, k, hub] for rp in model.rp for k in model.k for hub, i in model.hubConnections)
+        second_stage_objective = sum(model.vImpExp[rp, k, hub, i] * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pImpExpPrice[rp, k, hub, i] for rp in model.rp for k in model.k for hub, i in model.hubConnections)
     else:
         second_stage_objective = sum((model.vImpExp[rp, k, hub, i] + model.vImpExpQ[rp, k, hub, i]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pImpExpPrice[rp, k, hub, i] for rp in model.rp for k in model.constraintsActiveK for hub, i in model.hubConnections)
 

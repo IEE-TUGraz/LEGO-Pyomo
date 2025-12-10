@@ -10,7 +10,7 @@ from pyomo.core import TransformationFactory
 
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
-from LEGO.modules import acOpfNim, acOpfBfm, storage, power, secondReserve, importExport, softLineLoadLimits, thermalGen, vres
+from LEGO.modules import dcOpf, acOpfNim, acOpfBfm, storage, power, secondReserve, importExport, softLineLoadLimits, thermalGen, vres
 
 printer = Printer.getInstance()
 
@@ -264,10 +264,11 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     model.first_stage_objective = 0.0
 
     # Element definitions
-    if cs.dPower_Parameters["pEnableTransNet"] and not cs.dPower_Parameters["pEnableSOCP"]: 
-        model.first_stage_varlist += power.add_element_definitions_and_bounds(model, cs)
-    if cs.dPower_Parameters["pEnableTransNet"] and cs.dPower_Parameters["pEnableSOCP"]:
+    if not cs.dPower_Parameters["pEnableSOCP"]: 
+        model.first_stage_varlist += dcOpf.add_element_definitions_and_bounds(model, cs)
+    else:
         model.first_stage_varlist += acOpfBfm.add_element_definitions_and_bounds(model, cs)
+        #model.first_stage_varlist += acOpfNim.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableThermalGen"]:
         model.first_stage_varlist += thermalGen.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableVRES"]:
@@ -288,14 +289,12 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=[g for g in model.g for i in model.i if (g, i) in model.gi], within=model.g)
 
     # Add constraints
-
-    if cs.dPower_Parameters["pEnableTransNet"] and not cs.dPower_Parameters["pEnableSOCP"]:
-        model.first_stage_objective += power.add_constraints(model, cs)
-    
-    if cs.dPower_Parameters["pEnableTransNet"] and cs.dPower_Parameters["pEnableSOCP"]:
+    # Todo: implement way to change between socp ac opfs
+    if not cs.dPower_Parameters["pEnableSOCP"]:
+        model.first_stage_objective += dcOpf.add_constraints(model, cs)
+    else:
         #model.first_stage_objective += acOpfNim.add_constraints(model, cs)
         model.first_stage_objective += acOpfBfm.add_constraints(model, cs)
-
     if cs.dPower_Parameters["pEnableThermalGen"]:
         model.first_stage_objective += thermalGen.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableVRES"]:
