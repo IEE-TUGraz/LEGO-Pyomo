@@ -267,8 +267,8 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     if not cs.dPower_Parameters["pEnableSOCP"]: 
         model.first_stage_varlist += dcOpf.add_element_definitions_and_bounds(model, cs)
     else:
-        model.first_stage_varlist += acOpfBfm.add_element_definitions_and_bounds(model, cs)
-        #model.first_stage_varlist += acOpfNim.add_element_definitions_and_bounds(model, cs)
+        #model.first_stage_varlist += acOpfBfm.add_element_definitions_and_bounds(model, cs)
+        model.first_stage_varlist += acOpfNim.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableThermalGen"]:
         model.first_stage_varlist += thermalGen.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableVRES"]:
@@ -293,8 +293,8 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     if not cs.dPower_Parameters["pEnableSOCP"]:
         model.first_stage_objective += dcOpf.add_constraints(model, cs)
     else:
-        #model.first_stage_objective += acOpfNim.add_constraints(model, cs)
-        model.first_stage_objective += acOpfBfm.add_constraints(model, cs)
+        model.first_stage_objective += acOpfNim.add_constraints(model, cs)
+        #model.first_stage_objective += acOpfBfm.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableThermalGen"]:
         model.first_stage_objective += thermalGen.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableVRES"]:
