@@ -85,7 +85,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         model.first_circuit_map_bidir = pyo.Param(model.la_full_no_c, initialize={(i, j): c for (i, j), c in model.first_circuit_map.items()} | {(j, i): c for (i, j), c in model.first_circuit_map.items()}, doc='First circuit for each line (i, j) bidirectional')
 
     # Parameters
-    model.pDemandP = pyo.Param(model.rp, model.k, model.i, initialize=cs.dPower_Demand['value'], doc='Demand at bus i in representative period rp and timestep k')
+    model.pDemandP = pyo.Param(model.rp, model.k, model.i, initialize=lambda m, rp, k, i: 0.0 if abs(cs.dPower_Demand['value'][(rp, k, i)]) < 1e-4 else float(cs.dPower_Demand['value'][(rp, k, i)]), doc='Demand at bus i in representative period rp and timestep k')
     model.pMovWindowLDS = cs.dGlobal_Parameters['pMovWindowLDS']
 
     model.pOMVarCost = pyo.Param(model.g, doc='Production cost of generator g')
@@ -122,10 +122,10 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         model.pMaxAngleDiff = pyo.Param(initialize=cs.dPower_Parameters["pMaxAngleDiff"] * np.pi / 180, doc='Maximum angle difference between two buses for the SOCP formulation')
         model.pBusMaxV = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusMaxV'], doc='Maximum voltage at bus i')
         model.pBusMinV = pyo.Param(model.i, initialize=lambda model, i: max(cs.dPower_BusInfo['pBusMinV'][i], 0.1), doc='Minimum voltage at bus i (with a lower bound of 0.1)')
-        model.pGline = pyo.Param(model.la, initialize=lambda model, i, j, c: model.pRline[i, j, c] / ((model.pRline[i, j, c] ** 2 + model.pXline[i, j, c] ** 2) if model.pRline[i, j, c] > 1e-6 else 1e-6), doc='Conductance of line la with lower bound')
-        model.pBline = pyo.Param(model.la, initialize=lambda model, i, j, c: - model.pXline[i, j, c] / ((model.pRline[i, j, c] ** 2 + model.pXline[i, j, c] ** 2) if model.pRline[i, j, c] > 1e-6 else 1e-6), doc='Susceptance of line la with lower bound')
+        model.pGline = pyo.Param(model.la, initialize=lambda model, i, j, c: model.pRline[i, j, c] / ((model.pRline[i, j, c] ** 2 + model.pXline[i, j, c] ** 2) if model.pRline[i, j, c] > 1e-5 else 1e-5), doc='Conductance of line la with lower bound')
+        model.pBline = pyo.Param(model.la, initialize=lambda model, i, j, c: - model.pXline[i, j, c] / ((model.pRline[i, j, c] ** 2 + model.pXline[i, j, c] ** 2) if model.pRline[i, j, c] > 1e-5 else 1e-5), doc='Susceptance of line la with lower bound')
         model.pRatioDemQP = pyo.Param(model.i, initialize=lambda model, i: pyo.tan(pyo.acos(model.pBus_pf[i])))
-        model.pDemandQ = pyo.Param(model.rp, model.k, model.i, initialize=cs.dPowerQ_Demand['value'], doc='Reactive Demand at bus i in representative period rp and timestep k')
+        model.pDemandQ = pyo.Param(model.rp, model.k, model.i, initialize=lambda m, rp, k, i: 0.0 if abs(cs.dPowerQ_Demand['value'][(rp, k, i)]) < 1e-4 else float(cs.dPowerQ_Demand['value'][(rp, k, i)]), doc='Reactive demand at bus i in representative period rp and timestep k')
 
     model.coordsLat = pyo.Param(model.i, initialize=cs.dPower_BusInfo['lat'], doc='Latitude of bus i')
     model.coordsLon = pyo.Param(model.i, initialize=cs.dPower_BusInfo['lon'], doc='Longitude of bus i')

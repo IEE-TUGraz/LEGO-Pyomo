@@ -35,7 +35,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     LEGO.addToParameter(model, 'pMaxGenQ', cs.dPower_VRES['Qmax'])
     LEGO.addToParameter(model, 'pMinGenQ', cs.dPower_VRES['Qmin'])
 
-    dCapacityFactor = cs.dPower_VRESProfiles["value"]
+    dCapacityFactor = cs.dPower_VRESProfiles["value"].where(cs.dPower_VRESProfiles["value"].abs() >= 1e-2, 0.0) # Capacity factors under 1% are set to zero to avoid numerical issues
     ror_with_spillage = []  # List of ror generators that have spillage (i.e., inflow > maximum production)
     for g in model.vresGenerators:
         if g in cs.dPower_Inflows.index.get_level_values("g"):
