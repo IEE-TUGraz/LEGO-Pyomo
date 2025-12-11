@@ -5,6 +5,7 @@ import pyomo.environ as pyo
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO import LEGOUtilities
+from LEGO.LEGOUtilities import _build_gi_node_helper
 
 printer = Printer.getInstance()
 
@@ -26,8 +27,20 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.le_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.le if node == i or node == j] for node in model.i}
     model.lc = pyo.Set(doc='Candidate lines', initialize=cs.dPower_Network[(cs.dPower_Network["pEnableInvest"] == 1)].index.tolist(), within=model.la)
     model.lc_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.lc if node == i or node == j] for node in model.i}
+    
+    # Pre-partition line sets by technical representation (OPTIMIZATION: eliminates match/case in constraint rules)
+    le_dcopf = [idx for idx in model.le if cs.dPower_Network.loc[idx]["pTecRepr"] == "DC-OPF"]
+    lc_dcopf = [idx for idx in model.lc if cs.dPower_Network.loc[idx]["pTecRepr"] == "DC-OPF"]
+    lc_dcopf_tp_sn = [idx for idx in model.lc if cs.dPower_Network.loc[idx]["pTecRepr"] in ["DC-OPF", "TP", "SN"]]
+    model.le_dcopf = pyo.Set(doc='Existing DC-OPF lines', initialize=le_dcopf, within=model.le)
+    model.lc_dcopf = pyo.Set(doc='Candidate DC-OPF lines', initialize=lc_dcopf, within=model.lc)
+    model.lc_dcopf_tp_sn = pyo.Set(doc='Candidate DC-OPF/TP/SN lines', initialize=lc_dcopf_tp_sn, within=model.lc)
+    
     model.g = pyo.Set(doc='Generators')
     model.gi = pyo.Set(doc='Generator g connected to bus i', within=model.g * model.i)
+
+    # NOTE: We initialize it here and update it in add_constraints when gi is complete
+    model.gi_node = {}  # bus i -> list of generators at that bus (for O(1) lookups)
 
     model.p = pyo.Set(doc='Periods', initialize=cs.dPower_Hindex.index.get_level_values('p').unique().tolist())
     model.rp = pyo.Set(doc='Representative periods', initialize=cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
@@ -60,6 +73,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.lc_full_no_c = pyo.Set(doc='Candidate lines incl. reverse lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc_full}, dimen=2)
     model.lc_no_c = pyo.Set(doc='Candidate lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc}, dimen=2)
 
+    model.le_pairs = {(i, j) for (i, j, c) in model.le}  # Set of (i,j) pairs in le
+    model.lc_pairs = {(i, j) for (i, j, c) in model.lc}  # Set of (i,j) pairs in lc
+
     # Helper to get the first circuit for each (i, j) pair
     df_circuits = cs.dPower_Network.reset_index()
 
@@ -71,15 +87,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     # Get the first circuit per (i, j) based on this order
     first_circuit_map = df_circuits.sort_values("c_order").drop_duplicates(subset=["i", "j"]).set_index(["i", "j"])["c"].to_dict()
-    # todo da kommt der fehler
-    # DEPRECATED: Param 'first_circuit_map' declared with an implicit
-    # domain of 'Any'. The default domain for Param objects is 'Any'.  However, we
-    # will be changing that default to 'Reals' in the future.  If you really intend
-    # the domain of this Paramto be 'Any', you can suppress this warning by
-    # explicitly specifying 'within=Any' to the Param constructor.  (deprecated in
-    # 5.6.9, will be removed in (or after) 6.0) (called from
-    # C:\Users\Stephan\anaconda3\envs\LEGO-Pyomo_env\Lib\site-
-    # packages\pyomo\core\base\indexed_component.py:718)
     model.first_circuit_map = pyo.Param(model.la_no_c, initialize=first_circuit_map, doc='First circuit for each line (i, j)')
     model.first_circuit_map_bidir = pyo.Param(model.la_full_no_c, initialize={(i, j): c for (i, j), c in model.first_circuit_map.items()} | {(j, i): c for (i, j), c in model.first_circuit_map.items()}, doc='First circuit for each line (i, j) bidirectional')
 
@@ -141,7 +148,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     dTechnicalReprIslands = pd.DataFrame(index=cs.dPower_BusInfo.index, columns=[cs.dPower_BusInfo.index], data=False)
 
     for index, entry in cs.dPower_Network.iterrows():
-        if cs.dPower_Network.loc[(index[0], index[1], index[2])]["pTecRepr"] in ["DC-OPF", "SOCP"]:
+        if cs.dPower_Network.loc[(index[0], index[1], index[2])]["pTecRepr"] in ["DC-OPF", ]:
             dTechnicalReprIslands.loc[index[0], index[1]] = True
             dTechnicalReprIslands.loc[index[1], index[0]] = True
     completed_buses = set()  # Set of buses that have been looked at already
@@ -169,9 +176,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
+    # Build helper dictionary for generator-to-bus mapping (now that gi is complete)
+    model.gi_node = _build_gi_node_helper(model)
     #Power balance for nodes DC ann SOCP
+    
     def eDC_BalanceP_rule(m, rp, k, i):
-        return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi)  # Production of generators at bus i todo please also make quick
+        return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])  # Production of generators at bus i (O(1) lookup)
                     + sum(m.vLineP[rp, k, e] if (e[1] == i) else -m.vLineP[rp, k, e] for e in model.la_nodeRelevant[i])  # Add power flow from bus j to bus i and subtract from bus i to bus j
                     - m.pDemandP[rp, k, i]  # Demand at bus i
                     + m.vPNS[rp, k, i]  # Slack variable for demand not served
@@ -181,63 +191,35 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eDC_BalanceP_expr[rp, k, i] == 0)
 
 
+    # Use pre-partitioned sets instead of match/case
     def eDC_ExiLinePij_rule(m, rp, k, i, j, c):
-        match cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
-            case "DC-OPF":
-                return m.vLineP[rp, k, i, j, c] == (m.vTheta[rp, k, i] - m.vTheta[rp, k, j] + m.vAngle[rp, k, i, j, c]) / (m.pXline[i, j, c] * m.pRatio[i, j, c])
-            case "TP" | "SN" | "SOCP":
-                return pyo.Constraint.Skip
-            case _:
-                raise ValueError(f"Technical representation '{cs.dPower_Network.loc[i, j]["pTecRepr"]}' "
-                                    f"for line ({i}, {j}) not recognized - please check input file 'Power_Network.xlsx'!")
+        return m.vLineP[rp, k, i, j, c] == (m.vTheta[rp, k, i] - m.vTheta[rp, k, j] + m.vAngle[rp, k, i, j, c]) / (m.pXline[i, j, c] * m.pRatio[i, j, c])
 
-    model.eDC_ExiLinePij = pyo.Constraint(model.rp, model.constraintsActiveK, model.le, doc="Power flow existing lines (for DC-OPF)", rule=eDC_ExiLinePij_rule)
+    model.eDC_ExiLinePij = pyo.Constraint(model.rp, model.constraintsActiveK, model.le_dcopf, doc="Power flow existing lines (for DC-OPF)", rule=eDC_ExiLinePij_rule)
 
     def eDC_CanLinePij1_rule(m, rp, k, i, j, c):
-        match cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
-            case "DC-OPF":
-                return (m.vLineP[rp, k, i, j, c] / (m.pBigM_Flow * m.pPmax[i, j, c]) >=
+        return (m.vLineP[rp, k, i, j, c] / (m.pBigM_Flow * m.pPmax[i, j, c]) >=
                         (m.vTheta[rp, k, i] - m.vTheta[rp, k, j] + m.vAngle[rp, k, i, j, c]) / (m.pXline[i, j, c] * m.pRatio[i, j, c]) /
                         (m.pBigM_Flow * m.pPmax[i, j, c]) - 1 + m.vLineInvest[i, j, c])
-            case "TP" | "SN" | "SOCP":
-                return pyo.Constraint.Skip
-            case _:
-                raise ValueError(f"Unsupported pTecRepr: {cs.dPower_Network.loc[i, j, c]['pTecRepr']}")
 
-    model.eDC_CanLinePij1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc, doc="Power flow candidate lines (for DC-OPF)", rule=eDC_CanLinePij1_rule)
+    model.eDC_CanLinePij1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_dcopf, doc="Power flow candidate lines (for DC-OPF)", rule=eDC_CanLinePij1_rule)
 
     def eDC_CanLinePij2_rule(m, rp, k, i, j, c):
-        match cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
-            case "DC-OPF":
-                return (m.vLineP[rp, k, i, j, c] / (m.pBigM_Flow * m.pPmax[i, j, c]) <=
+        return (m.vLineP[rp, k, i, j, c] / (m.pBigM_Flow * m.pPmax[i, j, c]) <=
                         (m.vTheta[rp, k, i] - m.vTheta[rp, k, j] + m.vAngle[rp, k, i, j, c]) / (m.pXline[i, j, c] * m.pRatio[i, j, c]) /
                         (m.pBigM_Flow * m.pPmax[i, j, c]) + 1 - m.vLineInvest[i, j, c])
-            case "TP" | "SN" | "SOCP":
-                return pyo.Constraint.Skip
-            case _:
-                raise ValueError(f"Unsupported pTecRepr: {cs.dPower_Network.loc[i, j, c]['pTecRepr']}")
 
-    model.eDC_CanLinePij2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc, doc="Power flow candidate lines (for DC-OPF)", rule=eDC_CanLinePij2_rule)
+    model.eDC_CanLinePij2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_dcopf, doc="Power flow candidate lines (for DC-OPF)", rule=eDC_CanLinePij2_rule)
 
     def eDC_LimCanLine1_rule(m, rp, k, i, j, c):
-        match cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
-            case "DC-OPF" | "TP" | "SN":
-                return m.vLineP[rp, k, i, j, c] / m.pPmax[i, j, c] + m.vLineInvest[i, j, c] >= 0
-            case 'SOCP':
-                return pyo.Constraint.Skip
-        return pyo.Constraint.Skip
+        return m.vLineP[rp, k, i, j, c] / m.pPmax[i, j, c] + m.vLineInvest[i, j, c] >= 0
 
-    model.eDC_LimCanLine1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc, doc="Power flow limit reverse direction for candidate lines (for DC-OPF)", rule=eDC_LimCanLine1_rule)
+    model.eDC_LimCanLine1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_dcopf_tp_sn, doc="Power flow limit reverse direction for candidate lines (for DC-OPF)", rule=eDC_LimCanLine1_rule)
 
     def eDC_LimCanLine2_rule(m, rp, k, i, j, c):
-        match cs.dPower_Network.loc[i, j, c]["pTecRepr"]:
-            case "DC-OPF" | "TP" | "SN":
-                return m.vLineP[rp, k, i, j, c] / m.pPmax[i, j, c] - m.vLineInvest[i, j, c] <= 0
-            case 'SOCP':
-                return pyo.Constraint.Skip
-        return pyo.Constraint.Skip
+        return m.vLineP[rp, k, i, j, c] / m.pPmax[i, j, c] - m.vLineInvest[i, j, c] <= 0
 
-    model.eDC_LimCanLine2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc, doc="Power flow limit reverse direction for candidate lines (for DC-OPF)", rule=eDC_LimCanLine2_rule)
+    model.eDC_LimCanLine2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.lc_dcopf_tp_sn, doc="Power flow limit reverse direction for candidate lines (for DC-OPF)", rule=eDC_LimCanLine2_rule)
 
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
@@ -251,15 +233,11 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             for i in model.i
         )
 
-    def line_losses_terms(rp, k):
-        return 0
-
     second_stage_objective = sum(model.pWeight_rp[rp] *  # Weight of representative periods
                                  sum(model.pWeight_k[k] *  # Weight of time steps
                                      (ens_terms(rp, k)  # Power non supplied terms
                                       + sum(+ model.vGenP[rp, k, g] * model.pOMVarCost[g]  # Production cost of generators
                                             for g in model.g))
-                                        + line_losses_terms(rp, k)  # Penalty for line losses
                                      for k in model.constraintsActiveK)
                                  for rp in model.rp)
 
