@@ -15,6 +15,8 @@ from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO, ModelType
 from LEGO.LEGOUtilities import analyze_infeasible_constraints
 
+from tools.checkSocpExactness import check_exactness_of_socp_solution
+
 printer = Printer.getInstance()
 
 # Set up logging so that infeasible constraints are logged by pyomo
@@ -95,6 +97,7 @@ if not use_moving_window:
         results, timing, objective_value = lego.solve_model(model_type=args.modelType)
         printer.information(f"Solving LEGO model took {timing:.2f} seconds\n")
         process_results(results)
+        check_exactness_of_socp_solution(lego, results)
     except NoFeasibleSolutionError:
         printer.error("No feasible solution found!")
         analyze_infeasible_constraints(model)
@@ -154,6 +157,7 @@ else:
             results, timing, objective_value = lego.solve_model(model_type=args.modelType)
             printer.information(f"Solving LEGO model took {timing:.2f} seconds")
             process_results(results)
+            check_exactness_of_socp_solution(lego, results)
         except NoFeasibleSolutionError:
             printer.error(f"No feasible solution found for window {start_k} to {end_k}!")
             analyze_infeasible_constraints(model)

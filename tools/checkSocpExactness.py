@@ -33,7 +33,7 @@ def check_exactness_of_socp_solution(lego, results):
                     if ui is None or vLineP is None or lij is None or vLineQ is None:
                         continue  # Skip if any value is None
 
-                    deviation = abs(ui * lij - (vLineP **2 + vLineQ **2))
+                    deviation = ui * lij - (vLineP **2 + vLineQ **2)
                     if deviation > max_deviation:
                         max_deviation = deviation
 
@@ -49,7 +49,7 @@ def check_exactness_of_socp_solution(lego, results):
                     if cii is None or cjj is None or sij is None or cij is None:
                         continue  # Skip if any value is None
 
-                    deviation = abs(cii * cjj - (sij **2 + cij **2))
+                    deviation = cii * cjj - (sij **2 + cij **2)
                     if deviation > max_deviation:
                         max_deviation = deviation
     else:
@@ -60,4 +60,4 @@ def check_exactness_of_socp_solution(lego, results):
     if max_deviation > tolerance:
         printer.warning(f"SOCP solution is not exact! Maximum deviation: {max_deviation}\n")
     else:
-        printer.information("SOCP solution is exact within the defined tolerance.\n")
+        printer.information(f"SOCP solution is exact within the defined tolerance. {max_deviation}\n")
