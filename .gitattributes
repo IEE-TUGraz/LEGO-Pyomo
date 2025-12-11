@@ -8,3 +8,6 @@
 
 # Mark binary files
 *.xlsx binary
+
+# Prevent Git from modifying .7z files
+*.7z binary

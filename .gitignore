@@ -10,6 +10,7 @@ scratch
 
 # Development environment files
 .idea/
+.vscode/
 
 # GAMS-output files (for comparison)
 *.lst
@@ -18,6 +19,11 @@ LEGO*.log*
 *.log
 *.lxi
 *.gsp
+*.gdx
 
-# Model files
-*.mps
+# Standard output files for LEGO.py
+*.sqlite
+model.xlsx
+
+# Operating system files
+.DS_Store

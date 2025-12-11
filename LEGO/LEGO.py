@@ -10,7 +10,8 @@ from pyomo.core import TransformationFactory
 
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
-from LEGO.modules import hydro, importExport, power, secondReserve, softLineLoadLimits, storage
+from LEGO.LEGOUtilities import reset_execution_safety_dict
+from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits, thermalGen, vres, hydro
 
 printer = Printer.getInstance()
 
@@ -31,27 +32,33 @@ class LEGO:
         self.model: typing.Optional[pyo.Model] = model
         self.results: typing.Optional[pyomo.opt.results.results_.SolverResults] = results
         self.timings = {"model_building": -1.0, "model_solving": -1.0}
-        self.optimizer_name = None
+        self.solver_name = None
         self._extensive_form = None  # Used for the ExtensiveForm model type, not used in other model types
 
-    def build_model(self, already_existing_ok: bool = False, model_type: ModelType = ModelType.DETERMINISTIC, optimizer_name: str = None) -> (pyo.Model, float):
+    def build_model(self, already_existing_ok: bool = False, model_type: ModelType = ModelType.DETERMINISTIC, solver_name: str = None) -> (pyo.Model, float):
         if not already_existing_ok and self.model is not None:
             raise RuntimeError("Model already exists, please set already_existing_ok to True if that's intentional")
 
         start_time = time.time()
         match model_type:
             case ModelType.DETERMINISTIC:
+                if solver_name is not None:
+                    printer.warning(f"Solver name {solver_name} provided for 'build_model', but not used when building deterministic model type. Make sure to provide it when solving the model instead.")
                 model = _build_model(self.cs)
                 self.model = model
             case ModelType.EXTENSIVE_FORM:
                 from mpisppy.opt.ef import ExtensiveForm
 
                 scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
-                if optimizer_name is None:
-                    optimizer_name = "highs"  # Has to be set before building, otherwise the ExtensiveForm will not work correctly
+
+                if solver_name is None:
+                    solver_name = self.cs.dGlobal_Parameters["pSolver"]  # Use the solver name from the case study parameters if not provided
+                elif self.cs.dGlobal_Parameters["pSolver"] != solver_name:
+                    printer.warning(f"Solver name {solver_name} does not match the one used in the case study ({self.cs.dGlobal_Parameters['pSolver']}) - using {solver_name}")
                 options = {
-                    "solver": "highs" if optimizer_name is None else optimizer_name,
+                    "solver": solver_name,
                 }
+
                 ef = ExtensiveForm(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
                 self._extensive_form = ef
                 self.model = ef.ef
@@ -64,7 +71,7 @@ class LEGO:
         self.timings["model_building"] = stop_time - start_time
         self.timings["model_solving"] = -1.0
         self.results = None
-        self.optimizer_name = optimizer_name
+        self.solver_name = solver_name
 
         return self.model, self.timings["model_building"]
 
@@ -72,19 +79,24 @@ class LEGO:
     def get_objective_value(self, zoi: bool):
         return get_objective_value(self.model, zoi)
 
-    def solve_model(self, model_type: ModelType = ModelType.DETERMINISTIC, optimizer_name="highs", already_solved_ok=False) -> (pyomo.opt.results.results_.SolverResults, float, float):
+    def solve_model(self, model_type: ModelType = ModelType.DETERMINISTIC, solver_name: str = None, already_solved_ok=False) -> (pyomo.opt.results.results_.SolverResults, float, float):
         if not already_solved_ok and self.results is not None:
             raise RuntimeError("Model already solved, please set already_solved_ok to True if that's intentional")
+
+        if solver_name is None:
+            solver_name = self.cs.dGlobal_Parameters["pSolver"]  # Use the solver name from the case study parameters if not provided
+        elif self.cs.dGlobal_Parameters["pSolver"] != solver_name:
+            printer.warning(f"Solver name {solver_name} does not match the one used in the case study ({self.cs.dGlobal_Parameters['pSolver']}) - using {solver_name}")
 
         start_time = time.time()
         match model_type:
             case ModelType.DETERMINISTIC:
-                optimizer = pyo.SolverFactory(optimizer_name)
-                results = optimizer.solve(self.model)
+                optimizer = pyo.SolverFactory(solver_name)
+                results = optimizer.solve(self.model, tee=True)
                 objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
             case ModelType.EXTENSIVE_FORM:
-                if optimizer_name != self.optimizer_name:
-                    raise RuntimeError(f"Optimizer name {optimizer_name} does not match the one used to build the model ({self.optimizer_name}), please use the same optimizer name when solving using the 'ExtensiveForm' model type")
+                if solver_name != self.solver_name:
+                    raise RuntimeError(f"Optimizer name {solver_name} does not match the one used to build the model ({self.solver_name}), please use the same optimizer name when solving using the 'ExtensiveForm' model type")
                 start_time = time.time()
                 results = self._extensive_form.solve_extensive_form()
                 stop_time = time.time()
@@ -99,8 +111,8 @@ class LEGO:
 
                 scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
                 options = {
-                    "root_solver": optimizer_name,
-                    "sp_solver": optimizer_name,
+                    "root_solver": solver_name,
+                    "sp_solver": solver_name,
                     "sp_solver_options": {"threads": os.cpu_count() - 1},  # Use all but one CPU core
                     # "valid_eta_lb": None,  # TODO: Check how to set bounds dynamically
                     "max_iter": 1000,
@@ -127,7 +139,7 @@ class LEGO:
 
                 scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
                 options = {
-                    "solver_name": optimizer_name,
+                    "solver_name": solver_name,
                     "PHIterLimit": 50,
                     "defaultPHrho": 10,
                     "convthresh": 1e-7,
@@ -154,6 +166,17 @@ class LEGO:
 
         self.timings["model_solving"] = stop_time - start_time
         self.results = results
+
+        eps = 1e-5
+        try:
+            total_PNS = sum(pyo.value(self.model.vPNS[rp, k, i]) for rp in self.model.rp for k in self.model.k for i in self.model.i)
+            total_EPS = sum(pyo.value(self.model.vEPS[rp, k, i]) for rp in self.model.rp for k in self.model.k for i in self.model.i)
+            if total_PNS > eps:
+                printer.warning(f"Power not supplied value {total_PNS} exceeds threshold {eps}")
+            if total_EPS > eps:
+                printer.warning(f"Excess power supplied value {total_EPS} exceeds threshold {eps}")
+        except Exception as e:
+            printer.warning(f"Could not check slack variables automatically: {e}")
 
         return results, self.timings["model_solving"], objective_value
 
@@ -223,8 +246,8 @@ def build_from_clone_with_fixed_results(model_to_be_cloned: pyo.Model, model_wit
 def _scenario_creator(scenario_name: str, full_case_study: CaseStudy) -> pyo.ConcreteModel:
     """
     Creates a scenario based on the given scenario name. Used for mpi-sppy.
-    :param scenario_name: Name of the scenario to create
-    :return: A pyomo ConcreteModel object for the given scenario
+    :param scenario_name: Name of the scenario to create.
+    :return: A pyomo ConcreteModel object for the given scenario.
     """
     import mpisppy.utils.sputils as sputils
 
@@ -237,10 +260,11 @@ def _scenario_creator(scenario_name: str, full_case_study: CaseStudy) -> pyo.Con
 def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     """
     Builds a pyomo ConcreteModel based on the given CaseStudy object.
-    :param cs: The CaseStudy object to build the model from
-    :return: A pyomo ConcreteModel object
+    :param cs: The CaseStudy object to build the model from.
+    :return: A pyomo ConcreteModel object.
     """
     model = pyo.ConcreteModel()
+    reset_execution_safety_dict(model)  # Reset the execution safety dict to ensure that decorators work correctly
     model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=0.0)  # Initialize objective function
 
     # Initialize first_stage variables and objective required for stochasticity
@@ -250,9 +274,16 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     # Element definitions
     model.first_stage_varlist += power.add_element_definitions_and_bounds(model, cs)
     model.first_stage_varlist += hydro.add_element_definitions_and_bounds(model, cs)
+    if cs.dPower_Parameters["pEnableThermalGen"]:
+        model.first_stage_varlist += thermalGen.add_element_definitions_and_bounds(model, cs)
+    if cs.dPower_Parameters["pEnableVRES"]:
+        model.first_stage_varlist += vres.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableStorage"]:
         model.first_stage_varlist += storage.add_element_definitions_and_bounds(model, cs)
-    model.first_stage_varlist += secondReserve.add_element_definitions_and_bounds(model, cs)
+
+    if cs.dPower_Parameters["p2ndResUp"] > 0.0 or cs.dPower_Parameters["p2ndResDW"] > 0.0:
+        model.first_stage_varlist += secondReserve.add_element_definitions_and_bounds(model, cs)
+
     if cs.dPower_Parameters["pEnablePowerImportExport"]:
         model.first_stage_varlist += importExport.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
@@ -265,9 +296,16 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     # Add constraints
     model.first_stage_objective += power.add_constraints(model, cs)
     model.first_stage_objective += hydro.add_constraints(model, cs)
+    if cs.dPower_Parameters["pEnableThermalGen"]:
+        model.first_stage_objective += thermalGen.add_constraints(model, cs)
+    if cs.dPower_Parameters["pEnableVRES"]:
+        model.first_stage_objective += vres.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableStorage"]:
         model.first_stage_objective += storage.add_constraints(model, cs)
-    model.first_stage_objective += secondReserve.add_constraints(model, cs)
+
+    if cs.dPower_Parameters["p2ndResUp"] > 0.0 or cs.dPower_Parameters["p2ndResDW"] > 0.0:
+        model.first_stage_objective += secondReserve.add_constraints(model, cs)
+
     if cs.dPower_Parameters["pEnablePowerImportExport"]:
         model.first_stage_objective += importExport.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
@@ -282,9 +320,9 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
 def addToSet(model: pyo.ConcreteModel, set_name: str, values: iter) -> None:
     """
     Adds values to a set in the model. If the set does not exist, it raises an error.
-    :param model: The model to which the set belongs
-    :param set_name: Name of the set to add values to
-    :param values: Values to add to the set
+    :param model: The model to which the set belongs.
+    :param set_name: Name of the set to add values to.
+    :param values: Values to add to the set.
     :return: None
     """
     if not hasattr(model, set_name):
@@ -298,12 +336,12 @@ def addToParameter(model: pyo.ConcreteModel, parameter_name: str, values: iter, 
     """
     Adds values to a parameter in the model. If the parameter does not exist, it creates it.
     If the parameter exists, it updates the values.
-    :param model: The model to which the parameter belongs
-    :param parameter_name: Name of the parameter to add or update
-    :param values: Values to add or update in the parameter
-    :param doc: Documentation string for the parameter
-    :param indices: Indices for the parameter
-    :param overwrite: If True, it overwrites existing values in the parameter
+    :param model: The model to which the parameter belongs.
+    :param parameter_name: Name of the parameter to add or update.
+    :param values: Values to add or update in the parameter.
+    :param doc: Documentation string for the parameter.
+    :param indices: Indices for the parameter.
+    :param overwrite: If True, it overwrites existing values in the parameter.
     :return: None
     """
     if not hasattr(model, parameter_name):  # Check if parameter exists

@@ -1,3 +1,5 @@
+import typing
+
 import pyomo.environ as pyo
 
 from InOutModule.CaseStudy import CaseStudy
@@ -5,7 +7,7 @@ from LEGO import LEGOUtilities
 
 
 @LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
-def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> (list[pyo.Var], list[pyo.Var]):
+def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> typing.Tuple[list[pyo.Var], list[pyo.Var]]:
     # Lists for defining stochastic behavior. First stage variables are common for all scenarios, second stage variables are scenario-specific.
     first_stage_variables = []
     second_stage_variables = []
@@ -39,23 +41,28 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # Enforce ImpFix/ImpMax and ExpFix/ExpMax
-    def eImpExp_rule(model, rp, k, hub):
+    def eImpExp_rule(model, rp, k, hub, hub_i):
         if model.pImpExpValue[rp, k, hub] >= 0:  # Only importing allowed
             if model.pImpType[hub] == 'ImpFix':
-                return sum(model.vImpExp[rp, k, hub, i] for i in model.i if (hub, i) in model.hubConnections) == model.pImpExpValue[rp, k, hub]
+                return sum(model.vImpExp[rp, k, hub, i] for i in hub_i[hub]) == model.pImpExpValue[rp, k, hub]
             elif model.pImpType[hub] == 'ImpMax':
-                return sum(model.vImpExp[rp, k, hub, i] for i in model.i if (hub, i) in model.hubConnections) <= model.pImpExpValue[rp, k, hub]
+                return sum(model.vImpExp[rp, k, hub, i] for i in hub_i[hub]) <= model.pImpExpValue[rp, k, hub]
             else:
                 raise ValueError(f"Unknown import type for hub '{hub}': '{model.pImpType[hub]}'")
         else:  # Only exporting allowed
             if model.pExpType[hub] == 'ExpFix':
-                return sum(model.vImpExp[rp, k, hub, i] for i in model.i if (hub, i) in model.hubConnections) == model.pImpExpValue[rp, k, hub]
+                return sum(model.vImpExp[rp, k, hub, i] for i in hub_i[hub]) == model.pImpExpValue[rp, k, hub]
             elif model.pExpType[hub] == 'ExpMax':
-                return sum(model.vImpExp[rp, k, hub, i] for i in model.i if (hub, i) in model.hubConnections) >= model.pImpExpValue[rp, k, hub]
+                return sum(model.vImpExp[rp, k, hub, i] for i in hub_i[hub]) >= model.pImpExpValue[rp, k, hub]
             else:
                 raise ValueError(f"Unknown export type for hub '{hub}': '{model.pExpType[hub]}'")
 
-    model.eImpExp = pyo.Constraint(model.rp, model.k, model.hubs, doc='Imp-/Export sum at each hub', rule=eImpExp_rule)
+    hub_i = {}  # Precompute list of nodes connected to each hub
+    for hub, i in model.hubConnections:
+        if hub not in hub_i:
+            hub_i[hub] = []
+        hub_i[hub].append(i)
+    model.eImpExp = pyo.Constraint(model.rp, model.k, model.hubs, doc='Imp-/Export sum at each hub', rule=lambda m, rp, k, hub: eImpExp_rule(m, rp, k, hub, hub_i))
 
     # Add import/export to power-balance of each node in each hour
     for rp in model.rp:

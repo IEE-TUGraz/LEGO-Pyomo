@@ -1,3 +1,5 @@
+import typing
+
 import pyomo.environ as pyo
 
 from InOutModule.CaseStudy import CaseStudy
@@ -5,7 +7,7 @@ from LEGO import LEGOUtilities
 
 
 @LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
-def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> (list[pyo.Var], list[pyo.Var]):
+def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> typing.Tuple[list[pyo.Var], list[pyo.Var]]:
     # Lists for defining stochastic behavior. First stage variables are common for all scenarios, second stage variables are scenario-specific.
     first_stage_variables = []
     second_stage_variables = []
@@ -48,7 +50,12 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     first_stage_objective = 0.0
 
     # Add cost when exceeding soft line load limit
-    second_stage_objective = sum(model.pWeight_rp[rp] * model.pWeight_k[k] * model.vLineOverload[rp, k, i, j, c] * model.pLOLCost for rp in model.rp for k in model.k for i, j, c in model.la)
+    second_stage_objective = sum(model.pWeight_rp[rp] *
+                                 sum(model.pWeight_k[k] *
+                                     sum(model.vLineOverload[rp, k, i, j, c]
+                                         for i, j, c in model.la)
+                                     for k in model.k)
+                                 for rp in model.rp) * model.pLOLCost
 
     # Adjust objective and return first_stage_objective expression
     model.objective.expr += first_stage_objective + second_stage_objective
