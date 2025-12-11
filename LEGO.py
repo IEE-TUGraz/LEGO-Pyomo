@@ -8,8 +8,9 @@ from pyomo.core import NameLabeler
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
-from InOutModule import SQLiteWriter, ExcelWriter
+from InOutModule import SQLiteWriter
 from InOutModule.CaseStudy import CaseStudy
+from InOutModule.ExcelWriter import ExcelWriter
 from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO, ModelType
 
