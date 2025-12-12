@@ -16,12 +16,12 @@ def check_exactness_of_socp_solution(lego, results):
     if not lego.cs.dPower_Parameters['pEnableSOCP']:
         return  # SOCP not enabled, no need to check exactness
 
-    printer.information("\nChecking exactness of SOCP solution...")
 
     # check if constraint eSOCP_VoltageDrop_rule is in the model
     
     max_deviation = 0.0
     if hasattr(model, "eSOCP_VoltageDrop"):
+        printer.information("\nChecking exactness of SOCP (Branch Flow Model) solution...")
         for rp in model.rp:
             for k in model.constraintsActiveK:
                 for (i, j, c) in model.la:
@@ -38,6 +38,7 @@ def check_exactness_of_socp_solution(lego, results):
                         max_deviation = deviation
 
     elif hasattr(model, "eSOCP_ExiLinePij"):
+        printer.information("\nChecking exactness of SOCP (Node Injection Model) solution...")
         for rp in model.rp:
             for k in model.constraintsActiveK:
                 for (i, j, c) in model.la:
