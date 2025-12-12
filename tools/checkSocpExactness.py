@@ -36,6 +36,7 @@ def check_exactness_of_socp_solution(lego, results):
                     deviation = ui * lij - (vLineP **2 + vLineQ **2)
                     if deviation > max_deviation:
                         max_deviation = deviation
+                        idx_of_max_deviation = (rp, k, i, j, c)
 
     elif hasattr(model, "eSOCP_ExiLinePij"):
         printer.information("\nChecking exactness of SOCP (Node Injection Model) solution...")
@@ -53,12 +54,13 @@ def check_exactness_of_socp_solution(lego, results):
                     deviation = cii * cjj - (sij **2 + cij **2)
                     if deviation > max_deviation:
                         max_deviation = deviation
+                        idx_of_max_deviation = (rp, k, i, j, c)
     else:
         printer.warning("No matching SOCP constraints found to choose AC-OPF implementation..")
         return
 
     tolerance = 1e-6  # Define a tolerance level for exactness
     if max_deviation > tolerance:
-        printer.warning(f"SOCP solution is not exact! Maximum deviation: {max_deviation}\n")
+        printer.warning(f"SOCP solution is not exact! Maximum deviation: {max_deviation} at index: {idx_of_max_deviation}\n")
     else:
         printer.information(f"SOCP solution is exact within the defined tolerance. {max_deviation}\n")
