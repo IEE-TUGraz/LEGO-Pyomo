@@ -16,28 +16,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     second_stage_variables = []
 
     # Sets
-    model.i = pyo.Set(doc='Buses', initialize=cs.dPower_BusInfo.index.tolist())
-    model.slack_node = pyo.Set(doc='Slack bus', initialize=[cs.dPower_Parameters['is']])
-
-    model.c = pyo.Set(doc='Circuits', initialize=cs.dPower_Network.index.get_level_values('c').unique().tolist())
-    model.la = pyo.Set(doc='All lines', initialize=cs.dPower_Network.index.tolist(), within=model.i * model.i * model.c)
-    model.la_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.la if node == i or node == j] for node in model.i}
-    model.le = pyo.Set(doc='Existing lines', initialize=cs.dPower_Network[(cs.dPower_Network["pEnableInvest"] == 0)].index.tolist(), within=model.la)
-    model.le_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.le if node == i or node == j] for node in model.i}
-    model.lc = pyo.Set(doc='Candidate lines', initialize=cs.dPower_Network[(cs.dPower_Network["pEnableInvest"] == 1)].index.tolist(), within=model.la)
-    model.lc_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.lc if node == i or node == j] for node in model.i}
-    model.g = pyo.Set(doc='Generators')
-    model.gi = pyo.Set(doc='Generator g connected to bus i', within=model.g * model.i)
-
-    model.p = pyo.Set(doc='Periods', initialize=cs.dPower_Hindex.index.get_level_values('p').unique().tolist())
-    model.rp = pyo.Set(doc='Representative periods', initialize=cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
-    model.k = pyo.Set(doc='Timestep within representative period', initialize=cs.dPower_Demand.index.get_level_values('k').unique().tolist())
-
-    if cs.dGlobal_Parameters["pMovingWindowLength"] > 0 and cs.dGlobal_Parameters["pMovingWindowOverlap"] >= 0:
-        model.constraintsActiveK = pyo.Set(doc='Timesteps where constraints are active during the actual time window', initialize=cs.constraints_active_k)
-    else:
-        model.constraintsActiveK = pyo.Set(doc='Timesteps where constraints are active', initialize=model.k)
-
     model.hindex = cs.dPower_Hindex.index
     # Helper function for creating reverse and bidirectional sets
     def make_reverse_set(original_set):
@@ -60,74 +38,30 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.lc_full_no_c = pyo.Set(doc='Candidate lines incl. reverse lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc_full}, dimen=2)
     model.lc_no_c = pyo.Set(doc='Candidate lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc}, dimen=2)
 
-    # Helper to get the first circuit for each (i, j) pair
-    df_circuits = cs.dPower_Network.reset_index()
-
-    # Sort the DataFrame by the desired circuit order
-    df_circuits["c_str"] = df_circuits["c"].astype(str)
-    ordered_circuits = list(dict.fromkeys(df_circuits["c_str"].tolist()))
-    circuit_order = {c: idx for idx, c in enumerate(ordered_circuits)}
-    df_circuits["c_order"] = df_circuits["c_str"].map(circuit_order)
-
-    # Get the first circuit per (i, j) based on this order
-    first_circuit_map = df_circuits.sort_values("c_order").drop_duplicates(subset=["i", "j"]).set_index(["i", "j"])["c"].to_dict()
-    # todo da kommt der fehler
-    # DEPRECATED: Param 'first_circuit_map' declared with an implicit
-    # domain of 'Any'. The default domain for Param objects is 'Any'.  However, we
-    # will be changing that default to 'Reals' in the future.  If you really intend
-    # the domain of this Paramto be 'Any', you can suppress this warning by
-    # explicitly specifying 'within=Any' to the Param constructor.  (deprecated in
-    # 5.6.9, will be removed in (or after) 6.0) (called from
-    # C:\Users\Stephan\anaconda3\envs\LEGO-Pyomo_env\Lib\site-
-    # packages\pyomo\core\base\indexed_component.py:718)
-    model.first_circuit_map = pyo.Param(model.la_no_c, initialize=first_circuit_map, doc='First circuit for each line (i, j)')
-    model.first_circuit_map_bidir = pyo.Param(model.la_full_no_c, initialize={(i, j): c for (i, j), c in model.first_circuit_map.items()} | {(j, i): c for (i, j), c in model.first_circuit_map.items()}, doc='First circuit for each line (i, j) bidirectional')
+    # node -> list of lines where node is sending/receiving
+    model.la_outflows = {node: [] for node in model.i}  # lines where node is the sending end (outflows from node)
+    model.la_inflows = {node: [] for node in model.i}  # lines where node is the receiving end (inflows to node)
+    for (i, j, c) in model.la_full:
+        model.la_outflows[i].append((i, j, c))
+        model.la_inflows[j].append((i, j, c))
 
     # Parameters
-    model.pDemandP = pyo.Param(model.rp, model.k, model.i, initialize=cs.dPower_Demand['value'], doc='Demand at bus i in representative period rp and timestep k')
-    model.pMovWindowLDS = cs.dGlobal_Parameters['pMovWindowLDS']
-
-    model.pOMVarCost = pyo.Param(model.g, doc='Production cost of generator g')
-    model.pEnabInv = pyo.Param(model.g, doc='Enable investment in thermal generator g')
-    model.pMaxInvest = pyo.Param(model.g, doc='Maximum investment in thermal generator g')
-    model.pInvestCost = pyo.Param(model.g, doc='Investment cost for thermal generator g')
-    model.pMaxProd = pyo.Param(model.g, doc='Maximum production of generator g')
-    model.pMinProd = pyo.Param(model.g, doc='Minimum production of generator g')
-    model.pExisUnits = pyo.Param(model.g, doc='Existing units of generator g')
-    model.pMaxGenQ = pyo.Param(model.g, doc='Maximum reactive production of generator g')
-    model.pMinGenQ = pyo.Param(model.g, doc='Minimum reactive production of generator g')
-
-    model.pXline = pyo.Param(model.la, initialize=cs.dPower_Network['pXline'], doc='Reactance of line la')
-    model.pAngle = pyo.Param(model.la, initialize=cs.dPower_Network['pAngle'] * np.pi / 180, doc='Transformer angle shift')
-    model.pRatio = pyo.Param(model.la, initialize=cs.dPower_Network['pRatio'], doc='Transformer ratio')
-    model.pPmax = pyo.Param(model.la, initialize=cs.dPower_Network['pPmax'], doc='Maximum power flow on line la')
-    model.pFixedCost = pyo.Param(model.la, initialize=cs.dPower_Network['pInvestCost'], doc='Fixed cost when investing in line la')  # TODO: Think about renaming this parameter (something related to 'investment cost')
-    model.pBigM_Flow = pyo.Param(initialize=1e3, doc="Big M for power flow")
-    model.pENSCost = pyo.Param(initialize=cs.dPower_Parameters['pENSCost'], doc='Cost used for Power Not Served (PNS) and Excess Power Served (EPS)')
-    model.pWeight_rp = pyo.Param(model.rp, initialize=cs.dPower_WeightsRP["pWeight_rp"], doc='Weight of representative period rp')
-    model.pWeight_k = pyo.Param(model.k, initialize=cs.dPower_WeightsK["pWeight_k"], doc='Weight of time step k')
-
-    model.pBigM = pyo.Param(doc="Big M for binary variables", initialize=1e3)
-    model.eps = pyo.Param(doc="Very small number", initialize=1e-9)
-
     model.pBusG = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusG'], doc='Conductance of bus i')
     model.pBusB = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusG'], doc='Susceptance of bus i')
     model.pBus_pf = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBus_pf'], doc='PowerFactor of bus i')
     model.pRline = pyo.Param(model.la, initialize=cs.dPower_Network['pRline'], doc='Resistance of line la')
-    model.pBcline = pyo.Param(model.la, initialize=cs.dPower_Network['pBcline'], doc='Susceptance of line la')
     model.pQmax = pyo.Param(model.la, initialize=lambda model, i, j, c: model.pPmax[i, j, c], doc='Maximum reactive power flow on line la')  # It is asumed that Qmax is ident to Pmax
     model.pBigM_SOCP = pyo.Param(initialize=1e3, doc="Big M for SOCP")
     model.pMaxAngleDiff = pyo.Param(initialize=cs.dPower_Parameters["pMaxAngleDiff"] * np.pi / 180, doc='Maximum angle difference between two buses for the SOCP formulation')
     model.pBusMaxV = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusMaxV'], doc='Maximum voltage at bus i')
     model.pBusMinV = pyo.Param(model.i, initialize=lambda model, i: max(cs.dPower_BusInfo['pBusMinV'][i], 0.1), doc='Minimum voltage at bus i (with a lower bound of 0.1)')
-    model.pGline = pyo.Param(model.la, initialize=lambda model, i, j, c: model.pRline[i, j, c] / ((model.pRline[i, j, c] ** 2 + model.pXline[i, j, c] ** 2) if model.pRline[i, j, c] > 1e-6 else 1e-6), doc='Conductance of line la with lower bound')
-    model.pBline = pyo.Param(model.la, initialize=lambda model, i, j, c: - model.pXline[i, j, c] / ((model.pRline[i, j, c] ** 2 + model.pXline[i, j, c] ** 2) if model.pRline[i, j, c] > 1e-6 else 1e-6), doc='Susceptance of line la with lower bound')
     model.pRatioDemQP = pyo.Param(model.i, initialize=lambda model, i: pyo.tan(pyo.acos(model.pBus_pf[i])))
     model.pDemandQ = pyo.Param(model.rp, model.k, model.i, initialize=cs.dPowerQ_Demand['value'], doc='Reactive Demand at bus i in representative period rp and timestep k')
 
     model.coordsLat = pyo.Param(model.i, initialize=cs.dPower_BusInfo['lat'], doc='Latitude of bus i')
     model.coordsLon = pyo.Param(model.i, initialize=cs.dPower_BusInfo['lon'], doc='Longitude of bus i')
 
+    # Todo: Line Investment not impelented in BFM yet
     model.vLineInvest = pyo.Var(model.la, doc='Transmission line investment', domain=pyo.Binary)
     for i, j, c in model.le:
         model.vLineInvest[i, j, c].fix(0)  # Set existing lines to not investable
@@ -209,12 +143,12 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def eSOCP_ActivePowerFlow_rule(m, rp, k, i, j, c):
         return (- m.vLineP[rp, k, i, j, c] 
                 + m.pRline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c] -
-                (sum(m.vGenP[rp, k, g] for g in m.g if (g, j) in m.gi)
+                (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])
                     - (m.pDemandP[rp, k, j])
                     + m.vPNS[rp, k, j]
                     - m.vEPS[rp, k, j]
                     ) +
-                sum(m.vLineP[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j)
+                sum(m.vLineP[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j) 
                 == 0
                 ) 
 
@@ -222,12 +156,12 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     def eSOCP_ReactivePowerFlow_rule(m, rp, k, i, j, c):
         return (m.vLineQ[rp, k, i, j, c] == m.pXline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c] -
-            (sum(m.vGenQ[rp, k, g] for g in m.g if (g, j) in m.gi)
+            (sum(m.vGenQ[rp, k, g] for g in m.gi_node[i])
             - (m.pDemandQ[rp, k, j])
             + m.vQNS[rp, k, j]
             - m.vEQS[rp, k, j]
             ) +
-            sum(m.vLineQ[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j))  # Only outflows from i, Old indexing format
+            sum(m.vLineQ[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j))  # Only outflows from i
 
     model.eSOCP_ReactivePowerFlow = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc='Reactive power flow over line ij (SOCP)', rule=eSOCP_ReactivePowerFlow_rule)
 
@@ -279,23 +213,19 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         model.vLineQ[:, :, model.slack_node, :, :].fix(0)
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
-    first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
-                             sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
+    first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc))  # Investment cost of transmission lines
+    
     # Reactive slack node terms included when SOCP active
     def ens_terms(rp, k):
         return sum(
-            model.vPNS[rp, k, i] * model.pENSCost
-            + model.vEPS[rp, k, i] * model.pENSCost * 2
-            + model.vQNS[rp, k, i] * model.pENSCost
+            model.vQNS[rp, k, i] * model.pENSCost
             + model.vEQS[rp, k, i] * model.pENSCost * 2
             for i in model.i
         )
 
     second_stage_objective = sum(model.pWeight_rp[rp] *  # Weight of representative periods
                                  sum(model.pWeight_k[k] *  # Weight of time steps
-                                     (ens_terms(rp, k)  # Power non supplied terms
-                                      + sum(+ model.vGenP[rp, k, g] * model.pOMVarCost[g]  # Production cost of generators
-                                            for g in model.g))
+                                     ens_terms(rp, k)  # Power non supplied terms
                                      for k in model.constraintsActiveK)
                                  for rp in model.rp)
 

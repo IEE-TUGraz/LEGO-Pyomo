@@ -58,10 +58,13 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vCurtailment = pyo.Var(model.rp, model.k, model.vresGenerators, doc="Curtailment of VRES generators", bounds=(0, None))
     second_stage_variables.append(model.vCurtailment)
 
+    # Pre-compute base capacity per generator
+    base_capacity = {g: model.pMaxProd[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])) for g in model.vresGenerators}
     for g in model.vresGenerators:
+        base_cap = base_capacity[g]
         for rp in model.rp:
             for k in model.k:
-                maximumProduction = model.pMaxProd[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g])) * model.pCapacityFactors[rp, k, g]
+                maximumProduction = base_cap * model.pCapacityFactors[rp, k, g]
                 model.vCurtailment[rp, k, g].setub(maximumProduction)
                 model.vGenP[rp, k, g].setub(maximumProduction)
 
