@@ -21,11 +21,11 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.pImpExpMaximum = pyo.Param(model.rp, model.k, model.hubConnections, doc='Maximum Imp-/Export value at hub', initialize=cs.dPower_ImportExport['ImpExpMaximum'].reorder_levels(["rp", "k", "hub", "i"]))
     model.pImpExpPrice = pyo.Param(model.rp, model.k, model.hubConnections, doc='Imp-/Export price at hub', initialize=cs.dPower_ImportExport['ImpExpPrice'].reorder_levels(["rp", "k", "hub", "i"]))
     if not cs.dPower_Parameters['pEnableSOCP']:
-        model.vImpExp = pyo.Var(model.rp, model.k, model.hubConnections, doc='Import/Export at hub connection', bounds=lambda m, rp, k, hub, i: (model.pImpExpMinimum[rp, k, hub, i], model.pImpExpMaximum[rp, k, hub, i]))
+        model.vImpExp = pyo.Var(model.rp, model.k, model.hubConnections, doc='Import/Export at hub connection', bounds=lambda m, rp, k, hub, i: (m.pImpExpMinimum[rp, k, hub, i], m.pImpExpMaximum[rp, k, hub, i]))
         second_stage_variables += [model.vImpExp]
     else:
-        model.vImpExp = pyo.Var(model.rp, model.k, model.hubConnections, doc='Import/Export at hub connection', bounds=lambda m, rp, k, hub, i: (model.pImpExpMinimum[rp, k, hub, i], model.pImpExpMaximum[rp, k, hub, i]))
-        model.vImpExpQ = pyo.Var(model.rp, model.k, model.hubConnections, doc='Reactive power associated with Import/Export at hub connection', bounds=lambda m, rp, k, hub, i: (model.pImpExpMinimum[rp, k, hub, i], model.pImpExpMaximum[rp, k, hub, i]))
+        model.vImpExp = pyo.Var(model.rp, model.k, model.hubConnections, doc='Import/Export at hub connection', bounds=lambda m, rp, k, hub, i: (m.pImpExpMinimum[rp, k, hub, i], m.pImpExpMaximum[rp, k, hub, i]))
+        model.vImpExpQ = pyo.Var(model.rp, model.k, model.hubConnections, doc='Reactive power associated with Import/Export at hub connection', bounds=lambda m, rp, k, hub, i: (m.pImpExpMinimum[rp, k, hub, i], m.pImpExpMaximum[rp, k, hub, i]))
         second_stage_variables += [model.vImpExp, model.vImpExpQ]
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
@@ -46,7 +46,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     # Add import/export cost/revenues to total cost
     if not cs.dPower_Parameters['pEnableSOCP']:
-        second_stage_objective = sum(model.vImpExp[rp, k, hub, i] * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pImpExpPrice[rp, k, hub] for rp in model.rp for k in model.k for hub, i in model.hubConnections)
+        second_stage_objective = sum(model.vImpExp[rp, k, hub, i] * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pImpExpPrice[rp, k, hub, i] for rp in model.rp for k in model.k for hub, i in model.hubConnections)
     else:
         second_stage_objective = sum((model.vImpExp[rp, k, hub, i] + model.vImpExpQ[rp, k, hub, i]) * model.pWeight_rp[rp] * model.pWeight_k[k] * model.pImpExpPrice[rp, k, hub, i] for rp in model.rp for k in model.constraintsActiveK for hub, i in model.hubConnections)
 
