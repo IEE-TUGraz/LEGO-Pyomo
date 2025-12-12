@@ -264,6 +264,7 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     model.first_stage_objective = 0.0
 
     # Element definitions
+    #model.first_stage_varlist += power.add_element_definitions_and_bounds(model, cs)
     if not cs.dPower_Parameters["pEnableSOCP"]: 
         model.first_stage_varlist += dcOpf.add_element_definitions_and_bounds(model, cs)
     else:
@@ -290,6 +291,7 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
 
     # Add constraints
     # Todo: implement way to change between socp ac opfs
+    #model.first_stage_objective += power.add_constraints(model, cs)
     if not cs.dPower_Parameters["pEnableSOCP"]:
         model.first_stage_objective += dcOpf.add_constraints(model, cs)
     else:

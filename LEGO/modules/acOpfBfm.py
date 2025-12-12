@@ -5,6 +5,7 @@ import pyomo.environ as pyo
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO import LEGOUtilities
+from LEGO.LEGOUtilities import _build_gi_node_helper
 
 printer = Printer.getInstance()
 
@@ -60,6 +61,19 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.lc_full_no_c = pyo.Set(doc='Candidate lines incl. reverse lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc_full}, dimen=2)
     model.lc_no_c = pyo.Set(doc='Candidate lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc}, dimen=2)
 
+    # node -> list of lines where node is sending/receiving
+    model.la_outflows = {node: [] for node in model.i}  # lines where node is the sending end (outflows from node)
+    model.la_inflows = {node: [] for node in model.i}  # lines where node is the receiving end (inflows to node)
+    for (i, j, c) in model.la_full:
+        model.la_outflows[i].append((i, j, c))
+        model.la_inflows[j].append((i, j, c))
+
+    model.g = pyo.Set(doc='Generators')
+    model.gi = pyo.Set(doc='Generator g connected to bus i', within=model.g * model.i)
+
+    # NOTE: We initialize it here and update it in add_constraints when gi is complete
+    model.gi_node = {}  # bus i -> list of generators at that bus (for O(1) lookups)
+
     # Helper to get the first circuit for each (i, j) pair
     df_circuits = cs.dPower_Network.reset_index()
 
@@ -71,15 +85,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     # Get the first circuit per (i, j) based on this order
     first_circuit_map = df_circuits.sort_values("c_order").drop_duplicates(subset=["i", "j"]).set_index(["i", "j"])["c"].to_dict()
-    # todo da kommt der fehler
-    # DEPRECATED: Param 'first_circuit_map' declared with an implicit
-    # domain of 'Any'. The default domain for Param objects is 'Any'.  However, we
-    # will be changing that default to 'Reals' in the future.  If you really intend
-    # the domain of this Paramto be 'Any', you can suppress this warning by
-    # explicitly specifying 'within=Any' to the Param constructor.  (deprecated in
-    # 5.6.9, will be removed in (or after) 6.0) (called from
-    # C:\Users\Stephan\anaconda3\envs\LEGO-Pyomo_env\Lib\site-
-    # packages\pyomo\core\base\indexed_component.py:718)
     model.first_circuit_map = pyo.Param(model.la_no_c, initialize=first_circuit_map, doc='First circuit for each line (i, j)')
     model.first_circuit_map_bidir = pyo.Param(model.la_full_no_c, initialize={(i, j): c for (i, j), c in model.first_circuit_map.items()} | {(j, i): c for (i, j), c in model.first_circuit_map.items()}, doc='First circuit for each line (i, j) bidirectional')
 
@@ -206,15 +211,18 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
+    # Build helper dictionary for generator-to-bus mapping (now that gi is complete)
+    model.gi_node = _build_gi_node_helper(model)
+
     def eSOCP_ActivePowerFlow_rule(m, rp, k, i, j, c):
         return (- m.vLineP[rp, k, i, j, c] 
                 + m.pRline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c] -
-                (sum(m.vGenP[rp, k, g] for g in m.g if (g, j) in m.gi)
+                (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])
                     - (m.pDemandP[rp, k, j])
                     + m.vPNS[rp, k, j]
                     - m.vEPS[rp, k, j]
                     ) +
-                sum(m.vLineP[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j)
+                sum(m.vLineP[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j) 
                 == 0
                 ) 
 
@@ -222,12 +230,12 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     def eSOCP_ReactivePowerFlow_rule(m, rp, k, i, j, c):
         return (m.vLineQ[rp, k, i, j, c] == m.pXline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c] -
-            (sum(m.vGenQ[rp, k, g] for g in m.g if (g, j) in m.gi)
+            (sum(m.vGenQ[rp, k, g] for g in m.gi_node[i])
             - (m.pDemandQ[rp, k, j])
             + m.vQNS[rp, k, j]
             - m.vEQS[rp, k, j]
             ) +
-            sum(m.vLineQ[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j))  # Only outflows from i, Old indexing format
+            sum(m.vLineQ[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j))  # Only outflows from i
 
     model.eSOCP_ReactivePowerFlow = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc='Reactive power flow over line ij (SOCP)', rule=eSOCP_ReactivePowerFlow_rule)
 

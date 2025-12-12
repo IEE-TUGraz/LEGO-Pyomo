@@ -27,14 +27,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.lc = pyo.Set(doc='Candidate lines', initialize=cs.dPower_Network[(cs.dPower_Network["pEnableInvest"] == 1)].index.tolist(), within=model.la)
     model.lc_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.lc if node == i or node == j] for node in model.i}
 
-    # Pre-partition line sets by technical representation (OPTIMIZATION: eliminates match/case in constraint rules)
-    le_dcopf = [idx for idx in model.le if cs.dPower_Network.loc[idx]["pTecRepr"] == "DC-OPF"]
-    lc_dcopf = [idx for idx in model.lc if cs.dPower_Network.loc[idx]["pTecRepr"] == "DC-OPF"]
-    lc_dcopf_tp_sn = [idx for idx in model.lc if cs.dPower_Network.loc[idx]["pTecRepr"] in ["DC-OPF", "TP", "SN"]]
-    model.le_dcopf = pyo.Set(doc='Existing DC-OPF lines', initialize=le_dcopf, within=model.le)
-    model.lc_dcopf = pyo.Set(doc='Candidate DC-OPF lines', initialize=lc_dcopf, within=model.lc)
-    model.lc_dcopf_tp_sn = pyo.Set(doc='Candidate DC-OPF/TP/SN lines', initialize=lc_dcopf_tp_sn, within=model.lc)
-
     model.g = pyo.Set(doc='Generators')
     model.gi = pyo.Set(doc='Generator g connected to bus i', within=model.g * model.i)
 
@@ -101,15 +93,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
         # Get the first circuit per (i, j) based on this order
         first_circuit_map = df_circuits.sort_values("c_order").drop_duplicates(subset=["i", "j"]).set_index(["i", "j"])["c"].to_dict()
-        # todo da kommt der fehler
-        # DEPRECATED: Param 'first_circuit_map' declared with an implicit
-        # domain of 'Any'. The default domain for Param objects is 'Any'.  However, we
-        # will be changing that default to 'Reals' in the future.  If you really intend
-        # the domain of this Paramto be 'Any', you can suppress this warning by
-        # explicitly specifying 'within=Any' to the Param constructor.  (deprecated in
-        # 5.6.9, will be removed in (or after) 6.0) (called from
-        # C:\Users\Stephan\anaconda3\envs\LEGO-Pyomo_env\Lib\site-
-        # packages\pyomo\core\base\indexed_component.py:718)
         model.first_circuit_map = pyo.Param(model.la_no_c, initialize=first_circuit_map, doc='First circuit for each line (i, j)')
         model.first_circuit_map_bidir = pyo.Param(model.la_full_no_c, initialize={(i, j): c for (i, j), c in model.first_circuit_map.items()} | {(j, i): c for (i, j), c in model.first_circuit_map.items()}, doc='First circuit for each line (i, j) bidirectional')
 
@@ -562,7 +545,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
 
     # define a active and reactive power balance constraint for the slack bus to use the ImExport implementation (only called DC to be consistent with the rest of the model)
-    if cs.dPower_Parameters['pEnablePowerImportExport']:
+    if cs.dPower_Parameters['pEnablePowerImportExport'] and cs.dPower_Parameters["pEnableSOCP"]:
 
         def eDC_BalanceP_rule(m, rp, k, i):
             return (- sum(m.vLineP[rp, k, j, m_con, c] for (j, m_con, c) in m.la if j == i))

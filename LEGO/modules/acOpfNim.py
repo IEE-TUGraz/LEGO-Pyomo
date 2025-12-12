@@ -5,6 +5,7 @@ import pyomo.environ as pyo
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO import LEGOUtilities
+from LEGO.LEGOUtilities import _build_gi_node_helper
 
 printer = Printer.getInstance()
 
@@ -59,6 +60,19 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.lc_full = pyo.Set(doc='Candidate lines incl. reverse lines', initialize=lambda m: set(m.lc) | set(m.lc_reverse), within=model.la_full, dimen=3)
     model.lc_full_no_c = pyo.Set(doc='Candidate lines incl. reverse lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc_full}, dimen=2)
     model.lc_no_c = pyo.Set(doc='Candidate lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc}, dimen=2)
+
+    model.g = pyo.Set(doc='Generators')
+    model.gi = pyo.Set(doc='Generator g connected to bus i', within=model.g * model.i)
+
+    # NOTE: We initialize it here and update it in add_constraints when gi is complete
+    model.gi_node = {}  # bus i -> list of generators at that bus (for O(1) lookups)
+
+    # node -> list of lines where node is sending/receiving
+    model.la_outflows = {node: [] for node in model.i}  # lines where node is the sending end (outflows from node)
+    model.la_inflows = {node: [] for node in model.i}  # lines where node is the receiving end (inflows to node)
+    for (i, j, c) in model.la_full:
+        model.la_outflows[i].append((i, j, c))
+        model.la_inflows[j].append((i, j, c))
 
     # Helper to get the first circuit for each (i, j) pair
     df_circuits = cs.dPower_Network.reset_index()
@@ -219,16 +233,16 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     line_investement_candidates = False if len(model.lc) == 0 else True
-
+    # Build helper dictionary for generator-to-bus mapping (now that gi is complete)
+    model.gi_node = _build_gi_node_helper(model)
     # Power balance for nodes DC ann SOCP
     def eDC_BalanceP_rule(m, rp, k, i):
-        return (sum(m.vGenP[rp, k, g] for g in m.g if (g, i) in m.gi)  # Gen at bus i
-                - sum(m.vLineP[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i)  # Only outflows from i, Old indexing format
-                # - sum(m.vLineP[rp, k, i2, j, c] if i2 == i else m.vLineP[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])  # Only outflows from i
-                - m.vSOCP_cii[rp, k, i] * m.pBusG[i]
-                - (m.pDemandP[rp, k, i])
-                + m.vPNS[rp, k, i]
-                - m.vEPS[rp, k, i])
+        return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])  # Gen at bus i (O(1) lookup)
+                    - sum(m.vLineP[rp, k, i2, j, c] for (i2, j, c) in m.la_outflows[i])  # Only outflows from i (O(1) lookup)
+                    - m.vSOCP_cii[rp, k, i] * m.pBusG[i]
+                    - (m.pDemandP[rp, k, i])
+                    + m.vPNS[rp, k, i]
+                    - m.vEPS[rp, k, i])
 
     model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.i, rule=eDC_BalanceP_rule)
     model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eDC_BalanceP_expr[rp, k, i] == 0)
