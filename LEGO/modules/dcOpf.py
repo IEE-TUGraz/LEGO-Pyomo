@@ -5,7 +5,6 @@ import pyomo.environ as pyo
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO import LEGOUtilities
-from LEGO.LEGOUtilities import _build_gi_node_helper
 
 printer = Printer.getInstance()
 
@@ -15,19 +14,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     # Lists for defining stochastic behavior. First stage variables are common for all scenarios, second stage variables are scenario-specific.
     first_stage_variables = []
     second_stage_variables = []
-
-    # Sets
-    model.i = pyo.Set(doc='Buses', initialize=cs.dPower_BusInfo.index.tolist())
-    model.slack_node = pyo.Set(doc='Slack bus', initialize=[cs.dPower_Parameters['is']])
-
-    model.c = pyo.Set(doc='Circuits', initialize=cs.dPower_Network.index.get_level_values('c').unique().tolist())
-    model.la = pyo.Set(doc='All lines', initialize=cs.dPower_Network.index.tolist(), within=model.i * model.i * model.c)
-    model.la_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.la if node == i or node == j] for node in model.i}
-    model.le = pyo.Set(doc='Existing lines', initialize=cs.dPower_Network[(cs.dPower_Network["pEnableInvest"] == 0)].index.tolist(), within=model.la)
-    model.le_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.le if node == i or node == j] for node in model.i}
-    model.lc = pyo.Set(doc='Candidate lines', initialize=cs.dPower_Network[(cs.dPower_Network["pEnableInvest"] == 1)].index.tolist(), within=model.la)
-    model.lc_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.lc if node == i or node == j] for node in model.i}
-    
+  
     # Pre-partition line sets by technical representation (OPTIMIZATION: eliminates match/case in constraint rules)
     le_dcopf = [idx for idx in model.le if cs.dPower_Network.loc[idx]["pTecRepr"] == "DC-OPF"]
     lc_dcopf = [idx for idx in model.lc if cs.dPower_Network.loc[idx]["pTecRepr"] == "DC-OPF"]
@@ -35,91 +22,18 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.le_dcopf = pyo.Set(doc='Existing DC-OPF lines', initialize=le_dcopf, within=model.le)
     model.lc_dcopf = pyo.Set(doc='Candidate DC-OPF lines', initialize=lc_dcopf, within=model.lc)
     model.lc_dcopf_tp_sn = pyo.Set(doc='Candidate DC-OPF/TP/SN lines', initialize=lc_dcopf_tp_sn, within=model.lc)
-    
-    model.g = pyo.Set(doc='Generators')
-    model.gi = pyo.Set(doc='Generator g connected to bus i', within=model.g * model.i)
-
-    # NOTE: We initialize it here and update it in add_constraints when gi is complete
-    model.gi_node = {}  # bus i -> list of generators at that bus (for O(1) lookups)
-
+ 
     model.p = pyo.Set(doc='Periods', initialize=cs.dPower_Hindex.index.get_level_values('p').unique().tolist())
     model.rp = pyo.Set(doc='Representative periods', initialize=cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
     model.k = pyo.Set(doc='Timestep within representative period', initialize=cs.dPower_Demand.index.get_level_values('k').unique().tolist())
 
-    if cs.dGlobal_Parameters["pMovingWindowLength"] > 0 and cs.dGlobal_Parameters["pMovingWindowOverlap"] >= 0:
-        model.constraintsActiveK = pyo.Set(doc='Timesteps where constraints are active during the actual time window', initialize=cs.constraints_active_k)
-    else:
-        model.constraintsActiveK = pyo.Set(doc='Timesteps where constraints are active', initialize=model.k)
-
     model.hindex = cs.dPower_Hindex.index
-    # Helper function for creating reverse and bidirectional sets
-    def make_reverse_set(original_set):
-        reverse = []
-        for (i, j, c) in original_set:
-            reverse.append((j, i, c))
-        return reverse
-
-    model.la_reverse = pyo.Set(doc='Reverse lines for la', initialize=lambda m: make_reverse_set(m.la), dimen=3)
-    model.la_no_c = pyo.Set(doc='All lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.la}, dimen=2)
-    model.la_full = pyo.Set(doc='All lines incl. reverse lines', initialize=lambda m: set(m.la) | set(m.la_reverse), dimen=3)
-    model.la_full_no_c = pyo.Set(doc='All lines incl. reverse lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.la_full}, dimen=2)
-
-    model.le_reverse = pyo.Set(doc='Reverse lines for le', initialize=lambda m: make_reverse_set(m.le), within=model.la_reverse, dimen=3)
-    model.le_full = pyo.Set(doc='Existing lines incl. reverse lines', initialize=lambda m: set(m.le) | set(m.le_reverse), within=model.la_full, dimen=3)
-    model.le_no_c = pyo.Set(doc='Existing lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.le}, dimen=2)
-
-    model.lc_reverse = pyo.Set(doc='Reverse lines for lc', initialize=lambda m: make_reverse_set(m.lc), within=model.la_reverse, dimen=3)
-    model.lc_full = pyo.Set(doc='Candidate lines incl. reverse lines', initialize=lambda m: set(m.lc) | set(m.lc_reverse), within=model.la_full, dimen=3)
-    model.lc_full_no_c = pyo.Set(doc='Candidate lines incl. reverse lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc_full}, dimen=2)
-    model.lc_no_c = pyo.Set(doc='Candidate lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc}, dimen=2)
-
-    model.le_pairs = {(i, j) for (i, j, c) in model.le}  # Set of (i,j) pairs in le
-    model.lc_pairs = {(i, j) for (i, j, c) in model.lc}  # Set of (i,j) pairs in lc
-
-    # Helper to get the first circuit for each (i, j) pair
-    df_circuits = cs.dPower_Network.reset_index()
-
-    # Sort the DataFrame by the desired circuit order
-    df_circuits["c_str"] = df_circuits["c"].astype(str)
-    ordered_circuits = list(dict.fromkeys(df_circuits["c_str"].tolist()))
-    circuit_order = {c: idx for idx, c in enumerate(ordered_circuits)}
-    df_circuits["c_order"] = df_circuits["c_str"].map(circuit_order)
-
-    # Get the first circuit per (i, j) based on this order
-    first_circuit_map = df_circuits.sort_values("c_order").drop_duplicates(subset=["i", "j"]).set_index(["i", "j"])["c"].to_dict()
-    model.first_circuit_map = pyo.Param(model.la_no_c, initialize=first_circuit_map, doc='First circuit for each line (i, j)')
-    model.first_circuit_map_bidir = pyo.Param(model.la_full_no_c, initialize={(i, j): c for (i, j), c in model.first_circuit_map.items()} | {(j, i): c for (i, j), c in model.first_circuit_map.items()}, doc='First circuit for each line (i, j) bidirectional')
 
     # Parameters
-    model.pDemandP = pyo.Param(model.rp, model.k, model.i, initialize=cs.dPower_Demand['value'], doc='Demand at bus i in representative period rp and timestep k')
-    model.pMovWindowLDS = cs.dGlobal_Parameters['pMovWindowLDS']
-
-    model.pOMVarCost = pyo.Param(model.g, doc='Production cost of generator g')
-    model.pEnabInv = pyo.Param(model.g, doc='Enable investment in thermal generator g')
-    model.pMaxInvest = pyo.Param(model.g, doc='Maximum investment in thermal generator g')
-    model.pInvestCost = pyo.Param(model.g, doc='Investment cost for thermal generator g')
-    model.pMaxProd = pyo.Param(model.g, doc='Maximum production of generator g')
-    model.pMinProd = pyo.Param(model.g, doc='Minimum production of generator g')
-    model.pExisUnits = pyo.Param(model.g, doc='Existing units of generator g')
-    model.pMaxGenQ = pyo.Param(model.g, doc='Maximum reactive production of generator g')
-    model.pMinGenQ = pyo.Param(model.g, doc='Minimum reactive production of generator g')
-
-    model.pXline = pyo.Param(model.la, initialize=cs.dPower_Network['pXline'], doc='Reactance of line la')
-    model.pAngle = pyo.Param(model.la, initialize=cs.dPower_Network['pAngle'] * np.pi / 180, doc='Transformer angle shift')
-    model.pRatio = pyo.Param(model.la, initialize=cs.dPower_Network['pRatio'], doc='Transformer ratio')
-    model.pPmax = pyo.Param(model.la, initialize=cs.dPower_Network['pPmax'], doc='Maximum power flow on line la')
-    model.pFixedCost = pyo.Param(model.la, initialize=cs.dPower_Network['pInvestCost'], doc='Fixed cost when investing in line la')  # TODO: Think about renaming this parameter (something related to 'investment cost')
-    model.pBigM_Flow = pyo.Param(initialize=1e3, doc="Big M for power flow")
-    model.pENSCost = pyo.Param(initialize=cs.dPower_Parameters['pENSCost'], doc='Cost used for Power Not Served (PNS) and Excess Power Served (EPS)')
-    model.pWeight_rp = pyo.Param(model.rp, initialize=cs.dPower_WeightsRP["pWeight_rp"], doc='Weight of representative period rp')
-    model.pWeight_k = pyo.Param(model.k, initialize=cs.dPower_WeightsK["pWeight_k"], doc='Weight of time step k')
-
-    model.pBigM = pyo.Param(doc="Big M for binary variables", initialize=1e3)
-    model.eps = pyo.Param(doc="Very small number", initialize=1e-9)
-
     model.coordsLat = pyo.Param(model.i, initialize=cs.dPower_BusInfo['lat'], doc='Latitude of bus i')
     model.coordsLon = pyo.Param(model.i, initialize=cs.dPower_BusInfo['lon'], doc='Longitude of bus i')
 
+    # Variables
     model.vTheta = pyo.Var(model.rp, model.k, model.i, doc='Angle of bus i', bounds=(-cs.dPower_Parameters["pMaxAngleDCOPF"], cs.dPower_Parameters["pMaxAngleDCOPF"]))
     second_stage_variables += [model.vTheta]
     model.vAngle = pyo.Var(model.rp, model.k, model.la, doc='Angle phase shifting transformer', bounds=lambda m, rp, k, i, j, c: (-m.pAngle[i, j, c], m.pAngle[i, j, c]))
@@ -176,10 +90,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
-    # Build helper dictionary for generator-to-bus mapping (now that gi is complete)
-    model.gi_node = _build_gi_node_helper(model)
-    #Power balance for nodes DC ann SOCP
-    
+    #Power balance for nodes DC
     def eDC_BalanceP_rule(m, rp, k, i):
         return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])  # Production of generators at bus i (O(1) lookup)
                     + sum(m.vLineP[rp, k, e] if (e[1] == i) else -m.vLineP[rp, k, e] for e in model.la_nodeRelevant[i])  # Add power flow from bus j to bus i and subtract from bus i to bus j
@@ -223,24 +134,10 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
-    first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
-                             sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
+    first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc))  # Investment cost of transmission lines
     
-    def ens_terms(rp, k):
-        return sum(
-            model.vPNS[rp, k, i] * model.pENSCost
-            + model.vEPS[rp, k, i] * model.pENSCost * 2
-            for i in model.i
-        )
-
-    second_stage_objective = sum(model.pWeight_rp[rp] *  # Weight of representative periods
-                                 sum(model.pWeight_k[k] *  # Weight of time steps
-                                     (ens_terms(rp, k)  # Power non supplied terms
-                                      + sum(+ model.vGenP[rp, k, g] * model.pOMVarCost[g]  # Production cost of generators
-                                            for g in model.g))
-                                     for k in model.constraintsActiveK)
-                                 for rp in model.rp)
 
     # Adjust objective and return first_stage_objective expression
-    model.objective.expr += first_stage_objective + second_stage_objective
+    # No changes to second stage objective needed for DC-OPF
+    model.objective.expr += first_stage_objective 
     return first_stage_objective

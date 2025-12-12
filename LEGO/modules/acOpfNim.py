@@ -5,7 +5,6 @@ import pyomo.environ as pyo
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO import LEGOUtilities
-from LEGO.LEGOUtilities import _build_gi_node_helper
 
 printer = Printer.getInstance()
 
@@ -17,29 +16,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     second_stage_variables = []
 
     # Sets
-    model.i = pyo.Set(doc='Buses', initialize=cs.dPower_BusInfo.index.tolist())
-
-    model.c = pyo.Set(doc='Circuits', initialize=cs.dPower_Network.index.get_level_values('c').unique().tolist())
-    model.la = pyo.Set(doc='All lines', initialize=cs.dPower_Network.index.tolist(), within=model.i * model.i * model.c)
-    model.la_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.la if node == i or node == j] for node in model.i}
-    model.le = pyo.Set(doc='Existing lines', initialize=cs.dPower_Network[(cs.dPower_Network["pEnableInvest"] == 0)].index.tolist(), within=model.la)
-    model.le_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.le if node == i or node == j] for node in model.i}
-    model.lc = pyo.Set(doc='Candidate lines', initialize=cs.dPower_Network[(cs.dPower_Network["pEnableInvest"] == 1)].index.tolist(), within=model.la)
-    model.lc_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.lc if node == i or node == j] for node in model.i}
-    model.g = pyo.Set(doc='Generators')
-    model.gi = pyo.Set(doc='Generator g connected to bus i', within=model.g * model.i)
-
-    model.p = pyo.Set(doc='Periods', initialize=cs.dPower_Hindex.index.get_level_values('p').unique().tolist())
-    model.rp = pyo.Set(doc='Representative periods', initialize=cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
-    model.k = pyo.Set(doc='Timestep within representative period', initialize=cs.dPower_Demand.index.get_level_values('k').unique().tolist())
-
-    if cs.dGlobal_Parameters["pMovingWindowLength"] > 0 and cs.dGlobal_Parameters["pMovingWindowOverlap"] >= 0:
-        model.constraintsActiveK = pyo.Set(doc='Timesteps where constraints are active during the actual time window', initialize=cs.constraints_active_k)
-    else:
-        model.constraintsActiveK = pyo.Set(doc='Timesteps where constraints are active', initialize=model.k)
-
-    model.hindex = cs.dPower_Hindex.index
-
     # Helper function for creating reverse and bidirectional sets
     def make_reverse_set(original_set):
         reverse = []
@@ -61,12 +37,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.lc_full_no_c = pyo.Set(doc='Candidate lines incl. reverse lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc_full}, dimen=2)
     model.lc_no_c = pyo.Set(doc='Candidate lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc}, dimen=2)
 
-    model.g = pyo.Set(doc='Generators')
-    model.gi = pyo.Set(doc='Generator g connected to bus i', within=model.g * model.i)
-
-    # NOTE: We initialize it here and update it in add_constraints when gi is complete
-    model.gi_node = {}  # bus i -> list of generators at that bus (for O(1) lookups)
-
     # node -> list of lines where node is sending/receiving
     model.la_outflows = {node: [] for node in model.i}  # lines where node is the sending end (outflows from node)
     model.la_inflows = {node: [] for node in model.i}  # lines where node is the receiving end (inflows to node)
@@ -85,45 +55,10 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     # Get the first circuit per (i, j) based on this order
     first_circuit_map = df_circuits.sort_values("c_order").drop_duplicates(subset=["i", "j"]).set_index(["i", "j"])["c"].to_dict()
-    # todo da kommt der fehler
-    # DEPRECATED: Param 'first_circuit_map' declared with an implicit
-    # domain of 'Any'. The default domain for Param objects is 'Any'.  However, we
-    # will be changing that default to 'Reals' in the future.  If you really intend
-    # the domain of this Paramto be 'Any', you can suppress this warning by
-    # explicitly specifying 'within=Any' to the Param constructor.  (deprecated in
-    # 5.6.9, will be removed in (or after) 6.0) (called from
-    # C:\Users\Stephan\anaconda3\envs\LEGO-Pyomo_env\Lib\site-
-    # packages\pyomo\core\base\indexed_component.py:718)
     model.first_circuit_map = pyo.Param(model.la_no_c, initialize=first_circuit_map, doc='First circuit for each line (i, j)')
     model.first_circuit_map_bidir = pyo.Param(model.la_full_no_c, initialize={(i, j): c for (i, j), c in model.first_circuit_map.items()} | {(j, i): c for (i, j), c in model.first_circuit_map.items()}, doc='First circuit for each line (i, j) bidirectional')
 
     # Parameters
-    model.pDemandP = pyo.Param(model.rp, model.k, model.i, initialize=cs.dPower_Demand['value'], doc='Demand at bus i in representative period rp and timestep k')
-    model.pMovWindowLDS = cs.dGlobal_Parameters['pMovWindowLDS']
-
-    model.pOMVarCost = pyo.Param(model.g, doc='Production cost of generator g')
-    model.pEnabInv = pyo.Param(model.g, doc='Enable investment in thermal generator g')
-    model.pMaxInvest = pyo.Param(model.g, doc='Maximum investment in thermal generator g')
-    model.pInvestCost = pyo.Param(model.g, doc='Investment cost for thermal generator g')
-    model.pMaxProd = pyo.Param(model.g, doc='Maximum production of generator g')
-    model.pMinProd = pyo.Param(model.g, doc='Minimum production of generator g')
-    model.pExisUnits = pyo.Param(model.g, doc='Existing units of generator g')
-    model.pMaxGenQ = pyo.Param(model.g, doc='Maximum reactive production of generator g')
-    model.pMinGenQ = pyo.Param(model.g, doc='Minimum reactive production of generator g')
-
-    model.pXline = pyo.Param(model.la, initialize=cs.dPower_Network['pXline'], doc='Reactance of line la')
-    model.pAngle = pyo.Param(model.la, initialize=cs.dPower_Network['pAngle'] * np.pi / 180, doc='Transformer angle shift')
-    model.pRatio = pyo.Param(model.la, initialize=cs.dPower_Network['pRatio'], doc='Transformer ratio')
-    model.pPmax = pyo.Param(model.la, initialize=cs.dPower_Network['pPmax'], doc='Maximum power flow on line la')
-    model.pFixedCost = pyo.Param(model.la, initialize=cs.dPower_Network['pInvestCost'], doc='Fixed cost when investing in line la')  # TODO: Think about renaming this parameter (something related to 'investment cost')
-    model.pBigM_Flow = pyo.Param(initialize=1e3, doc="Big M for power flow")
-    model.pENSCost = pyo.Param(initialize=cs.dPower_Parameters['pENSCost'], doc='Cost used for Power Not Served (PNS) and Excess Power Served (EPS)')
-    model.pWeight_rp = pyo.Param(model.rp, initialize=cs.dPower_WeightsRP["pWeight_rp"], doc='Weight of representative period rp')
-    model.pWeight_k = pyo.Param(model.k, initialize=cs.dPower_WeightsK["pWeight_k"], doc='Weight of time step k')
-
-    model.pBigM = pyo.Param(doc="Big M for binary variables", initialize=1e3)
-    model.eps = pyo.Param(doc="Very small number", initialize=1e-9)
-
     model.pBusG = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusG'], doc='Conductance of bus i')
     model.pBusB = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusG'], doc='Susceptance of bus i')
     model.pBus_pf = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBus_pf'], doc='PowerFactor of bus i')
@@ -233,8 +168,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     line_investement_candidates = False if len(model.lc) == 0 else True
-    # Build helper dictionary for generator-to-bus mapping (now that gi is complete)
-    model.gi_node = _build_gi_node_helper(model)
     # Power balance for nodes DC ann SOCP
     def eDC_BalanceP_rule(m, rp, k, i):
         return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])  # Gen at bus i (O(1) lookup)
@@ -248,16 +181,14 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eDC_BalanceP_expr[rp, k, i] == 0)
 
     def eSOCP_BalanceQ_rule(m, rp, k, i):
-        return (sum(m.vGenQ[rp, k, g] for g in m.g if (g, i) in m.gi)
-                # todo: sum(m.vGenQ[rp, k, g] for g in m.gi_helper[i])
-                # Only vLineQ where i is the sending end (i → j)
-                # - sum(m.vLineQ[rp, k, i, j, c] for (i2, j, c) in m.la_full if i2 == i) Old indexing format
-                - sum(m.vLineQ[rp, k, i2, j, c] if i2 == i else m.vLineQ[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])
-                + m.vSOCP_cii[rp, k, i] * m.pBusB[i]
-                - m.pDemandQ[rp, k, i]
-                + m.vQNS[rp, k, i]
-                - m.vEQS[rp, k, i]
-                )
+        return (sum(m.vGenQ[rp, k, g] for g in m.gi_node[i])  # Generators at bus i (O(1) lookup)
+                    # Only vLineQ where i is involved - use la_nodeRelevant for proper flow direction
+                    - sum(m.vLineQ[rp, k, i2, j, c] if i2 == i else m.vLineQ[rp, k, j, i2, c] for (i2, j, c) in m.la_nodeRelevant[i])
+                    + m.vSOCP_cii[rp, k, i] * m.pBusB[i]
+                    - m.pDemandQ[rp, k, i]
+                    + m.vQNS[rp, k, i]
+                    - m.vEQS[rp, k, i]
+                    )
 
     def eSOCP_ExiLinePij_rule(m, rp, k, i, j, c):
         return (m.vLineP[rp, k, i, j, c] == (
@@ -445,15 +376,13 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             model.eSOCP_QMaxFACTS = pyo.Constraint(model.rp, model.constraintsActiveK, model.facts, doc='max reactive power output of FACTS unit', rule=lambda m, rp, k, i: m.vGenQ[rp, k, i] <= m.pMaxGenQ[i] * (m.pExisUnits[i] + m.vGenInvest[i]))
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
-    first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc) +  # Investment cost of transmission lines
-                             sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
+    first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc))  # Investment cost of transmission lines
+                             
    
     # Reactive slack node terms included when SOCP active
     def ens_terms(rp, k):
         return sum(
-            model.vPNS[rp, k, i] * model.pENSCost
-            + model.vEPS[rp, k, i] * model.pENSCost * 2
-            + model.vQNS[rp, k, i] * model.pENSCost
+            model.vQNS[rp, k, i] * model.pENSCost
             + model.vEQS[rp, k, i] * model.pENSCost * 2
             for i in model.i
         )
@@ -465,10 +394,8 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     second_stage_objective = sum(model.pWeight_rp[rp] *  # Weight of representative periods
                                  sum(model.pWeight_k[k] *  # Weight of time steps
-                                     (ens_terms(rp, k)  # Power non supplied terms
-                                      + sum(+ model.vGenP[rp, k, g] * model.pOMVarCost[g]  # Production cost of generators
-                                            for g in model.g))
-                                        + line_losses_terms(rp, k)  # Penalty for line losses
+                                     ens_terms(rp, k)  # Power non supplied terms
+                                     + line_losses_terms(rp, k)  # Penalty for line losses
                                      for k in model.constraintsActiveK)
                                  for rp in model.rp)
 
