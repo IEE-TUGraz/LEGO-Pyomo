@@ -140,28 +140,38 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
+    # Define active- and reactive power balance expressions
+    def eActivePowerBalance_rule(m, rp, k, i):
+        return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])
+                - (m.pDemandP[rp, k, i])
+                + m.vPNS[rp, k, i]
+                - m.vEPS[rp, k, i]
+                )
+    
+    def eReactivePowerBalance_rule(m, rp, k, i):
+        return (sum(m.vGenQ[rp, k, g] for g in m.gi_node[i])
+                - (m.pDemandQ[rp, k, i])
+                + m.vQNS[rp, k, i]
+                - m.vEQS[rp, k, i]
+                )
+    
+    model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.i, rule=eActivePowerBalance_rule)
+    model.eSOCP_BalanceQ_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.i, rule=eReactivePowerBalance_rule)
+
     def eSOCP_ActivePowerFlow_rule(m, rp, k, i, j, c):
         return (- m.vLineP[rp, k, i, j, c] 
-                + m.pRline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c] -
-                (sum(m.vGenP[rp, k, g] for g in m.gi_node[j])
-                    - (m.pDemandP[rp, k, j])
-                    + m.vPNS[rp, k, j]
-                    - m.vEPS[rp, k, j]
-                    ) +
-                sum(m.vLineP[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j) 
+                + m.pRline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c] 
+                - m.eDC_BalanceP_expr[rp, k, j]
+                + sum(m.vLineP[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j) 
                 == 0
                 ) 
 
     model.eSOCP_ActivePowerFlow = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc='Active power flow on line ij', rule=eSOCP_ActivePowerFlow_rule)
 
     def eSOCP_ReactivePowerFlow_rule(m, rp, k, i, j, c):
-        return (m.vLineQ[rp, k, i, j, c] == m.pXline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c] -
-            (sum(m.vGenQ[rp, k, g] for g in m.gi_node[j])
-            - (m.pDemandQ[rp, k, j])
-            + m.vQNS[rp, k, j]
-            - m.vEQS[rp, k, j]
-            ) +
-            sum(m.vLineQ[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j))  # Only outflows from i
+        return (m.vLineQ[rp, k, i, j, c] == m.pXline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c] 
+                - m.eSOCP_BalanceQ_expr[rp, k, j]
+                + sum(m.vLineQ[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j))  # Only outflows from i
 
     model.eSOCP_ReactivePowerFlow = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc='Reactive power flow over line ij (SOCP)', rule=eSOCP_ReactivePowerFlow_rule)
 
@@ -194,23 +204,14 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
 
     # define a active and reactive power balance constraint for the slack bus to use the ImExport implementation (only called DC to be consistent with the rest of the model)
-    if cs.dPower_Parameters['pEnablePowerImportExport']:
-
-        def eDC_BalanceP_rule(m, rp, k, i):
-            return (- sum(m.vLineP[rp, k, j, m_con, c] for (j, m_con, c) in m.la if j == i))
-        
-        def eSOCP_ReactivePowerFlow_rule(m, rp, k, i):
-            return (- sum(m.vLineQ[rp, k, j, m_con, c] for (j, m_con, c) in m.la if j == i))
-        
-        model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.slack_node, rule=eDC_BalanceP_rule)
-        model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.slack_node, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eDC_BalanceP_expr[rp, k, i] == 0)
-
-        model.eSOCP_BalanceQ_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.slack_node, rule=eSOCP_ReactivePowerFlow_rule)
-        model.eSOCP_BalanceQ = pyo.Constraint(model.rp, model.constraintsActiveK, model.slack_node, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eSOCP_BalanceQ_expr[rp, k, i] == 0)
-
-    else:
-        model.vLineP[:, :, model.slack_node, :, :].fix(0)
-        model.vLineQ[:, :, model.slack_node, :, :].fix(0)
+    for rp in model.rp:
+        for k in model.constraintsActiveK:
+            for i in model.slack_node:
+                model.eDC_BalanceP_expr[rp, k, i] -= sum(model.vLineP[rp, k, j, m_con, c] for (j, m_con, c) in model.la if j == i)
+                model.eSOCP_BalanceQ_expr[rp, k, i] -= sum(model.vLineQ[rp, k, j, m_con, c] for (j, m_con, c) in model.la if j == i)
+    
+    model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.slack_node, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eDC_BalanceP_expr[rp, k, i] == 0)
+    model.eSOCP_BalanceQ = pyo.Constraint(model.rp, model.constraintsActiveK, model.slack_node, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eSOCP_BalanceQ_expr[rp, k, i] == 0)
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc))  # Investment cost of transmission lines
