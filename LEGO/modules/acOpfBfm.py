@@ -143,7 +143,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def eSOCP_ActivePowerFlow_rule(m, rp, k, i, j, c):
         return (- m.vLineP[rp, k, i, j, c] 
                 + m.pRline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c] -
-                (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])
+                (sum(m.vGenP[rp, k, g] for g in m.gi_node[j])
                     - (m.pDemandP[rp, k, j])
                     + m.vPNS[rp, k, j]
                     - m.vEPS[rp, k, j]
@@ -156,7 +156,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     def eSOCP_ReactivePowerFlow_rule(m, rp, k, i, j, c):
         return (m.vLineQ[rp, k, i, j, c] == m.pXline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c] -
-            (sum(m.vGenQ[rp, k, g] for g in m.gi_node[i])
+            (sum(m.vGenQ[rp, k, g] for g in m.gi_node[j])
             - (m.pDemandQ[rp, k, j])
             + m.vQNS[rp, k, j]
             - m.vEQS[rp, k, j]
