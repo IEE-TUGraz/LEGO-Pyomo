@@ -69,7 +69,7 @@ args = parser.parse_args()
 printer.information(f"Loading case study from '{args.caseStudyDirectory}'\n")
 start_time = time.time()
 cs = CaseStudy(args.caseStudyDirectory)
-#cs = cs.filter_timesteps('k00001','k00002')
+#cs = cs.filter_timesteps('k00001','k00096')
 
 
 rh_length = cs.dGlobal_Parameters["pMovingWindowLength"]
@@ -97,7 +97,7 @@ if not use_moving_window:
         results, timing, objective_value = lego.solve_model(model_type=args.modelType)
         printer.information(f"Solving LEGO model took {timing:.2f} seconds\n")
         process_results(results)
-        check_exactness_of_socp_solution(lego, results)
+        check_exactness_of_socp_solution(lego)
     except NoFeasibleSolutionError:
         printer.error("No feasible solution found!")
         analyze_infeasible_constraints(model)
@@ -157,7 +157,7 @@ else:
             results, timing, objective_value = lego.solve_model(model_type=args.modelType)
             printer.information(f"Solving LEGO model took {timing:.2f} seconds")
             process_results(results)
-            check_exactness_of_socp_solution(lego, results)
+            check_exactness_of_socp_solution(lego)
         except NoFeasibleSolutionError:
             printer.error(f"No feasible solution found for window {start_k} to {end_k}!")
             analyze_infeasible_constraints(model)

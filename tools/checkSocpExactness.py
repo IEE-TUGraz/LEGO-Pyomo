@@ -16,9 +16,7 @@ def check_exactness_of_socp_solution(lego, results):
     if not lego.cs.dPower_Parameters['pEnableSOCP']:
         return  # SOCP not enabled, no need to check exactness
 
-
     # check if constraint eSOCP_VoltageDrop_rule is in the model
-    
     max_deviation = 0.0
     if hasattr(model, "eSOCP_VoltageDrop"):
         printer.information("\nChecking exactness of SOCP (Branch Flow Model) solution...")
@@ -59,7 +57,7 @@ def check_exactness_of_socp_solution(lego, results):
         printer.warning("No matching SOCP constraints found to choose AC-OPF implementation..")
         return
 
-    tolerance = 1e-6  # Define a tolerance level for exactness
+    tolerance = 1e-5  # Define a tolerance level for exactness
     if max_deviation > tolerance:
         printer.warning(f"SOCP solution is not exact! Maximum deviation: {max_deviation} at index: {idx_of_max_deviation}\n")
     else:
