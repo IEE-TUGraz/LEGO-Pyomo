@@ -4,13 +4,12 @@ import numpy as np
 from InOutModule.printer import Printer
 printer = Printer.getInstance()
 
-def check_exactness_of_socp_solution(lego, results):
+def check_exactness_of_socp_solution(lego):
 
     """Check the exactness of the SOCP solution after solving the model.
 
     Args:
         lego (LEGO): The LEGO instance containing the model.
-        results: The results object returned by the solver.
     """
     model = lego.model
     if not lego.cs.dPower_Parameters['pEnableSOCP']:
