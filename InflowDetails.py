@@ -121,6 +121,7 @@ for name, cs in caseStudy_objects.items():
     printer.information(f"Building LEGO model for case study with {name} inflows took {timing:.2f} seconds")
     legos[name] = (lego, model)
 
+hourly_objective = None
 printer.information("Solving LEGO models and calculating regret")
 for name, (lego, model) in legos.items():
     printer.information(f"Solving LEGO model for case study with {name} inflows")
@@ -138,17 +139,35 @@ for name, (lego, model) in legos.items():
 
     SQLiteWriter.model_to_sqlite(model, f"model_{name}-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}-inflows{args.scaleInflows}-vresMaxProd{args.scaleVRESMaxProd}.sqlite")
 
-    printer.information(f"Calculating regret for case study with {name} inflows")
-    cs = cs_inflow_hourly.copy()
-    lego_regret = LEGO(cs)
-    lego_regret_model, timing = lego.build_model()
-    for var in lego_regret_model.component_objects(pyo.Var, active=True):
-        if var.name == "vGenInvest":
-            for index in var:
-                var[index].value = model.vGenInvest[index].value
-                var[index].fixed = True
-    results_regret, timing, objective_value_regret = lego_regret.solve_model()
-    regret = objective_value_regret - objective_value
-    printer.information(f"Regret for case study with {name} inflows: {regret:.4f}")
+    if name == "hourly":
+        hourly_objective = objective_value
+        continue  # No regret calculation for hourly inflows (since this is the reference case)
+    else:
+        printer.information(f"Calculating regret for case study with {name} inflows")
+        cs = cs_inflow_hourly.copy()
+        lego_regret = LEGO(cs)
+        lego_regret_model, timing = lego_regret.build_model()
+        for var in lego_regret_model.component_objects(pyo.Var, active=True):
+            if var.name == "vGenInvest":
+                for index in var:
+                    var[index].value = model.vGenInvest[index].value
+                    var[index].fixed = True
+        results_regret, timing, objective_value_regret = lego_regret.solve_model()
+        printer.information(f"Solving regret model for case study with {name} inflows took {timing:.2f} seconds")
+
+        match results.solver.termination_condition:
+            case pyo.TerminationCondition.optimal:
+                printer.success(f"Optimal solution: {pyo.value(model.objective):.4f}")
+            case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
+                printer.error(f"Model returned as {results.solver.termination_condition}, logging infeasible constraints:")
+                log_infeasible_constraints(model, log_expression=False)
+            case _:
+                printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
+
+        if hourly_objective is not None:
+            regret = objective_value_regret - objective_value
+            printer.information(f"Regret for case study with {name} inflows: {regret:.4f}")
+        else:
+            printer.warning("Hourly objective is None, cannot calculate regret (yet?)")
 
     SQLiteWriter.model_to_sqlite(lego_regret_model, f"model_{name}-regret-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}-inflows{args.scaleInflows}-vresMaxProd{args.scaleVRESMaxProd}.sqlite")
