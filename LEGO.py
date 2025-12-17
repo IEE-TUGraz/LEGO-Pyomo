@@ -90,9 +90,9 @@ if not use_moving_window:
     # with open("pprint.txt", "w") as f:
     #     model.objective.pprint(f)
     printer.information(f"Building LEGO model took {timing:.2f} seconds")
-    printer.information("Writing build non Rolling-Horizon model to mps file 'Build_Model.mps'")
-    model.write("Build_Model.mps", io_options={'labeler': NameLabeler()})
-    SQLiteWriter.model_to_sqlite(model, "Model_limits.sqlite")
+    #printer.information("Writing build non Rolling-Horizon model to mps file 'Build_Model.mps'")
+    #model.write("Build_Model.mps", io_options={'labeler': NameLabeler()})
+    #SQLiteWriter.model_to_sqlite(model, "Model_limits.sqlite")
     # Solve LEGO model
     printer.information("Solving LEGO model")
     try:
@@ -136,10 +136,10 @@ else:
         model, timing = lego.build_model(model_type=args.modelType)
 
         printer.information(f"Building LEGO model took {timing:.2f} seconds")
-        printer.information("Writing build Rolling-Horizon model to mps file 'Build_Model.mps'")
-        model.write("Build_Model.mps", io_options={'labeler': NameLabeler()})
+        #printer.information("Writing build Rolling-Horizon model to mps file 'Build_Model.mps'")
+        #model.write("Build_Model.mps", io_options={'labeler': NameLabeler()})
         if model_old is not None:
-            SQLiteWriter.model_to_sqlite(model, "Model_limits.sqlite", use_moving_window=True )
+            #SQLiteWriter.model_to_sqlite(model, "Model_limits.sqlite", use_moving_window=True )
             new_end = f"k{start_timestep-1:05}"
             print(f"New end: {new_end}")
             for component in list(model_old.component_objects()):
@@ -153,8 +153,8 @@ else:
                                 if v.value is not None:
                                     new_component[n].fix(pyo.value(v))  # TODO skip validation
 
-        else:
-            SQLiteWriter.model_to_sqlite(model, "Model_limits.sqlite" ,use_moving_window=False)
+        #else:
+            # SQLiteWriter.model_to_sqlite(model, "Model_limits.sqlite" ,use_moving_window=False)
 
         # Solve LEGO model
         printer.information("Solving LEGO model")
@@ -175,5 +175,5 @@ else:
 printer.information(f"Finished in {time.time() - start_time:.2f} seconds")
 
 SQLiteWriter.model_to_sqlite(model, "model.sqlite")
-ExcelWriter.model_to_excel(model, "model.xlsx")
+#ExcelWriter.model_to_excel(model, "model.xlsx")
 model.write("model.mps", io_options={'labeler': NameLabeler()})

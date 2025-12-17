@@ -524,7 +524,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             )
         def line_losses_terms(rp, k):
             return sum(
-                (model.alpha_p[rp, k, i, j, c] + model.alpha_q[rp, k, i, j, c]) * 1000
+                (model.alpha_p[rp, k, i, j, c] + model.alpha_q[rp, k, i, j, c]) * model.pENSCost * 0.1
                 for i, j, c in model.la
             )
 
