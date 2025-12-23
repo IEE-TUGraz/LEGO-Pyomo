@@ -148,7 +148,7 @@ for name, (lego, model) in legos.items():
         case _:
             printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
 
-    SQLiteWriter.model_to_sqlite(model, f"model_{name}-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}-inflows{args.scaleInflows}-vresMaxProd{args.scaleVRESMaxProd}.sqlite")
+    SQLiteWriter.model_to_sqlite(model, f"model_{name}-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}-inflows{args.scaleInflows}-vresMaxProd{args.scaleVRESMaxProd}-clusteredOnOriginal{args.clusterOnOriginalData}.sqlite")
 
     if name == "hourly":
         hourly_objective = objective_value
@@ -181,4 +181,4 @@ for name, (lego, model) in legos.items():
         else:
             printer.warning("Hourly objective is None, cannot calculate regret (yet?)")
 
-    SQLiteWriter.model_to_sqlite(lego_regret_model, f"model_{name}-regret-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}-inflows{args.scaleInflows}-vresMaxProd{args.scaleVRESMaxProd}.sqlite")
+    SQLiteWriter.model_to_sqlite(lego_regret_model, f"model_{name}-regret-{caseStudyName}-rps{args.numberOfRPs}-ks{args.lengthOfRPs}-demand{args.scaleDemand}-inflows{args.scaleInflows}-vresMaxProd{args.scaleVRESMaxProd}-clusteredOnOriginal{args.clusterOnOriginalData}.sqlite")
