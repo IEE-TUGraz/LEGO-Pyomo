@@ -36,6 +36,7 @@ parser.add_argument("--lengthOfRPs", type=int, default=24, help="Length of repre
 parser.add_argument("--scaleDemand", type=float, default=1.0, help="Scaling factor for demand (default: 1.0 = no scaling)")
 parser.add_argument("--scaleVRESMaxProd", type=float, default=1.0, help="Scaling factor for VRES maximum production (default: 1.0 = no scaling)")
 parser.add_argument("--scaleInflows", type=float, default=1.0, help="Scaling factor for inflows (default: 1.0 = no scaling)")
+parser.add_argument("--clusterOnOriginalData", action="store_true", help="Cluster data on original data (instead of after aggregation)")
 args = parser.parse_args()
 
 caseStudyName = args.caseStudyDirectory.replace("/", "_").replace("\\", "_")
@@ -105,9 +106,19 @@ printer.information("Aggregation of inflow data completed")
 
 if args.numberOfRPs > 1:
     printer.information(f"Clustering data into {args.numberOfRPs} representative periods of length {args.lengthOfRPs}")
-    for name, cs in caseStudy_objects.items():
-        printer.information(f"Clustering inflow data for case study with {name} inflows")
-        cs.apply_kmedoids_aggregation(args.numberOfRPs, args.lengthOfRPs)
+
+    if args.clusterOnOriginalData:
+        printer.information("Calculating representative periods based on original hourly data")
+
+        aggregation_results = caseStudy_objects["hourly"].get_kmedoids_representative_periods(args.numberOfRPs, args.lengthOfRPs)
+
+        for name, cs in caseStudy_objects.items():
+            printer.information(f"Clustering inflow data for case study with {name} inflows based on original hourly data")
+            cs.apply_representative_periods(aggregation_results, args.lengthOfRPs)
+    else:
+        for name, cs in caseStudy_objects.items():
+            printer.information(f"Clustering inflow data for case study with {name} inflows")
+            cs.apply_kmedoids_aggregation(args.numberOfRPs, args.lengthOfRPs)
     printer.information("Clustering of simplified case study completed")
 else:  # args.numberOfRPs < 1 already handled when parsing arguments
     printer.information("Skipping clustering of case studies since numberOfRPs == 1")
