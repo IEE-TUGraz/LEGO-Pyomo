@@ -19,7 +19,7 @@ logger = logging.getLogger("pyomo")
 logger.setLevel("INFO")
 
 
-def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows, scaleVRESMaxProd, clusterOnOriginalData):
+def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows, scaleVRESMaxProd, clusterOnOriginalData, scaleRoRToInflowScaling):
     caseStudyName = caseStudyDirectory.replace("/", "_").replace("\\", "_")
 
     printer.information(f"Loading original case study from '{caseStudyDirectory}'")
@@ -31,13 +31,18 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
         printer.information(f"Scaling demand by factor {scaleDemand}")
         cs_inflow_hourly.dPower_Demand['value'] *= scaleDemand
 
+    if scaleVRESMaxProd != 1.0:
+        printer.information(f"Scaling VRES maximum production by factor {scaleVRESMaxProd}")
+        cs_inflow_hourly.dPower_VRES['MaxProd'] *= scaleVRESMaxProd
+
     if scaleInflows != 1.0:
         printer.information(f"Scaling inflows by factor {scaleInflows}")
         cs_inflow_hourly.dPower_Inflows['value'] *= scaleInflows
 
-    if scaleVRESMaxProd != 1.0:
-        printer.information(f"Scaling VRES maximum production by factor {scaleVRESMaxProd}")
-        cs_inflow_hourly.dPower_VRES['MaxProd'] *= scaleVRESMaxProd
+    if scaleRoRToInflowScaling:
+        printer.information(f"Scaling run-of-river generation capacity by inflow scaling factor {scaleInflows} to prevent inflows that exceed maximum production of RoR plants")
+        ror_gens = cs_inflow_hourly.dPower_VRES[cs_inflow_hourly.dPower_VRES['tec'].str.lower() == 'ror'].index
+        cs_inflow_hourly.dPower_VRES.loc[ror_gens, 'MaxProd'] *= scaleInflows
 
     printer.information("Creating copies of case study with different levels of aggregation for inflow data")
     cs_inflow_yearly_aggregated = cs_inflow_hourly.copy()
@@ -178,6 +183,7 @@ if __name__ == "__main__":
     parser.add_argument("--scaleVRESMaxProd", type=float, default=1.0, help="Scaling factor for VRES maximum production (default: 1.0 = no scaling)")
     parser.add_argument("--scaleInflows", type=float, default=1.0, help="Scaling factor for inflows (default: 1.0 = no scaling)")
     parser.add_argument("--clusterOnOriginalData", action="store_true", help="Cluster data on original data (instead of after aggregation)")
+    parser.add_argument("--scaleRoRToInflowScaling", action="store_true", help="Scale run-of-river generation capacity according to inflow scaling factor to prevent inflows that exceed maximum production of RoR plants. Note: This happens ON-TOP of the VRES scaling.")
     args = parser.parse_args()
 
     if args.numberOfRPs < 1:
@@ -187,4 +193,4 @@ if __name__ == "__main__":
         printer.error("lengthOfRPs must be at least 1")
         exit(1)
 
-    main(args.caseStudyDirectory, args.numberOfRPs, args.lengthOfRPs, args.scaleDemand, args.scaleInflows, args.scaleVRESMaxProd, args.clusterOnOriginalData)
+    main(args.caseStudyDirectory, args.numberOfRPs, args.lengthOfRPs, args.scaleDemand, args.scaleInflows, args.scaleVRESMaxProd, args.clusterOnOriginalData, args.scaleRoRToInflowScaling)
