@@ -34,12 +34,16 @@ def directory_path(string):
 
 parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to folder containing data for LEGO model")
 parser.add_argument("modelType", default=ModelType.DETERMINISTIC, type=lambda s: ModelType[s], choices=list(ModelType), nargs="?", help="ModelType of first model")
+parser.add_argument("--filterTimesteps", type=str, nargs="?", help="Filter the case study to only include timesteps between the given start and end (inclusive), format: kXXXX-kYYYY")
 args = parser.parse_args()
 
 # Load case study
 printer.information(f"Loading case study from '{args.caseStudyDirectory}'")
 start_time = time.time()
 cs = CaseStudy(args.caseStudyDirectory)
+if args.filterTimesteps:
+    start, end = args.filterTimesteps.split("-")
+    cs = cs.filter_timesteps(start, end)
 lego = LEGO(cs)
 printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
 
