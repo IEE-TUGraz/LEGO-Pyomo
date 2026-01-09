@@ -44,6 +44,9 @@ class LEGO:
             case ModelType.DETERMINISTIC:
                 if solver_name is not None:
                     printer.warning(f"Solver name {solver_name} provided for 'build_model', but not used when building deterministic model type. Make sure to provide it when solving the model instead.")
+                if self.cs.dGlobal_Scenarios.shape[0] > 1:
+                    printer.warning(f"Case study contains multiple scenarios ({self.cs.dGlobal_Scenarios.shape[0]}), but building deterministic model type - only first scenario will be used.")
+                self.cs.filter_scenario(self.cs.dGlobal_Scenarios.iloc[0].name, inplace=True)
                 model = _build_model(self.cs)
                 self.model = model
             case ModelType.EXTENSIVE_FORM:
