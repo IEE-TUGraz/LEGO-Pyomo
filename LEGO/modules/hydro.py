@@ -1,75 +1,52 @@
-import numpy as np
 import pyomo.environ as pyo
 
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO import LEGO, LEGOUtilities
 
-DEFHydroplants = ['P1', 'P2', 'P3', 'P4']
-DEFHydroplantsToNodes = {'P1': 'Node_5', 'P2': 'Node_6', 'P3': 'Node_7', 'P4': 'Node_8'}
-DEFPumpNetwork = [('P2', 'P1'), ('P4', 'P1')]
-DEFHydroDownstreamNetwork = [('P1', 'P2'), ('P1', 'P3'), ('P2', 'P4'), ('P3', 'P4')]
-DEFMaxProdWater = {'P1': 100, 'P2': 150, 'P3': 200, 'P4': 250}  # Example max inflow rates
-DEFCapacityReservoir = {'P1': 5000, 'P2': 6000, 'P3': 7000, 'P4': 8000}  # Example reservoir capacities
-DEFLowerLimitReservoir = {'P1': 50, 'P2': 60, 'P3': 70, 'P4': 80}  # Example lower limits for reservoirs
-DEFInitialStorage = {'P1': 50, 'P2': 100, 'P3': 140, 'P4': 280}  # Initial storage levels
-DEFPowerFactor = {'P1': 1.5, 'P2': 1.4, 'P3': 1.5, 'P4': 1.6}  # Example power factors
-DEFHydroOMVarCost = {'P1': 5, 'P2': 6, 'P3': 7, 'P4': 8}  # Example O&M variable costs
-DEFHydroPumpVarCost = {('P2', 'P1'): 1, ('P4', 'P1'): 1}  # Example pump variable costs
-DEFHydroDistributionFactor = {('P1', 'P2'): 0.5,  # 50% of the inflow from P1 goes to P2
-                              ('P1', 'P3'): 0.5,  # 50% of the inflow from P1 goes to P3
-                              ('P2', 'P4'): 1.0,  # 100% of the inflow from P2 goes to P4
-                              ('P3', 'P4'): 1.0}  # 100% of the inflow from P3 goes to P4
-DEFPowerFactorPumps = {('P2', 'P1'): 1.2,  # Example power factor for pumping from P2 to P1
-                       ('P4', 'P1'): 1.3}  # Example power factor for pumping from P4 to P1
-DEFHydroPumplimit = {('P2', 'P1'): 80,  # Example maximum pumping capacity from P2 to P1
-                     ('P4', 'P1'): 90}  # Example maximum pumping capacity from P4 to P1
-
 printer = Printer.getInstance()
 
 
 @LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
 def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> (list[pyo.Var], list[pyo.Var]):
-    # From Frauental Tool
-    printer.error("USING RANDOM INFLOWS FOR HYDRO - REPLACE WITH REAL DATA")
-    DEFInflows = {(rp, k, g): np.random.randint(50, 160) for rp in model.rp for k in model.k for g in DEFHydroplants}
-
     # Lists for defining stochastic behavior. First stage variables are common for all scenarios, second stage variables are scenario-specific.
     first_stage_variables = []
     second_stage_variables = []
 
     # Sets
-    model.Hydroplants = pyo.Set(initialize=DEFHydroplants, doc='Hydro plants')
-    LEGO.addToSet(model, "g", DEFHydroplants)
-    LEGO.addToSet(model, "gi", [(k, v) for k, v in DEFHydroplantsToNodes.items()])  # Note: Add gi after g since it depends on g
+    model.Hydroplants = pyo.Set(initialize=cs.dPower_HydroAssets.index, doc='Hydro plants')
+    LEGO.addToSet(model, "g", model.Hydroplants)
+    LEGO.addToSet(model, "gi", cs.dPower_HydroAssets.reset_index().set_index(['g', 'i']).index)
 
-    model.PumpNetwork = pyo.Set(dimen=2, initialize=DEFPumpNetwork, doc='Allowed pump connections between hydro plants')
-    model.HydroDownstreamNetwork = pyo.Set(dimen=2, initialize=DEFHydroDownstreamNetwork, doc='Downstream network for hydro plants')
+    model.PumpNetwork = pyo.Set(dimen=2, initialize=cs.dPower_HydroNetwork[cs.dPower_HydroNetwork["TurbineOrPump"] == 1].index, doc='Allowed pump connections between hydro plants', domain=model.Hydroplants * model.Hydroplants)
+    model.HydroDownstreamNetwork = pyo.Set(dimen=2, initialize=cs.dPower_HydroNetwork[cs.dPower_HydroNetwork["TurbineOrPump"] == 0].index, doc='Downstream network for hydro plants', domain=model.Hydroplants * model.Hydroplants)
 
     # Parameters
-    model.pMaxProdWater = pyo.Param(model.Hydroplants, initialize=DEFMaxProdWater, doc='Maximum production rate for hydro plants [water amount]')
-    LEGO.addToParameter(model, "pMaxProd", {g: maxWater * DEFPowerFactor[g] for g, maxWater in DEFMaxProdWater.items()}, 'Maximum production rate for hydro plants [energy amount]')
-    LEGO.addToParameter(model, "pExisUnits", {g: 1 for g in DEFHydroplants}, 'Existing units for hydro plants')
-    LEGO.addToParameter(model, "pMaxInvest", {g: 0 for g in DEFHydroplants}, 'Maximum investable units for hydro plants')
-    LEGO.addToParameter(model, "pEnabInv", {g: 0 for g in DEFHydroplants}, 'Enable investment for hydro plants')
-    LEGO.addToParameter(model, "pInvestCost", {g: 0 for g in DEFHydroplants}, 'Investment cost for hydro plants [€/energy amount]')
-    model.pInflowRiver = pyo.Param(model.rp, model.k, model.Hydroplants, initialize=DEFInflows, doc='Flow of river for hydro plants at certain time steps [water amount]')
-    model.pCapacityReservoir = pyo.Param(model.Hydroplants, initialize=DEFCapacityReservoir, doc='Capacity of reservoirs for hydro plants [water amount]')  # TODO: not yet used, but can be added if needed
-    model.pLowerLimitReservoir = pyo.Param(model.Hydroplants, initialize=DEFLowerLimitReservoir, doc='Lower limit of reservoir levels for hydro plants [water amount]')  # TODO: not yet used, but can be added if needed
-    model.pInitialStorage = pyo.Param(model.Hydroplants, initialize=DEFInitialStorage, doc='Initial storage levels for hydro plants [water amount]')
-    model.pPowerFactor = pyo.Param(model.Hydroplants, initialize=DEFPowerFactor, doc='Power factor for hydro plants (water amount to energy output)')
-    model.pCostPumps = pyo.Param(model.PumpNetwork, initialize=DEFHydroPumpVarCost, doc='Pump costs between hydro plants')
-    LEGO.addToParameter(model, "pOMVarCost", DEFHydroOMVarCost, 'Variable O&M cost for hydro plants')
-    model.pDistributionFactor = pyo.Param(model.HydroDownstreamNetwork, initialize=DEFHydroDistributionFactor, doc='Distribution factors for cascade nodes')
-    model.pPowerFactorPumps = pyo.Param(model.PumpNetwork, initialize=DEFPowerFactorPumps, doc='Power factors for pumps between hydro plants')
-    model.pPumplimit = pyo.Param(model.PumpNetwork, initialize=DEFHydroPumplimit, doc='Maximum pumping capacity between hydro plants [water amount]')
+    model.pMaxProdWater = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["MaxProd"], doc='Maximum production rate for hydro plants [water amount]')
+    LEGO.addToParameter(model, "pMaxProd", cs.dPower_HydroAssets["MaxProd"] * cs.dPower_HydroAssets["PowerFactorTurbine"], 'Maximum production rate for hydro plants [energy amount]')
+    LEGO.addToParameter(model, "pExisUnits", cs.dPower_HydroAssets["ExisUnits"], 'Existing units for hydro plants')
+    LEGO.addToParameter(model, "pMaxInvest", cs.dPower_HydroAssets["MaxInvest"], 'Maximum investable units for hydro plants')
+    LEGO.addToParameter(model, "pEnabInv", cs.dPower_HydroAssets["EnableInvest"], 'Enable investment for hydro plants')
+    LEGO.addToParameter(model, "pInvestCost", cs.dPower_HydroAssets["InvestCostPerMW"], 'Investment cost for hydro plants [€/energy amount]')
+    model.pEnergy2PowerRatio = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["Ene2PowRatio"], doc='Energy to Power Ratio (how many time-steps can the unit discharge from a full reservoir)')
+    model.pLowerLimitReservoir = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["MinReserve"], doc='Lower limit of reservoir levels for hydro plants [water amount]')  # TODO: not yet used, but can be added if needed
+    model.pInitialStorage = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["IniReserve"], doc='Initial storage levels for hydro plants [water amount]')
+    model.pPowerFactorTurbine = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["PowerFactorTurbine"], doc='Power factor for hydro plants (water amount to energy output)')
+    model.pPowerFactorPumps = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["PowerFactorPump"], doc='Power factors for pumps between hydro plants')
+    LEGO.addToParameter(model, "pOMVarCost", cs.dPower_HydroAssets["OMVarCostTurbine"], 'Variable O&M cost for hydro plants')
+    model.pCostPumps = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["OMVarCostPump"], doc='Pump costs between hydro plants')
+    model.pPumplimit = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["MaxPump"], doc='Maximum pumping capacity between hydro plants [water amount]')
+
+    model.pDistributionFactor = pyo.Param(model.HydroDownstreamNetwork, initialize=cs.dPower_HydroNetwork[cs.dPower_HydroNetwork["TurbineOrPump"] == 0]["DistributionFactor"], doc='Distribution factors for cascade nodes')
+
+    model.pInflowRiver = pyo.Param(model.rp, model.k, model.Hydroplants, initialize=cs.dPower_Inflows_WaterAmount["value"], default=0, doc='Flow of river for hydro plants at certain time steps [water amount]')
 
     # Variables
     model.vTotalIntake = pyo.Var(model.rp, model.k, model.Hydroplants, bounds=lambda m, rp, k, i: (0, m.pMaxProdWater[i]), doc='Inflow rate into the hydro plants / actual intake of the hydro plant [water amount]')
     second_stage_variables += [model.vTotalIntake]
-    model.vStorage = pyo.Var(model.rp, model.k, model.Hydroplants, bounds=lambda m, rp, k, i: (m.pLowerLimitReservoir[i], m.pCapacityReservoir[i]), doc='Storage level of the reservoir at the hydro plants [water amount]')
+    model.vStorage = pyo.Var(model.rp, model.k, model.Hydroplants, bounds=lambda m, rp, k, i: (m.pLowerLimitReservoir[i], m.pEnergy2PowerRatio[i] * m.pMaxProd[i]), doc='Storage level of the reservoir at the hydro plants [water amount]')
     second_stage_variables += [model.vStorage]
-    model.vPumpedWater = pyo.Var(model.rp, model.k, model.PumpNetwork, bounds=lambda m, rp, k, i, j: (0, m.pPumplimit[i, j]), doc='Pumped water between hydro plants [water amount]')
+    model.vPumpedWater = pyo.Var(model.rp, model.k, model.PumpNetwork, bounds=lambda m, rp, k, i, j: (0, m.pPumplimit[i]), doc='Pumped water between hydro plants [water amount]')
     second_stage_variables += [model.vPumpedWater]
     model.vConsumptionPumps = pyo.Var(model.rp, model.k, model.PumpNetwork, domain=pyo.NonNegativeReals, doc='Energy used for pumping between hydro plants [energy]')
     second_stage_variables += [model.vConsumptionPumps]
@@ -84,15 +61,16 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
-    model.eHydroConversion = pyo.Constraint(model.rp, model.k, model.Hydroplants, rule=lambda m, rp, k, g: m.vGenP[rp, k, g] == m.vTotalIntake[rp, k, g] * m.pPowerFactor[g], doc='Water to energy conversion for Hydroplants')
+    model.eHydroConversion = pyo.Constraint(model.rp, model.k, model.Hydroplants, rule=lambda m, rp, k, g: m.vGenP[rp, k, g] == m.vTotalIntake[rp, k, g] * m.pPowerFactorTurbine[g], doc='Water to energy conversion for Hydroplants')
 
-    model.ePumpConversion = pyo.Constraint(model.rp, model.k, model.PumpNetwork, rule=lambda m, rp, k, i, j: m.vConsumptionPumps[rp, k, i, j] == m.vPumpedWater[rp, k, i, j] * m.pPowerFactorPumps[i, j], doc='Energy use definition for pumps between hydro plants')
+    model.ePumpConversion = pyo.Constraint(model.rp, model.k, model.PumpNetwork, rule=lambda m, rp, k, i, j: m.vConsumptionPumps[rp, k, i, j] == m.vPumpedWater[rp, k, i, j] * m.pPowerFactorPumps[i], doc='Energy use definition for pumps between hydro plants')
 
+    HydroPlantsToNodes = {g: i for g, i in cs.dPower_HydroAssets.reset_index().set_index(['g', 'i']).index}
     # Add consumption from pumping to power balance
     for rp in model.rp:
         for k in model.k:
             for (i, j) in model.PumpNetwork:
-                model.eDC_BalanceP_expr[rp, k, DEFHydroplantsToNodes[i]] -= model.vConsumptionPumps[rp, k, i, j]
+                model.eDC_BalanceP_expr[rp, k, HydroPlantsToNodes[i]] -= model.vConsumptionPumps[rp, k, i, j]
 
     # Upstream plants for each hydro plant based on the cascade network structure
     model.UpstreamPlants = pyo.Set(model.Hydroplants, initialize={i: [u for (u, d) in model.HydroDownstreamNetwork if d == i] for i in model.Hydroplants})
@@ -102,7 +80,8 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         if len(model.rp) == 1 and model.k.first() == k:
             return model.vStorage[rp, k, g] == model.pInitialStorage[g] + model.pInflowRiver[rp, k, g] - model.vTotalIntake[rp, k, g] - pumped_out + model.vSlackWNS[rp, k, g] - model.vSlackWES[rp, k, g]
         elif len(model.rp) > 1:
-
+            raise NotImplementedError("Multiple RPs not yet implemented for hydro balance.")
+        else:
             inflow_from_upstream = sum(model.vTotalIntake[rp, model.k.prevw(k), u] * model.pDistributionFactor[u, g] for u in model.UpstreamPlants[g])
 
             pumped_in = sum(model.vPumpedWater[rp, model.k.prevw(k), i, j] for (i, j) in model.PumpNetwork if g == j)
@@ -112,7 +91,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0
-    second_stage_objective = (sum(model.vPumpedWater[rp, k, i, j] * model.pCostPumps[i, j] for (i, j) in model.PumpNetwork for rp in model.rp for k in model.k)  # Cost for pumping
+    second_stage_objective = (sum(model.vPumpedWater[rp, k, i, j] * model.pCostPumps[i] for (i, j) in model.PumpNetwork for rp in model.rp for k in model.k)  # Cost for pumping
                               + sum(model.vSlackWES[rp, k, g] * 10000 for g in model.Hydroplants for rp in model.rp for k in model.k)  # Cost for excess water served
                               + sum(model.vSlackWNS[rp, k, g] * 10000 for g in model.Hydroplants for rp in model.rp for k in model.k)  # Cost for unmet water inflow
                               )
