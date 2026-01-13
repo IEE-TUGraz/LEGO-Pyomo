@@ -19,7 +19,7 @@ logger = logging.getLogger("pyomo")
 logger.setLevel("INFO")
 
 
-def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows, scaleVRESMaxProd, clusterOnOriginalData, scaleRoRToInflowScaling):
+def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows, scaleVRESMaxProd, clusterOnOriginalData, scaleRoRToInflowScaling, rMIP):
     caseStudyName = caseStudyDirectory.replace("/", "_").replace("\\", "_")
 
     printer.information(f"Loading original case study from '{caseStudyDirectory}'")
@@ -43,6 +43,10 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
         printer.information(f"Scaling run-of-river generation capacity by inflow scaling factor {scaleInflows} to prevent inflows that exceed maximum production of RoR plants")
         ror_gens = cs_inflow_hourly.dPower_VRES[cs_inflow_hourly.dPower_VRES['tec'].str.lower() == 'ror'].index
         cs_inflow_hourly.dPower_VRES.loc[ror_gens, 'MaxProd'] *= scaleInflows
+
+    if rMIP:
+        printer.information("Setting up case study as rMIP")
+        cs_inflow_hourly.dGlobal_Parameters["pEnableRMIP"] = True
 
     printer.information("Creating copies of case study with different levels of aggregation for inflow data")
     cs_inflow_yearly_aggregated = cs_inflow_hourly.copy()
@@ -127,7 +131,7 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
             case _:
                 printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
 
-        SQLiteWriter.model_to_sqlite(model, f"model_{name}-{caseStudyName}-rps{numberOfRPs}-ks{lengthOfRPs}-demand{scaleDemand}-inflows{scaleInflows}-vresMaxProd{scaleVRESMaxProd}-clusteredOnOriginal{clusterOnOriginalData}.sqlite")
+        SQLiteWriter.model_to_sqlite(model, f"model_{name}-{caseStudyName}-rps{numberOfRPs}-ks{lengthOfRPs}-demand{scaleDemand}-inflows{scaleInflows}-vresMaxProd{scaleVRESMaxProd}-clusteredOnOriginal{clusterOnOriginalData}-rMIP{rMIP}.sqlite")
 
         if name == "hourly":
             hourly_objective = objective_value
@@ -160,7 +164,7 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
             else:
                 printer.warning("Hourly objective is None, cannot calculate regret (yet?)")
 
-        SQLiteWriter.model_to_sqlite(lego_regret_model, f"model_{name}-regret-{caseStudyName}-rps{numberOfRPs}-ks{lengthOfRPs}-demand{scaleDemand}-inflows{scaleInflows}-vresMaxProd{scaleVRESMaxProd}-clusteredOnOriginal{clusterOnOriginalData}.sqlite")
+        SQLiteWriter.model_to_sqlite(lego_regret_model, f"model_{name}-regret-{caseStudyName}-rps{numberOfRPs}-ks{lengthOfRPs}-demand{scaleDemand}-inflows{scaleInflows}-vresMaxProd{scaleVRESMaxProd}-clusteredOnOriginal{clusterOnOriginalData}-rMIP{rMIP}.sqlite")
 
 
 if __name__ == "__main__":
@@ -202,13 +206,7 @@ if __name__ == "__main__":
     parser.add_argument("--scaleInflows", type=float, default=1.0, help="Scaling factor for inflows (default: 1.0 = no scaling)")
     parser.add_argument("--clusterOnOriginalData", action="store_true", help="Cluster data on original data (instead of after aggregation)")
     parser.add_argument("--scaleRoRToInflowScaling", action="store_true", help="Scale run-of-river generation capacity according to inflow scaling factor to prevent inflows that exceed maximum production of RoR plants. Note: This happens ON-TOP of the VRES scaling.")
+    parser.add_argument("--rMIP", action="store_true", help="Solve model as rMIP")
     args = parser.parse_args()
 
-    if args.numberOfRPs < 1:
-        printer.error("numberOfRPs must be at least 1")
-        exit(1)
-    if args.lengthOfRPs < 1:
-        printer.error("lengthOfRPs must be at least 1")
-        exit(1)
-
-    main(args.caseStudyDirectory, args.numberOfRPs, args.lengthOfRPs, args.scaleDemand, args.scaleInflows, args.scaleVRESMaxProd, args.clusterOnOriginalData, args.scaleRoRToInflowScaling)
+    main(args.caseStudyDirectory, args.numberOfRPs, args.lengthOfRPs, args.scaleDemand, args.scaleInflows, args.scaleVRESMaxProd, args.clusterOnOriginalData, args.scaleRoRToInflowScaling, args.rMIP)
