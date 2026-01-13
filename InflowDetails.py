@@ -83,7 +83,7 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
         "daily": cs_inflow_daily_aggregated}
     printer.information("Aggregation of inflow data completed")
 
-    if numberOfRPs > 1:
+    if numberOfRPs > 0:
         printer.information(f"Clustering data into {numberOfRPs} representative periods of length {lengthOfRPs}")
 
         if clusterOnOriginalData:
@@ -99,8 +99,8 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
                 printer.information(f"Clustering inflow data for case study with {name} inflows")
                 cs.apply_kmedoids_aggregation(numberOfRPs, lengthOfRPs)
         printer.information("Clustering of simplified case study completed")
-    else:  # numberOfRPs < 1 already handled when parsing arguments
-        printer.information("Skipping clustering of case studies since numberOfRPs == 1")
+    elif numberOfRPs == 0:
+        printer.information("Skipping clustering of case studies since numberOfRPs == 0")
 
     printer.information("Building LEGO models")
     legos = {}
@@ -176,9 +176,27 @@ if __name__ == "__main__":
             raise argparse.ArgumentTypeError(f"Directory path not valid: '{string}'")
 
 
+    def check_NumberOfRPs(value):
+        float_check = float(value)
+        if not float_check.is_integer():
+            raise argparse.ArgumentTypeError(f"numberOfRPs needs to be an integer, but got: '{value}'")
+        if value < 0:
+            raise argparse.ArgumentTypeError(f"numberOfRPs needs to be positive, but got: '{value}'")
+        return value
+
+
+    def check_lengthOfRPs(value):
+        float_check = float(value)
+        if not float_check.is_integer():
+            raise argparse.ArgumentTypeError(f"lengthOfRPs needs to be an integer, but got: '{value}'")
+        if value <= 0:
+            raise argparse.ArgumentTypeError(f"lengthOfRPs needs to be greater than zero, but got: '{value}'")
+        return value
+
+
     parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to folder containing data for LEGO model")
-    parser.add_argument("--numberOfRPs", type=int, default=1, help="Number of representative periods to cluster data into")
-    parser.add_argument("--lengthOfRPs", type=int, default=24, help="Length of representative periods (in number of time steps)")
+    parser.add_argument("--numberOfRPs", type=check_NumberOfRPs, default=0, help="Number of representative periods to cluster data into")
+    parser.add_argument("--lengthOfRPs", type=check_lengthOfRPs, default=24, help="Length of representative periods (in number of time steps)")
     parser.add_argument("--scaleDemand", type=float, default=1.0, help="Scaling factor for demand (default: 1.0 = no scaling)")
     parser.add_argument("--scaleVRESMaxProd", type=float, default=1.0, help="Scaling factor for VRES maximum production (default: 1.0 = no scaling)")
     parser.add_argument("--scaleInflows", type=float, default=1.0, help="Scaling factor for inflows (default: 1.0 = no scaling)")
