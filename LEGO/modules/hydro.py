@@ -22,20 +22,20 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.HydroDownstreamNetwork = pyo.Set(dimen=2, initialize=cs.dPower_HydroNetwork[cs.dPower_HydroNetwork["TurbineOrPump"] == 0].index, doc='Downstream network for hydro plants', domain=model.Hydroplants * model.Hydroplants)
 
     # Parameters
-    model.pMaxProdWater = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["MaxProd"], doc='Maximum production rate for hydro plants [water amount]')
-    LEGO.addToParameter(model, "pMaxProd", cs.dPower_HydroAssets["MaxProd"] * cs.dPower_HydroAssets["PowerFactorTurbine"], 'Maximum production rate for hydro plants [energy amount]')
+    model.pMaxProdWater = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["MaxProdWater"], doc='Maximum production rate for hydro plants [water amount]')
+    LEGO.addToParameter(model, "pMaxProd", cs.dPower_HydroAssets["MaxProdWater"] * cs.dPower_HydroAssets["PowerFactorTurbine"], 'Maximum production rate for hydro plants [energy amount]')
     LEGO.addToParameter(model, "pExisUnits", cs.dPower_HydroAssets["ExisUnits"], 'Existing units for hydro plants')
     LEGO.addToParameter(model, "pMaxInvest", cs.dPower_HydroAssets["MaxInvest"], 'Maximum investable units for hydro plants')
     LEGO.addToParameter(model, "pEnabInv", cs.dPower_HydroAssets["EnableInvest"], 'Enable investment for hydro plants')
     LEGO.addToParameter(model, "pInvestCost", cs.dPower_HydroAssets["InvestCostPerMW"], 'Investment cost for hydro plants [€/energy amount]')
     model.pEnergy2PowerRatio = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["Ene2PowRatio"], doc='Energy to Power Ratio (how many time-steps can the unit discharge from a full reservoir)')
-    model.pLowerLimitReservoir = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["MinReserve"], doc='Lower limit of reservoir levels for hydro plants [water amount]')  # TODO: not yet used, but can be added if needed
-    model.pInitialStorage = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["IniReserve"], doc='Initial storage levels for hydro plants [water amount]')
+    model.pLowerLimitReservoir = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["MinReserve"] * cs.dPower_HydroAssets["StorageCapacity"], doc='Lower limit of reservoir levels for hydro plants [water amount]')  # TODO: not yet used, but can be added if needed
+    model.pInitialStorage = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["IniReserve"] * cs.dPower_HydroAssets["StorageCapacity"], doc='Initial storage levels for hydro plants [water amount]')
     model.pPowerFactorTurbine = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["PowerFactorTurbine"], doc='Power factor for hydro plants (water amount to energy output)')
     model.pPowerFactorPumps = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["PowerFactorPump"], doc='Power factors for pumps between hydro plants')
     LEGO.addToParameter(model, "pOMVarCost", cs.dPower_HydroAssets["OMVarCostTurbine"], 'Variable O&M cost for hydro plants')
     model.pCostPumps = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["OMVarCostPump"], doc='Pump costs between hydro plants')
-    model.pPumplimit = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["MaxPump"], doc='Maximum pumping capacity between hydro plants [water amount]')
+    model.pPumplimit = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["MaxPumpWater"], doc='Maximum pumping capacity between hydro plants [water amount]')
 
     model.pDistributionFactor = pyo.Param(model.HydroDownstreamNetwork, initialize=cs.dPower_HydroNetwork[cs.dPower_HydroNetwork["TurbineOrPump"] == 0]["DistributionFactor"], doc='Distribution factors for cascade nodes')
 
@@ -44,7 +44,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     # Variables
     model.vTotalIntake = pyo.Var(model.rp, model.k, model.Hydroplants, bounds=lambda m, rp, k, i: (0, m.pMaxProdWater[i]), doc='Inflow rate into the hydro plants / actual intake of the hydro plant [water amount]')
     second_stage_variables += [model.vTotalIntake]
-    model.vStorage = pyo.Var(model.rp, model.k, model.Hydroplants, bounds=lambda m, rp, k, i: (m.pLowerLimitReservoir[i], m.pEnergy2PowerRatio[i] * m.pMaxProd[i]), doc='Storage level of the reservoir at the hydro plants [water amount]')
+    model.vStorage = pyo.Var(model.rp, model.k, model.Hydroplants, bounds=lambda m, rp, k, i: (m.pLowerLimitReservoir[i], m.pEnergy2PowerRatio[i] * model.pMaxProdWater[i]), doc='Storage level of the reservoir at the hydro plants [water amount]')
     second_stage_variables += [model.vStorage]
     model.vPumpedWater = pyo.Var(model.rp, model.k, model.PumpNetwork, bounds=lambda m, rp, k, i, j: (0, m.pPumplimit[i]), doc='Pumped water between hydro plants [water amount]')
     second_stage_variables += [model.vPumpedWater]
@@ -91,9 +91,10 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0
+    # TODO: Add weight of RP and K
     second_stage_objective = (sum(model.vPumpedWater[rp, k, i, j] * model.pCostPumps[i] for (i, j) in model.PumpNetwork for rp in model.rp for k in model.k)  # Cost for pumping
-                              + sum(model.vSlackWES[rp, k, g] * 10000 for g in model.Hydroplants for rp in model.rp for k in model.k)  # Cost for excess water served
-                              + sum(model.vSlackWNS[rp, k, g] * 10000 for g in model.Hydroplants for rp in model.rp for k in model.k)  # Cost for unmet water inflow
+                              + sum(model.vSlackWES[rp, k, g] * 10000 for g in model.Hydroplants for rp in model.rp for k in model.k)  # Cost for excess water served  # TODO: Scale slack cost with cost factor
+                              + sum(model.vSlackWNS[rp, k, g] * 10000 for g in model.Hydroplants for rp in model.rp for k in model.k)  # Cost for unmet water inflow  # TODO: Scale slack cost with cost factor
                               )
 
     # Adjust objective and return first_stage_objective expression
