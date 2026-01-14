@@ -26,6 +26,7 @@ while True:
             found_one = True
             try:
                 printer.information(f"Executing job {i}: {line.strip()}")
+                os.system(f"title Job {i} from {args.jobs}: {line.strip()}")
                 os.system(line.strip())
                 with open(finished_job_flag, 'r') as f:
                     f.write(line.strip())
