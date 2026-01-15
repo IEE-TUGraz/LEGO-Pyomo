@@ -184,18 +184,18 @@ if __name__ == "__main__":
         float_check = float(value)
         if not float_check.is_integer():
             raise argparse.ArgumentTypeError(f"numberOfRPs needs to be an integer, but got: '{value}'")
-        if value < 0:
+        if float_check < 0:
             raise argparse.ArgumentTypeError(f"numberOfRPs needs to be positive, but got: '{value}'")
-        return value
+        return int(float_check)
 
 
     def check_lengthOfRPs(value):
         float_check = float(value)
         if not float_check.is_integer():
             raise argparse.ArgumentTypeError(f"lengthOfRPs needs to be an integer, but got: '{value}'")
-        if value <= 0:
+        if float_check <= 0:
             raise argparse.ArgumentTypeError(f"lengthOfRPs needs to be greater than zero, but got: '{value}'")
-        return value
+        return int(float_check)
 
 
     parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to folder containing data for LEGO model")
