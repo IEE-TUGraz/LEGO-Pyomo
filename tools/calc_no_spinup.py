@@ -18,14 +18,13 @@ HOURS = 8760
 # =========================
 df_network = pd.read_excel(
     "Power_HydroNetwork.xlsx",
-    sheet_name="Scenario_2014",  
-    usecols="C:D",
+    sheet_name="Scenario_2014",
+    usecols="C:E",  # Spalten für From und To
     skiprows=7,
-    nrows=35,
     header=None
 )
-
-df_network.columns = ["From", "To"]
+df_network.columns = ["From", "To", "TurbineOrPump"]
+df_network = df_network[df_network["TurbineOrPump"] == 0]  # Filter out all pump-connections, otherwise water would flow backwards
 df_network = df_network.dropna().drop_duplicates()
 
 df_network["From"] = df_network["From"].astype(str).str.strip()
