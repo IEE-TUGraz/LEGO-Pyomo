@@ -1,7 +1,10 @@
 import os
-import pandas as pd
-import numpy as np
+
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+from ExcelWriter import ExcelWriter
 
 # Parameters
 IN_DIR = "../data/hydroExample/"
@@ -19,7 +22,7 @@ HOURS = 8760
 df_network = pd.read_excel(
     IN_DIR + "Power_HydroNetwork.xlsx",
     sheet_name="Scenario_2014",
-    usecols="C:E",      # Spalten für From und To
+    usecols="C:E",  # Spalten für From und To
     skiprows=7,
     header=None
 )
@@ -49,7 +52,7 @@ edges = list(zip(df_network["From"].tolist(), df_network["To"].tolist()))
 df_assets = pd.read_excel(
     IN_DIR + "Power_HydroAssets.xlsx",
     sheet_name="Scenario_2016",
-    usecols="C,I",      # C ist generator unit und I der power factor
+    usecols="C,I",  # C ist generator unit und I der power factor
     skiprows=7,
     header=None
 )
@@ -58,6 +61,7 @@ df_assets = df_assets.dropna()
 
 df_assets["generator_unit"] = df_assets["generator_unit"].astype(str).str.strip()
 power_factor = dict(zip(df_assets["generator_unit"], df_assets["power_factor"]))
+
 
 # =========================
 # Read in inflows  (WICHTIG: Mehrere Zeilen pro generator_unit werden addiert)
@@ -69,17 +73,18 @@ def read_inflows(sheet):
         skiprows=7,
         header=None
     )
-    names = df.iloc[:, 3].astype(str).str.strip()       # Column D (generator_unit)
-    vals = df.iloc[:, 7:].to_numpy(dtype=float)         # Column H..end (k0001..k8760)
+    names = df.iloc[:, 3].astype(str).str.strip()  # Column D (generator_unit)
+    vals = df.iloc[:, 7:].to_numpy(dtype=float)  # Column H..end (k0001..k8760)
 
     d = {}
     for i in range(len(names)):
         key = names[i]
         if key in d:
-            d[key] += vals[i, :]        
+            d[key] += vals[i, :]
         else:
             d[key] = vals[i, :].copy()
     return d
+
 
 inflow_main = read_inflows(SCENARIO_MAIN)
 inflow_spin = read_inflows(SCENARIO_SPIN)
@@ -124,8 +129,18 @@ for t in range(HOURS):
 # Save Excel file with production per plant
 # =========================
 df_energy = pd.DataFrame(prod)
-df_energy.index = range(1, HOURS + 1)
-df_energy.to_excel(os.path.join(OUT_DIR, f"Energy_Production_{SCENARIO_MAIN}_8760h.xlsx"))
+
+# Prepare df_energy for ExcelWriter
+df_energy = df_energy.reset_index(names="k").melt(id_vars="k", var_name="g", value_name="value")
+df_energy["scenario"] = SCENARIO_MAIN
+df_energy["id"] = None
+df_energy["rp"] = "rp01"
+df_energy["k"] = (df_energy["k"] + 1).astype(str).str.zfill(4).radd("k")
+df_energy["dataPackage"] = "TO BE FILLED"
+df_energy["dataSource"] = "TO BE FILLED"
+
+ew = ExcelWriter()
+ew.write_Power_Inflows(df_energy, OUT_DIR)
 
 # =========================
 # Plotting per plant
