@@ -19,7 +19,7 @@ logger = logging.getLogger("pyomo")
 logger.setLevel("INFO")
 
 
-def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows, scaleVRESMaxProd, clusterOnOriginalData, scaleRoRToInflowScaling, rMIP):
+def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows, scaleVRESMaxProd, clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode):
     caseStudyName = caseStudyDirectory.replace("/", "_").replace("\\", "_")
 
     printer.information(f"Loading original case study from '{caseStudyDirectory}'")
@@ -47,6 +47,11 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
     if rMIP:
         printer.information("Setting up case study as rMIP")
         cs_inflow_hourly.dGlobal_Parameters["pEnableRMIP"] = True
+
+    if singleNode:
+        printer.information("Setting up case study as single node (no network constraints)")
+        cs_inflow_hourly.dPower_Network["pTecRepr"] = "SN"
+        cs_inflow_hourly.merge_single_node_buses()
 
     printer.information("Creating copies of case study with different levels of aggregation for inflow data")
     cs_inflow_yearly_aggregated = cs_inflow_hourly.copy()
@@ -131,7 +136,7 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
             case _:
                 printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
 
-        SQLiteWriter.model_to_sqlite(model, f"model_{name}-{caseStudyName}-rps{numberOfRPs}-ks{lengthOfRPs}-demand{scaleDemand}-inflows{scaleInflows}-vresMaxProd{scaleVRESMaxProd}-clusteredOnOriginal{clusterOnOriginalData}-rMIP{rMIP}.sqlite")
+        SQLiteWriter.model_to_sqlite(model, f"model_{name}-{caseStudyName}-rps{numberOfRPs}-ks{lengthOfRPs}-demand{scaleDemand}-inflows{scaleInflows}-vresMaxProd{scaleVRESMaxProd}-clusteredOnOriginal{clusterOnOriginalData}-rMIP{rMIP}-singleNode{singleNode}.sqlite")
 
         if name == "hourly":
             hourly_objective = objective_value
@@ -164,7 +169,7 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
             else:
                 printer.warning("Hourly objective is None, cannot calculate regret (yet?)")
 
-        SQLiteWriter.model_to_sqlite(lego_regret_model, f"model_{name}-regret-{caseStudyName}-rps{numberOfRPs}-ks{lengthOfRPs}-demand{scaleDemand}-inflows{scaleInflows}-vresMaxProd{scaleVRESMaxProd}-clusteredOnOriginal{clusterOnOriginalData}-rMIP{rMIP}.sqlite")
+        SQLiteWriter.model_to_sqlite(lego_regret_model, f"model_{name}-regret-{caseStudyName}-rps{numberOfRPs}-ks{lengthOfRPs}-demand{scaleDemand}-inflows{scaleInflows}-vresMaxProd{scaleVRESMaxProd}-clusteredOnOriginal{clusterOnOriginalData}-rMIP{rMIP}-singleNode{singleNode}.sqlite")
 
 
 if __name__ == "__main__":
@@ -207,6 +212,7 @@ if __name__ == "__main__":
     parser.add_argument("--clusterOnOriginalData", action="store_true", help="Cluster data on original data (instead of after aggregation)")
     parser.add_argument("--scaleRoRToInflowScaling", action="store_true", help="Scale run-of-river generation capacity according to inflow scaling factor to prevent inflows that exceed maximum production of RoR plants. Note: This happens ON-TOP of the VRES scaling.")
     parser.add_argument("--rMIP", action="store_true", help="Solve model as rMIP")
+    parser.add_argument("--singleNode", action="store_true", help="Solve model as single node (no network constraints)")
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory, args.numberOfRPs, args.lengthOfRPs, args.scaleDemand, args.scaleInflows, args.scaleVRESMaxProd, args.clusterOnOriginalData, args.scaleRoRToInflowScaling, args.rMIP)
+    main(args.caseStudyDirectory, args.numberOfRPs, args.lengthOfRPs, args.scaleDemand, args.scaleInflows, args.scaleVRESMaxProd, args.clusterOnOriginalData, args.scaleRoRToInflowScaling, args.rMIP, args.singleNode)
