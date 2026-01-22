@@ -1,6 +1,7 @@
 import argparse
 import datetime
 import os
+import subprocess
 import time
 
 from InOutModule.printer import Printer
@@ -10,8 +11,20 @@ printer = Printer.getInstance()
 parser = argparse.ArgumentParser(description='Calls the exact lines from the given file, can be called multiple times.')
 
 parser.add_argument('jobs', type=str, help='Path to the text-file containing the commands to be called.')
+parser.add_argument("--spawn", type=int, help='Number of jobs to spawn (if this is specified, it will call itself multiple times)', nargs='?', default=1)
 args = parser.parse_args()
-printer.information(f"Reading jobs from '{args.jobs}'")
+printer.information(f"Using jobs from '{args.jobs}'")
+
+if args.spawn > 1:
+    printer.information(f"Spawning {args.spawn} parallel jobs")
+    for i in range(args.spawn):
+        subprocess.Popen([
+            "cmd", "/c", "start", f"Caller {i}: {args.jobs}", "cmd", "/k",
+            f"set POST_ACTIVATE_COMMAND=python Caller.py {args.jobs} && call Conda-Activation-Scripts/activate_environment_windows.bat"
+        ])
+    printer.information(f"Spawned {args.spawn} parallel jobs, exiting... ")
+    input("[Press any key to close this window]")
+    exit(0)
 
 while True:
     with open(args.jobs, 'r') as f:
