@@ -74,6 +74,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.pRatioDemQP = pyo.Param(model.i, initialize=lambda model, i: pyo.tan(pyo.acos(model.pBus_pf[i])))
     model.pDemandQ = pyo.Param(model.rp, model.k, model.i, initialize=cs.dPowerQ_Demand['value'], doc='Reactive Demand at bus i in representative period rp and timestep k')
 
+    model.pVoltageBoundsUp = pyo.Param(doc='Soft Limits for the upper voltage bounds', initialize=cs.dPower_Parameters["pVoltageBoundsUp"])
+    model.pVoltageBoundsLow = pyo.Param(doc='Soft Limits for the lower voltage bounds', initialize=cs.dPower_Parameters["pVoltageBoundsLow"])
+
     model.coordsLat = pyo.Param(model.i, initialize=cs.dPower_BusInfo['lat'], doc='Latitude of bus i')
     model.coordsLon = pyo.Param(model.i, initialize=cs.dPower_BusInfo['lon'], doc='Longitude of bus i')
 
@@ -101,6 +104,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     model.vSOCP_cii = pyo.Var(model.rp, model.k, model.i, bounds=lambda m, rp, k, i: (round(m.pBusMinV[i] ** 2, 4), round(m.pBusMaxV[i] ** 2, 4)))
     second_stage_variables.append(model.vSOCP_cii)
+
+    model.vSOCP_cii_slack_pos = pyo.Var(model.rp, model.k, model.i, doc='Slack variable to penalize voltage terms near the upper voltage limits', bounds=lambda m, rp, k, i: (0, m.pVoltageBoundsUp ** 2))
+    second_stage_variables.append(model.vSOCP_cii_slack_pos)
+
+    model.vSOCP_cii_slack_neg = pyo.Var(model.rp, model.k, model.i, doc='Slack variable to penalize voltage terms near the lower voltage limits', bounds=lambda m, rp, k, i: (0, m.pVoltageBoundsLow ** 2))
+    second_stage_variables.append(model.vSOCP_cii_slack_neg)
 
     # cij = (vi^real* vj^real) + vi^imag*vj^imag), Lower bounds for vSOCP_cij need to always be at least 0
     model.vSOCP_cij = pyo.Var(model.rp, model.k, model.la_no_c, bounds=lambda m, rp, k, i, j: (round(max(model.pBusMinV[i] ** 2, 0.1), 4), round(model.pBusMaxV[i] ** 2, 4)) if (i, j, c) in m.le else (0, None))
@@ -226,6 +235,11 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def eSOCP_QLosses_rule2(m, rp, k, i, j, c):
         return model.alpha_q[rp, k, i, j, c] >= -(m.vLineQ[rp, k, i, j, c] + m.vLineQ[rp, k, j, i, c])
 
+    def eSOCP_VoltageLimitSlack_rule1(m, rp, k, i):
+        return (m.vSOCP_cii[rp, k, i] + m.vSOCP_cii_slack_neg[rp, k, i] >= (m.pBusMinV[i] + m.pVoltageBoundsLow) ** 2)
+    def eSOCP_VoltageLimitSlack_rule2(m, rp, k, i):
+        return (m.vSOCP_cii[rp, k, i] - m.vSOCP_cii_slack_pos[rp, k, i] <= (m.pBusMaxV[i] - m.pVoltageBoundsUp) ** 2)
+
     model.eSOCP_QMaxOut = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc="Max reactive power output of generator unit", rule=lambda m, rp, k, g: (m.vGenQ[rp, k, g] / m.pMaxGenQ[g] <= m.vCommit[rp, k, g]) if m.pMaxGenQ[g] != 0 and (m.pExisUnits[g] > 0 or m.pEnabInv[g] == 1) else pyo.Constraint.Skip)
     model.eSOCP_QMinOut1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc="Min positive reactive power output of generator unit", rule=lambda m, rp, k, g: (m.vGenQ[rp, k, g] / m.pMinGenQ[g] >= m.vCommit[rp, k, g]) if m.pMinGenQ[g] >= 0 and (m.pExisUnits[g] > 0 or m.pEnabInv[g] == 1) else pyo.Constraint.Skip)
     model.eSOCP_QMinOut2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc="Min negative reactive power output of generator unit", rule=lambda m, rp, k, g: (m.vGenQ[rp, k, g] / m.pMinGenQ[g] <= m.vCommit[rp, k, g]) if m.pMinGenQ[g] <= 0 and (m.pExisUnits[g] > 0 or m.pEnabInv[g] == 1) else pyo.Constraint.Skip)
@@ -248,6 +262,9 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     model.eSOCP_PLosses2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc="Active power losses approximation negative", rule=eSOCP_PLosses_rule2)
     model.eSOCP_QLosses1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc="Reactive power losses approximation positive", rule=eSOCP_QLosses_rule1)
     model.eSOCP_QLosses2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc="Reactive power losses approximation negative", rule=eSOCP_QLosses_rule2)
+
+    model.eSOCP_VoltageLimitSlack = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="SOCP constraints for voltage limits with slack variables", rule=eSOCP_VoltageLimitSlack_rule1)
+    model.eSOCP_VoltageLimitSlack2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="SOCP constraints for voltage limits with slack variables", rule=eSOCP_VoltageLimitSlack_rule2)
 
     if line_investement_candidates:  # define all constraints for investment lines
         def eSOCP_CanLinePij1_rule(m, rp, k, i, j, c):

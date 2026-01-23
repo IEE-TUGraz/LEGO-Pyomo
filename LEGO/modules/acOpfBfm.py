@@ -58,6 +58,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.pRatioDemQP = pyo.Param(model.i, initialize=lambda model, i: pyo.tan(pyo.acos(model.pBus_pf[i])))
     model.pDemandQ = pyo.Param(model.rp, model.k, model.i, initialize=cs.dPowerQ_Demand['value'], doc='Reactive Demand at bus i in representative period rp and timestep k')
 
+    model.pVoltageBoundsUp = pyo.Param(doc='Soft Limits for the upper voltage bounds', initialize=cs.dPower_Parameters["pVoltageBoundsUp"])
+    model.pVoltageBoundsLow = pyo.Param(doc='Soft Limits for the lower voltage bounds', initialize=cs.dPower_Parameters["pVoltageBoundsLow"])
+
     # Todo: Line Investment not impelented in BFM yet
     model.vLineInvest = pyo.Var(model.la, doc='Transmission line investment', domain=pyo.Binary)
     for i, j, c in model.le:
@@ -83,6 +86,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     model.vSOCP_ui = pyo.Var(model.rp, model.k, model.i, doc='Squared voltage magnitude at bus i', bounds=lambda m, rp, k, i: (m.pBusMinV[i] ** 2, m.pBusMaxV[i] ** 2))
     second_stage_variables.append(model.vSOCP_ui)
+
+    model.vSOCP_ui_slack_pos = pyo.Var(model.rp, model.k, model.i, doc='Slack variable to penalize voltage terms near the upper voltage limits', bounds=lambda m, rp, k, i: (0, m.pVoltageBoundsUp ** 2))
+    second_stage_variables.append(model.vSOCP_ui_slack_pos)
+
+    model.vSOCP_ui_slack_neg = pyo.Var(model.rp, model.k, model.i, doc='Slack variable to penalize voltage terms near the lower voltage limits', bounds=lambda m, rp, k, i: (0, m.pVoltageBoundsLow ** 2))
+    second_stage_variables.append(model.vSOCP_ui_slack_neg)
 
     model.vSOCP_lij = pyo.Var(model.rp, model.k, model.la, doc='Squared current magnitude on line ij', bounds=lambda m, rp, k, i, j, c: (0, None) if (i, j, c) in m.la else (None, None)) #m.pSijNom[i,j,c]/m.pBusMinV[i]
     second_stage_variables.append(model.vSOCP_lij)
@@ -193,6 +202,13 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     model.eSOCP_FlowDef = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc="SCOP constraints for existing lines (for AC-OPF) original set", rule=eSOCP_FlowDef_rule)
 
+    def eSOCP_VoltageLimitSlack_rule1(m, rp, k, i):
+        return (m.vSOCP_ui[rp, k, i] + m.vSOCP_ui_slack_neg[rp, k, i] >= (m.pBusMinV[i] + m.pVoltageBoundsLow) ** 2)
+    def eSOCP_VoltageLimitSlack_rule2(m, rp, k, i):
+        return (m.vSOCP_ui[rp, k, i] - m.vSOCP_ui_slack_pos[rp, k, i] <= (m.pBusMaxV[i] - m.pVoltageBoundsUp) ** 2)
+
+    model.eSOCP_VoltageLimitSlack = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="SOCP constraints for voltage limits with slack variables", rule=eSOCP_VoltageLimitSlack_rule1)
+    model.eSOCP_VoltageLimitSlack2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="SOCP constraints for voltage limits with slack variables", rule=eSOCP_VoltageLimitSlack_rule2)
 
     # FACTS (not yet Implemented) TODO: Add FACTS as a set, add FACTS parameters to nodes i
     if cs.dPower_Parameters["pEnableSOCP"] == 99999:
