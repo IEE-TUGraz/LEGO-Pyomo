@@ -79,11 +79,12 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def heat_balance_rule(m, rp, k, hn, dt, htec):
         return (m.vHeatProduction[rp, k, hn, dt, htec]
                 + m.vHeatStorageDischarge[rp, k, hn, dt, htec]
-                + m.vExcessHeatServed[rp, k, hn, dt, htec]
+                + m.vHeatNotServed[rp, k, hn, dt, htec]
                 ) == (m.pHeatDemandPerTechnology[rp, k, hn, dt, htec]
                       + m.vHeatStorageCharge[rp, k, hn, dt, htec]
-                      + m.vHeatNotServed[rp, k, hn, dt, htec]
+                      + m.vExcessHeatServed[rp, k, hn, dt, htec]
                       )
+
 
     model.HeatBalanceConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_balance_rule)
 
@@ -99,16 +100,23 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     model.MaxHeatProductionConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=max_heat_production_rule)
 
-    # heat storage balance rule
+    # heat storage balance rule: cyclic over each rp for short term storage
     def heat_storage_balance_rule(m, rp, k, hn, dt, htec):
+        # predecessor hour (cyclic)
         if k == m.k.first():
-            return m.vHeatStorageLevel[rp, k, hn, dt, htec] == 0.0
+            k_prev = m.k.last()
         else:
             k_prev = m.k.prev(k)
-            return m.vHeatStorageLevel[rp, k, hn, dt, htec] == (m.vHeatStorageLevel[rp, k_prev, hn, dt, htec] * (1 - m.pHeatStorageSelfDischarge[hn, dt, htec])
-                                                                + m.vHeatStorageCharge[rp, k_prev, hn, dt, htec] * m.pHeatStorageChEfficiency[hn, dt, htec]
-                                                                - m.vHeatStorageDischarge[rp, k_prev, hn, dt, htec] / m.pHeatStorageDischEfficiency[hn, dt, htec])
 
+        return (m.vHeatStorageLevel[rp, k, hn, dt, htec]
+                ==
+                m.vHeatStorageLevel[rp, k_prev, hn, dt, htec]
+                * (1 - m.pHeatStorageSelfDischarge[hn, dt, htec])
+                + m.vHeatStorageCharge[rp, k_prev, hn, dt, htec]
+                * m.pHeatStorageChEfficiency[hn, dt, htec]
+                - m.vHeatStorageDischarge[rp, k_prev, hn, dt, htec]
+                / m.pHeatStorageDischEfficiency[hn, dt, htec]
+        )
     model.HeatStorageBalanceConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_storage_balance_rule)
 
     # max storage level value
