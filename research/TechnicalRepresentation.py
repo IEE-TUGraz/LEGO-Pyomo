@@ -19,7 +19,7 @@ logger = logging.getLogger("pyomo")
 logger.setLevel("INFO")
 
 
-def main(case_study_directory):
+def main(case_study_directory, part):
     caseStudyName = case_study_directory.replace("/", "_").replace("\\", "_")
 
     printer.information(f"Loading original case study from '{case_study_directory}'")
@@ -38,11 +38,14 @@ def main(case_study_directory):
     cs_transportProblem.dPower_Network["pTecRepr"] = "TP"
     cs_singleNode.dPower_Network["pTecRepr"] = "SN"
 
-    caseStudy_objects = {
-        "DC-OPF": cs_dcOPF,
-        "Transport Problem": cs_transportProblem,
-        "Single Node": cs_singleNode
-    }
+    caseStudy_objects = {}
+    if part == 0 or part == 1:
+        caseStudy_objects["DC-OPF"] = cs_dcOPF
+    if part == 0 or part == 2:
+        caseStudy_objects["Transport Problem"] = cs_transportProblem
+    if part == 0 or part == 3:
+        caseStudy_objects["Single Node"] = cs_singleNode
+
     printer.information("Creation of case study copies completed")
 
     printer.information("Building LEGO models")
@@ -90,6 +93,7 @@ if __name__ == "__main__":
 
 
     parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to folder containing data for LEGO model")
+    parser.add_argument("--part", type=int, help="Part of the case study to be run (if the case study is split into multiple parts)", nargs="?", default=0)
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory)
+    main(args.caseStudyDirectory, args.part)
