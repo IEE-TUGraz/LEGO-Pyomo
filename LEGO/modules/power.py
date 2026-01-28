@@ -180,8 +180,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         completed_buses.add(index)
 
         # Set slack node
-        # slack_node = cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
-        slack_node = cs.dPower_Parameters["is"]  # TODO: Switch this again to be calculated (fixed to 'is' for compatibility)
+        if cs.dPower_Parameters["is"] == None:
+            printer.information(f"Determining slack node based on highest demand in this island...")
+            slack_node = cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
+        else:
+            printer.information(f"Using predefined slack node from Power_Parameters: {cs.dPower_Parameters['is']}")
+            slack_node = cs.dPower_Parameters["is"]
         if i == 0: printer.information("Setting slack nodes for technical representation islands:")
         i += 1
         printer.information(f"Zone {i:>2} - Slack node: {slack_node}")

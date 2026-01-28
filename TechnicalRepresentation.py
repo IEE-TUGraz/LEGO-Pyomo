@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import time
+from collections import deque
 
 import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
@@ -10,6 +11,7 @@ from rich_argparse import RichHelpFormatter
 from InOutModule import SQLiteWriter
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
+from LEGO import LEGOUtilities
 from LEGO.LEGO import LEGO
 
 printer = Printer.getInstance()
@@ -19,7 +21,129 @@ logger = logging.getLogger("pyomo")
 logger.setLevel("INFO")
 
 
-def main(case_study_directory, part, limit_k):
+def assign_technical_representation_by_layers(cs: CaseStudy, dc_buffer: int, tp_buffer: int) -> None:
+    """
+    Assigns technical representation (DC-OPF, TP, or SN) to network lines based on their distance
+    from the zone of interest (ZOI). Modifies cs.dPower_Network in place.
+
+    Algorithm:
+    1. Lines connecting two buses within the ZOI are assigned DC-OPF
+    2. Lines are then assigned to layers based on their distance from the ZOI using BFS
+    3. DC-Buffer: number of layers outside ZOI that should be DC-OPF
+    4. TP-Buffer: number of layers after DC-Buffer that should be TP
+    5. All remaining lines are assigned SN
+
+    :param cs: CaseStudy object
+    :param dc_buffer: Number of layers outside ZOI to assign as DC-OPF
+    :param tp_buffer: Number of layers after dc_buffer to assign as TP
+    """
+    # Get buses in the zone of interest
+    zoi_buses = set(cs.dPower_BusInfo[cs.dPower_BusInfo['zoi'] == 1].index)
+    printer.information(f"Found {len(zoi_buses)} buses in zone of interest")
+
+    # Initialize all lines as unassigned
+    line_layer = {}  # Maps (i, j, c) -> layer number (-1 for ZOI internal lines)
+
+    # Step 1: Identify lines within ZOI (both ends in ZOI)
+    zoi_internal_lines = []
+    for idx in cs.dPower_Network.index:
+        i, j, c = idx
+        if i in zoi_buses and j in zoi_buses:
+            line_layer[idx] = -1  # Special marker for ZOI internal lines
+            zoi_internal_lines.append(idx)
+
+    # Step 2: Build adjacency structure for BFS
+    # We need to track which buses are reachable at each layer
+    bus_layer = {bus: -1 for bus in zoi_buses}  # ZOI buses are at layer -1
+    visited_buses = set(zoi_buses)
+
+    # BFS to assign layers to buses and lines
+    # Initialize queue with ZOI buses so the loop handles all layers uniformly
+    queue = deque((bus, -1) for bus in zoi_buses)
+
+    while queue:
+        next_queue = deque()
+
+        # Collect all buses from current layer
+        buses_in_current_layer = set()
+        current_layer = None
+        while queue:
+            bus, layer = queue.popleft()
+            buses_in_current_layer.add(bus)
+            current_layer = layer
+
+        # Lines from current layer connect to buses in next layer
+        next_layer = current_layer + 1
+
+        # Process unassigned lines: discover new buses and assign cross-layer connections
+        unassigned = [idx for idx in cs.dPower_Network.index if idx not in line_layer]
+
+        for i, j, c in unassigned:
+            idx = (i, j, c)
+            i_in_current = i in buses_in_current_layer
+            j_in_current = j in buses_in_current_layer
+            i_visited = i in visited_buses
+            j_visited = j in visited_buses
+
+            # Line connects current layer to unvisited bus - discovery line
+            if (i_in_current and not j_visited) or (j_in_current and not i_visited):
+                new_bus = j if i_in_current else i
+                line_layer[idx] = next_layer
+                bus_layer[new_bus] = next_layer
+                visited_buses.add(new_bus)
+                next_queue.append((new_bus, next_layer))
+            # Both endpoints already visited - assign to max layer + 1 if same layer, else max layer
+            elif i_visited and j_visited:
+                line_layer[idx] = max(bus_layer[i], bus_layer[j]) + (1 if bus_layer[i] == bus_layer[j] else 0)
+
+        # Report lines assigned to next_layer in this iteration
+        if next_layer >= 0:
+            lines_in_next = len([l for l in line_layer.values() if l == next_layer])
+            if lines_in_next > 0:
+                printer.information(f"Layer {next_layer}: {lines_in_next} lines")
+
+        queue = next_queue
+
+    # Step 3: Assign technical representations based on layers
+    # Categorize all lines into lists for batch assignment
+    zoi_dc_opf_lines = []
+    buffer_dc_opf_lines = []
+    tp_lines = []
+    sn_lines = []
+
+    for idx in cs.dPower_Network.index:
+        if idx in line_layer:
+            layer = line_layer[idx]
+            match layer:
+                case -1:  # ZOI internal
+                    zoi_dc_opf_lines.append(idx)
+                case _ if layer < dc_buffer:  # Within DC buffer
+                    buffer_dc_opf_lines.append(idx)
+                case _ if layer < dc_buffer + tp_buffer:  # Within TP buffer
+                    tp_lines.append(idx)
+                case _:  # Beyond both buffers
+                    sn_lines.append(idx)
+        else:
+            printer.error(f"Line {idx} is not connected to the rest of the network - this should not happen!")
+
+    # Batch assignment to avoid performance warnings (only if lists are non-empty)
+    if zoi_dc_opf_lines:
+        cs.dPower_Network.loc[zoi_dc_opf_lines, 'pTecRepr'] = 'DC-OPF'
+    if buffer_dc_opf_lines:
+        cs.dPower_Network.loc[buffer_dc_opf_lines, 'pTecRepr'] = 'DC-OPF'
+    if tp_lines:
+        cs.dPower_Network.loc[tp_lines, 'pTecRepr'] = 'TP'
+    if sn_lines:
+        cs.dPower_Network.loc[sn_lines, 'pTecRepr'] = 'SN'
+
+    printer.information(f"Technical representation assignment complete:")
+    printer.information(f"  DC-OPF in ZOI: {len(zoi_dc_opf_lines)} lines")
+    printer.information(f"  DC-OPF in buffer: {len(buffer_dc_opf_lines)} lines")
+    printer.information(f"  TP in buffer: {len(tp_lines)} lines")
+    printer.information(f"  SN (rest): {len(sn_lines)} lines")
+
+
+def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer):
     caseStudyName = case_study_directory.replace("/", "_").replace("\\", "_")
 
     printer.information(f"Loading original case study from '{case_study_directory}'")
@@ -32,23 +156,29 @@ def main(case_study_directory, part, limit_k):
         start, end = limit_k.split("-")
         cs.filter_timesteps(start, end, inplace=True)
 
+    if zoi is not None:
+        printer.information(f"Setting Zone of Interest (zoi) to zone '{zoi}'")
+        cs.dPower_BusInfo['zoi'] = 0
+        cs.dPower_BusInfo.loc[cs.dPower_BusInfo['z'] == zoi, 'zoi'] = 1
+    else:
+        printer.warning("No Zone of Interest (zoi) specified, proceeding with original setting from Power_BusInfo")
+
     printer.information(f"Setting parameters so that it will be solved as rMIP")
     cs.dGlobal_Parameters["pEnableRMIP"] = True
 
-    printer.information("Creating copies of case study with different formulations for network constraints")
+    printer.information(f"Removing fixed slack node so that it is calculated based on demand")
+    cs.dPower_Parameters["is"] = None
+
+    printer.information("Creating copy of case study with different formulations for network constraints")
     caseStudy_objects = {}
-    if part == 0 or part == 1:
-        cs.dPower_Network["pTecRepr"] = "DC-OPF"
-        caseStudy_objects["DC-OPF"] = cs
-    if part == 0 or part == 2:
-        cs_transportProblem = cs if part == 2 else cs.copy()  # Re-use the original case study if possible to save memory
-        cs_transportProblem.dPower_Network["pTecRepr"] = "TP"
-        caseStudy_objects["Transport Problem"] = cs_transportProblem
-    if part == 0 or part == 3:
-        cs_singleNode = cs if part == 3 else cs.copy()  # Re-use the original case study if possible to save memory
-        cs_singleNode.dPower_Network["pTecRepr"] = "SN"
-        cs_singleNode.merge_single_node_buses()
-        caseStudy_objects["Single Node"] = cs_singleNode
+    cs.dPower_Network["pTecRepr"] = "DC-OPF"
+    caseStudy_objects["DC-OPF"] = cs
+
+    cs_adjusted = cs.copy()
+    printer.information(f"Assigning technical representations with DC-Buffer={dc_buffer}, TP-Buffer={tp_buffer}")
+    assign_technical_representation_by_layers(cs_adjusted, dc_buffer, tp_buffer)
+    cs_adjusted.merge_single_node_buses()
+    caseStudy_objects["Adjusted"] = cs_adjusted
 
     printer.information("Creation of case study copies completed")
 
@@ -78,6 +208,11 @@ def main(case_study_directory, part, limit_k):
 
         SQLiteWriter.model_to_sqlite(model, f"model_{name}-{caseStudyName}.sqlite")
 
+    printer.information("Compare objective functions within zoi")
+    for name, (lego, model) in legos.items():
+        zoi_expr, zoi_value = LEGOUtilities.evaluate_zoi_objective(model, line_filter="both")
+        printer.information(f"Objective value within zoi for case study with {name} representation: {zoi_value:.4f}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tests different technical representations for network", formatter_class=RichHelpFormatter)
@@ -97,8 +232,10 @@ if __name__ == "__main__":
 
 
     parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to folder containing data for LEGO model")
-    parser.add_argument("--part", type=int, help="Part of the case study to be run (if the case study is split into multiple parts)", nargs="?", default=0)
+    parser.add_argument("--zoi", type=str, help="Which Zone (from Power_BusInfo 'z') should be the Zone of Interest ('zoi')?", nargs="?", default=None)
     parser.add_argument("--limitK", type=str, help="Limit the ks, format: 'k0025-k0048'", nargs="?", default=None)
+    parser.add_argument("--dcBuffer", type=int, help="Number of network layers outside ZOI to assign as DC-OPF (default: 1)", nargs="?", default=1)
+    parser.add_argument("--tpBuffer", type=int, help="Number of network layers after DC buffer to assign as TP (default: 1)", nargs="?", default=1)
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory, args.part, args.limitK)
+    main(args.caseStudyDirectory, args.zoi, args.limitK, args.dcBuffer, args.tpBuffer)
