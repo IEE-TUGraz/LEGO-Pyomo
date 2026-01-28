@@ -19,13 +19,18 @@ logger = logging.getLogger("pyomo")
 logger.setLevel("INFO")
 
 
-def main(case_study_directory, part):
+def main(case_study_directory, part, limit_k):
     caseStudyName = case_study_directory.replace("/", "_").replace("\\", "_")
 
     printer.information(f"Loading original case study from '{case_study_directory}'")
     start_time = time.time()
     cs = CaseStudy(case_study_directory)
     printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
+
+    if limit_k is not None:
+        printer.information(f"Limiting K values to '{limit_k}'")
+        start, end = limit_k.split("-")
+        cs.filter_timesteps(start, end, inplace=True)
 
     printer.information(f"Setting parameters so that it will be solved as rMIP")
     cs.dGlobal_Parameters["pEnableRMIP"] = True
@@ -75,7 +80,7 @@ def main(case_study_directory, part):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Tests different ", formatter_class=RichHelpFormatter)
+    parser = argparse.ArgumentParser(description="Tests different technical representations for network", formatter_class=RichHelpFormatter)
 
 
     def directory_path(string) -> str:
@@ -93,6 +98,7 @@ if __name__ == "__main__":
 
     parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to folder containing data for LEGO model")
     parser.add_argument("--part", type=int, help="Part of the case study to be run (if the case study is split into multiple parts)", nargs="?", default=0)
+    parser.add_argument("--limitK", type=str, help="Limit the ks, format: 'k0025-k0048'", nargs="?", default=None)
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory, args.part)
+    main(args.caseStudyDirectory, args.part, args.limitK)
