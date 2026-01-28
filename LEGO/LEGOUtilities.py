@@ -3,12 +3,13 @@ import os
 import typing
 import zipfile
 from pathlib import Path
-from typing import Union, List
+from typing import Union, List, Tuple, Optional
 
 import matplotlib.pyplot as plt
 import pandas as pd
 import py7zr
 import pyomo.environ as pyo
+from pyomo.repn import generate_standard_repn
 
 from InOutModule import ExcelReader
 from InOutModule.printer import Printer
@@ -540,6 +541,123 @@ class MPSFileManager:
             for mps_path in self.originally_compressed:
                 if mps_path.exists():
                     mps_path.unlink()  # Delete the decompressed file
+
+
+def evaluate_zoi_objective(model: pyo.ConcreteModel, line_filter: str = "both") -> Tuple[pyo.Expression, Optional[float]]:
+    """
+    Evaluate the objective function for components within the zone of interest (ZOI).
+
+    This function introspects the actual objective expression and filters terms based on
+    variable indices. It (should) automatically adapt when the objective changes - please check anyway!
+
+    :param model: The relevant model (can be already solved or not)
+    :param line_filter: How to filter transmission lines by ZOI buses.
+        "both" (default): include line only if both endpoints are in ZOI.
+        "any": include line if at least one endpoint is in ZOI.
+    :return: Tuple of (expression, value) where:
+        - expression: Pyomo expression for the ZOI-filtered objective
+        - value: float value if model is solved, else None
+    """
+    if line_filter not in ("both", "any"):
+        raise ValueError(f"line_filter must be 'both' or 'any', got '{line_filter}'")
+
+    zoi_i = set(model.zoi_i)
+    all_i = set(model.i)
+    all_g = set(model.g)
+
+    zoi_g = {g for g, i in model.gi if i in zoi_i}  # All g in ZOI based on bus location
+
+    # Build line sets for quick lookup
+    all_lines = set(model.la)
+
+    # Hub connections: (hub, bus) pairs
+    hub_connections = set(model.hubConnections) if hasattr(model, 'hubConnections') else set()
+
+    def _line_in_zoi(i, j) -> bool:
+        """Check if a line (i, j) is in the ZOI based on line_filter setting."""
+        if line_filter == "both":
+            return i in zoi_i and j in zoi_i
+        else:
+            return i in zoi_i or j in zoi_i
+
+    def _is_var_in_zoi(var_data: pyo.Var) -> bool:
+        """
+        Determine if a variable instance belongs to the zone of interest.
+
+        Checks the variable's index against known sets (buses, generators, lines, hub connections)
+        and returns True if the variable is associated with ZOI entities.
+        """
+        idx = var_data.index()
+
+        # Handle scalar variables (no index)
+        if idx is None:
+            return True  # Include scalar variables (they're global)
+
+        # Normalize to tuple
+        if not isinstance(idx, tuple):
+            idx = (idx,)
+
+        # Check for line indices: (i, j, c) where (i, j, c) is in model.la
+        if len(idx) >= 3:
+            # Try different positions for line index (could be at end or throughout)
+            for start in range(len(idx) - 2):
+                potential_line = (idx[start], idx[start + 1], idx[start + 2])
+                if potential_line in all_lines:
+                    return _line_in_zoi(potential_line[0], potential_line[1])
+
+        # Check for hub connection indices: (hub, i) in hubConnections
+        if hub_connections:
+            for start in range(len(idx) - 1):
+                potential_hub_conn = (idx[start], idx[start + 1])
+                if potential_hub_conn in hub_connections:
+                    # The second element is the bus
+                    return potential_hub_conn[1] in zoi_i
+
+        # Check each index element for bus or generator membership
+        has_bus_index = False
+        has_generator_index = False
+        bus_in_zoi = True
+        generator_in_zoi = True
+
+        for elem in idx:
+            if elem in all_i:
+                has_bus_index = True
+                if elem not in zoi_i:
+                    bus_in_zoi = False
+            if elem in all_g:
+                has_generator_index = True
+                if elem not in zoi_g:
+                    generator_in_zoi = False
+
+        # If variable has bus index, we return whether bus is in ZOI
+        if has_bus_index:
+            return bus_in_zoi
+
+        # If variable has generator index, we return whether generator is at bus that is in ZOI
+        if has_generator_index:
+            return generator_in_zoi
+
+        # Variable has no bus/generator/line index - include it (e.g., global parameters)
+        return True
+
+    # Decompose objective into linear representation
+    repn = generate_standard_repn(model.objective.expr, quadratic=False)
+
+    # Build filtered expression
+    zoi_expr = repn.constant if repn.constant else 0.0
+
+    for coef, var in zip(repn.linear_coefs, repn.linear_vars):
+        if _is_var_in_zoi(var):
+            zoi_expr += coef * var
+
+    # Try to evaluate if model is solved
+    value = None
+    try:
+        value = pyo.value(zoi_expr)
+    except ValueError:
+        pass
+
+    return zoi_expr, value
 
 
 if __name__ == "__main__":

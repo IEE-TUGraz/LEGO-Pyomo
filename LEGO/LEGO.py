@@ -290,7 +290,6 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
 
     # Helper Sets for zone of interest
     model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=cs.dPower_BusInfo.loc[cs.dPower_BusInfo["zoi"] == 1].index.tolist(), within=model.i)
-    model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=[g for g in model.g for i in model.i if (g, i) in model.gi], within=model.g)
 
     # Add constraints
     model.first_stage_objective += power.add_constraints(model, cs)
