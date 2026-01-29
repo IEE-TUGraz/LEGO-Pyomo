@@ -276,7 +276,8 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
 
     # Element definitions
     model.first_stage_varlist += power.add_element_definitions_and_bounds(model, cs)
-    model.first_stage_varlist += hydro.add_element_definitions_and_bounds(model, cs)
+    if cs.dPower_Parameters["pEnableAdvancedHydro"]:
+        model.first_stage_varlist += hydro.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableThermalGen"]:
         model.first_stage_varlist += thermalGen.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableVRES"]:
@@ -298,7 +299,8 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
 
     # Add constraints
     model.first_stage_objective += power.add_constraints(model, cs)
-    model.first_stage_objective += hydro.add_constraints(model, cs)
+    if cs.dPower_Parameters["pEnableAdvancedHydro"]:
+        model.first_stage_objective += hydro.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableThermalGen"]:
         model.first_stage_objective += thermalGen.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableVRES"]:
