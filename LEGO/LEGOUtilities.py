@@ -552,8 +552,9 @@ def evaluate_zoi_objective(model: pyo.ConcreteModel, line_filter: str = "both") 
 
     :param model: The relevant model (can be already solved or not)
     :param line_filter: How to filter transmission lines by ZOI buses.
-        "both" (default): include line only if both endpoints are in ZOI.
-        "any": include line if at least one endpoint is in ZOI.
+        "both" (default): include line only if both endpoints are in ZOI. Inter-zone lines
+                          (exactly one endpoint in ZOI) get 50% weight.
+        "any": include line if at least one endpoint is in ZOI (full weight).
     :return: Tuple of (expression, value) where:
         - expression: Pyomo expression for the ZOI-filtered objective
         - value: float value if model is solved, else None
@@ -573,25 +574,20 @@ def evaluate_zoi_objective(model: pyo.ConcreteModel, line_filter: str = "both") 
     # Hub connections: (hub, bus) pairs
     hub_connections = set(model.hubConnections) if hasattr(model, 'hubConnections') else set()
 
-    def _line_in_zoi(i, j) -> bool:
-        """Check if a line (i, j) is in the ZOI based on line_filter setting."""
-        if line_filter == "both":
-            return i in zoi_i and j in zoi_i
-        else:
-            return i in zoi_i or j in zoi_i
-
-    def _is_var_in_zoi(var_data: pyo.Var) -> bool:
+    def _get_var_weight(var_data: pyo.Var) -> float:
         """
-        Determine if a variable instance belongs to the zone of interest.
+        Determine the weight for a variable in the ZOI objective calculation.
 
-        Checks the variable's index against known sets (buses, generators, lines, hub connections)
-        and returns True if the variable is associated with ZOI entities.
+        Returns:
+            1.0 if variable fully belongs to ZOI
+            0.5 if variable is on inter-zone boundary (line with exactly one endpoint in ZOI)
+            0.0 if variable is outside ZOI
         """
         idx = var_data.index()
 
         # Handle scalar variables (no index)
         if idx is None:
-            return True  # Include scalar variables (they're global)
+            return 1.0  # Include scalar variables (they're global)
 
         # Normalize to tuple
         if not isinstance(idx, tuple):
@@ -603,7 +599,26 @@ def evaluate_zoi_objective(model: pyo.ConcreteModel, line_filter: str = "both") 
             for start in range(len(idx) - 2):
                 potential_line = (idx[start], idx[start + 1], idx[start + 2])
                 if potential_line in all_lines:
-                    return _line_in_zoi(potential_line[0], potential_line[1])
+                    i, j, _ = potential_line
+                    i_in_zoi = i in zoi_i
+                    j_in_zoi = j in zoi_i
+
+                    if line_filter == "both":
+                        # Both endpoints in ZOI: full weight
+                        if i_in_zoi and j_in_zoi:
+                            return 1.0
+                        # Exactly one endpoint in ZOI: half weight (inter-zone line)
+                        elif i_in_zoi or j_in_zoi:
+                            return 0.5
+                        # Neither endpoint in ZOI: no weight
+                        else:
+                            return 0.0
+                    else:  # line_filter == "any"
+                        # At least one endpoint in ZOI: full weight
+                        if i_in_zoi or j_in_zoi:
+                            return 1.0
+                        else:
+                            return 0.0
 
         # Check for hub connection indices: (hub, i) in hubConnections
         if hub_connections:
@@ -611,7 +626,7 @@ def evaluate_zoi_objective(model: pyo.ConcreteModel, line_filter: str = "both") 
                 potential_hub_conn = (idx[start], idx[start + 1])
                 if potential_hub_conn in hub_connections:
                     # The second element is the bus
-                    return potential_hub_conn[1] in zoi_i
+                    return 1.0 if potential_hub_conn[1] in zoi_i else 0.0
 
         # Check each index element for bus or generator membership
         has_bus_index = False
@@ -631,14 +646,14 @@ def evaluate_zoi_objective(model: pyo.ConcreteModel, line_filter: str = "both") 
 
         # If variable has bus index, we return whether bus is in ZOI
         if has_bus_index:
-            return bus_in_zoi
+            return 1.0 if bus_in_zoi else 0.0
 
         # If variable has generator index, we return whether generator is at bus that is in ZOI
         if has_generator_index:
-            return generator_in_zoi
+            return 1.0 if generator_in_zoi else 0.0
 
         # Variable has no bus/generator/line index - include it (e.g., global parameters)
-        return True
+        return 1.0
 
     # Decompose objective into linear representation
     repn = generate_standard_repn(model.objective.expr, quadratic=False)
@@ -647,8 +662,9 @@ def evaluate_zoi_objective(model: pyo.ConcreteModel, line_filter: str = "both") 
     zoi_expr = repn.constant if repn.constant else 0.0
 
     for coef, var in zip(repn.linear_coefs, repn.linear_vars):
-        if _is_var_in_zoi(var):
-            zoi_expr += coef * var
+        weight = _get_var_weight(var)
+        if weight > 0.0:
+            zoi_expr += weight * coef * var
 
     # Try to evaluate if model is solved
     value = None
