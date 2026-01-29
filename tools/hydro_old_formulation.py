@@ -13,8 +13,8 @@ IN_DIR = "../data/hydroExample/"
 OUT_DIR = "../output/inflow_spinup/"
 os.makedirs(OUT_DIR, exist_ok=True)
 
-SCENARIO_MAIN = "Scenario_2015"
-SCENARIO_SPIN = "Scenario_2014"
+SCENARIO_MAIN = "Scenario_2016"
+SCENARIO_SPIN = "Scenario_2015"
 SPINUP = 168
 HOURS = 8760
 
@@ -37,7 +37,7 @@ for i, j in dPower_HydroNetwork.index:
     pp_pre.setdefault(i, [])
 
 plants = list(pp_pre.keys())
-edges = list(dPower_HydroNetwork.index)
+edges = list(dPower_HydroNetwork[dPower_HydroNetwork["TurbineOrPump"]==0].index)  # Only consider turbine connections for water flow
 
 inflow_main = dPower_Inflows_WaterAmount[dPower_Inflows_WaterAmount["scenario"] == SCENARIO_MAIN]
 inflow_spin = dPower_Inflows_WaterAmount[dPower_Inflows_WaterAmount["scenario"] == SCENARIO_SPIN]
