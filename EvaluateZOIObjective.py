@@ -1,5 +1,6 @@
 import glob
 import re
+import time
 
 import cloudpickle
 
@@ -36,11 +37,17 @@ def main():
 
         try:
             # Load the LEGO Pyomo model
+            start_time = time.time()
             with open(pkl_file, mode='rb') as file:
                 model = cloudpickle.load(file)
+            load_time = time.time() - start_time
+            printer.information(f"  Loaded in {load_time:.2f} seconds")
 
             # Calculate the ZOI objective function
+            calc_start_time = time.time()
             zoi_expr, zoi_value = LEGOUtilities.evaluate_zoi_objective(model, line_filter="both")
+            calc_time = time.time() - calc_start_time
+            printer.information(f"  ZOI objective calculated in {calc_time:.2f} seconds")
 
             # Extract parameters from filename
             dc_buffer, tp_buffer, zone = extract_parameters(pkl_file)
@@ -48,7 +55,7 @@ def main():
             # Create base identifier by removing zone from filename
             base_identifier = re.sub(r'-zoi[^-]+', '-zoi', pkl_file)
 
-            printer.success(f"  ZOI Objective: {zoi_value:.4f}")
+            printer.success(f"  ZOI Objective: {zoi_value:.2f}")
             results.append((pkl_file, dc_buffer, tp_buffer, zone, zoi_value))
 
             # Group files for comparison
