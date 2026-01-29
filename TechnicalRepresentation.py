@@ -141,7 +141,7 @@ def assign_technical_representation_by_layers(cs: CaseStudy, dc_buffer: int, tp_
     printer.information(f"  DC-OPF in ZOI: {len(zoi_dc_opf_lines)} lines")
     printer.information(f"  DC-OPF in buffer: {len(buffer_dc_opf_lines)} lines")
     printer.information(f"  TP in buffer: {len(tp_lines)} lines")
-    printer.information(f"  SN (rest): {len(sn_lines)} lines")
+    printer.information(f"  SN: {len(sn_lines)} lines")
 
 
 def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer):
