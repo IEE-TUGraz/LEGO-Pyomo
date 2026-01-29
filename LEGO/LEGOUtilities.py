@@ -5,7 +5,7 @@ import typing
 import zipfile
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
-from typing import Union, List, Tuple, Optional
+from typing import Union, List, Tuple, Optional, Dict
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -801,6 +801,49 @@ def evaluate_zoi_objective(model: pyo.ConcreteModel, line_filter: str = "both", 
         pass
 
     return zoi_expr, value
+
+
+def evaluate_gen_investment_by_technology(model: pyo.ConcreteModel, filter_zoi: bool = True) -> Dict[str, float]:
+    """
+    Evaluate generator investment capacity by technology.
+
+    Calculates invested capacity as vGenInvest × pMaxProd and aggregates by technology.
+
+    :param model: The Pyomo model with solved vGenInvest values
+    :param filter_zoi: If True, only include generators in zone of interest (zoi_i).
+                       If False, include all generators.
+    :return: Dictionary mapping technology -> total invested capacity
+    """
+    from collections import defaultdict
+
+    # Get sets
+    zoi_i = set(model.zoi_i) if filter_zoi else None
+
+    # Calculate zoi_g if filtering by ZOI
+    if filter_zoi and zoi_i:
+        zoi_g = {g for g, i in model.gi if i in zoi_i}
+    else:
+        zoi_g = None
+
+    # Aggregate investments by technology
+    tech_capacity = defaultdict(float)
+
+    for g, tec in model.gtec:
+        # Skip if filtering by ZOI and generator not in ZOI
+        if zoi_g is not None and g not in zoi_g:
+            continue
+
+        # Calculate invested capacity: vGenInvest × pMaxProd
+        invest_units = pyo.value(model.vGenInvest[g])
+        if invest_units is None or invest_units == 0:
+            continue
+
+        max_prod = pyo.value(model.pMaxProd[g])
+        capacity = invest_units * max_prod
+
+        tech_capacity[tec] += capacity
+
+    return dict(tech_capacity)
 
 
 if __name__ == "__main__":
