@@ -4,6 +4,7 @@ import os
 import time
 from collections import deque
 
+import cloudpickle
 import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
@@ -145,6 +146,7 @@ def assign_technical_representation_by_layers(cs: CaseStudy, dc_buffer: int, tp_
 
 def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer):
     caseStudyName = case_study_directory.replace("/", "_").replace("\\", "_")
+    identifier = f"data{caseStudyName}-zoi{zoi}-limitK{limit_k}-dcBuffer{dc_buffer}-tpBuffer{tp_buffer}"
 
     printer.information(f"Loading original case study from '{case_study_directory}'")
     start_time = time.time()
@@ -171,9 +173,6 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer):
 
     printer.information("Creating copy of case study with different formulations for network constraints")
     caseStudy_objects = {}
-    cs.dPower_Network["pTecRepr"] = "DC-OPF"
-    caseStudy_objects["DC-OPF"] = cs
-
     cs_adjusted = cs.copy()
     printer.information(f"Assigning technical representations with DC-Buffer={dc_buffer}, TP-Buffer={tp_buffer}")
     assign_technical_representation_by_layers(cs_adjusted, dc_buffer, tp_buffer)
@@ -206,7 +205,11 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer):
             case _:
                 printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
 
-        SQLiteWriter.model_to_sqlite(model, f"model_{name}-{caseStudyName}.sqlite")
+        SQLiteWriter.model_to_sqlite(model, f"model_{name}-{identifier}.sqlite")
+        printer.information(f"Saved LEGO model to 'model_{name}-{identifier}.sqlite'")
+        with open(f"model_{name}-{identifier}.pkl", mode='wb') as file:
+            cloudpickle.dump(model, file)
+            printer.information(f"Saved LEGO model to 'model_{name}-{identifier}.pkl'")
 
     printer.information("Compare objective functions within zoi")
     for name, (lego, model) in legos.items():
