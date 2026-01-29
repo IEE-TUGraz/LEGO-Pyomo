@@ -1,14 +1,16 @@
 import os
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+sys.path.append("../InOutModule")
 from ExcelWriter import ExcelWriter
+import ExcelReader
 
-# Parameters
 IN_DIR = "../data/hydroExample/"
-OUT_DIR = "../output/inflow_spinup/"  # hier beliebiges Verzeichnis wählen
+OUT_DIR = "../output/inflow_spinup/"
 os.makedirs(OUT_DIR, exist_ok=True)
 
 SCENARIO_MAIN = "Scenario_2015"
@@ -16,88 +18,36 @@ SCENARIO_SPIN = "Scenario_2014"
 SPINUP = 168
 HOURS = 8760
 
-# =========================
-# Read in network
-# =========================
-df_network = pd.read_excel(
-    IN_DIR + "Power_HydroNetwork.xlsx",
-    sheet_name="Scenario_2014",
-    usecols="C:E",  # Spalten für From und To
-    skiprows=7,
-    header=None
-)
-df_network.columns = ["From", "To", "TurbineOrPump"]
-df_network = df_network[df_network["TurbineOrPump"] == 0]  # Filter out all pump-connections, otherwise water would flow backwards
-df_network = df_network.dropna().drop_duplicates()
+# Read input files
+dPower_VRES = ExcelReader.get_Power_VRES(IN_DIR + "Power_VRES.xlsx", keep_excluded_entries=True, fail_on_wrong_version=False)
+dPower_Storage = ExcelReader.get_Power_Storage(IN_DIR + "Power_Storage.xlsx", keep_excluded_entries=True, fail_on_wrong_version=False)
+dPower_HydroNetwork = ExcelReader.get_Power_HydroNetwork(IN_DIR + "Power_HydroNetwork.xlsx", keep_excluded_entries=True, fail_on_wrong_version=False)
+dPower_HydroAssets = ExcelReader.get_Power_HydroAssets(IN_DIR + "Power_HydroAssets.xlsx", keep_excluded_entries=True, fail_on_wrong_version=False)
+dPower_Inflows_WaterAmount = ExcelReader.get_Power_Inflows_WaterAmount(IN_DIR + "Power_Inflows_WaterAmount.xlsx", fail_on_wrong_version=False)
 
-df_network["From"] = df_network["From"].astype(str).str.strip()
-df_network["To"] = df_network["To"].astype(str).str.strip()
+# Identify hydro assets with outbound pump connections (TurbineOrPump == 1)
+pump_assets = set(dPower_HydroNetwork[dPower_HydroNetwork["TurbineOrPump"] == 1].reset_index()["i"].unique())
 
 # Build network dictionaries
 pp_pre = {}
 pp_follow = {}
-for _, r in df_network.iterrows():
-    u = r["From"]
-    v = r["To"]
-    pp_follow.setdefault(u, []).append(v)
-    pp_pre.setdefault(v, []).append(u)
-    pp_pre.setdefault(u, [])
+for i, j in dPower_HydroNetwork.index:
+    pp_follow.setdefault(i, []).append(j)
+    pp_pre.setdefault(j, []).append(i)
+    pp_pre.setdefault(i, [])
 
 plants = list(pp_pre.keys())
-edges = list(zip(df_network["From"].tolist(), df_network["To"].tolist()))
+edges = list(dPower_HydroNetwork.index)
 
-# =========================
-# Read in assets
-# =========================
-df_assets = pd.read_excel(
-    IN_DIR + "Power_HydroAssets.xlsx",
-    sheet_name="Scenario_2014",
-    usecols="C,I",  # C ist generator unit und I der power factor
-    skiprows=7,
-    header=None
-)
-df_assets.columns = ["generator_unit", "power_factor"]
-df_assets = df_assets.dropna()
+inflow_main = dPower_Inflows_WaterAmount[dPower_Inflows_WaterAmount["scenario"] == SCENARIO_MAIN]
+inflow_spin = dPower_Inflows_WaterAmount[dPower_Inflows_WaterAmount["scenario"] == SCENARIO_SPIN]
 
-df_assets["generator_unit"] = df_assets["generator_unit"].astype(str).str.strip()
-power_factor = dict(zip(df_assets["generator_unit"], df_assets["power_factor"]))
-
-
-# =========================
-# Read in inflows  (WICHTIG: Mehrere Zeilen pro generator_unit werden addiert)
-# =========================
-def read_inflows(sheet):
-    df = pd.read_excel(
-        IN_DIR + "Power_Inflows_WaterAmount.xlsx",
-        sheet_name=sheet,
-        skiprows=7,
-        header=None
-    )
-    names = df.iloc[:, 3].astype(str).str.strip()  # Column D (generator_unit)
-    vals = df.iloc[:, 7:].to_numpy(dtype=float)  # Column H..end (k0001..k8760)
-
-    d = {}
-    for i in range(len(names)):
-        key = names[i]
-        if key in d:
-            d[key] += vals[i, :]
-        else:
-            d[key] = vals[i, :].copy()
-    return d
-
-
-inflow_main = read_inflows(SCENARIO_MAIN)
-inflow_spin = read_inflows(SCENARIO_SPIN)
-
-# Fill missing plants with zero inflow
-for p in plants:
-    if p not in inflow_main:
-        inflow_main[p] = np.zeros(HOURS)
-    if p not in inflow_spin:
-        inflow_spin[p] = np.zeros(HOURS)
-
-# Spinup-Arrays: 168h before main simulation
-inflow_spin_tail = {p: inflow_spin[p][-SPINUP:] for p in plants}
+# Add missing plants with zero inflow
+rp = inflow_main.index.get_level_values('rp').unique()
+k = inflow_main.index.get_level_values('k').unique()
+full_idx = pd.MultiIndex.from_product([rp, k, plants], names=['rp', 'k', 'g'])
+inflow_main = inflow_main.reindex(full_idx, fill_value=0)
+inflow_spin = inflow_spin.reindex(full_idx, fill_value=0)
 
 # =========================
 # SIMULATION
@@ -109,28 +59,24 @@ inflow_prev = {p: 0.0 for p in plants}
 
 # Spin-up
 for t in range(SPINUP):
-    inflow_curr = {p: float(inflow_spin_tail[p][t]) for p in plants}
+    inflow_curr = {p: float(inflow_spin.loc[("rp01", f"k{t + 1 + HOURS - SPINUP:04}", p), "value"]) for p in plants}
     for u, v in edges:
         inflow_curr[v] += inflow_prev[u]
     inflow_prev = inflow_curr
 
 # Main calculation
 for t in range(HOURS):
-    inflow_curr = {p: float(inflow_main[p][t]) for p in plants}
+    inflow_curr = {p: float(inflow_main.loc[("rp01", f"k{t + 1:04}", p), "value"]) for p in plants}
     for u, v in edges:
         inflow_curr[v] += inflow_prev[u]
 
     for p in plants:
-        prod[p][t] = inflow_curr[p] * power_factor.get(p, 0.0)
+        prod[p][t] = inflow_curr[p] * dPower_HydroAssets.loc[p, "PowerFactorTurbine"]
 
     inflow_prev = inflow_curr
 
-# =========================
 # Save Excel file with production per plant
-# =========================
 df_energy = pd.DataFrame(prod)
-
-# Prepare df_energy for ExcelWriter
 df_energy = df_energy.reset_index(names="k").melt(id_vars="k", var_name="g", value_name="value")
 df_energy["scenario"] = SCENARIO_MAIN
 df_energy["id"] = None
@@ -142,9 +88,24 @@ df_energy["dataSource"] = "TO BE FILLED"
 ew = ExcelWriter()
 ew.write_Power_Inflows(df_energy, OUT_DIR)
 
-# =========================
-# Plotting per plant
-# =========================
+# Calculate MaxProd and MinProd in MWh by multiplying water amounts with PowerFactors
+dPower_HydroAssets['MaxProd'] = dPower_HydroAssets['MaxProdWater'] * dPower_HydroAssets['PowerFactorTurbine']
+dPower_HydroAssets['MinProd'] = 0.0  # MinProdWater not available in HydroAssets
+dPower_HydroAssets['MaxCons'] = dPower_HydroAssets['MaxPumpWater'] * dPower_HydroAssets['PowerFactorPump']
+
+# Split hydro assets: those with pump connections go to Storage, others to VRES
+df_hydro_for_storage = dPower_HydroAssets[dPower_HydroAssets.index.isin(pump_assets)]
+df_hydro_for_vres = dPower_HydroAssets[~dPower_HydroAssets.index.isin(pump_assets)]
+
+# Add hydro assets to Power_VRES
+df_vres_combined = pd.concat([dPower_VRES, df_hydro_for_vres])
+ew.write_Power_VRES(df_vres_combined, OUT_DIR)
+
+# Add hydro assets to Power_Storage
+df_storage_combined = pd.concat([dPower_Storage, df_hydro_for_storage])
+ew.write_Power_Storage(df_storage_combined, OUT_DIR)
+
+# Plotting
 month_edges = np.array([0, 744, 1416, 2160, 2880, 3624, 4344,
                         5088, 5832, 6552, 7296, 8016, 8760])
 month_centers = (month_edges[:-1] + month_edges[1:]) / 2
