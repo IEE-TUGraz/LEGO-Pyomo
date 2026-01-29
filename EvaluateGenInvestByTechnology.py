@@ -12,11 +12,12 @@ printer.set_width(300)
 
 
 def extract_parameters(filename):
-    """Extract dcBuffer, tpBuffer, and zone values from filename."""
-    match = re.search(r'-zoi(?P<zone>[^-]+)-.*?dcBuffer(?P<dc>\d+)-tpBuffer(?P<tp>\d+)', filename)
+    """Extract dcBuffer, tpBuffer, zone, and demand values from filename."""
+    match = re.search(r'-zoi(?P<zone>[^-]+)-.*?dcBuffer(?P<dc>\d+)-tpBuffer(?P<tp>\d+)(?:-demand(?P<demand>\d+(?:\.\d+)?))?', filename)
     if match:
-        return int(match.group('dc')), int(match.group('tp')), match.group('zone')
-    return None, None, None
+        demand = float(match.group('demand')) if match.group('demand') else 1.0
+        return int(match.group('dc')), int(match.group('tp')), match.group('zone'), demand
+    return None, None, None, 1.0
 
 
 def evaluate_gen_investment_by_technology_from_sqlite(sqlite_file, filter_zoi=True):
@@ -44,17 +45,23 @@ def evaluate_gen_investment_by_technology_from_sqlite(sqlite_file, filter_zoi=Tr
         # Get ZOI filtering data if needed
         if filter_zoi:
             zoi_i_df = pd.read_sql_query('SELECT * FROM zoi_i', conn)
-            gi_df = pd.read_sql_query('SELECT * FROM gi', conn)
 
-            # Rename columns for gi and zoi_i
-            gi_df = gi_df.rename(columns={'0': 'g', '1': 'i'})
-            zoi_i_df = zoi_i_df.rename(columns={'0': 'i'})
+            # Check if zoi_i is empty (happens when --zoi None creates 0 ZOI buses)
+            if len(zoi_i_df) == 0:
+                # Empty ZOI means no filtering (treat all generators as in ZOI)
+                zoi_generators = None
+            else:
+                gi_df = pd.read_sql_query('SELECT * FROM gi', conn)
 
-            # Get set of ZOI buses
-            zoi_buses = set(zoi_i_df['i'])
+                # Rename columns for gi and zoi_i
+                gi_df = gi_df.rename(columns={'0': 'g', '1': 'i'})
+                zoi_i_df = zoi_i_df.rename(columns={'0': 'i'})
 
-            # Get generators in ZOI
-            zoi_generators = set(gi_df[gi_df['i'].isin(zoi_buses)]['g'])
+                # Get set of ZOI buses
+                zoi_buses = set(zoi_i_df['i'])
+
+                # Get generators in ZOI
+                zoi_generators = set(gi_df[gi_df['i'].isin(zoi_buses)]['g'])
         else:
             zoi_generators = None
 
@@ -82,24 +89,32 @@ def evaluate_gen_investment_by_technology_from_sqlite(sqlite_file, filter_zoi=Tr
 
 def print_summary_table(results):
     """Print summary table of all files."""
-    printer.information("\n" + "=" * 165)
+    # Calculate the maximum filename length for proper alignment
+    max_filename_len = max(len(sqlite_file) for sqlite_file, _, _, _, _, _, _ in results)
+    # Ensure minimum width for readability
+    filename_width = max(max_filename_len, len("Filename"))
+    # Calculate total table width
+    table_width = filename_width + 2 + 8 + 8 + 15 + 8 + 15 + 15 + 10  # 2 for spacing, rest for columns
+
+    printer.information("\n" + "=" * table_width)
     printer.information("Summary of Generator Investment Capacity by Zone")
-    printer.information("=" * 165)
+    printer.information("=" * table_width)
     printer.information(
-        f"  {'Filename':<95s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Zone':>15s} "
+        f"  {'Filename':<{filename_width}s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Zone':>15s} {'Demand':>8s} "
         f"{'Total Cap (MW)':>15s} {'ZOI Cap (MW)':>15s}"
     )
-    printer.information("-" * 165)
+    printer.information("-" * table_width)
 
-    for sqlite_file, dc_buffer, tp_buffer, zone, total_invest, zoi_invest in results:
+    for sqlite_file, dc_buffer, tp_buffer, zone, demand, total_invest, zoi_invest in results:
         dc_str = str(dc_buffer) if dc_buffer is not None else "N/A"
         tp_str = str(tp_buffer) if tp_buffer is not None else "N/A"
         zone_str = zone if zone is not None else "N/A"
+        demand_str = f"{demand:.1f}" if demand is not None else "N/A"
         total_cap = sum(total_invest.values())
         zoi_cap = sum(zoi_invest.values())
 
         printer.information(
-            f"  {sqlite_file:<95s} {dc_str:>8s} {tp_str:>8s} {zone_str:>15s} "
+            f"  {sqlite_file:<{filename_width}s} {dc_str:>8s} {tp_str:>8s} {zone_str:>15s} {demand_str:>8s} "
             f"{total_cap:>15.2f} {zoi_cap:>15.2f}"
         )
 
@@ -154,11 +169,11 @@ def print_safety_checks(group, zoi_none_entry):
     Checks that investments in zoiNone model, when partitioned by zones R1/R2/R3,
     sum to the total zoiNone investment. This verifies our zone filtering works correctly.
     """
-    none_sqlite_file, _, _, _, none_total, none_zoi = zoi_none_entry
+    none_sqlite_file, _, _, _, _, none_total, none_zoi = zoi_none_entry
 
     # Get zone SQLite files
     zone_files = {}
-    for sqlite_file, dc_buffer, tp_buffer, zone, zone_total, zone_zoi in group:
+    for sqlite_file, dc_buffer, tp_buffer, zone, demand, zone_total, zone_zoi in group:
         if zone != "None":
             zone_files[zone] = sqlite_file
 
@@ -228,7 +243,7 @@ def main():
             all_technologies.update(zoi_invest.keys())
 
             # Extract parameters
-            dc_buffer, tp_buffer, zone = extract_parameters(sqlite_file)
+            dc_buffer, tp_buffer, zone, demand = extract_parameters(sqlite_file)
 
             # Create base identifier
             base_identifier = re.sub(r'-zoi[^-]+', '-zoi', sqlite_file)
@@ -239,13 +254,13 @@ def main():
             printer.success(f"  Total Investment: {total_cap:.2f} MW")
             printer.success(f"  ZOI Investment: {zoi_cap:.2f} MW")
 
-            results.append((sqlite_file, dc_buffer, tp_buffer, zone, total_invest, zoi_invest))
+            results.append((sqlite_file, dc_buffer, tp_buffer, zone, demand, total_invest, zoi_invest))
 
             # Group files for comparison
             if base_identifier not in file_groups:
                 file_groups[base_identifier] = []
             file_groups[base_identifier].append(
-                (sqlite_file, dc_buffer, tp_buffer, zone, total_invest, zoi_invest)
+                (sqlite_file, dc_buffer, tp_buffer, zone, demand, total_invest, zoi_invest)
             )
 
         except Exception as e:
@@ -271,14 +286,14 @@ def main():
         if not other_zones:
             continue
 
-        _, _, _, _, none_total, none_zoi = zoi_none_entry
+        _, _, _, _, _, none_total, none_zoi = zoi_none_entry
 
         printer.information("\n" + "=" * 160)
         printer.information(f"Technology Investment Comparison for: {base_identifier}")
         printer.information("=" * 160)
 
         # For each zone
-        for sqlite_file, dc_buffer, tp_buffer, zone, zone_total, zone_zoi in other_zones:
+        for sqlite_file, dc_buffer, tp_buffer, zone, demand, zone_total, zone_zoi in other_zones:
             printer.information(f"\nComparing Zone: {zone}")
             printer.information("-" * 160)
             printer.information(

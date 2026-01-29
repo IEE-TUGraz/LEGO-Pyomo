@@ -144,9 +144,9 @@ def assign_technical_representation_by_layers(cs: CaseStudy, dc_buffer: int, tp_
     printer.information(f"  SN: {len(sn_lines)} lines")
 
 
-def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer):
+def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand):
     caseStudyName = case_study_directory.replace("/", "_").replace("\\", "_")
-    identifier = f"data{caseStudyName}-zoi{zoi}-limitK{limit_k}-dcBuffer{dc_buffer}-tpBuffer{tp_buffer}"
+    identifier = f"data{caseStudyName}-zoi{zoi}-limitK{limit_k}-dcBuffer{dc_buffer}-tpBuffer{tp_buffer}-demand{scale_demand:.1f}"
 
     printer.information(f"Loading original case study from '{case_study_directory}'")
     start_time = time.time()
@@ -158,10 +158,20 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer):
         start, end = limit_k.split("-")
         cs.filter_timesteps(start, end, inplace=True)
 
+    if scale_demand != 1.0:
+        printer.information(f"Scaling demand by factor {scale_demand}")
+        cs.dPower_Demand['value'] *= scale_demand
+
     if zoi is not None:
         printer.information(f"Setting Zone of Interest (zoi) to zone '{zoi}'")
         cs.dPower_BusInfo['zoi'] = 0
         cs.dPower_BusInfo.loc[cs.dPower_BusInfo['z'] == zoi, 'zoi'] = 1
+
+        # Check if any buses were assigned to ZOI
+        num_zoi_buses = (cs.dPower_BusInfo['zoi'] == 1).sum()
+        if num_zoi_buses == 0:
+            available_zones = cs.dPower_BusInfo['z'].unique().tolist()
+            printer.warning(f"0 buses selected for zone '{zoi}'. Available zones: {available_zones}")
     else:
         printer.warning("No Zone of Interest (zoi) specified, proceeding with original setting from Power_BusInfo")
 
@@ -172,29 +182,26 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer):
     cs.dPower_Parameters["is"] = None
 
     printer.information("Creating copy of case study with different formulations for network constraints")
-    caseStudy_objects = {}
-    cs_adjusted = cs.copy()
     printer.information(f"Assigning technical representations with DC-Buffer={dc_buffer}, TP-Buffer={tp_buffer}")
-    assign_technical_representation_by_layers(cs_adjusted, dc_buffer, tp_buffer)
-    cs_adjusted.merge_single_node_buses()
-    caseStudy_objects["Adjusted"] = cs_adjusted
+    assign_technical_representation_by_layers(cs, dc_buffer, tp_buffer)
+    cs.merge_single_node_buses()
 
     printer.information("Creation of case study copies completed")
 
     printer.information("Building LEGO models")
     legos = {}
-    for name, cs in caseStudy_objects.items():
-        printer.information(f"Building LEGO model for case study with {name} representation")
+    for name, cs in [(zoi, cs)]:
+        printer.information(f"Building LEGO model for case study with '{name}' as zoi")
         lego = LEGO(cs)
         model, timing = lego.build_model()
-        printer.information(f"Building LEGO model for case study with {name} representation took {timing:.2f} seconds")
+        printer.information(f"Building LEGO model for case study with '{name}' as zoi took {timing:.2f} seconds")
         legos[name] = (lego, model)
 
     printer.information("Solving LEGO models")
     for name, (lego, model) in legos.items():
-        printer.information(f"Solving LEGO model for case study with {name} representation")
+        printer.information(f"Solving LEGO model for case study with '{name}' as zoi")
         results, timing, objective_value = lego.solve_model()
-        printer.information(f"Solving LEGO model for case study with {name} representation took {timing:.2f} seconds")
+        printer.information(f"Solving LEGO model for case study with '{name}' as zoi took {timing:.2f} seconds")
 
         match results.solver.termination_condition:
             case pyo.TerminationCondition.optimal:
@@ -205,13 +212,13 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer):
             case _:
                 printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
 
-        sqlite_filename = f"model_{name}-{identifier}.sqlite"
+        sqlite_filename = f"TR-{identifier}.sqlite"
         SQLiteWriter.model_to_sqlite(model, sqlite_filename)
         printer.information(f"Saved LEGO model to '{sqlite_filename}'")
         SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_filename, results, work_units=lego.work_units)
-        with open(f"model_{name}-{identifier}.pkl", mode='wb') as file:
+        with open(f"TR-{identifier}.pkl", mode='wb') as file:
             cloudpickle.dump(model, file)
-            printer.information(f"Saved LEGO model to 'model_{name}-{identifier}.pkl'")
+            printer.information(f"Saved LEGO model to 'TR-{identifier}.pkl'")
 
     printer.information("Compare objective functions within zoi")
     for name, (lego, model) in legos.items():
@@ -241,6 +248,7 @@ if __name__ == "__main__":
     parser.add_argument("--limitK", type=str, help="Limit the ks, format: 'k0025-k0048'", nargs="?", default=None)
     parser.add_argument("--dcBuffer", type=int, help="Number of network layers outside ZOI to assign as DC-OPF (default: 1)", nargs="?", default=1)
     parser.add_argument("--tpBuffer", type=int, help="Number of network layers after DC buffer to assign as TP (default: 1)", nargs="?", default=1)
+    parser.add_argument("--scaleDemand", type=float, help="Scaling factor for demand (default: 1.0 = no scaling)", nargs="?", default=1.0)
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory, args.zoi, args.limitK, args.dcBuffer, args.tpBuffer)
+    main(args.caseStudyDirectory, args.zoi, args.limitK, args.dcBuffer, args.tpBuffer, args.scaleDemand)
