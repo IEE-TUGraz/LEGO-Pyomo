@@ -89,11 +89,25 @@ class LEGO:
             printer.warning(f"Solver name {solver_name} does not match the one used in the case study ({self.cs.dGlobal_Parameters['pSolver']}) - using {solver_name}")
 
         start_time = time.time()
+        self.work_units = None  # Initialize work_units
         match model_type:
             case ModelType.DETERMINISTIC:
-                optimizer = pyo.SolverFactory(solver_name)
-                results = optimizer.solve(self.model, tee=True)
-                objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+                # Use persistent solver for Gurobi to access work units
+                if solver_name.lower() in ['gurobi', 'gurobi_persistent']:
+                    optimizer = pyo.SolverFactory('gurobi_persistent')
+                    optimizer.set_instance(self.model)
+                    results = optimizer.solve(tee=True)
+                    objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+                    # Extract work units from Gurobi model
+                    try:
+                        self.work_units = optimizer._solver_model.Work
+                    except Exception as e:
+                        printer.warning(f"Could not extract work units from Gurobi: {e}")
+                        self.work_units = None
+                else:
+                    optimizer = pyo.SolverFactory(solver_name)
+                    results = optimizer.solve(self.model, tee=True)
+                    objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
             case ModelType.EXTENSIVE_FORM:
                 if solver_name != self.solver_name:
                     raise RuntimeError(f"Optimizer name {solver_name} does not match the one used to build the model ({self.solver_name}), please use the same optimizer name when solving using the 'ExtensiveForm' model type")

@@ -205,8 +205,10 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer):
             case _:
                 printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
 
-        SQLiteWriter.model_to_sqlite(model, f"model_{name}-{identifier}.sqlite")
-        printer.information(f"Saved LEGO model to 'model_{name}-{identifier}.sqlite'")
+        sqlite_filename = f"model_{name}-{identifier}.sqlite"
+        SQLiteWriter.model_to_sqlite(model, sqlite_filename)
+        printer.information(f"Saved LEGO model to '{sqlite_filename}'")
+        SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_filename, results, work_units=lego.work_units)
         with open(f"model_{name}-{identifier}.pkl", mode='wb') as file:
             cloudpickle.dump(model, file)
             printer.information(f"Saved LEGO model to 'model_{name}-{identifier}.pkl'")
