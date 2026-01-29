@@ -1,5 +1,6 @@
 import functools
 import os
+import sys
 import typing
 import zipfile
 from multiprocessing import Pool, cpu_count
@@ -739,8 +740,13 @@ def evaluate_zoi_objective(model: pyo.ConcreteModel, line_filter: str = "both", 
                 )
 
                 # Split work into chunks (one per CPU core)
-                printer.information(f"Evaluating ZOI objective in parallel using {cpu_count()} workers...")
-                n_workers = cpu_count()
+                # Windows has a limit of 63 handles for WaitForMultipleObjects
+                # Pool creates workers + ~2 management handles, so cap at 60 to stay under 63
+                max_workers = cpu_count()
+                if sys.platform == 'win32':
+                    max_workers = min(max_workers, 60)
+                n_workers = max_workers
+                printer.information(f"Evaluating ZOI objective in parallel using {n_workers} workers...")
                 chunk_size = max(1, num_vars // n_workers)
                 chunks = []
 
