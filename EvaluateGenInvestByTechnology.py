@@ -119,6 +119,46 @@ def print_summary_table(results):
         )
 
 
+def evaluate_gen_investment_with_custom_zoi(sqlite_file, zoi_sqlite_file):
+    """
+    Evaluate generator investment using ZOI definition from another SQLite file.
+
+    This allows comparing investments across different models using a consistent
+    zone definition. For example, comparing zoiNone with zoneR1 using R1's zoi_i.
+
+    :param sqlite_file: Path to the SQLite file containing investment data
+    :param zoi_sqlite_file: Path to the SQLite file containing zoi_i definition
+    :return: Dictionary mapping technology -> total invested capacity
+    """
+    # Load investment data from target file
+    invest_conn = sqlite3.connect(sqlite_file)
+    vGenInvest_df = pd.read_sql_query('SELECT * FROM vGenInvest', invest_conn)
+    pMaxProd_df = pd.read_sql_query('SELECT * FROM pMaxProd', invest_conn)
+    gtec_df = pd.read_sql_query('SELECT * FROM gtec', invest_conn).rename(columns={'0': 'g', '1': 'tec'})
+    gi_df = pd.read_sql_query('SELECT * FROM gi', invest_conn).rename(columns={'0': 'g', '1': 'i'})
+    invest_conn.close()
+
+    # Load ZOI definition from reference file
+    zoi_conn = sqlite3.connect(zoi_sqlite_file)
+    zoi_i_df = pd.read_sql_query('SELECT * FROM zoi_i', zoi_conn).rename(columns={'0': 'i'})
+    zoi_conn.close()
+
+    # Get set of ZOI buses
+    zoi_buses = set(zoi_i_df['i'])
+
+    # Merge investment data
+    invest_data = vGenInvest_df.merge(pMaxProd_df, on='g', suffixes=('_invest', '_maxprod'))
+    invest_data = invest_data.merge(gtec_df[['g', 'tec']], on='g')
+    invest_data = invest_data.merge(gi_df[['g', 'i']], on='g')
+    invest_data['capacity_MW'] = invest_data['values_invest'] * invest_data['values_maxprod'] * 1000
+
+    # Filter by ZOI buses
+    zone_data = invest_data[invest_data['i'].isin(zoi_buses)]
+    tech_capacity = zone_data.groupby('tec')['capacity_MW'].sum().to_dict()
+
+    return tech_capacity
+
+
 def evaluate_zone_investments_from_none_model(none_sqlite_file, zone_sqlite_files):
     """
     Evaluate investments in the zoiNone model partitioned by zone definitions.
@@ -132,31 +172,9 @@ def evaluate_zone_investments_from_none_model(none_sqlite_file, zone_sqlite_file
     """
     zone_investments = {}
 
-    # Load zoiNone model data once
-    none_conn = sqlite3.connect(none_sqlite_file)
-    vGenInvest_df = pd.read_sql_query('SELECT * FROM vGenInvest', none_conn)
-    pMaxProd_df = pd.read_sql_query('SELECT * FROM pMaxProd', none_conn)
-    gtec_df = pd.read_sql_query('SELECT * FROM gtec', none_conn).rename(columns={'0': 'g', '1': 'tec'})
-    gi_df = pd.read_sql_query('SELECT * FROM gi', none_conn).rename(columns={'0': 'g', '1': 'i'})
-
-    # Merge investment data
-    invest_data = vGenInvest_df.merge(pMaxProd_df, on='g', suffixes=('_invest', '_maxprod'))
-    invest_data = invest_data.merge(gtec_df[['g', 'tec']], on='g')
-    invest_data = invest_data.merge(gi_df[['g', 'i']], on='g')
-    invest_data['capacity_MW'] = invest_data['values_invest'] * invest_data['values_maxprod'] * 1000
-
-    none_conn.close()
-
-    # For each zone, get bus membership and filter zoiNone investments
+    # For each zone, evaluate zoiNone using that zone's zoi_i
     for zone_name, zone_file in zone_sqlite_files.items():
-        zone_conn = sqlite3.connect(zone_file)
-        zoi_i_df = pd.read_sql_query('SELECT * FROM zoi_i', zone_conn).rename(columns={'0': 'i'})
-        zone_buses = set(zoi_i_df['i'])
-        zone_conn.close()
-
-        # Filter zoiNone investments to this zone
-        zone_data = invest_data[invest_data['i'].isin(zone_buses)]
-        tech_capacity = zone_data.groupby('tec')['capacity_MW'].sum().to_dict()
+        tech_capacity = evaluate_gen_investment_with_custom_zoi(none_sqlite_file, zone_file)
         zone_investments[zone_name] = tech_capacity
 
     return zone_investments
@@ -286,7 +304,7 @@ def main():
         if not other_zones:
             continue
 
-        _, _, _, _, _, none_total, none_zoi = zoi_none_entry
+        none_sqlite_file, _, _, _, _, none_total, _ = zoi_none_entry
 
         printer.information("\n" + "=" * 160)
         printer.information(f"Technology Investment Comparison for: {base_identifier}")
@@ -294,6 +312,10 @@ def main():
 
         # For each zone
         for sqlite_file, dc_buffer, tp_buffer, zone, demand, zone_total, zone_zoi in other_zones:
+            # IMPORTANT: Evaluate zoiNone using the same zoi_i as the zone-specific file
+            # This ensures we compare the same geographic area in both models
+            none_zoi = evaluate_gen_investment_with_custom_zoi(none_sqlite_file, sqlite_file)
+
             printer.information(f"\nComparing Zone: {zone}")
             printer.information("-" * 160)
             printer.information(
