@@ -85,18 +85,25 @@ def main():
         print_run_parameters_from_pkl(pkl_file)
 
         try:
-            # Load the LEGO Pyomo model
+            # Load the ZOI data (lightweight structure instead of full model)
             start_time = time.time()
             with open(pkl_file, mode='rb') as file:
-                model = cloudpickle.load(file)
+                zoi_data = cloudpickle.load(file)
             load_time = time.time() - start_time
             printer.information(f"  Loaded in {load_time:.2f} seconds")
 
-            # Calculate the ZOI objective function
-            calc_start_time = time.time()
-            zoi_expr, zoi_value = LEGOUtilities.evaluate_zoi_objective(model, line_filter="both")
-            calc_time = time.time() - calc_start_time
-            printer.information(f"  ZOI objective calculated in {calc_time:.2f} seconds")
+            # Check if this is old format (full model) or new format (zoi_data dict)
+            if isinstance(zoi_data, dict) and 'zoi_objective_value' in zoi_data:
+                # New format: extract pre-calculated value
+                zoi_value = zoi_data['zoi_objective_value']
+                printer.information(f"  Using pre-calculated ZOI objective value")
+            else:
+                # Old format: full model - calculate ZOI objective
+                printer.warning(f"  Old format detected (full model), calculating ZOI objective...")
+                calc_start_time = time.time()
+                _, zoi_value = LEGOUtilities.evaluate_zoi_objective(zoi_data, line_filter="both")
+                calc_time = time.time() - calc_start_time
+                printer.information(f"  ZOI objective calculated in {calc_time:.2f} seconds")
 
             # Extract parameters from filename
             dc_buffer, tp_buffer, zone, demand, pmax = extract_parameters(pkl_file)
@@ -110,7 +117,7 @@ def main():
             # Group files for comparison
             if base_identifier not in file_groups:
                 file_groups[base_identifier] = []
-            file_groups[base_identifier].append((pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, model))
+            file_groups[base_identifier].append((pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, zoi_data))
 
         except Exception as e:
             printer.error(f"  Failed to process '{pkl_file}': {e}")
@@ -138,16 +145,16 @@ def main():
 
     # Compare zoiNone models with other zones in their groups
     for base_identifier, group in file_groups.items():
-        # Find the zoiNone model in this group
-        zoi_none_entry = next((entry for entry in group if entry[3] == "None"), None)
+        # Find the zoiNone model in this group (zone is None type, not string "None")
+        zoi_none_entry = next((entry for entry in group if entry[3] is None), None)
 
         if zoi_none_entry is None:
             continue
 
-        zoi_none_file, _, _, _, _, _, zoi_none_original_value, zoi_none_model = zoi_none_entry
+        zoi_none_file, _, _, _, _, _, zoi_none_original_value, zoi_none_data = zoi_none_entry
 
-        # Get other zones in this group
-        other_zones = [entry for entry in group if entry[3] != "None"]
+        # Get other zones in this group (zone is not None)
+        other_zones = [entry for entry in group if entry[3] is not None]
 
         if not other_zones:
             continue
@@ -160,19 +167,29 @@ def main():
 
         sum_of_zone_objectives = 0.0
 
-        for pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, original_zoi_value, zone_model in other_zones:
+        for pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, original_zoi_value, zone_data in other_zones:
             try:
-                # Extract zoi_i from the zone model
-                zone_zoi_i = list(zone_model.zoi_i)
+                # Check if data is in new format (dict) or old format (model)
+                if isinstance(zone_data, dict) and 'sets' in zone_data:
+                    # New format: extract zoi_i from zone_data
+                    zone_zoi_i = zone_data['sets']['zoi_i']
+                else:
+                    # Old format: extract from model
+                    zone_zoi_i = list(zone_data.zoi_i)
 
-                # Clear and update zoi_i in the zoiNone model
-                zoi_none_model.zoi_i.clear()
-                zoi_none_model.zoi_i.construct()
-                for bus in zone_zoi_i:
-                    zoi_none_model.zoi_i.add(bus)
-
-                # Recalculate ZOI objective with updated zoi_i
-                _, zoi_none_value = LEGOUtilities.evaluate_zoi_objective(zoi_none_model, line_filter="both")
+                # Recalculate ZOI objective for zoiNone data with zone's ZOI definition
+                if isinstance(zoi_none_data, dict) and 'zoi_objective_value' in zoi_none_data:
+                    # New format: use lightweight recalculation
+                    zoi_none_value = LEGOUtilities.evaluate_zoi_objective_from_data(
+                        zoi_none_data, new_zoi_i=zone_zoi_i, line_filter="both"
+                    )
+                else:
+                    # Old format: modify model and recalculate
+                    zoi_none_data.zoi_i.clear()
+                    zoi_none_data.zoi_i.construct()
+                    for bus in zone_zoi_i:
+                        zoi_none_data.zoi_i.add(bus)
+                    _, zoi_none_value = LEGOUtilities.evaluate_zoi_objective(zoi_none_data, line_filter="both")
 
                 difference = zoi_none_value - original_zoi_value
                 rel_diff_pct = (difference / zoi_none_value * 100) if zoi_none_value != 0 else 0.0
@@ -181,6 +198,8 @@ def main():
 
             except Exception as e:
                 printer.error(f"  Failed to compare zone {zone}: {e}")
+                import traceback
+                traceback.print_exc()
 
         # Safety check: sum of individual zone objectives should equal original zoiNone objective
         printer.information("-" * 120)

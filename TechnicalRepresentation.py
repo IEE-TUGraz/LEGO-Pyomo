@@ -230,9 +230,13 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
             scale_demand=scale_demand,
             scale_pmax=scale_pmax
         )
+
+        # Save lightweight ZOI data instead of full model
+        printer.information("Extracting ZOI objective data for pickle file...")
+        zoi_data = LEGOUtilities.extract_zoi_objective_data(model)
         with open(f"TR-{identifier}.pkl", mode='wb') as file:
-            cloudpickle.dump(model, file)
-            printer.information(f"Saved LEGO model to 'TR-{identifier}.pkl'")
+            cloudpickle.dump(zoi_data, file)
+            printer.information(f"Saved ZOI objective data to 'TR-{identifier}.pkl'")
 
     printer.information("Compare objective functions within zoi")
     for name, (lego, model) in legos.items():

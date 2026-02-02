@@ -803,6 +803,126 @@ def evaluate_zoi_objective(model: pyo.ConcreteModel, line_filter: str = "both", 
     return zoi_expr, value
 
 
+def extract_zoi_objective_data(model: pyo.ConcreteModel) -> Dict:
+    """
+    Extract minimal data needed to recalculate ZOI objectives from a solved model.
+    This creates a lightweight representation that can be pickled efficiently.
+
+    :param model: Solved Pyomo model
+    :return: Dictionary with ZOI objective data
+    """
+    from pyomo.repn import generate_standard_repn
+
+    printer.information("Extracting ZOI objective data from model...")
+
+    # Decompose objective into linear representation
+    repn = generate_standard_repn(model.objective.expr, quadratic=False)
+
+    # Extract variable values and indices
+    var_data = {}
+    for var in repn.linear_vars:
+        idx = var.index()
+        var_data[idx] = pyo.value(var)
+
+    # Extract sets
+    sets_data = {
+        'i': list(model.i),
+        'g': list(model.g),
+        'gi': list(model.gi),
+        'la': list(model.la),
+        'zoi_i': list(model.zoi_i),
+    }
+
+    # Check for hub connections
+    if hasattr(model, 'hubConnections'):
+        sets_data['hubConnections'] = list(model.hubConnections)
+    else:
+        sets_data['hubConnections'] = []
+
+    # Extract objective components
+    objective_data = {
+        'constant': repn.constant if repn.constant else 0.0,
+        'linear_vars_indices': [var.index() for var in repn.linear_vars],
+        'linear_coefs': list(repn.linear_coefs),
+    }
+
+    # Calculate original ZOI objective
+    _, zoi_value = evaluate_zoi_objective(model, line_filter="both")
+
+    zoi_data = {
+        'var_values': var_data,
+        'sets': sets_data,
+        'objective': objective_data,
+        'zoi_objective_value': zoi_value,
+    }
+
+    printer.success(f"Extracted ZOI objective data (ZOI value: {zoi_value:.2f})")
+    return zoi_data
+
+
+def evaluate_zoi_objective_from_data(zoi_data: Dict, new_zoi_i: Optional[List] = None,
+                                      line_filter: str = "both") -> float:
+    """
+    Recalculate ZOI objective from extracted data with optionally different ZOI definition.
+
+    :param zoi_data: Dictionary returned by extract_zoi_objective_data
+    :param new_zoi_i: Optional new ZOI bus set. If None, uses original zoi_i from data
+    :param line_filter: How to filter transmission lines ("both" or "any")
+    :return: ZOI objective value
+    """
+    if line_filter not in ("both", "any"):
+        raise ValueError(f"line_filter must be 'both' or 'any', got '{line_filter}'")
+
+    # Use provided ZOI or fall back to original
+    zoi_i = set(new_zoi_i) if new_zoi_i is not None else set(zoi_data['sets']['zoi_i'])
+    all_i = set(zoi_data['sets']['i'])
+    all_g = set(zoi_data['sets']['g'])
+
+    # Get zoi_g based on ZOI buses
+    gi_set = set(zoi_data['sets']['gi'])
+    zoi_g = {g for g, i in gi_set if i in zoi_i}
+
+    # Build line sets
+    all_lines = set(zoi_data['sets']['la'])
+    hub_connections = set(zoi_data['sets']['hubConnections']) if zoi_data['sets']['hubConnections'] else set()
+
+    # Pre-compute line weights
+    line_weights = {}
+    for i, j, c in all_lines:
+        i_in_zoi = i in zoi_i
+        j_in_zoi = j in zoi_i
+
+        if line_filter == "both":
+            if i_in_zoi and j_in_zoi:
+                line_weights[(i, j, c)] = 1.0
+            elif i_in_zoi or j_in_zoi:
+                line_weights[(i, j, c)] = 0.5
+            else:
+                line_weights[(i, j, c)] = 0.0
+        else:  # line_filter == "any"
+            if i_in_zoi or j_in_zoi:
+                line_weights[(i, j, c)] = 1.0
+            else:
+                line_weights[(i, j, c)] = 0.0
+
+    # Calculate ZOI objective value
+    value = zoi_data['objective']['constant']
+    var_values = zoi_data['var_values']
+
+    weight_cache = {}
+    for idx, coef in zip(zoi_data['objective']['linear_vars_indices'],
+                         zoi_data['objective']['linear_coefs']):
+        if idx not in weight_cache:
+            weight_cache[idx] = _compute_variable_weight(
+                idx, zoi_i, all_i, all_g, zoi_g, line_weights, hub_connections
+            )
+        weight = weight_cache[idx]
+        if weight > 0.0:
+            value += weight * coef * var_values.get(idx, 0.0)
+
+    return value
+
+
 def evaluate_gen_investment_by_technology(model: pyo.ConcreteModel, filter_zoi: bool = True) -> Dict[str, float]:
     """
     Evaluate generator investment capacity by technology.
