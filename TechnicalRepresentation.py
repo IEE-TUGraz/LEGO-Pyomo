@@ -144,9 +144,9 @@ def assign_technical_representation_by_layers(cs: CaseStudy, dc_buffer: int, tp_
     printer.information(f"  SN: {len(sn_lines)} lines")
 
 
-def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand):
+def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand, scale_pmax):
     caseStudyName = case_study_directory.replace("/", "_").replace("\\", "_")
-    identifier = f"data{caseStudyName}-zoi{zoi}-limitK{limit_k}-dcBuffer{dc_buffer}-tpBuffer{tp_buffer}-demand{scale_demand:.1f}"
+    identifier = f"data{caseStudyName}-zoi{zoi}-limitK{limit_k}-dcBuffer{dc_buffer}-tpBuffer{tp_buffer}-demand{scale_demand:.1f}-pmax{scale_pmax:.1f}"
 
     printer.information(f"Loading original case study from '{case_study_directory}'")
     start_time = time.time()
@@ -161,6 +161,10 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand)
     if scale_demand != 1.0:
         printer.information(f"Scaling demand by factor {scale_demand}")
         cs.dPower_Demand['value'] *= scale_demand
+
+    if scale_pmax != 1.0:
+        printer.information(f"Scaling pPmax (line capacity) by factor {scale_pmax}")
+        cs.dPower_Network['pPmax'] *= scale_pmax
 
     if zoi is not None:
         printer.information(f"Setting Zone of Interest (zoi) to zone '{zoi}'")
@@ -249,6 +253,7 @@ if __name__ == "__main__":
     parser.add_argument("--dcBuffer", type=int, help="Number of network layers outside ZOI to assign as DC-OPF (default: 1)", nargs="?", default=1)
     parser.add_argument("--tpBuffer", type=int, help="Number of network layers after DC buffer to assign as TP (default: 1)", nargs="?", default=1)
     parser.add_argument("--scaleDemand", type=float, help="Scaling factor for demand (default: 1.0 = no scaling)", nargs="?", default=1.0)
+    parser.add_argument("--scalePMax", type=float, help="Scaling factor for pPmax (line capacity) (default: 1.0 = no scaling)", nargs="?", default=1.0)
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory, args.zoi, args.limitK, args.dcBuffer, args.tpBuffer, args.scaleDemand)
+    main(args.caseStudyDirectory, args.zoi, args.limitK, args.dcBuffer, args.tpBuffer, args.scaleDemand, args.scalePMax)
