@@ -1,8 +1,11 @@
 import glob
+import os
 import re
+import sqlite3
 import time
 
 import cloudpickle
+import pandas as pd
 
 from InOutModule.printer import Printer
 from LEGO import LEGOUtilities
@@ -11,13 +14,56 @@ printer = Printer.getInstance()
 
 
 def extract_parameters(filename):
-    """Extract dcBuffer, tpBuffer, zone, demand, and pmax values from filename."""
+    """
+    Extract dcBuffer, tpBuffer, zone, demand, and pmax values from filename or SQLite database.
+    First tries to read from run_parameters table in corresponding SQLite, falls back to filename parsing.
+    """
+    # Try to read from corresponding SQLite database first
+    sqlite_file = filename.replace('.pkl', '.sqlite')
+    if os.path.exists(sqlite_file):
+        try:
+            conn = sqlite3.connect(sqlite_file)
+            df = pd.read_sql_query('SELECT * FROM run_parameters', conn)
+            conn.close()
+
+            if len(df) > 0:
+                row = df.iloc[0]
+                dc_buffer = int(row['dc_buffer']) if 'dc_buffer' in row and row['dc_buffer'] != 'None' else None
+                tp_buffer = int(row['tp_buffer']) if 'tp_buffer' in row and row['tp_buffer'] != 'None' else None
+                zone = str(row['zoi']) if 'zoi' in row and row['zoi'] != 'None' else None
+                demand = float(row['scale_demand']) if 'scale_demand' in row and row['scale_demand'] != 'None' else 1.0
+                pmax = float(row['scale_pmax']) if 'scale_pmax' in row and row['scale_pmax'] != 'None' else 1.0
+                return dc_buffer, tp_buffer, zone, demand, pmax
+        except Exception:
+            pass  # Fall back to filename parsing
+
+    # Fall back to parsing filename
     match = re.search(r'-zoi(?P<zone>[^-]+)-.*?dcBuffer(?P<dc>\d+)-tpBuffer(?P<tp>\d+)(?:-demand(?P<demand>\d+(?:\.\d+)?))?(?:-pmax(?P<pmax>\d+(?:\.\d+)?))?', filename)
     if match:
         demand = float(match.group('demand')) if match.group('demand') else 1.0
         pmax = float(match.group('pmax')) if match.group('pmax') else 1.0
         return int(match.group('dc')), int(match.group('tp')), match.group('zone'), demand, pmax
     return None, None, None, 1.0, 1.0
+
+
+def print_run_parameters_from_pkl(pkl_file):
+    """
+    Print run parameters from corresponding SQLite file if available.
+    :param pkl_file: Path to the pickle file
+    """
+    sqlite_file = pkl_file.replace('.pkl', '.sqlite')
+    if os.path.exists(sqlite_file):
+        try:
+            conn = sqlite3.connect(sqlite_file)
+            df = pd.read_sql_query('SELECT * FROM run_parameters', conn)
+            conn.close()
+
+            if len(df) > 0:
+                row = df.iloc[0]
+                params_str = ", ".join([f"{col}={row[col]}" for col in df.columns])
+                printer.information(f"  Run parameters: {params_str}")
+        except Exception:
+            pass  # Table doesn't exist or other error - silently ignore
 
 
 def main():
@@ -36,6 +82,7 @@ def main():
 
     for pkl_file in sorted(pickle_files):
         printer.information(f"\nProcessing '{pkl_file}'...")
+        print_run_parameters_from_pkl(pkl_file)
 
         try:
             # Load the LEGO Pyomo model
