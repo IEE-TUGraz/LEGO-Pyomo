@@ -73,8 +73,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         model.first_circuit_map_bidir = pyo.Param(model.la_full_no_c, initialize={(i, j): c for (i, j), c in model.first_circuit_map.items()} | {(j, i): c for (i, j), c in model.first_circuit_map.items()}, doc='First circuit for each line (i, j) bidirectional')
 
     # Parameters
-    model.pDemandP = pyo.Param(model.rp, model.k, model.i, initialize=cs.dPower_Demand['value'], doc='Demand at bus i in representative period rp and timestep k')
     model.pMovWindow = cs.dGlobal_Parameters['pMovWindow']
+
+    missing_demand_buses = [i for i in model.i if i not in cs.dPower_Demand.index.get_level_values('i')]
+    if len(missing_demand_buses) > 0:
+        printer.warning(f"The following buses have no demand defined in 'dPower_Demand': {missing_demand_buses}. Their demand will be set to 0.")
+    model.pDemandP = pyo.Param(model.rp, model.k, model.i, initialize=cs.dPower_Demand['value'], doc='Demand at bus i in representative period rp and timestep k', default=0)
 
     model.pOMVarCost = pyo.Param(model.g, doc='Production cost of generator g')
     model.pEnabInv = pyo.Param(model.g, doc='Enable investment in thermal generator g')
