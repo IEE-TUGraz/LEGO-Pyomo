@@ -79,6 +79,7 @@ def main():
     # Process each pickle file and group by base identifier (everything except zone)
     results = []
     file_groups = {}  # Key: base_identifier, Value: list of (pkl_file, dc_buffer, tp_buffer, zone, zoi_value, model)
+    uniform_representation_results = []  # Special handling for TP and SN
 
     for pkl_file in sorted(pickle_files):
         printer.information(f"\nProcessing '{pkl_file}'...")
@@ -114,10 +115,14 @@ def main():
             printer.success(f"  ZOI Objective: {zoi_value:.2f}")
             results.append((pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value))
 
-            # Group files for comparison
-            if base_identifier not in file_groups:
-                file_groups[base_identifier] = []
-            file_groups[base_identifier].append((pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, zoi_data))
+            # Check if this is a uniform representation (TP or SN)
+            if zone in ['TP', 'SN']:
+                uniform_representation_results.append((pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, zoi_data))
+            else:
+                # Group files for comparison (normal zones)
+                if base_identifier not in file_groups:
+                    file_groups[base_identifier] = []
+                file_groups[base_identifier].append((pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, zoi_data))
 
         except Exception as e:
             printer.error(f"  Failed to process '{pkl_file}': {e}")
@@ -145,16 +150,16 @@ def main():
 
     # Compare zoiNone models with other zones in their groups
     for base_identifier, group in file_groups.items():
-        # Find the zoiNone model in this group (zone is None type, not string "None")
-        zoi_none_entry = next((entry for entry in group if entry[3] is None), None)
+        # Find the zoiNone model in this group (check both Python None and string "None")
+        zoi_none_entry = next((entry for entry in group if (entry[3] is None or entry[3] == "None")), None)
 
         if zoi_none_entry is None:
             continue
 
         zoi_none_file, _, _, _, _, _, zoi_none_original_value, zoi_none_data = zoi_none_entry
 
-        # Get other zones in this group (zone is not None)
-        other_zones = [entry for entry in group if entry[3] is not None]
+        # Get other zones in this group (exclude both Python None and string "None")
+        other_zones = [entry for entry in group if entry[3] is not None and entry[3] != "None"]
 
         if not other_zones:
             continue
@@ -165,7 +170,7 @@ def main():
         printer.information(f"  {'Zone':<20s} {'ZOI Objective (zoiNone model)':>30s} {'ZOI Objective (original)':>30s} {'Difference':>15s} {'Rel. Diff (%)':>15s}")
         printer.information("-" * 120)
 
-        sum_of_zone_objectives = 0.0
+        sum_of_original_zone_objectives = 0.0
 
         for pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, original_zoi_value, zone_data in other_zones:
             try:
@@ -193,7 +198,7 @@ def main():
 
                 difference = zoi_none_value - original_zoi_value
                 rel_diff_pct = (difference / zoi_none_value * 100) if zoi_none_value != 0 else 0.0
-                sum_of_zone_objectives += zoi_none_value
+                sum_of_original_zone_objectives += original_zoi_value
                 printer.information(f"  {zone:<20s} {zoi_none_value:>30.2f} {original_zoi_value:>30.2f} {difference:>15.2f} {rel_diff_pct:>14.1f}%")
 
             except Exception as e:
@@ -201,16 +206,113 @@ def main():
                 import traceback
                 traceback.print_exc()
 
-        # Safety check: sum of individual zone objectives should equal original zoiNone objective
+        # Safety check: sum of original zone objectives should equal original zoiNone objective
         printer.information("-" * 120)
-        printer.information(f"  {'SAFETY CHECK':<20s} {'Sum of zone objectives':>30s} {'Original zoiNone objective':>30s} {'Difference':>15s} {'Rel. Diff (%)':>15s}")
-        safety_difference = sum_of_zone_objectives - zoi_none_original_value
-        safety_rel_diff_pct = (safety_difference / sum_of_zone_objectives * 100) if sum_of_zone_objectives != 0 else 0.0
-        tolerance = 0.01  # Allow small numerical differences
-        if abs(safety_difference) < tolerance:
-            printer.success(f"  {'[PASSED]':<20s} {sum_of_zone_objectives:>30.2f} {zoi_none_original_value:>30.2f} {safety_difference:>15.2f} {safety_rel_diff_pct:>14.1f}%")
+        printer.information(f"  {'SAFETY CHECK':<20s} {'Sum of original zone objectives':>30s} {'Original zoiNone objective':>30s} {'Difference':>15s} {'Rel. Diff (%)':>15s}")
+        safety_difference = sum_of_original_zone_objectives - zoi_none_original_value
+        safety_rel_diff_pct = (safety_difference / sum_of_original_zone_objectives * 100) if sum_of_original_zone_objectives != 0 else 0.0
+        tolerance_pct = 0.01  # 0.01% relative tolerance
+        if abs(safety_rel_diff_pct) < tolerance_pct:
+            printer.success(f"  {'[PASSED]':<20s} {sum_of_original_zone_objectives:>30.2f} {zoi_none_original_value:>30.2f} {safety_difference:>15.2f} {safety_rel_diff_pct:>14.1f}%")
         else:
-            printer.error(f"  {'[FAILED]':<20s} {sum_of_zone_objectives:>30.2f} {zoi_none_original_value:>30.2f} {safety_difference:>15.2f} {safety_rel_diff_pct:>14.1f}%")
+            printer.error(f"  {'[FAILED]':<20s} {sum_of_original_zone_objectives:>30.2f} {zoi_none_original_value:>30.2f} {safety_difference:>15.2f} {safety_rel_diff_pct:>14.1f}%")
+
+    # Display uniform representation results if any
+    if uniform_representation_results:
+        # Group by base identifier (without zone)
+        uniform_groups = {}
+        for entry in uniform_representation_results:
+            pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, zoi_data = entry
+            base_id = re.sub(r'-zoi[^-]+', '-zoi', pkl_file)
+            if base_id not in uniform_groups:
+                uniform_groups[base_id] = []
+            uniform_groups[base_id].append(entry)
+
+        for base_id, group in uniform_groups.items():
+            # Find corresponding zoiNone entry from regular results
+            none_entry = None
+            for pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value in results:
+                if (zone is None or zone == "None") and re.sub(r'-zoi[^-]+', '-zoi', pkl_file) == base_id:
+                    none_entry = (pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value)
+                    break
+
+            if not none_entry:
+                printer.warning(f"No DC-OPF baseline found for {base_id}")
+                continue
+
+            none_pkl_file, _, _, _, _, _, none_zoi_value = none_entry
+            none_sqlite_file = none_pkl_file.replace('.pkl', '.sqlite')
+            none_total_obj = None
+            if os.path.exists(none_sqlite_file):
+                try:
+                    import sqlite3
+                    conn = sqlite3.connect(none_sqlite_file)
+                    cursor = conn.execute('SELECT `values` FROM objective')
+                    none_total_obj = cursor.fetchone()[0]
+                    conn.close()
+                except Exception:
+                    pass
+
+            if none_total_obj is None:
+                printer.warning(f"Could not read DC-OPF objective for {base_id}")
+                continue
+
+            printer.information("\n" + "=" * 140)
+            printer.information(f"Uniform Technical Representations for: {base_id}")
+            printer.information("=" * 140)
+            printer.information(f"  {'Type':<10s} {'Description':<50s} {'Total Objective':>20s} {'Abs. Diff':>15s} {'Rel. Diff (%)':>15s}")
+            printer.information("-" * 140)
+
+            # Collect entries and sort: DC-OPF, TP, SN
+            entries = []
+
+            # Add DC-OPF as first entry
+            entries.append(('DC-OPF', 'DC Optimal Power Flow (all lines as DC-OPF)', none_total_obj, 0.0, 0.0))
+
+            # Add TP and SN
+            for pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, zoi_data in group:
+                if zone == 'TP':
+                    desc = "Transport Model (all lines as TP)"
+                    sort_order = 1
+                elif zone == 'SN':
+                    desc = "Single Node / Copper Plate (all lines as SN)"
+                    sort_order = 2
+                else:
+                    desc = f"Uniform {zone}"
+                    sort_order = 3
+
+                # Get total objective from SQLite if available
+                sqlite_file = pkl_file.replace('.pkl', '.sqlite')
+                total_obj = None
+                if os.path.exists(sqlite_file):
+                    try:
+                        import sqlite3
+                        conn = sqlite3.connect(sqlite_file)
+                        cursor = conn.execute('SELECT `values` FROM objective')
+                        total_obj = cursor.fetchone()[0]
+                        conn.close()
+                    except Exception:
+                        pass
+
+                if total_obj is not None:
+                    abs_diff = total_obj - none_total_obj
+                    rel_diff_pct = (abs_diff / none_total_obj * 100) if none_total_obj != 0 else 0.0
+                    entries.append((zone, desc, total_obj, abs_diff, rel_diff_pct, sort_order))
+
+            # Sort entries: DC-OPF (0), TP (1), SN (2)
+            entries_sorted = sorted([e for e in entries if len(e) > 5], key=lambda x: x[5])
+
+            # Print all entries
+            for entry in [entries[0]] + entries_sorted:
+                if len(entry) == 5:
+                    zone_type, desc, total_obj, abs_diff, rel_diff_pct = entry
+                    printer.information(f"  {zone_type:<10s} {desc:<50s} {total_obj:>20.2f} {abs_diff:>15.2f} {rel_diff_pct:>14.1f}%")
+                else:
+                    zone_type, desc, total_obj, abs_diff, rel_diff_pct, _ = entry
+                    printer.information(f"  {zone_type:<10s} {desc:<50s} {total_obj:>20.2f} {abs_diff:>15.2f} {rel_diff_pct:>14.1f}%")
+
+            printer.information("-" * 140)
+            printer.information("Note: DC-OPF is the baseline model with full network representation.")
 
 
 if __name__ == "__main__":

@@ -230,10 +230,10 @@ def print_safety_checks(group, zoi_none_entry):
     """
     none_sqlite_file, _, _, _, _, _, none_total, none_zoi = zoi_none_entry
 
-    # Get zone SQLite files
+    # Get zone SQLite files (exclude both Python None and string "None")
     zone_files = {}
     for sqlite_file, dc_buffer, tp_buffer, zone, demand, pmax, zone_total, zone_zoi in group:
-        if zone != "None":
+        if zone != "None" and zone is not None:
             zone_files[zone] = sqlite_file
 
     if not zone_files:
@@ -288,6 +288,7 @@ def main():
     results = []
     file_groups = {}
     all_technologies = set()
+    uniform_representation_results = []  # Special handling for TP and SN
 
     for sqlite_file in sorted(sqlite_files):
         printer.information(f"\nProcessing '{sqlite_file}'...")
@@ -316,12 +317,16 @@ def main():
 
             results.append((sqlite_file, dc_buffer, tp_buffer, zone, demand, pmax, total_invest, zoi_invest))
 
-            # Group files for comparison
-            if base_identifier not in file_groups:
-                file_groups[base_identifier] = []
-            file_groups[base_identifier].append(
-                (sqlite_file, dc_buffer, tp_buffer, zone, demand, pmax, total_invest, zoi_invest)
-            )
+            # Check if this is a uniform representation (TP or SN)
+            if zone in ['TP', 'SN']:
+                uniform_representation_results.append((sqlite_file, dc_buffer, tp_buffer, zone, demand, pmax, total_invest, zoi_invest))
+            else:
+                # Group files for comparison (normal zones)
+                if base_identifier not in file_groups:
+                    file_groups[base_identifier] = []
+                file_groups[base_identifier].append(
+                    (sqlite_file, dc_buffer, tp_buffer, zone, demand, pmax, total_invest, zoi_invest)
+                )
 
         except Exception as e:
             printer.error(f"  Failed to process '{sqlite_file}': {e}")
@@ -334,14 +339,14 @@ def main():
 
     # Compare zones for each group
     for base_identifier, group in file_groups.items():
-        # Find zoiNone entry
-        zoi_none_entry = next((entry for entry in group if entry[3] == "None"), None)
+        # Find zoiNone entry (check both Python None and string "None")
+        zoi_none_entry = next((entry for entry in group if (entry[3] == "None" or entry[3] is None)), None)
 
         if zoi_none_entry is None:
             continue
 
-        # Get other zones
-        other_zones = [entry for entry in group if entry[3] != "None"]
+        # Get other zones (exclude both Python None and string "None")
+        other_zones = [entry for entry in group if entry[3] != "None" and entry[3] is not None]
 
         if not other_zones:
             continue
@@ -387,6 +392,106 @@ def main():
 
         # Safety checks
         print_safety_checks(group, zoi_none_entry)
+
+    # Display uniform representation results if any
+    if uniform_representation_results:
+        # Group by base identifier (without zone)
+        uniform_groups = {}
+        for entry in uniform_representation_results:
+            sqlite_file, dc_buffer, tp_buffer, zone, demand, pmax, total_invest, zoi_invest = entry
+            base_id = re.sub(r'-zoi[^-]+', '-zoi', sqlite_file)
+            if base_id not in uniform_groups:
+                uniform_groups[base_id] = []
+            uniform_groups[base_id].append(entry)
+
+        for base_id, group in uniform_groups.items():
+            # Find corresponding zoiNone entry from regular results
+            zoi_none_entry = None
+            for sqlite_file, dc_buffer, tp_buffer, zone, demand, pmax, total_invest, zoi_invest in results:
+                # Check for both Python None and string "None" to handle SQLite vs filename parsing
+                if (zone == "None" or zone is None) and re.sub(r'-zoi[^-]+', '-zoi', sqlite_file) == base_id:
+                    zoi_none_entry = (sqlite_file, dc_buffer, tp_buffer, zone, demand, pmax, total_invest, zoi_invest)
+                    break
+
+            if not zoi_none_entry:
+                printer.warning(f"No DC-OPF baseline found for {base_id}")
+                continue
+
+            none_sqlite_file, _, _, _, _, _, none_total, none_zoi = zoi_none_entry
+            none_total_cap = sum(none_total.values())
+
+            printer.information("\n" + "=" * 140)
+            printer.information(f"Uniform Technical Representations for: {base_id}")
+            printer.information("=" * 140)
+            printer.information(f"  {'Type':<10s} {'Description':<50s} {'Total Cap (MW)':>25s} {'Abs. Diff (MW)':>20s} {'Rel. Diff (%)':>15s}")
+            printer.information("-" * 140)
+
+            # Collect entries and sort: DC-OPF, TP, SN
+            entries = []
+
+            # Add DC-OPF as first entry
+            entries.append(('DC-OPF', 'DC Optimal Power Flow (all lines as DC-OPF)', none_total_cap, 0.0, 0.0))
+
+            # Add TP and SN
+            for sqlite_file, dc_buffer, tp_buffer, zone, demand, pmax, total_invest, zoi_invest in group:
+                if zone == 'TP':
+                    desc = "Transport Model (all lines as TP)"
+                    sort_order = 1
+                elif zone == 'SN':
+                    desc = "Single Node / Copper Plate (all lines as SN)"
+                    sort_order = 2
+                else:
+                    desc = f"Uniform {zone}"
+                    sort_order = 3
+
+                total_cap = sum(total_invest.values())
+                abs_diff = total_cap - none_total_cap
+                rel_diff_pct = (abs_diff / none_total_cap * 100) if none_total_cap != 0 else 0.0
+                entries.append((zone, desc, total_cap, abs_diff, rel_diff_pct, sort_order))
+
+            # Sort entries: DC-OPF (0), TP (1), SN (2)
+            entries_sorted = sorted([e for e in entries if len(e) > 5], key=lambda x: x[5])
+
+            # Print all entries
+            for entry in [entries[0]] + entries_sorted:
+                if len(entry) == 5:
+                    zone_type, desc, total_cap, abs_diff, rel_diff_pct = entry
+                    printer.information(f"  {zone_type:<10s} {desc:<50s} {total_cap:>25.2f} {abs_diff:>20.2f} {rel_diff_pct:>14.1f}%")
+                else:
+                    zone_type, desc, total_cap, abs_diff, rel_diff_pct, _ = entry
+                    printer.information(f"  {zone_type:<10s} {desc:<50s} {total_cap:>25.2f} {abs_diff:>20.2f} {rel_diff_pct:>14.1f}%")
+
+            printer.information("-" * 140)
+            printer.information("Note: DC-OPF is the baseline model with full network representation.")
+
+            # Add detailed technology comparison for TP and SN
+            for sqlite_file, dc_buffer, tp_buffer, zone, demand, pmax, total_invest, zoi_invest in sorted(group, key=lambda x: (0 if x[3] == 'TP' else 1)):
+                if zone == 'TP':
+                    desc = "Transport Model (all lines as TP)"
+                elif zone == 'SN':
+                    desc = "Single Node / Copper Plate (all lines as SN)"
+                else:
+                    continue
+
+                printer.information(f"\nComparing: {desc} ({zone})")
+                printer.information("-" * 140)
+                printer.information(
+                    f"  {'Technology':<20s} "
+                    f"{'Total (DC-OPF)':>15s} {'Total (' + zone + ')':>15s} {'Diff':>12s} {'Rel%':>10s}"
+                )
+                printer.information("-" * 140)
+
+                # Print each technology
+                for tec in sorted(all_technologies):
+                    none_total_val = none_total.get(tec, 0.0)
+                    zone_total_val = total_invest.get(tec, 0.0)
+                    diff_total = zone_total_val - none_total_val
+                    rel_total = (diff_total / none_total_val * 100) if none_total_val != 0 else 0.0
+
+                    printer.information(
+                        f"  {tec:<20s} "
+                        f"{none_total_val:>15.2f} {zone_total_val:>15.2f} {diff_total:>12.2f} {rel_total:>9.1f}%"
+                    )
 
 
 if __name__ == "__main__":
