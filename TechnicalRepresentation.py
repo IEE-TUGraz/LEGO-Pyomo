@@ -146,92 +146,101 @@ def assign_technical_representation_by_layers(cs: CaseStudy, dc_buffer: int, tp_
     printer.information(f"  SN: {len(sn_lines)} lines")
 
 
-def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand, scale_pmax):
+def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand, scale_pmax, all_zones):
     caseStudyName = case_study_directory.replace("/", "_").replace("\\", "_")
 
-    # Build identifier with only non-default parameters
-    identifier_parts = [f"data{caseStudyName}"]
-
     printer.information(f"Loading case study from '{case_study_directory}'")
+    identifier_parts_base = [f"data{caseStudyName}"]  # Build identifier with only non-default parameters
     start_time = time.time()
-    cs = CaseStudy(case_study_directory)
+    cs_base = CaseStudy(case_study_directory)
     printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
 
     printer.information(f"Setting parameters so that it will be solved as rMIP")
-    cs.dGlobal_Parameters["pEnableRMIP"] = True
+    cs_base.dGlobal_Parameters["pEnableRMIP"] = True
 
     printer.information(f"Removing fixed slack node so that it is calculated based on demand")
-    cs.dPower_Parameters["is"] = None
+    cs_base.dPower_Parameters["is"] = None
 
     if limit_k is not None:
         printer.information(f"Limiting K values to '{limit_k}'")
-        identifier_parts.append(f"limitK{limit_k}")
+        identifier_parts_base.append(f"limitK{limit_k}")
         start, end = limit_k.split("-")
-        cs.filter_timesteps(start, end, inplace=True)
-
-    # Check if zone is uniform representation (where buffers are unused)
-    # DC, TP, SN are uniform representations; None means no ZOI adjustment at all
-    is_uniform_repr = zoi in ['DC', 'TP', 'SN'] or zoi is None or zoi == 'None'
+        cs_base.filter_timesteps(start, end, inplace=True)
 
     if scale_demand != SCALE_DEFAULT:
         printer.information(f"Scaling demand by factor {scale_demand}")
-        identifier_parts.append(f"demand{scale_demand:.1f}")
-        cs.dPower_Demand['value'] *= scale_demand
+        identifier_parts_base.append(f"demand{scale_demand:.1f}")
+        cs_base.dPower_Demand['value'] *= scale_demand
 
     if scale_pmax != SCALE_DEFAULT:
         printer.information(f"Scaling pPmax (line capacity) by factor {scale_pmax}")
-        identifier_parts.append(f"pmax{scale_pmax:.1f}")
-        cs.dPower_Network['pPmax'] *= scale_pmax
+        identifier_parts_base.append(f"pmax{scale_pmax:.1f}")
+        cs_base.dPower_Network['pPmax'] *= scale_pmax
 
     if dc_buffer != DC_BUFFER_DEFAULT:
-        if is_uniform_repr:
-            printer.warning("DC buffer specified but using uniform technical representation - DC buffer will be ignored")
+        if zoi in ['DC', 'TP', 'SN'] or zoi is None or zoi == 'None':
+            printer.warning("DC buffer specified but using uniform or unchanged technical representation - DC buffer will be ignored")
         else:
-            identifier_parts.append(f"dcBuffer{dc_buffer}")
+            identifier_parts_base.append(f"dcBuffer{dc_buffer}")
 
     if tp_buffer != TP_BUFFER_DEFAULT:
-        if is_uniform_repr:
-            printer.warning("TP buffer specified but using uniform technical representation - TP buffer will be ignored")
+        if zoi in ['DC', 'TP', 'SN'] or zoi is None or zoi == 'None':
+            printer.warning("TP buffer specified but using uniform or unchanged technical representation - TP buffer will be ignored")
         else:
-            identifier_parts.append(f"tpBuffer{tp_buffer}")
+            identifier_parts_base.append(f"tpBuffer{tp_buffer}")
 
-    if zoi is None or zoi == 'None':
-        printer.information(f"No ZOI adjustment - using original technical representations from Power_Network.xlsx")
-    elif zoi in ['DC', 'TP', 'SN']:
-        printer.information(f"Using uniform technical representation: {zoi}")
-        identifier_parts.append(f"zoi{zoi}")
-        cs.dPower_Network['pTecRepr'] = 'DC-OPF' if zoi == 'DC' else zoi
+    # Determine which zones to run
+    if all_zones:
+        printer.information("Running for all zones (--all specified)")
+        # Get all unique zones from the data
+        available_zones = sorted(cs_base.dPower_BusInfo['z'].unique().tolist())
+        zones_to_run = ['DC', 'TP', 'SN'] + available_zones
+        printer.information(f"Will run for zones: {zones_to_run}")
     else:
-        printer.information(f"Setting Zone of Interest (zoi) to zone '{zoi}'")
-        identifier_parts.append(f"zoi{zoi}")
-        cs.dPower_BusInfo['zoi'] = 0
-        cs.dPower_BusInfo.loc[cs.dPower_BusInfo['z'] == zoi, 'zoi'] = 1
+        zones_to_run = [zoi]
 
-        # Check if any buses were assigned to ZOI
-        num_zoi_buses = (cs.dPower_BusInfo['zoi'] == 1).sum()
-        if num_zoi_buses == 0:
-            available_zones = cs.dPower_BusInfo['z'].unique().tolist()
-            printer.warning(f"0 buses selected for zone '{zoi}'. Available zones: {available_zones}")
-
-        printer.information(f"Assigning technical representations with DC-Buffer={dc_buffer}, TP-Buffer={tp_buffer}")
-        assign_technical_representation_by_layers(cs, dc_buffer, tp_buffer)
-
-    cs.merge_single_node_buses()
-
-    printer.information("Building LEGO model")
     legos = {}
-    for name, cs in [(zoi, cs)]:
-        printer.information(f"Building LEGO model for case study with '{name}' as zoi")
+    for current_zoi in zones_to_run:
+        printer.information(f"\n{'=' * 80}")
+        printer.information(f"Processing zone: {current_zoi}")
+        printer.information(f"{'=' * 80}\n")
+
+        # Create a copy of the base case study for this zone
+        cs = cs_base.copy()
+        identifier_parts = identifier_parts_base.copy()
+
+        # Apply zone-specific settings
+        if current_zoi is None or current_zoi == 'None':
+            printer.information(f"No ZOI adjustment - using original technical representations from Power_Network.xlsx")
+        elif current_zoi in ['DC', 'TP', 'SN']:
+            printer.information(f"Using uniform technical representation: {current_zoi}")
+            identifier_parts.append(f"zoi{current_zoi}")
+            cs.dPower_Network['pTecRepr'] = 'DC-OPF' if current_zoi == 'DC' else current_zoi
+        else:
+            printer.information(f"Setting Zone of Interest (zoi) to zone '{current_zoi}'")
+            identifier_parts.append(f"zoi{current_zoi}")
+            cs.dPower_BusInfo['zoi'] = 0
+            cs.dPower_BusInfo.loc[cs.dPower_BusInfo['z'] == current_zoi, 'zoi'] = 1
+
+            # Check if any buses were assigned to ZOI
+            num_zoi_buses = (cs.dPower_BusInfo['zoi'] == 1).sum()
+            if num_zoi_buses == 0:
+                available_zones = cs.dPower_BusInfo['z'].unique().tolist()
+                printer.warning(f"0 buses selected for zone '{current_zoi}'. Available zones: {available_zones}")
+
+            printer.information(f"Assigning technical representations with DC-Buffer={dc_buffer}, TP-Buffer={tp_buffer}")
+            assign_technical_representation_by_layers(cs, dc_buffer, tp_buffer)
+
+        cs.merge_single_node_buses()
+        printer.information(f"Building LEGO model for case study with '{current_zoi}' as zoi...")
         lego = LEGO(cs)
         model, timing = lego.build_model()
-        printer.information(f"Building LEGO model for case study with '{name}' as zoi took {timing:.2f} seconds")
-        legos[name] = (lego, model)
+        printer.information(f"Building LEGO model for case study with '{current_zoi}' as zoi took {timing:.2f} seconds")
+        legos[current_zoi] = (lego, model)
 
-    printer.information("Solving LEGO model(s)")
-    for name, (lego, model) in legos.items():
-        printer.information(f"Solving LEGO model for case study with '{name}' as zoi")
+        printer.information(f"Solving LEGO model for case study with '{current_zoi}' as zoi...")
         results, timing, objective_value = lego.solve_model()
-        printer.information(f"Solving LEGO model for case study with '{name}' as zoi took {timing:.2f} seconds")
+        printer.information(f"Solving LEGO model for case study with '{current_zoi}' as zoi took {timing:.2f} seconds")
 
         match results.solver.termination_condition:
             case pyo.TerminationCondition.optimal:
@@ -250,7 +259,7 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
         SQLiteWriter.add_run_parameters_to_sqlite(
             sqlite_filename,
             case_study_directory=case_study_directory,
-            zoi=zoi,
+            zoi=current_zoi,
             limit_k=limit_k,
             dc_buffer=dc_buffer,
             tp_buffer=tp_buffer,
@@ -264,7 +273,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tests different technical representations for network", formatter_class=RichHelpFormatter)
 
     parser.add_argument("caseStudyDirectory", type=str, help="Path to folder containing data for LEGO model")
-    parser.add_argument("--zoi", type=str, help="Which Zone (from Power_BusInfo 'z') should be the Zone of Interest ('zoi')? Special values: 'DC' for uniform DC-OPF, 'TP' for uniform Transport Model, 'SN' for uniform Single Node. If not specified (default None), uses original settings from Excel files without adjustment.", nargs="?", default=None)
+    parser.add_argument("--zoi", type=str, help="Which Zone (from Power_BusInfo 'z') should be the Zone of Interest ('zoi')? Special values: 'DC' for uniform DC-OPF, 'TP' for uniform Transport Model, 'SN' for uniform Single Node. If not specified (default None), uses original settings from Excel files without adjustment. Ignored if --all is specified.", nargs="?", default=None)
+    parser.add_argument("--all", action="store_true", help="Run for all zones: DC, TP, SN, and all zones found in Power_BusInfo. Overrides --zoi.")
     parser.add_argument("--limitK", type=str, help="Limit the ks, format: 'k0025-k0048'", nargs="?", default=None)
     parser.add_argument("--dcBuffer", type=int, help=f"Number of network layers outside ZOI to assign as DC-OPF (default: {DC_BUFFER_DEFAULT})", nargs="?", default=DC_BUFFER_DEFAULT)
     parser.add_argument("--tpBuffer", type=int, help=f"Number of network layers after DC buffer to assign as TP (default: {TP_BUFFER_DEFAULT})", nargs="?", default=TP_BUFFER_DEFAULT)
@@ -272,4 +282,4 @@ if __name__ == "__main__":
     parser.add_argument("--scalePMax", type=float, help=f"Scaling factor for pPmax (line capacity) (default: {SCALE_DEFAULT} = no scaling)", nargs="?", default=SCALE_DEFAULT)
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory, args.zoi, args.limitK, args.dcBuffer, args.tpBuffer, args.scaleDemand, args.scalePMax)
+    main(args.caseStudyDirectory, args.zoi, args.limitK, args.dcBuffer, args.tpBuffer, args.scaleDemand, args.scalePMax, args.all)
