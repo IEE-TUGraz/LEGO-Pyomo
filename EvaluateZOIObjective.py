@@ -5,9 +5,7 @@ import re
 import sqlite3
 import time
 
-import cloudpickle
 import pandas as pd
-import pyomo.environ as pe
 
 from InOutModule.printer import Printer
 from LEGO import LEGOUtilities
@@ -142,12 +140,24 @@ def load_zoi_data_from_sqlite(sqlite_file):
         except Exception:
             total_objective = None
 
+        # Load work_units from solver_statistics (may not exist)
+        work_units = None
+        try:
+            df_stats = pd.read_sql_query('SELECT * FROM solver_statistics', conn)
+            if 'work_units' in df_stats.columns:
+                val = df_stats.iloc[0]['work_units']
+                if val is not None:
+                    work_units = float(val)
+        except Exception:
+            pass
+
         # Create ZOI data structure
         zoi_data = {
             'var_values': var_values,
             'sets': sets_data,
             'objective': objective_data,
             'total_objective': total_objective,
+            'work_units': work_units,
         }
 
         return zoi_data
@@ -158,65 +168,94 @@ def load_zoi_data_from_sqlite(sqlite_file):
 
 def extract_parameters(filename):
     """
-    Extract dcBuffer, tpBuffer, zone, demand, and pmax values from filename.
+    Extract all parameters from filename.
     Uses default values if parameters are missing from the filename.
 
+    Handles both old and new filename formats:
+    - Old: TR-datadata_<name>-zoi<zone>-limitK<k>-dcBuffer<dc>-tpBuffer<tp>-demand<d>-pmax<p>
+    - New: TR-datadata_<name>-limitK<k>-demand<d>-pmax<p>-dcBuffer<dc>-tpBuffer<tp>-zoi<zone>
+
     Returns:
-        tuple: (dc_buffer, tp_buffer, zone, demand, pmax, params_dict)
+        tuple: (input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, params_dict)
                where params_dict contains info about which values are defaults
     """
     params_dict = {}
 
-    # Parse filename - all parameters except zone are optional
     # Remove file extension first
-    filename_no_ext = filename.replace('.sqlite', '').replace('.pkl', '')
-    match = re.search(r'-zoi(?P<zone>[^-]+)(?:.*?-dcBuffer(?P<dc>\d+))?(?:.*?-tpBuffer(?P<tp>\d+))?(?:.*?-demand(?P<demand>\d+(?:\.\d+)?))?(?:.*?-pmax(?P<pmax>\d+(?:\.\d+)?))?', filename_no_ext)
+    filename_no_ext = filename.replace('.sqlite', '')
 
-    if match:
-        # Zone is always required in filename
-        zone = match.group('zone')
-        params_dict['zone'] = {'value': zone, 'is_default': False}
+    # Extract input directory name (everything after "TR-data" until first parameter)
+    input_dir = None
+    input_dir_match = re.search(r'TR-data(.+?)(?:-(?:limitK|demand|pmax|dcBuffer|tpBuffer|zoi))', filename_no_ext)
+    if input_dir_match:
+        input_dir = input_dir_match.group(1)
+        params_dict['input_dir'] = {'value': input_dir, 'is_default': False}
+    else:
+        params_dict['input_dir'] = {'value': None, 'is_default': True}
 
-        # dcBuffer and tpBuffer are optional (defaults to 1)
-        if match.group('dc'):
-            dc_buffer = int(match.group('dc'))
-            params_dict['dc_buffer'] = {'value': dc_buffer, 'is_default': False}
-        else:
-            dc_buffer = DEFAULT_DC_BUFFER
-            params_dict['dc_buffer'] = {'value': dc_buffer, 'is_default': True}
+    # Extract limitK (optional) - format: -limitKk0001-k0048
+    limit_k = None
+    limit_k_match = re.search(r'-limitK(k\d+-k\d+)', filename_no_ext)
+    if limit_k_match:
+        limit_k = limit_k_match.group(1)
+        params_dict['limit_k'] = {'value': limit_k, 'is_default': False}
+    else:
+        params_dict['limit_k'] = {'value': None, 'is_default': True}
 
-        if match.group('tp'):
-            tp_buffer = int(match.group('tp'))
-            params_dict['tp_buffer'] = {'value': tp_buffer, 'is_default': False}
-        else:
-            tp_buffer = DEFAULT_TP_BUFFER
-            params_dict['tp_buffer'] = {'value': tp_buffer, 'is_default': True}
+    # Extract zone - can appear anywhere in the filename
+    zone_match = re.search(r'-zoi([^-]+?)(?:-|$)', filename_no_ext)
+    if not zone_match:
+        # No zone found - return all defaults
+        return (input_dir, limit_k, None, None, None, DEFAULT_SCALE_DEMAND, DEFAULT_SCALE_PMAX, {
+            'input_dir': params_dict.get('input_dir', {'value': None, 'is_default': True}),
+            'limit_k': params_dict.get('limit_k', {'value': None, 'is_default': True}),
+            'zone': {'value': None, 'is_default': True},
+            'dc_buffer': {'value': None, 'is_default': True},
+            'tp_buffer': {'value': None, 'is_default': True},
+            'scale_demand': {'value': DEFAULT_SCALE_DEMAND, 'is_default': True},
+            'scale_pmax': {'value': DEFAULT_SCALE_PMAX, 'is_default': True}
+        })
 
-        # demand and pmax are optional (defaults to 1.0)
-        if match.group('demand'):
-            demand = float(match.group('demand'))
-            params_dict['scale_demand'] = {'value': demand, 'is_default': False}
-        else:
-            demand = DEFAULT_SCALE_DEMAND
-            params_dict['scale_demand'] = {'value': demand, 'is_default': True}
+    zone = zone_match.group(1)
+    params_dict['zone'] = {'value': zone, 'is_default': False}
 
-        if match.group('pmax'):
-            pmax = float(match.group('pmax'))
-            params_dict['scale_pmax'] = {'value': pmax, 'is_default': False}
-        else:
-            pmax = DEFAULT_SCALE_PMAX
-            params_dict['scale_pmax'] = {'value': pmax, 'is_default': True}
+    # Extract dcBuffer (optional)
+    dc_match = re.search(r'-dcBuffer(\d+)', filename_no_ext)
+    if dc_match:
+        dc_buffer = int(dc_match.group(1))
+        params_dict['dc_buffer'] = {'value': dc_buffer, 'is_default': False}
+    else:
+        dc_buffer = DEFAULT_DC_BUFFER
+        params_dict['dc_buffer'] = {'value': dc_buffer, 'is_default': True}
 
-        return dc_buffer, tp_buffer, zone, demand, pmax, params_dict
+    # Extract tpBuffer (optional)
+    tp_match = re.search(r'-tpBuffer(\d+)', filename_no_ext)
+    if tp_match:
+        tp_buffer = int(tp_match.group(1))
+        params_dict['tp_buffer'] = {'value': tp_buffer, 'is_default': False}
+    else:
+        tp_buffer = DEFAULT_TP_BUFFER
+        params_dict['tp_buffer'] = {'value': tp_buffer, 'is_default': True}
 
-    # No match - return all defaults
-    return (None, None, None, DEFAULT_SCALE_DEMAND, DEFAULT_SCALE_PMAX, {
-        'zone': {'value': None, 'is_default': True},
-        'dc_buffer': {'value': None, 'is_default': True},
-        'tp_buffer': {'value': None, 'is_default': True},
-        'scale_demand': {'value': DEFAULT_SCALE_DEMAND, 'is_default': True},
-        'scale_pmax': {'value': DEFAULT_SCALE_PMAX, 'is_default': True}
-    })
+    # Extract demand (optional)
+    demand_match = re.search(r'-demand(\d+(?:\.\d+)?)', filename_no_ext)
+    if demand_match:
+        demand = float(demand_match.group(1))
+        params_dict['scale_demand'] = {'value': demand, 'is_default': False}
+    else:
+        demand = DEFAULT_SCALE_DEMAND
+        params_dict['scale_demand'] = {'value': demand, 'is_default': True}
+
+    # Extract pmax (optional)
+    pmax_match = re.search(r'-pmax(\d+(?:\.\d+)?)', filename_no_ext)
+    if pmax_match:
+        pmax = float(pmax_match.group(1))
+        params_dict['scale_pmax'] = {'value': pmax, 'is_default': False}
+    else:
+        pmax = DEFAULT_SCALE_PMAX
+        params_dict['scale_pmax'] = {'value': pmax, 'is_default': True}
+
+    return input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, params_dict
 
 
 def print_run_parameters(params_dict):
@@ -228,10 +267,10 @@ def print_run_parameters(params_dict):
         printer.warning("  Could not extract parameters from filename")
         return
 
-    # Check if zone is a uniform representation (None, TP, SN)
+    # Check if zone is a uniform representation (None, DC, TP, SN)
     zone_info = params_dict.get('zone', {})
     zone = zone_info.get('value')
-    is_uniform_repr = zone in ['TP', 'SN'] or zone is None or zone == "None"
+    is_uniform_repr = zone in ['DC', 'TP', 'SN'] or zone is None or zone == "None"
 
     param_strs = []
     for key, info in params_dict.items():
@@ -250,81 +289,38 @@ def print_run_parameters(params_dict):
 
 
 def main(folder="."):
-    # Find all data files (both .sqlite and .pkl) in the specified folder
+    # Find all SQLite files in the specified folder
     sqlite_pattern = os.path.join(folder, "*.sqlite")
-    pkl_pattern = os.path.join(folder, "*.pkl")
+    sqlite_files = sorted(glob.glob(sqlite_pattern))
 
-    sqlite_files = set(glob.glob(sqlite_pattern))
-    pkl_files = set(glob.glob(pkl_pattern))
-
-    # Create a unified list of base filenames (without extension)
-    all_base_files = set()
-    for f in sqlite_files:
-        all_base_files.add(f.replace('.sqlite', ''))
-    for f in pkl_files:
-        all_base_files.add(f.replace('.pkl', ''))
-
-    if not all_base_files:
-        printer.warning(f"No data files (.sqlite or .pkl) found in '{folder}'")
+    if not sqlite_files:
+        printer.warning(f"No SQLite files found in '{folder}'")
         return
 
-    printer.information(f"Found {len(all_base_files)} data file(s) in '{folder}'")
+    printer.information(f"Found {len(sqlite_files)} SQLite file(s) in '{folder}'")
 
     # Process each file and group by base identifier
     results = []
     all_files_data = []  # Store all file data for flexible grouping
-    uniform_files = []  # Store uniform representation files (None, TP, SN)
+    uniform_files = []  # Store uniform representation files (DC, TP, SN)
 
-    for base_file in sorted(all_base_files):
-        # Prefer SQLite over pickle
-        sqlite_file = base_file + '.sqlite'
-        pkl_file = base_file + '.pkl'
-
-        if os.path.exists(sqlite_file):
-            file_to_process = sqlite_file
-            use_sqlite = True
-        elif os.path.exists(pkl_file):
-            file_to_process = pkl_file
-            use_sqlite = False
-        else:
-            continue
-
-        printer.information(f"\nProcessing '{file_to_process}'...")
+    for sqlite_file in sqlite_files:
+        printer.information(f"\nProcessing '{sqlite_file}'...")
 
         try:
             # Extract parameters from filename
-            dc_buffer, tp_buffer, zone, demand, pmax, params_dict = extract_parameters(file_to_process)
+            input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, params_dict = extract_parameters(sqlite_file)
             print_run_parameters(params_dict)
 
-            # Load the ZOI data
+            # Load the ZOI data from SQLite
             start_time = time.time()
-            if use_sqlite:
-                printer.information(f"  Loading from SQLite database...")
-                try:
-                    zoi_data = load_zoi_data_from_sqlite(sqlite_file)
-                    load_time = time.time() - start_time
-                    printer.information(f"  Loaded in {load_time:.2f} seconds")
-                except Exception as e:
-                    # SQLite loading failed (probably missing objective decomposition tables)
-                    # Fall back to pickle file if available
-                    if os.path.exists(pkl_file):
-                        printer.warning(f"  SQLite loading failed ({e}), falling back to pickle file...")
-                        start_time = time.time()
-                        with open(pkl_file, mode='rb') as file:
-                            zoi_data = cloudpickle.load(file)
-                        load_time = time.time() - start_time
-                        printer.information(f"  Loaded from pickle in {load_time:.2f} seconds")
-                    else:
-                        raise
-            else:
-                printer.information(f"  Loading from pickle file...")
-                with open(pkl_file, mode='rb') as file:
-                    zoi_data = cloudpickle.load(file)
-                load_time = time.time() - start_time
-                printer.information(f"  Loaded in {load_time:.2f} seconds")
+            printer.information(f"  Loading from SQLite database...")
+            zoi_data = load_zoi_data_from_sqlite(sqlite_file)
+            load_time = time.time() - start_time
+            printer.information(f"  Loaded in {load_time:.2f} seconds")
 
             # Check if this is a uniform representation
-            is_uniform_repr = zone in ['TP', 'SN'] or zone is None or zone == "None"
+            is_uniform_repr = zone in ['DC', 'TP', 'SN'] or zone is None or zone == "None"
 
             # Calculate objectives based on type
             zoi_value = None
@@ -332,15 +328,10 @@ def main(folder="."):
                 # Uniform representation: skip ZOI objective, only calculate total objective
                 printer.information(f"  Uniform representation detected - skipping ZOI objective calculation")
             else:
-                # Zone-specific: calculate ZOI objective (always calculate freshly, never use pre-calculated)
+                # Zone-specific: calculate ZOI objective
                 calc_start_time = time.time()
-                if isinstance(zoi_data, dict) and 'sets' in zoi_data:
-                    # Dict format (from SQLite or new pickle format): use lightweight recalculation from data
-                    zoi_i = zoi_data['sets']['zoi_i']
-                    zoi_value = LEGOUtilities.evaluate_zoi_objective_from_data(zoi_data, new_zoi_i=zoi_i, line_filter="both")
-                else:
-                    # Old format: full model - calculate ZOI objective
-                    _, zoi_value = LEGOUtilities.evaluate_zoi_objective(zoi_data, line_filter="both")
+                zoi_i = zoi_data['sets']['zoi_i']
+                zoi_value = LEGOUtilities.evaluate_zoi_objective_from_data(zoi_data, new_zoi_i=zoi_i, line_filter="both")
                 calc_time = time.time() - calc_start_time
                 printer.information(f"  ZOI objective calculated in {calc_time:.2f} seconds")
                 printer.success(f"  ZOI Objective: {zoi_value:.2f}")
@@ -349,35 +340,20 @@ def main(folder="."):
             calc_total_obj = None
             stored_total_obj = None
             try:
-                if isinstance(zoi_data, dict):
-                    # Get stored objective if available
-                    if 'total_objective' in zoi_data:
-                        stored_total_obj = zoi_data['total_objective']
+                # Get stored objective if available
+                if 'total_objective' in zoi_data:
+                    stored_total_obj = zoi_data['total_objective']
 
-                    # Always calculate total objective from components
-                    if 'objective' in zoi_data and 'var_values' in zoi_data:
-                        obj_data = zoi_data['objective']
-                        var_data = zoi_data['var_values']
-                        calc_total_obj = obj_data['constant']
+                # Calculate total objective from components
+                obj_data = zoi_data['objective']
+                var_data = zoi_data['var_values']
+                calc_total_obj = obj_data['constant']
 
-                        # Check if we have new format (var_name, index) or old format (index only)
-                        if 'linear_vars_info' in obj_data:
-                            # New format: use (var_name, index) composite keys
-                            for (var_name, idx), coef in zip(obj_data['linear_vars_info'], obj_data['linear_coefs']):
-                                key = (var_name, idx)
-                                if key in var_data:
-                                    calc_total_obj += coef * var_data[key]
-                        elif 'linear_vars_indices' in obj_data:
-                            # Old format: use index only (backward compatibility)
-                            for idx, coef in zip(obj_data['linear_vars_indices'], obj_data['linear_coefs']):
-                                if idx in var_data:
-                                    calc_total_obj += coef * var_data[idx]
-                else:
-                    # Old format: get objective from model
-                    obj_list = list(zoi_data.component_objects(ctype=pe.Objective, active=True))
-                    if obj_list:
-                        calc_total_obj = pe.value(obj_list[0])
-                        stored_total_obj = calc_total_obj  # In old format, they're the same
+                # Use (var_name, index) composite keys
+                for (var_name, idx), coef in zip(obj_data['linear_vars_info'], obj_data['linear_coefs']):
+                    key = (var_name, idx)
+                    if key in var_data:
+                        calc_total_obj += coef * var_data[key]
             except Exception as e:
                 printer.warning(f"  Could not calculate total objective: {e}")
 
@@ -395,11 +371,13 @@ def main(folder="."):
                 else:
                     printer.warning(f"  Stored Total Objective: Not available in data")
 
-            results.append((file_to_process, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, calc_total_obj))
+            results.append((sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, calc_total_obj))
 
             # Store file data
             file_data = {
-                'pkl_file': file_to_process,  # Store the actual file used
+                'sqlite_file': sqlite_file,
+                'input_dir': input_dir,
+                'limit_k': limit_k,
                 'dc_buffer': dc_buffer,
                 'tp_buffer': tp_buffer,
                 'zone': zone,
@@ -407,27 +385,27 @@ def main(folder="."):
                 'pmax': pmax,
                 'zoi_value': zoi_value,
                 'zoi_data': zoi_data,
-                'total_obj': calc_total_obj  # Use calculated total objective
+                'total_obj': calc_total_obj,
+                'work_units': zoi_data.get('work_units')
             }
 
             # Separate uniform representations from zone-specific runs
-            if zone in ['TP', 'SN'] or zone is None or zone == "None":
+            if zone in ['DC', 'TP', 'SN'] or zone is None or zone == "None":
                 uniform_files.append(file_data)
             else:
                 all_files_data.append(file_data)
 
         except Exception as e:
-            printer.error(f"  Failed to process '{file_to_process}': {e}")
+            printer.error(f"  Failed to process '{sqlite_file}': {e}")
 
-    # Group zone-specific files by their parameters (including dcBuffer/tpBuffer)
-    # Key: (case_study_base, dc_buffer, tp_buffer, demand, pmax)
+    # Group zone-specific files by their parameters
+    # Key: (input_dir, limit_k, dc_buffer, tp_buffer, demand, pmax)
     file_groups = {}
 
     for file_data in all_files_data:
-        # Extract case study base name (remove path and specific parameters from filename)
-        # Group by dcBuffer, tpBuffer, demand, pmax
-        group_key = (file_data['dc_buffer'], file_data['tp_buffer'],
-                     file_data['demand'], file_data['pmax'])
+        # Group by all parameters
+        group_key = (file_data['input_dir'], file_data['limit_k'], file_data['dc_buffer'],
+                     file_data['tp_buffer'], file_data['demand'], file_data['pmax'])
 
         if group_key not in file_groups:
             file_groups[group_key] = {
@@ -439,32 +417,35 @@ def main(folder="."):
 
     # Match uniform files to groups (ignoring dcBuffer/tpBuffer)
     for uniform_file in uniform_files:
-        # Match based on demand and pmax only
+        # Match based on input_dir, limit_k, demand, and pmax
         for group_key, group_data in file_groups.items():
-            dc_buf, tp_buf, demand, pmax = group_key
-            if uniform_file['demand'] == demand and uniform_file['pmax'] == pmax:
+            input_dir, limit_k, dc_buf, tp_buf, demand, pmax = group_key
+            if (uniform_file['input_dir'] == input_dir and uniform_file['limit_k'] == limit_k and
+                    uniform_file['demand'] == demand and uniform_file['pmax'] == pmax):
                 group_data['uniform_files'].append(uniform_file)
 
     # Print summary
     if results:
-        # Sort results by groups: demand, pmax, then by dcBuffer/tpBuffer (with uniform reps first), then by zone
+        # Sort results by groups: input_dir, limit_k, demand, pmax, then by dcBuffer/tpBuffer (with uniform reps first), then by zone
         def sort_key(result):
-            pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj = result
-            # For uniform representations (None, TP, SN), put them first in each demand/pmax group
-            is_uniform = zone in ['TP', 'SN'] or zone is None or zone == "None"
-            # Sort order: demand, pmax, uniform flag, dcBuffer, tpBuffer, zone
+            sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj = result
+            # For uniform representations (None, TP, SN), put them first in each group
+            is_uniform = zone in ['DC', 'TP', 'SN'] or zone is None or zone == "None"
+            # Sort order: input_dir, limit_k, demand, pmax, uniform flag, dcBuffer, tpBuffer, zone
             zone_str = str(zone) if zone is not None else ""
+            input_dir_str = str(input_dir) if input_dir is not None else ""
+            limit_k_str = str(limit_k) if limit_k is not None else ""
             dc_sort = -1 if is_uniform else (dc_buffer if dc_buffer is not None else 999)
             tp_sort = -1 if is_uniform else (tp_buffer if tp_buffer is not None else 999)
-            return (demand, pmax, 0 if is_uniform else 1, dc_sort, tp_sort, zone_str)
+            return (input_dir_str, limit_k_str, demand, pmax, 0 if is_uniform else 1, dc_sort, tp_sort, zone_str)
 
         sorted_results = sorted(results, key=sort_key)
 
         # Calculate the maximum filename length for proper alignment
-        max_filename_len = max(len(pkl_file) for pkl_file, _, _, _, _, _, _, _ in sorted_results)
+        max_filename_len = max(len(sqlite_file) for sqlite_file, _, _, _, _, _, _, _, _, _ in sorted_results)
         # Ensure minimum width for readability
         filename_width = max(max_filename_len, len("Filename"))
-        # Calculate total table width (added 16 for Total Objective column)
+        # Calculate total table width
         table_width = filename_width + 2 + 8 + 8 + 8 + 8 + 14 + 16
 
         printer.information("\n" + "=" * table_width)
@@ -476,16 +457,16 @@ def main(folder="."):
         # Track previous group to insert separators
         prev_group = None
 
-        for pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj in sorted_results:
-            # Check if we're starting a new group (demand, pmax)
-            current_group = (demand, pmax)
+        for sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj in sorted_results:
+            # Check if we're starting a new group (input_dir, limit_k, demand, pmax)
+            current_group = (input_dir, limit_k, demand, pmax)
             if prev_group is not None and current_group != prev_group:
                 # Insert separator line between groups
                 printer.information("-" * table_width)
             prev_group = current_group
 
             # Show '-' for dcBuffer and tpBuffer for uniform representations
-            is_uniform = zone in ['TP', 'SN'] or zone is None or zone == "None"
+            is_uniform = zone in ['DC', 'TP', 'SN'] or zone is None or zone == "None"
             dc_str = "-" if is_uniform else (str(dc_buffer) if dc_buffer is not None else "N/A")
             tp_str = "-" if is_uniform else (str(tp_buffer) if tp_buffer is not None else "N/A")
             demand_str = f"{demand:.1f}" if demand is not None else "N/A"
@@ -494,205 +475,177 @@ def main(folder="."):
             zoi_str = "N/A" if (is_uniform or zoi_value is None) else f"{zoi_value:.2f}"
             # Show total objective if available
             total_str = f"{total_obj:.2f}" if total_obj is not None else "N/A"
-            printer.information(f"  {pkl_file:<{filename_width}s} {dc_str:>8s} {tp_str:>8s} {demand_str:>8s} {pmax_str:>8s} {zoi_str:>14s} {total_str:>16s}")
+            printer.information(f"  {sqlite_file:<{filename_width}s} {dc_str:>8s} {tp_str:>8s} {demand_str:>8s} {pmax_str:>8s} {zoi_str:>14s} {total_str:>16s}")
 
-    # Group uniform files by demand and pmax for easier access
+    # Group uniform files by all grouping parameters for easier access
     uniform_groups = {}
     for uniform_file in uniform_files:
-        group_key = (uniform_file['demand'], uniform_file['pmax'])
+        group_key = (uniform_file['input_dir'], uniform_file['limit_k'],
+                     uniform_file['demand'], uniform_file['pmax'])
         if group_key not in uniform_groups:
             uniform_groups[group_key] = []
         uniform_groups[group_key].append(uniform_file)
 
-    # Organize groups by (demand, pmax) to show zone-specific and uniform representations together
-    demand_pmax_groups = {}
-    for (dc_buf, tp_buf, demand, pmax), group_data in file_groups.items():
-        key = (demand, pmax)
-        if key not in demand_pmax_groups:
-            demand_pmax_groups[key] = []
-        demand_pmax_groups[key].append((dc_buf, tp_buf, group_data))
+    # Organize groups by (input_dir, limit_k, demand, pmax) to show zone-specific and uniform representations together
+    main_groups = {}
+    for (input_dir, limit_k, dc_buf, tp_buf, demand, pmax), group_data in file_groups.items():
+        key = (input_dir, limit_k, demand, pmax)
+        if key not in main_groups:
+            main_groups[key] = []
+        main_groups[key].append((dc_buf, tp_buf, group_data))
 
-    # Process each (demand, pmax) group
-    for (demand, pmax), configs in sorted(demand_pmax_groups.items()):
-        # Get gold standard file for this group (from first config)
-        first_config = configs[0] if configs else None
-        if first_config:
-            _, _, group_data = first_config
-            zoi_none_for_header = next(
-                (f for f in group_data['uniform_files']
-                 if (f['zone'] is None or f['zone'] == "None")),
-                None
-            )
-        else:
-            zoi_none_for_header = None
-
-        # Extract case study name from filename
-        case_study_name = "Unknown"
-        if zoi_none_for_header:
-            pkl_file = zoi_none_for_header['pkl_file']
-            # Extract from filename like "TR-datadata_NREL-118-zoi..."
-            # Use non-greedy match to capture everything between "TR-data" and "-zoi"
-            match = re.search(r'TR-data(.+?)-zoi', pkl_file)
-            if match:
-                case_study_name = match.group(1)
+    # Process each (input_dir, limit_k, demand, pmax) group
+    for (input_dir, limit_k, demand, pmax), configs in sorted(main_groups.items(), key=lambda x: (x[0][0] or '', x[0][1] or '', x[0][2], x[0][3])):
+        # Build group description
+        group_desc_parts = []
+        if input_dir:
+            group_desc_parts.append(f"input={input_dir}")
+        if limit_k:
+            group_desc_parts.append(f"limitK={limit_k}")
+        group_desc_parts.append(f"demand={demand}")
+        group_desc_parts.append(f"pmax={pmax}")
+        group_desc = ", ".join(group_desc_parts)
 
         printer.information("\n" + "=" * 140)
-        printer.information(f"COMPARISON GROUP: {case_study_name}, demand={demand}, pmax={pmax}")
-        if zoi_none_for_header:
-            printer.information(f"Gold Standard: DC-OPF (zoi=None) - {zoi_none_for_header['pkl_file']}")
+        printer.information(f"COMPARISON GROUP: {group_desc}")
         printer.information("=" * 140)
 
-        # Show zone-specific comparisons for each (dc_buffer, tp_buffer) configuration
+        # --- 1) Uniform Technical Representation Comparisons (shown first) ---
+        uniform_group_key = (input_dir, limit_k, demand, pmax)
+        if uniform_group_key in uniform_groups:
+            group_uniform_files = uniform_groups[uniform_group_key]
+
+            # Find baseline: prefer zoiNone, fall back to zoiDC
+            dc_opf_file = next(
+                (f for f in group_uniform_files if (f['zone'] is None or f['zone'] == "None")),
+                None
+            )
+            if dc_opf_file is None:
+                dc_opf_file = next(
+                    (f for f in group_uniform_files if f['zone'] == 'DC'),
+                    None
+                )
+
+            if dc_opf_file is not None:
+                dc_opf_total_obj = dc_opf_file.get('total_obj')
+                baseline_zone = dc_opf_file.get('zone')
+                other_files = [f for f in group_uniform_files if f['zone'] != baseline_zone]
+
+                if dc_opf_total_obj is not None and other_files:
+                    # Build label/description for baseline
+                    zone_labels = {
+                        'DC': ('DC-OPF', 'DC Optimal Power Flow (all lines as DC-OPF)'),
+                        'TP': ('TP', 'Transport Model (all lines as TP)'),
+                        'SN': ('SN', 'Single Node / Copper Plate (all lines as SN)'),
+                    }
+                    if baseline_zone is None or baseline_zone == "None":
+                        baseline_label, baseline_desc = 'None', 'No ZOI adjustment (original Excel settings)'
+                    else:
+                        baseline_label, baseline_desc = zone_labels.get(baseline_zone, (baseline_zone, f'Uniform {baseline_zone}'))
+
+                    # Collect (label, desc, total_obj, abs_diff, rel_diff_pct, sort_order, work_units)
+                    entries = []
+                    entries.append((baseline_label, baseline_desc + ' (BASELINE)',
+                                    dc_opf_total_obj, 0.0, 0.0, -99, dc_opf_file.get('work_units')))
+
+                    sort_order_map = {'DC': 0, 'TP': 1, 'SN': 2}
+                    for uf in other_files:
+                        zone = uf['zone']
+                        if zone is None or zone == "None":
+                            label, desc, so = 'None', 'No ZOI adjustment (original Excel settings)', -1
+                        else:
+                            label, desc = zone_labels.get(zone, (zone, f'Uniform {zone}'))
+                            so = sort_order_map.get(zone, 3)
+                        total_obj = uf.get('total_obj')
+                        if total_obj is not None:
+                            abs_diff = total_obj - dc_opf_total_obj
+                            rel_diff_pct = (abs_diff / dc_opf_total_obj * 100) if dc_opf_total_obj != 0 else 0.0
+                            entries.append((label, desc, total_obj, abs_diff, rel_diff_pct, so, uf.get('work_units')))
+
+                    # Sort by sort_order (baseline first via -99, then others)
+                    entries.sort(key=lambda e: e[5])
+
+                    printer.information(f"\nUniform Technical Representation Comparisons")
+                    printer.information("-" * 140)
+                    printer.information(f"  {'Type':<10s} {'Description':<60s} {'Total Objective':>18s} {'Abs. Diff':>15s} {'Rel. Diff (%)':>15s} {'Work Units':>12s}")
+                    printer.information("-" * 140)
+                    for label, desc, total_obj, abs_diff, rel_diff_pct, _, wu in entries:
+                        wu_str = f"{wu:.2f}" if wu is not None else "N/A"
+                        printer.information(f"  {label:<10s} {desc:<60s} {total_obj:>18.2f} {abs_diff:>15.2f} {rel_diff_pct:>14.1f}% {wu_str:>12s}")
+                    printer.information("-" * 140)
+
+        # --- 2) Zone-Specific Comparisons (one per dc_buf / tp_buf config) ---
         for dc_buf, tp_buf, group_data in sorted(configs):
-            # Find the zoiNone model in uniform files for this group
-            zoi_none_file_data = next(
+            # Find baseline model: prefer zoiNone, fall back to zoiDC
+            baseline_file_data = next(
                 (f for f in group_data['uniform_files']
                  if (f['zone'] is None or f['zone'] == "None")),
                 None
             )
+            if baseline_file_data is None:
+                baseline_file_data = next(
+                    (f for f in group_data['uniform_files'] if f['zone'] == 'DC'),
+                    None
+                )
 
-            if zoi_none_file_data is None:
+            if baseline_file_data is None:
                 continue
 
             zone_files = group_data['zone_files']
             if not zone_files:
                 continue
 
-            # Get total objective from zoiNone pkl file for safety check
-            zoi_none_total_obj = zoi_none_file_data.get('total_obj')
+            baseline_total_obj = baseline_file_data.get('total_obj')
+            baseline_zone = baseline_file_data.get('zone')
+            baseline_label = "zoiNone" if (baseline_zone is None or baseline_zone == "None") else f"zoi{baseline_zone}"
 
-            printer.information(f"Zone-Specific Comparisons")
-            printer.information(f"Parameters: dcBuffer={dc_buf}, tpBuffer={tp_buf}, demand={demand}, pmax={pmax}")
+            printer.information(f"\nZone-Specific Comparisons (Baseline: {baseline_label})")
+            printer.information(f"Parameters: {group_desc}, dcBuffer={dc_buf}, tpBuffer={tp_buf}")
             printer.information("-" * 140)
-            printer.information(f"  {'Zone':<20s} {'Gold Std for Zone':>30s} {'Zone-Specific Run':>30s} {'Difference':>15s} {'Rel. Diff (%)':>15s}")
+            printer.information(f"  {'Zone':<12s} {'Baseline for Zone':>18s} {'Zone-Specific Run':>18s} {'Difference':>15s} {'Rel. Diff (%)':>15s} {'Work Units':>12s}")
             printer.information("-" * 140)
 
-            sum_of_gold_standard_zone_objectives = 0.0
+            sum_of_baseline_zone_objectives = 0.0
 
             for zone_file_data in zone_files:
                 try:
                     zone = zone_file_data['zone']
                     original_zoi_value = zone_file_data['zoi_value']
-                    zone_data = zone_file_data['zoi_data']
-                    zoi_none_data = zoi_none_file_data['zoi_data']
+                    baseline_data = baseline_file_data['zoi_data']
+                    zone_zoi_i = zone_file_data['zoi_data']['sets']['zoi_i']
 
-                    # Check if data is in new format (dict) or old format (model)
-                    if isinstance(zone_data, dict) and 'sets' in zone_data:
-                        # New format: extract zoi_i from zone_data
-                        zone_zoi_i = zone_data['sets']['zoi_i']
-                    else:
-                        # Old format: extract from model
-                        zone_zoi_i = list(zone_data.zoi_i)
+                    # Recalculate ZOI objective for baseline data with zone's ZOI definition
+                    baseline_zone_objective = LEGOUtilities.evaluate_zoi_objective_from_data(
+                        baseline_data, new_zoi_i=zone_zoi_i, line_filter="both"
+                    )
 
-                    # Recalculate ZOI objective for zoiNone (gold standard) data with zone's ZOI definition
-                    if isinstance(zoi_none_data, dict) and 'zoi_objective_value' in zoi_none_data:
-                        # New format: use lightweight recalculation
-                        gold_standard_zone_objective = LEGOUtilities.evaluate_zoi_objective_from_data(
-                            zoi_none_data, new_zoi_i=zone_zoi_i, line_filter="both"
-                        )
-                    else:
-                        # Old format: modify model and recalculate
-                        zoi_none_data.zoi_i.clear()
-                        zoi_none_data.zoi_i.construct()
-                        for bus in zone_zoi_i:
-                            zoi_none_data.zoi_i.add(bus)
-                        _, gold_standard_zone_objective = LEGOUtilities.evaluate_zoi_objective(zoi_none_data, line_filter="both")
-
-                    difference = gold_standard_zone_objective - original_zoi_value
-                    rel_diff_pct = (difference / gold_standard_zone_objective * 100) if gold_standard_zone_objective != 0 else 0.0
-                    sum_of_gold_standard_zone_objectives += gold_standard_zone_objective
-                    printer.information(f"  {zone:<20s} {gold_standard_zone_objective:>30.2f} {original_zoi_value:>30.2f} {difference:>15.2f} {rel_diff_pct:>14.1f}%")
+                    difference = baseline_zone_objective - original_zoi_value
+                    rel_diff_pct = (difference / baseline_zone_objective * 100) if baseline_zone_objective != 0 else 0.0
+                    sum_of_baseline_zone_objectives += baseline_zone_objective
+                    wu = zone_file_data.get('work_units')
+                    wu_str = f"{wu:.2f}" if wu is not None else "N/A"
+                    printer.information(f"  {zone:<12s} {baseline_zone_objective:>18.2f} {original_zoi_value:>18.2f} {difference:>15.2f} {rel_diff_pct:>14.1f}% {wu_str:>12s}")
 
                 except Exception as e:
                     printer.error(f"  Failed to compare zone {zone}: {e}")
                     import traceback
                     traceback.print_exc()
 
-            # Safety check: sum of gold standard's zone objectives should equal gold standard's overall objective
+            # Safety check: sum of baseline's zone objectives should equal baseline's overall objective
             printer.information("-" * 140)
-            if zoi_none_total_obj is not None:
-                printer.information(f"  {'SAFETY CHECK':<20s} {'Sum of Gold Std Zones':>30s} {'Gold Std Total Obj':>30s} {'Difference':>15s} {'Rel. Diff (%)':>15s}")
-                safety_difference = sum_of_gold_standard_zone_objectives - zoi_none_total_obj
-                safety_rel_diff_pct = (safety_difference / zoi_none_total_obj * 100) if zoi_none_total_obj != 0 else 0.0
+            if baseline_total_obj is not None:
+                printer.information(f"  {'SAFETY CHECK':<12s} {'Sum Baseline':>18s} {'Baseline Total':>18s} {'Difference':>15s} {'Rel. Diff (%)':>15s}")
+                safety_difference = sum_of_baseline_zone_objectives - baseline_total_obj
+                safety_rel_diff_pct = (safety_difference / baseline_total_obj * 100) if baseline_total_obj != 0 else 0.0
                 tolerance_pct = 0.01  # 0.01% relative tolerance
                 if abs(safety_rel_diff_pct) < tolerance_pct:
-                    printer.success(f"  {'[PASSED]':<20s} {sum_of_gold_standard_zone_objectives:>30.2f} {zoi_none_total_obj:>30.2f} {safety_difference:>15.2f} {safety_rel_diff_pct:>14.1f}%")
+                    printer.success(f"  {'[PASSED]':<12s} {sum_of_baseline_zone_objectives:>18.2f} {baseline_total_obj:>18.2f} {safety_difference:>15.2f} {safety_rel_diff_pct:>14.1f}%")
                 else:
-                    printer.error(f"  {'[FAILED]':<20s} {sum_of_gold_standard_zone_objectives:>30.2f} {zoi_none_total_obj:>30.2f} {safety_difference:>15.2f} {safety_rel_diff_pct:>14.1f}%")
-            else:
-                printer.warning(f"  {'SAFETY CHECK':<20s} Could not calculate total objective from pkl file - skipping safety check")
-                printer.warning(f"  {'N/A':<20s} {sum_of_gold_standard_zone_objectives:>30.2f} {'N/A':>30s}")
-
-        # Show uniform technical representation comparisons for this (demand, pmax) group
-        if (demand, pmax) in uniform_groups:
-            group_uniform_files = uniform_groups[(demand, pmax)]
-
-            # Find DC-OPF baseline (zoi=None)
-            dc_opf_file = next(
-                (f for f in group_uniform_files if (f['zone'] is None or f['zone'] == "None")),
-                None
-            )
-
-            if dc_opf_file is not None:
-                # Get total objective from DC-OPF pkl file
-                dc_opf_total_obj = dc_opf_file.get('total_obj')
-
-                # Find TP and SN files
-                tp_sn_files = [f for f in group_uniform_files if f['zone'] in ['TP', 'SN']]
-
-                if dc_opf_total_obj is not None and tp_sn_files:
-                    printer.information("\n" + "-" * 140)
-                    printer.information(f"Uniform Technical Representation Comparisons")
-                    printer.information(f"Parameters: demand={demand}, pmax={pmax}")
-                    printer.information("-" * 140)
-                    printer.information(f"  {'Type':<10s} {'Description':<50s} {'Total Objective':>20s} {'Abs. Diff':>15s} {'Rel. Diff (%)':>15s}")
-                    printer.information("-" * 140)
-
-                    # Collect entries and sort: DC-OPF, TP, SN
-                    entries = []
-
-                    # Add DC-OPF as first entry
-                    entries.append(('DC-OPF', 'DC Optimal Power Flow (all lines as DC-OPF)', dc_opf_total_obj, 0.0, 0.0))
-
-                    # Add TP and SN
-                    for uniform_file in tp_sn_files:
-                        zone = uniform_file['zone']
-
-                        if zone == 'TP':
-                            desc = "Transport Model (all lines as TP)"
-                            sort_order = 1
-                        elif zone == 'SN':
-                            desc = "Single Node / Copper Plate (all lines as SN)"
-                            sort_order = 2
-                        else:
-                            desc = f"Uniform {zone}"
-                            sort_order = 3
-
-                        # Get total objective from pkl file
-                        total_obj = uniform_file.get('total_obj')
-
-                        if total_obj is not None:
-                            abs_diff = total_obj - dc_opf_total_obj
-                            rel_diff_pct = (abs_diff / dc_opf_total_obj * 100) if dc_opf_total_obj != 0 else 0.0
-                            entries.append((zone, desc, total_obj, abs_diff, rel_diff_pct, sort_order))
-
-                    # Sort entries: DC-OPF (0), TP (1), SN (2)
-                    entries_sorted = sorted([e for e in entries if len(e) > 5], key=lambda x: x[5])
-
-                    # Print all entries
-                    for entry in [entries[0]] + entries_sorted:
-                        if len(entry) == 5:
-                            zone_type, desc, total_obj, abs_diff, rel_diff_pct = entry
-                            printer.information(f"  {zone_type:<10s} {desc:<50s} {total_obj:>20.2f} {abs_diff:>15.2f} {rel_diff_pct:>14.1f}%")
-                        else:
-                            zone_type, desc, total_obj, abs_diff, rel_diff_pct, _ = entry
-                            printer.information(f"  {zone_type:<10s} {desc:<50s} {total_obj:>20.2f} {abs_diff:>15.2f} {rel_diff_pct:>14.1f}%")
-
-                    printer.information("-" * 140)
+                    printer.error(f"  {'[FAILED]':<12s} {sum_of_baseline_zone_objectives:>18.2f} {baseline_total_obj:>18.2f} {safety_difference:>15.2f} {safety_rel_diff_pct:>14.1f}%")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Analyze ZOI (Zone of Interest) objectives from pickle files", fromfile_prefix_chars='@')
-    parser.add_argument("folder", nargs="?", default=".", help="Folder containing pickle files (default: current directory)")
+    parser = argparse.ArgumentParser(description="Analyze ZOI (Zone of Interest) objectives from SQLite files", fromfile_prefix_chars='@')
+    parser.add_argument("folder", nargs="?", default=".", help="Folder containing SQLite files (default: current directory)")
     args = parser.parse_args()
     main(args.folder)
