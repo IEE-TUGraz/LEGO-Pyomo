@@ -1,4 +1,6 @@
+import argparse
 import glob
+import os
 import re
 import sqlite3
 from collections import defaultdict
@@ -8,7 +10,7 @@ import pandas as pd
 from InOutModule.printer import Printer
 
 printer = Printer.getInstance()
-printer.set_width(300)
+printer.set_width(180)
 
 
 def extract_parameters(filename):
@@ -274,15 +276,16 @@ def print_safety_checks(group, zoi_none_entry):
         printer.error(f"  Status:                                [FAILED] - Check zone definitions")
 
 
-def main():
-    # Find all SQLite files
-    sqlite_files = glob.glob("*.sqlite")
+def main(folder="."):
+    # Find all SQLite files in the specified folder
+    search_pattern = os.path.join(folder, "*.sqlite")
+    sqlite_files = glob.glob(search_pattern)
 
     if not sqlite_files:
-        printer.warning("No SQLite files found in current directory")
+        printer.warning(f"No SQLite files found in '{folder}'")
         return
 
-    printer.information(f"Found {len(sqlite_files)} SQLite file(s)")
+    printer.information(f"Found {len(sqlite_files)} SQLite file(s) in '{folder}'")
 
     # Process each SQLite file
     results = []
@@ -495,4 +498,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Analyze generator investment capacity by technology from SQLite files")
+    parser.add_argument("folder", nargs="?", default=".", help="Folder containing SQLite files (default: current directory)")
+    args = parser.parse_args()
+    main(args.folder)

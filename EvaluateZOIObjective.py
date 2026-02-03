@@ -1,3 +1,4 @@
+import argparse
 import glob
 import os
 import re
@@ -66,15 +67,16 @@ def print_run_parameters_from_pkl(pkl_file):
             pass  # Table doesn't exist or other error - silently ignore
 
 
-def main():
-    # Find all pickle files in the current directory
-    pickle_files = glob.glob("*.pkl")
+def main(folder="."):
+    # Find all pickle files in the specified folder
+    search_pattern = os.path.join(folder, "*.pkl")
+    pickle_files = glob.glob(search_pattern)
 
     if not pickle_files:
-        printer.warning("No pickle files found in current directory")
+        printer.warning(f"No pickle files found in '{folder}'")
         return
 
-    printer.information(f"Found {len(pickle_files)} pickle file(s)")
+    printer.information(f"Found {len(pickle_files)} pickle file(s) in '{folder}'")
 
     # Process each pickle file and group by base identifier (everything except zone)
     results = []
@@ -316,4 +318,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Analyze ZOI (Zone of Interest) objectives from pickle files")
+    parser.add_argument("folder", nargs="?", default=".", help="Folder containing pickle files (default: current directory)")
+    args = parser.parse_args()
+    main(args.folder)
