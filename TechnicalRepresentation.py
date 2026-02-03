@@ -146,7 +146,32 @@ def assign_technical_representation_by_layers(cs: CaseStudy, dc_buffer: int, tp_
 
 def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand, scale_pmax):
     caseStudyName = case_study_directory.replace("/", "_").replace("\\", "_")
-    identifier = f"data{caseStudyName}-zoi{zoi}-limitK{limit_k}-dcBuffer{dc_buffer}-tpBuffer{tp_buffer}-demand{scale_demand:.1f}-pmax{scale_pmax:.1f}"
+
+    # Build identifier with only non-default parameters
+    # Defaults: dcBuffer=1, tpBuffer=1, scaleDemand=1.0, scalePMax=1.0
+    identifier_parts = [f"data{caseStudyName}", f"zoi{zoi}"]
+
+    # Add limitK if specified
+    if limit_k is not None:
+        identifier_parts.append(f"limitK{limit_k}")
+
+    # Check if zone is uniform representation (buffers are unused)
+    is_uniform_repr = zoi in ['TP', 'SN'] or zoi is None or zoi == 'None'
+
+    # Add dcBuffer and tpBuffer only if non-default AND not uniform representation
+    if not is_uniform_repr:
+        if dc_buffer != 1:
+            identifier_parts.append(f"dcBuffer{dc_buffer}")
+        if tp_buffer != 1:
+            identifier_parts.append(f"tpBuffer{tp_buffer}")
+
+    # Add demand and pmax only if non-default
+    if scale_demand != 1.0:
+        identifier_parts.append(f"demand{scale_demand:.1f}")
+    if scale_pmax != 1.0:
+        identifier_parts.append(f"pmax{scale_pmax:.1f}")
+
+    identifier = "-".join(identifier_parts)
 
     printer.information(f"Loading original case study from '{case_study_directory}'")
     start_time = time.time()

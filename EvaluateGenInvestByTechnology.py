@@ -498,7 +498,7 @@ def main(folder="."):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Analyze generator investment capacity by technology from SQLite files")
+    parser = argparse.ArgumentParser(description="Analyze generator investment capacity by technology from SQLite files", fromfile_prefix_chars='@')
     parser.add_argument("folder", nargs="?", default=".", help="Folder containing SQLite files (default: current directory)")
     args = parser.parse_args()
     main(args.folder)
