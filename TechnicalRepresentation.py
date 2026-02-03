@@ -177,17 +177,11 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
         identifier_parts_base.append(f"pmax{scale_pmax:.1f}")
         cs_base.dPower_Network['pPmax'] *= scale_pmax
 
-    if dc_buffer != DC_BUFFER_DEFAULT:
-        if zoi in ['DC', 'TP', 'SN'] or zoi is None or zoi == 'None':
+    if (zoi in ['DC', 'TP', 'SN', 'None'] or zoi is None) and not all_zones:
+        if dc_buffer != DC_BUFFER_DEFAULT:
             printer.warning("DC buffer specified but using uniform or unchanged technical representation - DC buffer will be ignored")
-        else:
-            identifier_parts_base.append(f"dcBuffer{dc_buffer}")
-
-    if tp_buffer != TP_BUFFER_DEFAULT:
-        if zoi in ['DC', 'TP', 'SN'] or zoi is None or zoi == 'None':
+        if tp_buffer != TP_BUFFER_DEFAULT:
             printer.warning("TP buffer specified but using uniform or unchanged technical representation - TP buffer will be ignored")
-        else:
-            identifier_parts_base.append(f"tpBuffer{tp_buffer}")
 
     # Determine which zones to run
     if all_zones:
@@ -218,6 +212,13 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
             cs.dPower_Network['pTecRepr'] = 'DC-OPF' if current_zoi == 'DC' else current_zoi
         else:
             printer.information(f"Setting Zone of Interest (zoi) to zone '{current_zoi}'")
+
+            # Add buffer info before zoi for easy grouping
+            if dc_buffer != DC_BUFFER_DEFAULT:
+                identifier_parts.append(f"dcBuffer{dc_buffer}")
+            if tp_buffer != TP_BUFFER_DEFAULT:
+                identifier_parts.append(f"tpBuffer{tp_buffer}")
+
             identifier_parts.append(f"zoi{current_zoi}")
             cs.dPower_BusInfo['zoi'] = 0
             cs.dPower_BusInfo.loc[cs.dPower_BusInfo['z'] == current_zoi, 'zoi'] = 1
@@ -270,7 +271,7 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Tests different technical representations for network", formatter_class=RichHelpFormatter)
+    parser = argparse.ArgumentParser(description="Tests different technical representations for network", formatter_class=RichHelpFormatter, fromfile_prefix_chars='@')
 
     parser.add_argument("caseStudyDirectory", type=str, help="Path to folder containing data for LEGO model")
     parser.add_argument("--zoi", type=str, help="Which Zone (from Power_BusInfo 'z') should be the Zone of Interest ('zoi')? Special values: 'DC' for uniform DC-OPF, 'TP' for uniform Transport Model, 'SN' for uniform Single Node. If not specified (default None), uses original settings from Excel files without adjustment. Ignored if --all is specified.", nargs="?", default=None)
