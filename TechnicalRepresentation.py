@@ -157,6 +157,12 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
     cs = CaseStudy(case_study_directory)
     printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
 
+    printer.information(f"Setting parameters so that it will be solved as rMIP")
+    cs.dGlobal_Parameters["pEnableRMIP"] = True
+
+    printer.information(f"Removing fixed slack node so that it is calculated based on demand")
+    cs.dPower_Parameters["is"] = None
+
     if limit_k is not None:
         printer.information(f"Limiting K values to '{limit_k}'")
         identifier_parts.append(f"limitK{limit_k}")
@@ -164,7 +170,8 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
         cs.filter_timesteps(start, end, inplace=True)
 
     # Check if zone is uniform representation (where buffers are unused)
-    is_uniform_repr = zoi in ['TP', 'SN'] or zoi is None or zoi == 'None'
+    # DC, TP, SN are uniform representations; None means no ZOI adjustment at all
+    is_uniform_repr = zoi in ['DC', 'TP', 'SN'] or zoi is None or zoi == 'None'
 
     if scale_demand != SCALE_DEFAULT:
         printer.information(f"Scaling demand by factor {scale_demand}")
@@ -188,7 +195,13 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
         else:
             identifier_parts.append(f"tpBuffer{tp_buffer}")
 
-    if zoi is not None:
+    if zoi is None or zoi == 'None':
+        printer.information(f"No ZOI adjustment - using original technical representations from Power_Network.xlsx")
+    elif zoi in ['DC', 'TP', 'SN']:
+        printer.information(f"Using uniform technical representation: {zoi}")
+        identifier_parts.append(f"zoi{zoi}")
+        cs.dPower_Network['pTecRepr'] = 'DC-OPF' if zoi == 'DC' else zoi
+    else:
         printer.information(f"Setting Zone of Interest (zoi) to zone '{zoi}'")
         identifier_parts.append(f"zoi{zoi}")
         cs.dPower_BusInfo['zoi'] = 0
@@ -199,26 +212,9 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
         if num_zoi_buses == 0:
             available_zones = cs.dPower_BusInfo['z'].unique().tolist()
             printer.warning(f"0 buses selected for zone '{zoi}'. Available zones: {available_zones}")
-    else:
-        printer.warning("No Zone of Interest (zoi) specified, proceeding with original setting from Power_BusInfo")
 
-    # Check for special zone names that apply uniform technical representation
-    if zoi == 'TP':
-        printer.information(f"Zone 'TP' specified: Setting all lines to Transport Model (TP)")
-        cs.dPower_Network['pTecRepr'] = 'TP'
-    elif zoi == 'SN':
-        printer.information(f"Zone 'SN' specified: Setting all lines to Single Node (SN)")
-        cs.dPower_Network['pTecRepr'] = 'SN'
-    else:
-        # Normal layer-based algorithm (including zoi='None' which gives all DC-OPF)
         printer.information(f"Assigning technical representations with DC-Buffer={dc_buffer}, TP-Buffer={tp_buffer}")
         assign_technical_representation_by_layers(cs, dc_buffer, tp_buffer)
-
-    printer.information(f"Setting parameters so that it will be solved as rMIP")
-    cs.dGlobal_Parameters["pEnableRMIP"] = True
-
-    printer.information(f"Removing fixed slack node so that it is calculated based on demand")
-    cs.dPower_Parameters["is"] = None
 
     cs.merge_single_node_buses()
 
@@ -268,7 +264,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tests different technical representations for network", formatter_class=RichHelpFormatter)
 
     parser.add_argument("caseStudyDirectory", type=str, help="Path to folder containing data for LEGO model")
-    parser.add_argument("--zoi", type=str, help="Which Zone (from Power_BusInfo 'z') should be the Zone of Interest ('zoi')? Special values: 'TP' or 'SN' to set all lines uniformly to that technical representation. Use 'None' for uniform DC-OPF (baseline for comparisons).", nargs="?", default=None)
+    parser.add_argument("--zoi", type=str, help="Which Zone (from Power_BusInfo 'z') should be the Zone of Interest ('zoi')? Special values: 'DC' for uniform DC-OPF, 'TP' for uniform Transport Model, 'SN' for uniform Single Node. If not specified (default None), uses original settings from Excel files without adjustment.", nargs="?", default=None)
     parser.add_argument("--limitK", type=str, help="Limit the ks, format: 'k0025-k0048'", nargs="?", default=None)
     parser.add_argument("--dcBuffer", type=int, help=f"Number of network layers outside ZOI to assign as DC-OPF (default: {DC_BUFFER_DEFAULT})", nargs="?", default=DC_BUFFER_DEFAULT)
     parser.add_argument("--tpBuffer", type=int, help=f"Number of network layers after DC buffer to assign as TP (default: {TP_BUFFER_DEFAULT})", nargs="?", default=TP_BUFFER_DEFAULT)
