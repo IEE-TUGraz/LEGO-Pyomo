@@ -258,7 +258,6 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
         sqlite_filename = f"TR-{identifier}.sqlite"
         SQLiteWriter.model_to_sqlite(model, sqlite_filename)
         printer.information(f"Saved LEGO model to '{sqlite_filename}'")
-        SQLiteWriter.add_objective_decomposition_to_sqlite(sqlite_filename, model)
         SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_filename, results, work_units=lego.work_units)
         SQLiteWriter.add_run_parameters_to_sqlite(
             sqlite_filename,

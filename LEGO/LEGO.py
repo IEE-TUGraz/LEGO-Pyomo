@@ -88,6 +88,10 @@ class LEGO:
         elif self.cs.dGlobal_Parameters["pSolver"] != solver_name:
             printer.warning(f"Solver name {solver_name} does not match the one used in the case study ({self.cs.dGlobal_Parameters['pSolver']}) - using {solver_name}")
 
+        # Add suffixes to request dual values from solver
+        if not hasattr(self.model, 'dual'):
+            self.model.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
+
         start_time = time.time()
         self.work_units = None  # Initialize work_units
         match model_type:
@@ -96,7 +100,7 @@ class LEGO:
                 if solver_name.lower() in ['gurobi', 'gurobi_persistent']:
                     optimizer = pyo.SolverFactory('gurobi_persistent')
                     optimizer.set_instance(self.model)
-                    results = optimizer.solve(tee=True)
+                    results = optimizer.solve(tee=True, load_solutions=True)
                     objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
                     # Extract work units from Gurobi model
                     try:
@@ -106,7 +110,7 @@ class LEGO:
                         self.work_units = None
                 else:
                     optimizer = pyo.SolverFactory(solver_name)
-                    results = optimizer.solve(self.model, tee=True)
+                    results = optimizer.solve(self.model, tee=True, load_solutions=True)
                     objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
             case ModelType.EXTENSIVE_FORM:
                 if solver_name != self.solver_name:

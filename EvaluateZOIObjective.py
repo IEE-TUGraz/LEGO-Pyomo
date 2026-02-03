@@ -71,7 +71,30 @@ def load_zoi_data_from_sqlite(sqlite_file):
 
         try:
             df_terms = pd.read_sql_query('SELECT * FROM objective_terms', conn)
-            linear_vars_indices = df_terms['var_index'].tolist()
+            # Parse string indices back to their original types (tuples, strings, etc.)
+            linear_vars_info = []  # List of (var_name, var_index) tuples
+            import ast
+
+            # Check if var_name column exists (new format) or not (old format)
+            if 'var_name' in df_terms.columns:
+                # New format: includes variable names
+                for _, row in df_terms.iterrows():
+                    var_name = row['var_name']
+                    idx_str = row['var_index']
+                    try:
+                        idx = ast.literal_eval(idx_str)
+                    except (ValueError, SyntaxError):
+                        idx = idx_str
+                    linear_vars_info.append((var_name, idx))
+            else:
+                # Old format: only indices (backward compatibility)
+                for idx_str in df_terms['var_index']:
+                    try:
+                        idx = ast.literal_eval(idx_str)
+                    except (ValueError, SyntaxError):
+                        idx = idx_str
+                    linear_vars_info.append((None, idx))  # No var_name available
+
             linear_coefs = df_terms['coefficient'].tolist()
         except Exception as e:
             printer.error(f"Could not load objective_terms: {e}")
@@ -79,7 +102,7 @@ def load_zoi_data_from_sqlite(sqlite_file):
 
         objective_data = {
             'constant': constant,
-            'linear_vars_indices': linear_vars_indices,
+            'linear_vars_info': linear_vars_info,  # Now includes (var_name, index) pairs
             'linear_coefs': linear_coefs,
         }
 
@@ -99,16 +122,16 @@ def load_zoi_data_from_sqlite(sqlite_file):
                     index_cols = [col for col in df.columns if col != 'values']
 
                     if len(index_cols) == 0:
-                        # Scalar variable
-                        var_values[var_name] = df['values'].iloc[0]
+                        # Scalar variable - store with (var_name, var_name) as key
+                        var_values[(var_name, var_name)] = df['values'].iloc[0]
                     else:
-                        # Indexed variable
+                        # Indexed variable - store with (var_name, index) as composite key
                         for _, row in df.iterrows():
                             if len(index_cols) == 1:
                                 idx = row[index_cols[0]]
                             else:
                                 idx = tuple(row[col] for col in index_cols)
-                            var_values[idx] = row['values']
+                            var_values[(var_name, idx)] = row['values']
             except Exception as e:
                 printer.warning(f"Could not load variable {var_name}: {e}")
 
@@ -300,45 +323,79 @@ def main(folder="."):
                 load_time = time.time() - start_time
                 printer.information(f"  Loaded in {load_time:.2f} seconds")
 
-            # Calculate ZOI objective (always calculate freshly, never use pre-calculated)
-            calc_start_time = time.time()
-            if isinstance(zoi_data, dict) and 'sets' in zoi_data:
-                # Dict format (from SQLite or new pickle format): use lightweight recalculation from data
-                zoi_i = zoi_data['sets']['zoi_i']
-                zoi_value = LEGOUtilities.evaluate_zoi_objective_from_data(zoi_data, new_zoi_i=zoi_i, line_filter="both")
+            # Check if this is a uniform representation
+            is_uniform_repr = zone in ['TP', 'SN'] or zone is None or zone == "None"
+
+            # Calculate objectives based on type
+            zoi_value = None
+            if is_uniform_repr:
+                # Uniform representation: skip ZOI objective, only calculate total objective
+                printer.information(f"  Uniform representation detected - skipping ZOI objective calculation")
             else:
-                # Old format: full model - calculate ZOI objective
-                _, zoi_value = LEGOUtilities.evaluate_zoi_objective(zoi_data, line_filter="both")
-            calc_time = time.time() - calc_start_time
-            printer.information(f"  ZOI objective calculated in {calc_time:.2f} seconds")
+                # Zone-specific: calculate ZOI objective (always calculate freshly, never use pre-calculated)
+                calc_start_time = time.time()
+                if isinstance(zoi_data, dict) and 'sets' in zoi_data:
+                    # Dict format (from SQLite or new pickle format): use lightweight recalculation from data
+                    zoi_i = zoi_data['sets']['zoi_i']
+                    zoi_value = LEGOUtilities.evaluate_zoi_objective_from_data(zoi_data, new_zoi_i=zoi_i, line_filter="both")
+                else:
+                    # Old format: full model - calculate ZOI objective
+                    _, zoi_value = LEGOUtilities.evaluate_zoi_objective(zoi_data, line_filter="both")
+                calc_time = time.time() - calc_start_time
+                printer.information(f"  ZOI objective calculated in {calc_time:.2f} seconds")
+                printer.success(f"  ZOI Objective: {zoi_value:.2f}")
 
-            printer.success(f"  ZOI Objective: {zoi_value:.2f}")
-            results.append((file_to_process, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value))
-
-            # Calculate total objective from data
-            total_obj = None
+            # Calculate total objective from data (for all cases)
+            calc_total_obj = None
+            stored_total_obj = None
             try:
                 if isinstance(zoi_data, dict):
-                    # New format: check if total objective is stored
+                    # Get stored objective if available
                     if 'total_objective' in zoi_data:
-                        total_obj = zoi_data['total_objective']
-                    elif 'objective' in zoi_data and 'var_values' in zoi_data:
-                        # Calculate from objective components
+                        stored_total_obj = zoi_data['total_objective']
+
+                    # Always calculate total objective from components
+                    if 'objective' in zoi_data and 'var_values' in zoi_data:
                         obj_data = zoi_data['objective']
                         var_data = zoi_data['var_values']
-                        total_obj = obj_data['constant']
-                        for idx, coef in zip(obj_data['linear_vars_indices'], obj_data['linear_coefs']):
-                            total_obj += coef * var_data[idx]
+                        calc_total_obj = obj_data['constant']
+
+                        # Check if we have new format (var_name, index) or old format (index only)
+                        if 'linear_vars_info' in obj_data:
+                            # New format: use (var_name, index) composite keys
+                            for (var_name, idx), coef in zip(obj_data['linear_vars_info'], obj_data['linear_coefs']):
+                                key = (var_name, idx)
+                                if key in var_data:
+                                    calc_total_obj += coef * var_data[key]
+                        elif 'linear_vars_indices' in obj_data:
+                            # Old format: use index only (backward compatibility)
+                            for idx, coef in zip(obj_data['linear_vars_indices'], obj_data['linear_coefs']):
+                                if idx in var_data:
+                                    calc_total_obj += coef * var_data[idx]
                 else:
                     # Old format: get objective from model
                     obj_list = list(zoi_data.component_objects(ctype=pe.Objective, active=True))
                     if obj_list:
-                        total_obj = pe.value(obj_list[0])
+                        calc_total_obj = pe.value(obj_list[0])
+                        stored_total_obj = calc_total_obj  # In old format, they're the same
             except Exception as e:
                 printer.warning(f"  Could not calculate total objective: {e}")
 
-            if total_obj is not None:
-                printer.information(f"  Total Objective: {total_obj:.2f}")
+            if calc_total_obj is not None:
+                printer.success(f"  Calculated Total Objective: {calc_total_obj:.2f}")
+
+                # Compare with stored objective
+                if stored_total_obj is not None:
+                    diff = abs(calc_total_obj - stored_total_obj)
+                    rel_diff_pct = (diff / stored_total_obj * 100) if stored_total_obj != 0 else 0.0
+                    if diff > 0.01:  # Tolerance of 0.01
+                        printer.warning(f"  Stored Total Objective: {stored_total_obj:.2f} (DIFFERENCE: {diff:.4f}, {rel_diff_pct:.4f}%)")
+                    else:
+                        printer.information(f"  Stored Total Objective: {stored_total_obj:.2f} (matches calculated)")
+                else:
+                    printer.warning(f"  Stored Total Objective: Not available in data")
+
+            results.append((file_to_process, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, calc_total_obj))
 
             # Store file data
             file_data = {
@@ -350,7 +407,7 @@ def main(folder="."):
                 'pmax': pmax,
                 'zoi_value': zoi_value,
                 'zoi_data': zoi_data,
-                'total_obj': total_obj
+                'total_obj': calc_total_obj  # Use calculated total objective
             }
 
             # Separate uniform representations from zone-specific runs
@@ -392,7 +449,7 @@ def main(folder="."):
     if results:
         # Sort results by groups: demand, pmax, then by dcBuffer/tpBuffer (with uniform reps first), then by zone
         def sort_key(result):
-            pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value = result
+            pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj = result
             # For uniform representations (None, TP, SN), put them first in each demand/pmax group
             is_uniform = zone in ['TP', 'SN'] or zone is None or zone == "None"
             # Sort order: demand, pmax, uniform flag, dcBuffer, tpBuffer, zone
@@ -404,22 +461,22 @@ def main(folder="."):
         sorted_results = sorted(results, key=sort_key)
 
         # Calculate the maximum filename length for proper alignment
-        max_filename_len = max(len(pkl_file) for pkl_file, _, _, _, _, _, _ in sorted_results)
+        max_filename_len = max(len(pkl_file) for pkl_file, _, _, _, _, _, _, _ in sorted_results)
         # Ensure minimum width for readability
         filename_width = max(max_filename_len, len("Filename"))
-        # Calculate total table width
-        table_width = filename_width + 2 + 8 + 8 + 8 + 8 + 14  # 2 for spacing, rest for columns
+        # Calculate total table width (added 16 for Total Objective column)
+        table_width = filename_width + 2 + 8 + 8 + 8 + 8 + 14 + 16
 
         printer.information("\n" + "=" * table_width)
-        printer.information("Summary of ZOI Objective Values (grouped by parameters):")
+        printer.information("Summary of Objective Values (grouped by parameters):")
         printer.information("=" * table_width)
-        printer.information(f"  {'Filename':<{filename_width}s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Demand':>8s} {'PMax':>8s} {'ZOI Objective':>14s}")
+        printer.information(f"  {'Filename':<{filename_width}s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Demand':>8s} {'PMax':>8s} {'ZOI Objective':>14s} {'Total Objective':>16s}")
         printer.information("-" * table_width)
 
         # Track previous group to insert separators
         prev_group = None
 
-        for pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value in sorted_results:
+        for pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj in sorted_results:
             # Check if we're starting a new group (demand, pmax)
             current_group = (demand, pmax)
             if prev_group is not None and current_group != prev_group:
@@ -433,7 +490,11 @@ def main(folder="."):
             tp_str = "-" if is_uniform else (str(tp_buffer) if tp_buffer is not None else "N/A")
             demand_str = f"{demand:.1f}" if demand is not None else "N/A"
             pmax_str = f"{pmax:.1f}" if pmax is not None else "N/A"
-            printer.information(f"  {pkl_file:<{filename_width}s} {dc_str:>8s} {tp_str:>8s} {demand_str:>8s} {pmax_str:>8s} {zoi_value:>14.2f}")
+            # Show N/A for ZOI objective if it's a uniform representation
+            zoi_str = "N/A" if (is_uniform or zoi_value is None) else f"{zoi_value:.2f}"
+            # Show total objective if available
+            total_str = f"{total_obj:.2f}" if total_obj is not None else "N/A"
+            printer.information(f"  {pkl_file:<{filename_width}s} {dc_str:>8s} {tp_str:>8s} {demand_str:>8s} {pmax_str:>8s} {zoi_str:>14s} {total_str:>16s}")
 
     # Group uniform files by demand and pmax for easier access
     uniform_groups = {}

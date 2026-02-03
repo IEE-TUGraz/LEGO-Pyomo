@@ -818,11 +818,12 @@ def extract_zoi_objective_data(model: pyo.ConcreteModel) -> Dict:
     # Decompose objective into linear representation
     repn = generate_standard_repn(model.objective.expr, quadratic=False)
 
-    # Extract variable values and indices
+    # Extract variable values with composite keys (var_name, index)
     var_data = {}
     for var in repn.linear_vars:
+        var_name = var.parent_component().name
         idx = var.index()
-        var_data[idx] = pyo.value(var)
+        var_data[(var_name, idx)] = pyo.value(var)
 
     # Extract sets
     sets_data = {
@@ -842,7 +843,7 @@ def extract_zoi_objective_data(model: pyo.ConcreteModel) -> Dict:
     # Extract objective components
     objective_data = {
         'constant': repn.constant if repn.constant else 0.0,
-        'linear_vars_indices': [var.index() for var in repn.linear_vars],
+        'linear_vars_info': [(var.parent_component().name, var.index()) for var in repn.linear_vars],
         'linear_coefs': list(repn.linear_coefs),
     }
 
@@ -910,15 +911,31 @@ def evaluate_zoi_objective_from_data(zoi_data: Dict, new_zoi_i: Optional[List] =
     var_values = zoi_data['var_values']
 
     weight_cache = {}
-    for idx, coef in zip(zoi_data['objective']['linear_vars_indices'],
-                         zoi_data['objective']['linear_coefs']):
-        if idx not in weight_cache:
-            weight_cache[idx] = _compute_variable_weight(
-                idx, zoi_i, all_i, all_g, zoi_g, line_weights, hub_connections
-            )
-        weight = weight_cache[idx]
-        if weight > 0.0:
-            value += weight * coef * var_values.get(idx, 0.0)
+
+    # Check if we have new format (linear_vars_info) or old format (linear_vars_indices)
+    if 'linear_vars_info' in zoi_data['objective']:
+        # New format: (var_name, idx) pairs
+        for (var_name, idx), coef in zip(zoi_data['objective']['linear_vars_info'],
+                                          zoi_data['objective']['linear_coefs']):
+            if idx not in weight_cache:
+                weight_cache[idx] = _compute_variable_weight(
+                    idx, zoi_i, all_i, all_g, zoi_g, line_weights, hub_connections
+                )
+            weight = weight_cache[idx]
+            if weight > 0.0:
+                var_key = (var_name, idx)
+                value += weight * coef * var_values.get(var_key, 0.0)
+    else:
+        # Old format: indices only (backward compatibility)
+        for idx, coef in zip(zoi_data['objective']['linear_vars_indices'],
+                             zoi_data['objective']['linear_coefs']):
+            if idx not in weight_cache:
+                weight_cache[idx] = _compute_variable_weight(
+                    idx, zoi_i, all_i, all_g, zoi_g, line_weights, hub_connections
+                )
+            weight = weight_cache[idx]
+            if weight > 0.0:
+                value += weight * coef * var_values.get(idx, 0.0)
 
     return value
 

@@ -415,6 +415,8 @@ def main(folder="."):
                 if (zone == "None" or zone is None) and re.sub(r'-zoi[^-]+', '-zoi', sqlite_file) == base_id:
                     zoi_none_entry = (sqlite_file, dc_buffer, tp_buffer, zone, demand, pmax, total_invest, zoi_invest)
                     break
+                else:
+                    printer.information(f"{sqlite_file})
 
             if not zoi_none_entry:
                 printer.warning(f"No DC-OPF baseline found for {base_id}")
