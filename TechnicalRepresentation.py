@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import time
 from collections import deque
 
@@ -146,7 +147,7 @@ def assign_technical_representation_by_layers(cs: CaseStudy, dc_buffer: int, tp_
     printer.information(f"  SN: {len(sn_lines)} lines")
 
 
-def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand, scale_pmax, all_zones):
+def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand, scale_pmax, all_zones, no_overwrite=False):
     caseStudyName = case_study_directory.replace("/", "_").replace("\\", "_")
 
     printer.information(f"Loading case study from '{case_study_directory}'")
@@ -232,6 +233,13 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
             printer.information(f"Assigning technical representations with DC-Buffer={dc_buffer}, TP-Buffer={tp_buffer}")
             assign_technical_representation_by_layers(cs, dc_buffer, tp_buffer)
 
+        identifier = "-".join(identifier_parts)
+        sqlite_filename = f"TR-{identifier}.sqlite"
+
+        if no_overwrite and os.path.exists(sqlite_filename):
+            printer.information(f"  File '{sqlite_filename}' already exists, skipping (--noOverwrite)")
+            continue
+
         cs.merge_single_node_buses()
         printer.information(f"Building LEGO model for case study with '{current_zoi}' as zoi...")
         lego = LEGO(cs)
@@ -252,9 +260,6 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
             case _:
                 printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
 
-        identifier = "-".join(identifier_parts)
-
-        sqlite_filename = f"TR-{identifier}.sqlite"
         SQLiteWriter.model_to_sqlite(model, sqlite_filename)
         SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_filename, results, work_units=lego.work_units)
         SQLiteWriter.add_run_parameters_to_sqlite(
@@ -281,6 +286,7 @@ if __name__ == "__main__":
     parser.add_argument("--tpBuffer", type=int, help=f"Number of network layers after DC buffer to assign as TP (default: {TP_BUFFER_DEFAULT})", nargs="?", default=TP_BUFFER_DEFAULT)
     parser.add_argument("--scaleDemand", type=float, help=f"Scaling factor for demand (default: {SCALE_DEFAULT} = no scaling)", nargs="?", default=SCALE_DEFAULT)
     parser.add_argument("--scalePMax", type=float, help=f"Scaling factor for pPmax (line capacity) (default: {SCALE_DEFAULT} = no scaling)", nargs="?", default=SCALE_DEFAULT)
+    parser.add_argument("--noOverwrite", action="store_true", help="Skip cases where the output .sqlite file already exists")
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory, args.zoi, args.limitK, args.dcBuffer, args.tpBuffer, args.scaleDemand, args.scalePMax, args.all)
+    main(args.caseStudyDirectory, args.zoi, args.limitK, args.dcBuffer, args.tpBuffer, args.scaleDemand, args.scalePMax, args.all, args.noOverwrite)
