@@ -2,9 +2,11 @@ import argparse
 import glob
 import os
 import re
+import sqlite3
 import time
 
 import cloudpickle
+import pandas as pd
 import pyomo.environ as pe
 
 from InOutModule.printer import Printer
@@ -19,6 +21,118 @@ DEFAULT_SCALE_DEMAND = 1.0
 DEFAULT_SCALE_PMAX = 1.0
 
 
+def load_zoi_data_from_sqlite(sqlite_file):
+    """
+    Load ZOI objective data from SQLite file.
+
+    :param sqlite_file: Path to SQLite database file
+    :return: Dictionary with ZOI data in the same format as extract_zoi_objective_data
+    """
+    conn = sqlite3.connect(sqlite_file)
+
+    try:
+        # Load sets
+        sets_data = {}
+        for set_name in ['i', 'g', 'gi', 'la', 'zoi_i']:
+            try:
+                df = pd.read_sql_query(f'SELECT * FROM {set_name}', conn)
+                # Drop the 'index' column added by pandas
+                if 'index' in df.columns:
+                    df = df.drop(columns=['index'])
+
+                if set_name in ['gi', 'la']:
+                    # These are tuple sets - convert rows to tuples
+                    # Columns are named '0', '1', ('2' for la)
+                    sets_data[set_name] = [tuple(row) for row in df.values]
+                else:
+                    # Scalar sets - column is named '0'
+                    if '0' in df.columns and len(df) > 0:
+                        sets_data[set_name] = df['0'].tolist()
+                    else:
+                        sets_data[set_name] = []
+            except Exception as e:
+                printer.warning(f"Could not load set {set_name}: {e}")
+                sets_data[set_name] = []
+
+        # Check for hubConnections (optional)
+        try:
+            df = pd.read_sql_query('SELECT * FROM hubConnections', conn)
+            sets_data['hubConnections'] = [tuple(row) for row in df.values]
+        except Exception:
+            sets_data['hubConnections'] = []
+
+        # Load objective decomposition
+        try:
+            df_constant = pd.read_sql_query('SELECT * FROM objective_constant', conn)
+            constant = df_constant.iloc[0]['constant']
+        except Exception as e:
+            printer.error(f"Could not load objective_constant: {e}")
+            raise
+
+        try:
+            df_terms = pd.read_sql_query('SELECT * FROM objective_terms', conn)
+            linear_vars_indices = df_terms['var_index'].tolist()
+            linear_coefs = df_terms['coefficient'].tolist()
+        except Exception as e:
+            printer.error(f"Could not load objective_terms: {e}")
+            raise
+
+        objective_data = {
+            'constant': constant,
+            'linear_vars_indices': linear_vars_indices,
+            'linear_coefs': linear_coefs,
+        }
+
+        # Load variable values
+        # Get all variable names from the database
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'v%'")
+        var_tables = [row[0] for row in cursor.fetchall()]
+
+        var_values = {}
+        for var_name in var_tables:
+            try:
+                df = pd.read_sql_query(f'SELECT * FROM {var_name}', conn)
+                # Reconstruct variable indices and values
+                if 'values' in df.columns:
+                    # Get index columns (all columns except 'values')
+                    index_cols = [col for col in df.columns if col != 'values']
+
+                    if len(index_cols) == 0:
+                        # Scalar variable
+                        var_values[var_name] = df['values'].iloc[0]
+                    else:
+                        # Indexed variable
+                        for _, row in df.iterrows():
+                            if len(index_cols) == 1:
+                                idx = row[index_cols[0]]
+                            else:
+                                idx = tuple(row[col] for col in index_cols)
+                            var_values[idx] = row['values']
+            except Exception as e:
+                printer.warning(f"Could not load variable {var_name}: {e}")
+
+        # Load total objective
+        try:
+            df_obj = pd.read_sql_query('SELECT * FROM objective', conn)
+            total_objective = df_obj.iloc[0]['values']
+        except Exception:
+            total_objective = None
+
+        # Create ZOI data structure
+        zoi_data = {
+            'var_values': var_values,
+            'sets': sets_data,
+            'objective': objective_data,
+            'total_objective': total_objective,
+        }
+
+        return zoi_data
+
+    finally:
+        conn.close()
+
+
 def extract_parameters(filename):
     """
     Extract dcBuffer, tpBuffer, zone, demand, and pmax values from filename.
@@ -31,7 +145,9 @@ def extract_parameters(filename):
     params_dict = {}
 
     # Parse filename - all parameters except zone are optional
-    match = re.search(r'-zoi(?P<zone>[^-]+)(?:.*?-dcBuffer(?P<dc>\d+))?(?:.*?-tpBuffer(?P<tp>\d+))?(?:.*?-demand(?P<demand>\d+(?:\.\d+)?))?(?:.*?-pmax(?P<pmax>\d+(?:\.\d+)?))?', filename)
+    # Remove file extension first
+    filename_no_ext = filename.replace('.sqlite', '').replace('.pkl', '')
+    match = re.search(r'-zoi(?P<zone>[^-]+)(?:.*?-dcBuffer(?P<dc>\d+))?(?:.*?-tpBuffer(?P<tp>\d+))?(?:.*?-demand(?P<demand>\d+(?:\.\d+)?))?(?:.*?-pmax(?P<pmax>\d+(?:\.\d+)?))?', filename_no_ext)
 
     if match:
         # Zone is always required in filename
@@ -111,40 +227,83 @@ def print_run_parameters(params_dict):
 
 
 def main(folder="."):
-    # Find all pickle files in the specified folder
-    search_pattern = os.path.join(folder, "*.pkl")
-    pickle_files = glob.glob(search_pattern)
+    # Find all data files (both .sqlite and .pkl) in the specified folder
+    sqlite_pattern = os.path.join(folder, "*.sqlite")
+    pkl_pattern = os.path.join(folder, "*.pkl")
 
-    if not pickle_files:
-        printer.warning(f"No pickle files found in '{folder}'")
+    sqlite_files = set(glob.glob(sqlite_pattern))
+    pkl_files = set(glob.glob(pkl_pattern))
+
+    # Create a unified list of base filenames (without extension)
+    all_base_files = set()
+    for f in sqlite_files:
+        all_base_files.add(f.replace('.sqlite', ''))
+    for f in pkl_files:
+        all_base_files.add(f.replace('.pkl', ''))
+
+    if not all_base_files:
+        printer.warning(f"No data files (.sqlite or .pkl) found in '{folder}'")
         return
 
-    printer.information(f"Found {len(pickle_files)} pickle file(s) in '{folder}'")
+    printer.information(f"Found {len(all_base_files)} data file(s) in '{folder}'")
 
-    # Process each pickle file and group by base identifier
+    # Process each file and group by base identifier
     results = []
     all_files_data = []  # Store all file data for flexible grouping
     uniform_files = []  # Store uniform representation files (None, TP, SN)
 
-    for pkl_file in sorted(pickle_files):
-        printer.information(f"\nProcessing '{pkl_file}'...")
+    for base_file in sorted(all_base_files):
+        # Prefer SQLite over pickle
+        sqlite_file = base_file + '.sqlite'
+        pkl_file = base_file + '.pkl'
+
+        if os.path.exists(sqlite_file):
+            file_to_process = sqlite_file
+            use_sqlite = True
+        elif os.path.exists(pkl_file):
+            file_to_process = pkl_file
+            use_sqlite = False
+        else:
+            continue
+
+        printer.information(f"\nProcessing '{file_to_process}'...")
 
         try:
             # Extract parameters from filename
-            dc_buffer, tp_buffer, zone, demand, pmax, params_dict = extract_parameters(pkl_file)
+            dc_buffer, tp_buffer, zone, demand, pmax, params_dict = extract_parameters(file_to_process)
             print_run_parameters(params_dict)
 
-            # Load the ZOI data (lightweight structure instead of full model)
+            # Load the ZOI data
             start_time = time.time()
-            with open(pkl_file, mode='rb') as file:
-                zoi_data = cloudpickle.load(file)
-            load_time = time.time() - start_time
-            printer.information(f"  Loaded in {load_time:.2f} seconds")
+            if use_sqlite:
+                printer.information(f"  Loading from SQLite database...")
+                try:
+                    zoi_data = load_zoi_data_from_sqlite(sqlite_file)
+                    load_time = time.time() - start_time
+                    printer.information(f"  Loaded in {load_time:.2f} seconds")
+                except Exception as e:
+                    # SQLite loading failed (probably missing objective decomposition tables)
+                    # Fall back to pickle file if available
+                    if os.path.exists(pkl_file):
+                        printer.warning(f"  SQLite loading failed ({e}), falling back to pickle file...")
+                        start_time = time.time()
+                        with open(pkl_file, mode='rb') as file:
+                            zoi_data = cloudpickle.load(file)
+                        load_time = time.time() - start_time
+                        printer.information(f"  Loaded from pickle in {load_time:.2f} seconds")
+                    else:
+                        raise
+            else:
+                printer.information(f"  Loading from pickle file...")
+                with open(pkl_file, mode='rb') as file:
+                    zoi_data = cloudpickle.load(file)
+                load_time = time.time() - start_time
+                printer.information(f"  Loaded in {load_time:.2f} seconds")
 
             # Calculate ZOI objective (always calculate freshly, never use pre-calculated)
             calc_start_time = time.time()
-            if isinstance(zoi_data, dict) and 'zoi_objective_value' in zoi_data:
-                # New format: use lightweight recalculation from data
+            if isinstance(zoi_data, dict) and 'sets' in zoi_data:
+                # Dict format (from SQLite or new pickle format): use lightweight recalculation from data
                 zoi_i = zoi_data['sets']['zoi_i']
                 zoi_value = LEGOUtilities.evaluate_zoi_objective_from_data(zoi_data, new_zoi_i=zoi_i, line_filter="both")
             else:
@@ -154,9 +313,9 @@ def main(folder="."):
             printer.information(f"  ZOI objective calculated in {calc_time:.2f} seconds")
 
             printer.success(f"  ZOI Objective: {zoi_value:.2f}")
-            results.append((pkl_file, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value))
+            results.append((file_to_process, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value))
 
-            # Calculate total objective from pkl data
+            # Calculate total objective from data
             total_obj = None
             try:
                 if isinstance(zoi_data, dict):
@@ -183,7 +342,7 @@ def main(folder="."):
 
             # Store file data
             file_data = {
-                'pkl_file': pkl_file,
+                'pkl_file': file_to_process,  # Store the actual file used
                 'dc_buffer': dc_buffer,
                 'tp_buffer': tp_buffer,
                 'zone': zone,
@@ -201,7 +360,7 @@ def main(folder="."):
                 all_files_data.append(file_data)
 
         except Exception as e:
-            printer.error(f"  Failed to process '{pkl_file}': {e}")
+            printer.error(f"  Failed to process '{file_to_process}': {e}")
 
     # Group zone-specific files by their parameters (including dcBuffer/tpBuffer)
     # Key: (case_study_base, dc_buffer, tp_buffer, demand, pmax)

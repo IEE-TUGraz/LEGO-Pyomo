@@ -4,7 +4,6 @@ import os
 import time
 from collections import deque
 
-import cloudpickle
 import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
@@ -259,6 +258,7 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
         sqlite_filename = f"TR-{identifier}.sqlite"
         SQLiteWriter.model_to_sqlite(model, sqlite_filename)
         printer.information(f"Saved LEGO model to '{sqlite_filename}'")
+        SQLiteWriter.add_objective_decomposition_to_sqlite(sqlite_filename, model)
         SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_filename, results, work_units=lego.work_units)
         SQLiteWriter.add_run_parameters_to_sqlite(
             sqlite_filename,
@@ -270,13 +270,6 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
             scale_demand=scale_demand,
             scale_pmax=scale_pmax
         )
-
-        # Save lightweight ZOI data instead of full model
-        printer.information("Extracting ZOI objective data for pickle file...")
-        zoi_data = LEGOUtilities.extract_zoi_objective_data(model)
-        with open(f"TR-{identifier}.pkl", mode='wb') as file:
-            cloudpickle.dump(zoi_data, file)
-            printer.information(f"Saved ZOI objective data to 'TR-{identifier}.pkl'")
 
     printer.information("Compare objective functions within zoi")
     for name, (lego, model) in legos.items():
