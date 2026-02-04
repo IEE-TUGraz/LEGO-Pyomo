@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import argparse
@@ -36,10 +37,13 @@ ZONE_LABELS = {
     'SN': ('SN', 'Single Node / Copper Plate (all lines as SN)'),
 }
 
+# Maps uniform-representation keys to the pTecRepr value used in dPower_Network
+UNIFORM_REPR_MAP = {'DC': 'DC-OPF', 'TP': 'TP', 'SN': 'SN'}
+
 
 def is_uniform_representation(zone: str | None) -> bool:
     """Check if zone represents a uniform technical representation (DC, TP, SN, or None)."""
-    return zone in ('DC', 'TP', 'SN', None) or zone == "None"
+    return zone in UNIFORM_REPR_MAP or zone is None or zone == "None"
 
 
 def load_file_metadata(sqlite_file):
@@ -264,6 +268,14 @@ def assign_technical_representation_by_layers(cs: CaseStudy, dc_buffer: int, tp_
     printer.information(f"  SN: {len(sn_lines)} lines")
 
 
+def load_vGenInvest_from_sqlite(sqlite_file):
+    """Load vGenInvest values from a solved model's sqlite file. Returns {g: value}."""
+    conn = sqlite3.connect(sqlite_file)
+    df = pd.read_sql_query('SELECT * FROM vGenInvest', conn)
+    conn.close()
+    return dict(zip(df['g'], df['values']))
+
+
 def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand, scale_pmax, all_zones, no_overwrite=False):
     caseStudyName = case_study_directory.replace("/", "_").replace("\\", "_")
 
@@ -305,55 +317,109 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
         printer.warning("dcBuffer=0 and tpBuffer=0 would make all cross-boundary lines SN, collapsing ZOI into the merged bus. Setting tpBuffer=1.")
         tp_buffer = 1
 
-    # Determine which zones to run
+    # --- Determine runs ---
+    available_zones = sorted(cs_base.dPower_BusInfo['z'].unique().tolist())
+
     if all_zones:
-        printer.information("Running for all zones (--all specified)")
-        # Get all unique zones from the data
-        available_zones = sorted(cs_base.dPower_BusInfo['z'].unique().tolist())
-        zones_to_run = ['DC', 'TP', 'SN'] + available_zones
-        printer.information(f"Will run for zones: {zones_to_run}")
+        zones_to_run = list(UNIFORM_REPR_MAP) + available_zones
+        regret_sources = ['TP', 'SN'] + available_zones  # No regret run for DC (would fix DC into DC)
     else:
         zones_to_run = [zoi]
+        regret_sources = [zoi]
 
-    legos = {}
-    for current_zoi in zones_to_run:
-        printer.information(f"\n{'=' * 80}")
-        printer.information(f"Processing zone: {current_zoi}")
-        printer.information(f"{'=' * 80}\n")
+    # Normal runs first (so their sqlite files exist when regret runs need them), then regret
+    runs = [{'type': 'normal', 'zoi': z} for z in zones_to_run]
+    runs += [{'type': 'regret', 'zoi': z} for z in regret_sources]
 
-        # Create a copy of the base case study for this zone
+    # Lazy-load caches for regret (populated on demand from sqlite)
+    dc_vGenInvest = None  # None = not yet loaded; {} = load failed
+    source_vGenInvest = {}  # source name -> {g: value} or None (file not found)
+
+    for run in runs:
+        current_zoi = run['zoi']
+        is_regret = run['type'] == 'regret'
+
+        # --- Header ---
+        label = f"{current_zoi} (regret)" if is_regret else str(current_zoi)
+        printer.information(f"\n{'=' * 60}")
+        printer.information(f"  {label}")
+        printer.information(f"{'=' * 60}\n")
+
+        # --- Setup ---
         cs = cs_base.copy()
         identifier_parts = identifier_parts_base.copy()
 
-        # Apply zone-specific settings
-        if current_zoi is None or current_zoi == 'None':
-            printer.information(f"No ZOI adjustment - using original technical representations from Power_Network.xlsx")
-        elif current_zoi in ['DC', 'TP', 'SN']:
+        if is_regret:
+            is_uniform_regret = current_zoi in ('TP', 'SN')
+
+            # Lazy-load the source model's vGenInvest
+            if current_zoi not in source_vGenInvest:
+                if is_uniform_regret:
+                    source_id = "-".join(identifier_parts_base + [f"zoi{current_zoi}"])
+                else:
+                    source_id = "-".join(identifier_parts_base +
+                                         ([f"dcBuffer{dc_buffer}"] if dc_buffer != DC_BUFFER_DEFAULT else []) +
+                                         ([f"tpBuffer{tp_buffer}"] if tp_buffer != TP_BUFFER_DEFAULT else []) +
+                                         [f"zoi{current_zoi}"])
+                source_file = f"TR-{source_id}.sqlite"
+                if os.path.exists(source_file):
+                    source_vGenInvest[current_zoi] = load_vGenInvest_from_sqlite(source_file)
+                else:
+                    printer.error(f"  Source model '{source_file}' not found — regret for '{current_zoi}' skipped.")
+                    source_vGenInvest[current_zoi] = None
+            if source_vGenInvest[current_zoi] is None:
+                continue
+
+            # Zone regret also needs DC baseline vGenInvest and zone_generators
+            if not is_uniform_regret:
+                if dc_vGenInvest is None:
+                    dc_file = f"TR-{'-'.join(identifier_parts_base + ['zoiDC'])}.sqlite"
+                    if os.path.exists(dc_file):
+                        dc_vGenInvest = load_vGenInvest_from_sqlite(dc_file)
+                    else:
+                        printer.error(f"DC baseline '{dc_file}' not found — zone regret requires a solved DC model.")
+                        dc_vGenInvest = {}
+                if not dc_vGenInvest:
+                    continue
+
+            # Uniform DC-OPF topology
+            cs.dPower_Network['pTecRepr'] = 'DC-OPF'
+            if not is_uniform_regret:
+                if dc_buffer != DC_BUFFER_DEFAULT:
+                    identifier_parts.append(f"dcBuffer{dc_buffer}")
+                if tp_buffer != TP_BUFFER_DEFAULT:
+                    identifier_parts.append(f"tpBuffer{tp_buffer}")
+            else:
+                printer.information(f"Setting all buses to be in ZOI for uniform regret")
+                cs.dPower_BusInfo['zoi'] = 1
+            identifier_parts.append(f"zoi{current_zoi}")
+            identifier_parts.append("regret")
+
+        elif current_zoi is None or current_zoi == 'None':
+            printer.information("No ZOI adjustment - using original technical representations from data files")
+
+        elif current_zoi in UNIFORM_REPR_MAP:
             printer.information(f"Using uniform technical representation: {current_zoi}")
             identifier_parts.append(f"zoi{current_zoi}")
-            cs.dPower_Network['pTecRepr'] = 'DC-OPF' if current_zoi == 'DC' else current_zoi
+            cs.dPower_Network['pTecRepr'] = UNIFORM_REPR_MAP[current_zoi]
+            cs.dPower_BusInfo['zoi'] = 1
         else:
-            printer.information(f"Setting Zone of Interest (zoi) to zone '{current_zoi}'")
-
-            # Add buffer info before zoi for easy grouping
+            printer.information(f"Setting Zone of Interest to '{current_zoi}'")
             if dc_buffer != DC_BUFFER_DEFAULT:
                 identifier_parts.append(f"dcBuffer{dc_buffer}")
             if tp_buffer != TP_BUFFER_DEFAULT:
                 identifier_parts.append(f"tpBuffer{tp_buffer}")
-
             identifier_parts.append(f"zoi{current_zoi}")
+
             cs.dPower_BusInfo['zoi'] = 0
             cs.dPower_BusInfo.loc[cs.dPower_BusInfo['z'] == current_zoi, 'zoi'] = 1
-
-            # Check if any buses were assigned to ZOI
-            num_zoi_buses = (cs.dPower_BusInfo['zoi'] == 1).sum()
-            if num_zoi_buses == 0:
-                available_zones = cs.dPower_BusInfo['z'].unique().tolist()
+            if (cs.dPower_BusInfo['zoi'] == 1).sum() == 0:
                 printer.warning(f"0 buses selected for zone '{current_zoi}'. Available zones: {available_zones}")
 
             printer.information(f"Assigning technical representations with DC-Buffer={dc_buffer}, TP-Buffer={tp_buffer}")
             assign_technical_representation_by_layers(cs, dc_buffer, tp_buffer)
 
+        # --- Filename + noOverwrite check ---
         identifier = "-".join(identifier_parts)
         sqlite_filename = f"TR-{identifier}.sqlite"
 
@@ -361,27 +427,40 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
             printer.information(f"  File '{sqlite_filename}' already exists, skipping (--noOverwrite)")
             continue
 
+        # --- Build ---
         cs.merge_single_node_buses()
-
-        printer.information(f"Building LEGO model for case study with '{current_zoi}' as zoi...")
         lego = LEGO(cs)
         model, timing = lego.build_model()
-        printer.information(f"Building LEGO model for case study with '{current_zoi}' as zoi took {timing:.2f} seconds")
-        legos[current_zoi] = (lego, model)
+        printer.information(f"  Build took {timing:.2f} seconds")
 
-        printer.information(f"Solving LEGO model for case study with '{current_zoi}' as zoi...")
+        # --- Fix vGenInvest (regret only) ---
+        if is_regret:
+            if current_zoi in ('TP', 'SN'):
+                # Uniform regret: all generators fixed to the uniform model's values
+                for g in model.vGenInvest:
+                    model.vGenInvest[g].fix(source_vGenInvest[current_zoi].get(g, 0))
+            else:
+                # Zone regret: ZOI generators from zone model, rest from DC baseline
+                zoi_gens = [g for g, i in model.gi if i in cs_base.dPower_BusInfo.loc[cs_base.dPower_BusInfo['z'] == current_zoi].index]
+                for g in model.vGenInvest:
+                    source = source_vGenInvest[current_zoi] if g in zoi_gens else dc_vGenInvest
+                    model.vGenInvest[g].fix(source[g])
+
+        # --- Solve ---
+        printer.information(f"  Solving...")
         results, timing, objective_value = lego.solve_model()
-        printer.information(f"Solving LEGO model for case study with '{current_zoi}' as zoi took {timing:.2f} seconds")
+        printer.information(f"  Solve took {timing:.2f} seconds")
 
         match results.solver.termination_condition:
             case pyo.TerminationCondition.optimal:
-                printer.success(f"Optimal solution: {pyo.value(model.objective):.4f}")
+                printer.success(f"  Optimal solution: {pyo.value(model.objective):.4f}")
             case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
-                printer.error(f"Model returned as {results.solver.termination_condition}, logging infeasible constraints:")
+                printer.error(f"  Model returned as {results.solver.termination_condition}, logging infeasible constraints:")
                 log_infeasible_constraints(model, log_expression=False)
             case _:
-                printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
+                printer.warning(f"  Solver terminated with condition: {results.solver.termination_condition}")
 
+        # --- Export ---
         SQLiteWriter.model_to_sqlite(model, sqlite_filename)
         SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_filename, results, work_units=lego.work_units)
         SQLiteWriter.add_run_parameters_to_sqlite(
@@ -394,7 +473,7 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
             scale_demand=scale_demand,
             scale_pmax=scale_pmax
         )
-        printer.information(f"Saved LEGO model to '{sqlite_filename}'")
+        printer.information(f"  Saved to '{sqlite_filename}'")
 
 
 if __name__ == "__main__":

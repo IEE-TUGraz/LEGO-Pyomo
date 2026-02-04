@@ -186,7 +186,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         else:
             printer.information(f"Using predefined slack node from Power_Parameters: {cs.dPower_Parameters['is']}")
             slack_node = cs.dPower_Parameters["is"]
-        if i == 0: printer.information("Setting slack nodes for technical representation islands:")
         i += 1
         printer.information(f"Zone {i:>2} - Slack node: {slack_node}")
         for rp in model.rp:
