@@ -18,6 +18,14 @@ from TechnicalRepresentation import is_uniform_representation, ZONE_LABELS, load
 printer = Printer.getInstance()
 
 
+def _safe_literal_eval(s):
+    """Parse a string as a Python literal, returning the string unchanged on failure."""
+    try:
+        return ast.literal_eval(s)
+    except (ValueError, SyntaxError):
+        return s
+
+
 def load_zoi_data_from_sqlite(sqlite_file):
     """
     Load ZOI objective data from SQLite file.
@@ -68,17 +76,10 @@ def load_zoi_data_from_sqlite(sqlite_file):
 
         try:
             df_terms = pd.read_sql_query('SELECT * FROM objective_terms', conn)
-            # Parse string indices back to their original types (tuples, strings, etc.)
-            linear_vars_info = []  # List of (var_name, var_index) tuples
-            for _, row in df_terms.iterrows():
-                var_name = row['var_name']
-                idx_str = row['var_index']
-                try:
-                    idx = ast.literal_eval(idx_str)
-                except (ValueError, SyntaxError):
-                    idx = idx_str
-                linear_vars_info.append((var_name, idx))
-
+            linear_vars_info = [
+                (var_name, _safe_literal_eval(idx_str))
+                for var_name, idx_str in zip(df_terms['var_name'], df_terms['var_index'])
+            ]
             linear_coefs = df_terms['coefficient'].tolist()
         except Exception as e:
             printer.error(f"Could not load objective_terms: {e}")
@@ -90,32 +91,29 @@ def load_zoi_data_from_sqlite(sqlite_file):
             'linear_coefs': linear_coefs,
         }
 
-        # Load variable values
-        # Get all variable names from the database
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'v%'")
-        var_tables = [row[0] for row in cursor.fetchall()]
+        # Load only variable tables actually referenced in the objective
+        needed_var_names = set(info[0] for info in linear_vars_info)
 
         var_values = {}
-        for var_name in var_tables:
+        for var_name in needed_var_names:
             try:
                 df = pd.read_sql_query(f'SELECT * FROM {var_name}', conn)
-                # Reconstruct variable indices and values
-                if 'values' in df.columns:
-                    # Get index columns (all columns except 'values')
-                    index_cols = [col for col in df.columns if col != 'values']
+                if 'values' not in df.columns:
+                    continue
+                index_cols = [col for col in df.columns if col != 'values']
 
-                    if len(index_cols) == 0:
-                        # Scalar variable - store with (var_name, var_name) as key
-                        var_values[(var_name, var_name)] = df['values'].iloc[0]
-                    else:
-                        # Indexed variable - store with (var_name, index) as composite key
-                        for _, row in df.iterrows():
-                            if len(index_cols) == 1:
-                                idx = row[index_cols[0]]
-                            else:
-                                idx = tuple(row[col] for col in index_cols)
-                            var_values[(var_name, idx)] = row['values']
+                if len(index_cols) == 0:
+                    var_values[(var_name, var_name)] = df['values'].iloc[0]
+                elif len(index_cols) == 1:
+                    var_values.update({
+                        (var_name, idx): val
+                        for idx, val in zip(df[index_cols[0]], df['values'])
+                    })
+                else:
+                    var_values.update({
+                        (var_name, idx): val
+                        for idx, val in zip(zip(*(df[col] for col in index_cols)), df['values'])
+                    })
             except Exception as e:
                 printer.warning(f"Could not load variable {var_name}: {e}")
 
@@ -361,9 +359,9 @@ def main(folder="."):
         group_desc_parts.append(f"pmax={pmax}")
         group_desc = ", ".join(group_desc_parts)
 
-        printer.information("\n" + "=" * 140)
+        printer.information("\n" + "=" * 155)
         printer.information(f"COMPARISON GROUP: {group_desc}")
-        printer.information("=" * 140)
+        printer.information("=" * 155)
 
         # --- 1) Uniform Technical Representation Comparisons (shown first) ---
         uniform_group_key = (input_dir, limit_k, demand, pmax)
@@ -393,10 +391,11 @@ def main(folder="."):
                     else:
                         baseline_label, baseline_desc = ZONE_LABELS.get(baseline_zone, (baseline_zone, f'Uniform {baseline_zone}'))
 
-                    # Collect (label, desc, total_obj, abs_diff, rel_diff_pct, sort_order, work_units)
+                    # Collect (label, desc, total_obj, abs_diff, rel_diff_pct, sort_order, work_units, wu_rel)
+                    baseline_wu = dc_opf_file.get('work_units')
                     entries = []
                     entries.append((baseline_label, baseline_desc + ' (BASELINE)',
-                                    dc_opf_total_obj, 0.0, 0.0, -99, dc_opf_file.get('work_units')))
+                                    dc_opf_total_obj, 0.0, 0.0, -99, baseline_wu, None))
 
                     sort_order_map = {'DC': 0, 'TP': 1, 'SN': 2}
                     for uf in other_files:
@@ -410,19 +409,22 @@ def main(folder="."):
                         if total_obj is not None:
                             abs_diff = total_obj - dc_opf_total_obj
                             rel_diff_pct = (abs_diff / dc_opf_total_obj * 100) if dc_opf_total_obj != 0 else 0.0
-                            entries.append((label, desc, total_obj, abs_diff, rel_diff_pct, so, uf.get('work_units')))
+                            wu = uf.get('work_units')
+                            wu_rel = (wu - baseline_wu) / baseline_wu * 100 if (wu is not None and baseline_wu is not None and baseline_wu != 0) else None
+                            entries.append((label, desc, total_obj, abs_diff, rel_diff_pct, so, wu, wu_rel))
 
                     # Sort by sort_order (baseline first via -99, then others)
                     entries.sort(key=lambda e: e[5])
 
                     printer.information(f"\nUniform Technical Representation Comparisons")
-                    printer.information("-" * 140)
-                    printer.information(f"  {'Type':<10s} {'Description':<60s} {'Total Objective':>18s} {'Abs. Diff':>15s} {'Rel. Diff (%)':>15s} {'Work Units':>12s}")
-                    printer.information("-" * 140)
-                    for label, desc, total_obj, abs_diff, rel_diff_pct, _, wu in entries:
+                    printer.information("-" * 155)
+                    printer.information(f"  {'Type':<10s} {'Description':<60s} {'Total Objective':>18s} {'Abs. Diff':>15s} {'Rel. Diff (%)':>15s} {'Work Units':>12s} {'WU Rel. (%)':>12s}")
+                    printer.information("-" * 155)
+                    for label, desc, total_obj, abs_diff, rel_diff_pct, _, wu, wu_rel in entries:
                         wu_str = f"{wu:.2f}" if wu is not None else "N/A"
-                        printer.information(f"  {label:<10s} {desc:<60s} {total_obj:>18.2f} {abs_diff:>15.2f} {rel_diff_pct:>14.1f}% {wu_str:>12s}")
-                    printer.information("-" * 140)
+                        wu_rel_str = f"{wu_rel:.1f}%" if wu_rel is not None else "-"
+                        printer.information(f"  {label:<10s} {desc:<60s} {total_obj:>18.2f} {abs_diff:>15.2f} {rel_diff_pct:>14.1f}% {wu_str:>12s} {wu_rel_str:>12s}")
+                    printer.information("-" * 155)
 
         # --- 2) Zone-Specific Comparisons (one per dc_buf / tp_buf config) ---
         for dc_buf, tp_buf, group_data in sorted(configs):
@@ -447,13 +449,14 @@ def main(folder="."):
 
             baseline_total_obj = baseline_file_data.get('total_obj')
             baseline_zone = baseline_file_data.get('zone')
+            baseline_wu = baseline_file_data.get('work_units')
             baseline_label = "zoiNone" if (baseline_zone is None or baseline_zone == "None") else f"zoi{baseline_zone}"
 
             printer.information(f"\nZone-Specific Comparisons (Baseline: {baseline_label})")
             printer.information(f"Parameters: {group_desc}, dcBuffer={dc_buf}, tpBuffer={tp_buf}")
-            printer.information("-" * 140)
-            printer.information(f"  {'Zone':<12s} {'Baseline for Zone':>18s} {'Zone-Specific Run':>18s} {'Difference':>15s} {'Rel. Diff (%)':>15s} {'Work Units':>12s}")
-            printer.information("-" * 140)
+            printer.information("-" * 155)
+            printer.information(f"  {'Zone':<12s} {'Baseline for Zone':>18s} {'Zone-Specific Run':>18s} {'Difference':>15s} {'Rel. Diff (%)':>15s} {'Work Units':>12s} {'WU Rel. (%)':>12s}")
+            printer.information("-" * 155)
 
             sum_of_baseline_zone_objectives = 0.0
 
@@ -474,7 +477,9 @@ def main(folder="."):
                     sum_of_baseline_zone_objectives += baseline_zone_objective
                     wu = zone_file_data.get('work_units')
                     wu_str = f"{wu:.2f}" if wu is not None else "N/A"
-                    printer.information(f"  {zone:<12s} {baseline_zone_objective:>18.2f} {original_zoi_value:>18.2f} {difference:>15.2f} {rel_diff_pct:>14.1f}% {wu_str:>12s}")
+                    wu_rel = (wu - baseline_wu) / baseline_wu * 100 if (wu is not None and baseline_wu is not None and baseline_wu != 0) else None
+                    wu_rel_str = f"{wu_rel:.1f}%" if wu_rel is not None else "N/A"
+                    printer.information(f"  {zone:<12s} {baseline_zone_objective:>18.2f} {original_zoi_value:>18.2f} {difference:>15.2f} {rel_diff_pct:>14.1f}% {wu_str:>12s} {wu_rel_str:>12s}")
 
                 except Exception as e:
                     printer.error(f"  Failed to compare zone {zone}: {e}")
@@ -482,7 +487,7 @@ def main(folder="."):
                     traceback.print_exc()
 
             # Safety check: sum of baseline's zone objectives should equal baseline's overall objective
-            printer.information("-" * 140)
+            printer.information("-" * 155)
             if baseline_total_obj is not None:
                 printer.information(f"  {'SAFETY CHECK':<12s} {'Sum Baseline':>18s} {'Baseline Total':>18s} {'Difference':>15s} {'Rel. Diff (%)':>15s}")
                 safety_difference = sum_of_baseline_zone_objectives - baseline_total_obj
