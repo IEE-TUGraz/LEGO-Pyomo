@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import argparse
@@ -8,6 +9,7 @@ import glob
 import os
 import sqlite3
 import time
+from collections import defaultdict
 
 import pandas as pd
 
@@ -165,6 +167,7 @@ def main(folder="."):
     results = []
     all_files_data = []  # Store all file data for flexible grouping
     uniform_files = []  # Store uniform representation files (DC, TP, SN)
+    regret_files = []  # Store regret files
 
     for sqlite_file in sqlite_files:
         printer.information(f"\nProcessing '{sqlite_file}'...")
@@ -176,6 +179,7 @@ def main(folder="."):
             input_dir, limit_k = meta['input_dir'], meta['limit_k']
             dc_buffer, tp_buffer = meta['dc_buffer'], meta['tp_buffer']
             zone, demand, pmax = meta['zone'], meta['demand'], meta['pmax']
+            is_regret_file = os.path.basename(sqlite_file).endswith('-regret.sqlite')
 
             # Load the ZOI data from SQLite
             start_time = time.time()
@@ -186,9 +190,8 @@ def main(folder="."):
 
             # Calculate objectives based on type
             zoi_value = None
-            if is_uniform_representation(zone):
-                # Uniform representation: skip ZOI objective, only calculate total objective
-                printer.information(f"  Uniform representation detected - skipping ZOI objective calculation")
+            if is_uniform_representation(zone) or is_regret_file:
+                printer.information(f"  {'Regret' if is_regret_file else 'Uniform'} run — skipping ZOI objective calculation")
             else:
                 # Zone-specific: calculate ZOI objective
                 calc_start_time = time.time()
@@ -233,7 +236,7 @@ def main(folder="."):
                 else:
                     printer.warning(f"  Stored Total Objective: Not available in data")
 
-            results.append((sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, calc_total_obj))
+            results.append((sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, calc_total_obj, is_regret_file))
 
             # Store file data
             file_data = {
@@ -251,8 +254,10 @@ def main(folder="."):
                 'work_units': zoi_data.get('work_units')
             }
 
-            # Separate uniform representations from zone-specific runs
-            if is_uniform_representation(zone):
+            # Separate into uniform, zone-specific, and regret
+            if is_regret_file:
+                regret_files.append(file_data)
+            elif is_uniform_representation(zone):
                 uniform_files.append(file_data)
             else:
                 all_files_data.append(file_data)
@@ -260,57 +265,31 @@ def main(folder="."):
         except Exception as e:
             printer.error(f"  Failed to process '{sqlite_file}': {e}")
 
-    # Group zone-specific files by their parameters
-    # Key: (input_dir, limit_k, dc_buffer, tp_buffer, demand, pmax)
-    file_groups = {}
-
-    for file_data in all_files_data:
-        # Group by all parameters
-        group_key = (file_data['input_dir'], file_data['limit_k'], file_data['dc_buffer'],
-                     file_data['tp_buffer'], file_data['demand'], file_data['pmax'])
-
-        if group_key not in file_groups:
-            file_groups[group_key] = {
-                'zone_files': [],
-                'uniform_files': []
-            }
-
-        file_groups[group_key]['zone_files'].append(file_data)
-
-    # Match uniform files to groups (ignoring dcBuffer/tpBuffer)
-    for uniform_file in uniform_files:
-        # Match based on input_dir, limit_k, demand, and pmax
-        for group_key, group_data in file_groups.items():
-            input_dir, limit_k, dc_buf, tp_buf, demand, pmax = group_key
-            if (uniform_file['input_dir'] == input_dir and uniform_file['limit_k'] == limit_k and
-                    uniform_file['demand'] == demand and uniform_file['pmax'] == pmax):
-                group_data['uniform_files'].append(uniform_file)
-
     # Print summary
     if results:
         def sort_key(result):
-            sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj = result
-            return make_run_sort_key(input_dir, limit_k, demand, pmax, dc_buffer, tp_buffer, zone)
+            sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj, is_regret = result
+            return make_run_sort_key(input_dir, limit_k, demand, pmax, dc_buffer, tp_buffer, zone) + (1 if is_regret else 0,)
 
         sorted_results = sorted(results, key=sort_key)
 
         # Calculate the maximum filename length for proper alignment
-        max_filename_len = max(len(sqlite_file) for sqlite_file, _, _, _, _, _, _, _, _, _ in sorted_results)
+        max_filename_len = max(len(sqlite_file) for sqlite_file, _, _, _, _, _, _, _, _, _, _ in sorted_results)
         # Ensure minimum width for readability
         filename_width = max(max_filename_len, len("Filename"))
         # Calculate total table width
-        table_width = filename_width + 2 + 8 + 8 + 8 + 8 + 14 + 16
+        table_width = filename_width + 2 + 16 + 8 + 8 + 8 + 8 + 14 + 16
 
         printer.information("\n" + "=" * table_width)
         printer.information("Summary of Objective Values (grouped by parameters):")
         printer.information("=" * table_width)
-        printer.information(f"  {'Filename':<{filename_width}s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Demand':>8s} {'PMax':>8s} {'ZOI Objective':>14s} {'Total Objective':>16s}")
+        printer.information(f"  {'Filename':<{filename_width}s} {'LimitK':>16s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Demand':>8s} {'PMax':>8s} {'ZOI Objective':>14s} {'Total Objective':>16s}")
         printer.information("-" * table_width)
 
         # Track previous group to insert separators
         prev_group = None
 
-        for sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj in sorted_results:
+        for sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj, _ in sorted_results:
             # Check if we're starting a new group (input_dir, limit_k, demand, pmax)
             current_group = (input_dir, limit_k, demand, pmax)
             if prev_group is not None and current_group != prev_group:
@@ -328,7 +307,8 @@ def main(folder="."):
             zoi_str = "N/A" if (is_uniform or zoi_value is None) else f"{zoi_value:.2f}"
             # Show total objective if available
             total_str = f"{total_obj:.2f}" if total_obj is not None else "N/A"
-            printer.information(f"  {sqlite_file:<{filename_width}s} {dc_str:>8s} {tp_str:>8s} {demand_str:>8s} {pmax_str:>8s} {zoi_str:>14s} {total_str:>16s}")
+            limit_k_str = limit_k if limit_k else "N/A"
+            printer.information(f"  {sqlite_file:<{filename_width}s} {limit_k_str:>16s} {dc_str:>8s} {tp_str:>8s} {demand_str:>8s} {pmax_str:>8s} {zoi_str:>14s} {total_str:>16s}")
 
     # Group uniform files by all grouping parameters for easier access
     uniform_groups = {}
@@ -339,17 +319,37 @@ def main(folder="."):
             uniform_groups[group_key] = []
         uniform_groups[group_key].append(uniform_file)
 
-    # Organize groups by (input_dir, limit_k, demand, pmax) to show zone-specific and uniform representations together
-    main_groups = {}
-    for (input_dir, limit_k, dc_buf, tp_buf, demand, pmax), group_data in file_groups.items():
-        key = (input_dir, limit_k, demand, pmax)
-        if key not in main_groups:
-            main_groups[key] = []
-        main_groups[key].append((dc_buf, tp_buf, group_data))
+    # Group regret files by (input_dir, limit_k, demand, pmax)
+    regret_groups = {}
+    for regret_file in regret_files:
+        group_key = (regret_file['input_dir'], regret_file['limit_k'],
+                     regret_file['demand'], regret_file['pmax'])
+        if group_key not in regret_groups:
+            regret_groups[group_key] = []
+        regret_groups[group_key].append(regret_file)
 
-    # Process each (input_dir, limit_k, demand, pmax) group
-    for (input_dir, limit_k, demand, pmax), configs in sorted(main_groups.items(), key=lambda x: (x[0][0] or '', x[0][1] or '', x[0][2], x[0][3])):
-        # Build group description
+    # Lookup maps for non-regret source work units
+    uniform_source_map = {}  # (group_key, zone) -> file_data
+    for gk, files in uniform_groups.items():
+        for f in files:
+            uniform_source_map[(gk, f['zone'])] = f
+
+    zone_source_map = {}  # (group_key, zone, dc_buf, tp_buf) -> file_data
+    zone_files_by_group = defaultdict(lambda: defaultdict(list))  # group_key -> buf_key -> [file_data]
+    for fd in all_files_data:
+        gk = (fd['input_dir'], fd['limit_k'], fd['demand'], fd['pmax'])
+        zone_source_map[(gk, fd['zone'], fd['dc_buffer'], fd['tp_buffer'])] = fd
+        zone_files_by_group[gk][(fd['dc_buffer'], fd['tp_buffer'])].append(fd)
+
+    # Process each comparison group
+    all_group_keys = sorted(
+        set(uniform_groups.keys()) | set(regret_groups.keys()) | set(zone_files_by_group.keys()),
+        key=lambda k: (k[0] or '', k[1] or '', k[2], k[3])
+    )
+
+    for group_key in all_group_keys:
+        input_dir, limit_k, demand, pmax = group_key
+
         group_desc_parts = []
         if input_dir:
             group_desc_parts.append(f"input={input_dir}")
@@ -363,140 +363,97 @@ def main(folder="."):
         printer.information(f"COMPARISON GROUP: {group_desc}")
         printer.information("=" * 155)
 
-        # --- 1) Uniform Technical Representation Comparisons (shown first) ---
-        uniform_group_key = (input_dir, limit_k, demand, pmax)
-        if uniform_group_key in uniform_groups:
-            group_uniform_files = uniform_groups[uniform_group_key]
+        # DC baseline (prefer zoiDC, fall back to zoiNone)
+        uniforms = uniform_groups.get(group_key, [])
+        dc_baseline = next((f for f in uniforms if f['zone'] == 'DC'), None)
+        if dc_baseline is None:
+            dc_baseline = next((f for f in uniforms if (f['zone'] is None or f['zone'] == "None")), None)
 
-            # Find baseline: prefer zoiNone, fall back to zoiDC
-            dc_opf_file = next(
-                (f for f in group_uniform_files if (f['zone'] is None or f['zone'] == "None")),
-                None
-            )
-            if dc_opf_file is None:
-                dc_opf_file = next(
-                    (f for f in group_uniform_files if f['zone'] == 'DC'),
-                    None
-                )
+        regrets = regret_groups.get(group_key, [])
+        if dc_baseline is None or not regrets:
+            continue
 
-            if dc_opf_file is not None:
-                dc_opf_total_obj = dc_opf_file.get('total_obj')
-                baseline_zone = dc_opf_file.get('zone')
-                other_files = [f for f in group_uniform_files if f['zone'] != baseline_zone]
+        dc_total_obj = dc_baseline['total_obj']
+        dc_wu = dc_baseline.get('work_units')
 
-                if dc_opf_total_obj is not None and other_files:
-                    # Build label/description for baseline
-                    if baseline_zone is None or baseline_zone == "None":
-                        baseline_label, baseline_desc = 'None', 'No ZOI adjustment (original Excel settings)'
-                    else:
-                        baseline_label, baseline_desc = ZONE_LABELS.get(baseline_zone, (baseline_zone, f'Uniform {baseline_zone}'))
+        # Build rows: DC baseline first, then uniform regret (SN/TP), then zone regret sorted by buffers
+        rows = []
+        rows.append({
+            'source': 'DC',
+            'is_uniform': True,
+            'dc_buf': None, 'tp_buf': None,
+            'total_obj': dc_total_obj,
+            'abs_regret': 0.0, 'rel_regret': 0.0,
+            'wu': dc_wu, 'wu_rel': None,
+            'sort': (-2, 0, 0, ''),
+        })
 
-                    # Collect (label, desc, total_obj, abs_diff, rel_diff_pct, sort_order, work_units, wu_rel)
-                    baseline_wu = dc_opf_file.get('work_units')
-                    entries = []
-                    entries.append((baseline_label, baseline_desc + ' (BASELINE)',
-                                    dc_opf_total_obj, 0.0, 0.0, -99, baseline_wu, None))
-
-                    sort_order_map = {'DC': 0, 'TP': 1, 'SN': 2}
-                    for uf in other_files:
-                        zone = uf['zone']
-                        if zone is None or zone == "None":
-                            label, desc, so = 'None', 'No ZOI adjustment (original Excel settings)', -1
-                        else:
-                            label, desc = ZONE_LABELS.get(zone, (zone, f'Uniform {zone}'))
-                            so = sort_order_map.get(zone, 3)
-                        total_obj = uf.get('total_obj')
-                        if total_obj is not None:
-                            abs_diff = total_obj - dc_opf_total_obj
-                            rel_diff_pct = (abs_diff / dc_opf_total_obj * 100) if dc_opf_total_obj != 0 else 0.0
-                            wu = uf.get('work_units')
-                            wu_rel = (wu - baseline_wu) / baseline_wu * 100 if (wu is not None and baseline_wu is not None and baseline_wu != 0) else None
-                            entries.append((label, desc, total_obj, abs_diff, rel_diff_pct, so, wu, wu_rel))
-
-                    # Sort by sort_order (baseline first via -99, then others)
-                    entries.sort(key=lambda e: e[5])
-
-                    printer.information(f"\nUniform Technical Representation Comparisons")
-                    printer.information("-" * 155)
-                    printer.information(f"  {'Type':<10s} {'Description':<60s} {'Total Objective':>18s} {'Abs. Diff':>15s} {'Rel. Diff (%)':>15s} {'Work Units':>12s} {'WU Rel. (%)':>12s}")
-                    printer.information("-" * 155)
-                    for label, desc, total_obj, abs_diff, rel_diff_pct, _, wu, wu_rel in entries:
-                        wu_str = f"{wu:.2f}" if wu is not None else "N/A"
-                        wu_rel_str = f"{wu_rel:.1f}%" if wu_rel is not None else "-"
-                        printer.information(f"  {label:<10s} {desc:<60s} {total_obj:>18.2f} {abs_diff:>15.2f} {rel_diff_pct:>14.1f}% {wu_str:>12s} {wu_rel_str:>12s}")
-                    printer.information("-" * 155)
-
-        # --- 2) Zone-Specific Comparisons (one per dc_buf / tp_buf config) ---
-        for dc_buf, tp_buf, group_data in sorted(configs):
-            # Find baseline model: prefer zoiNone, fall back to zoiDC
-            baseline_file_data = next(
-                (f for f in group_data['uniform_files']
-                 if (f['zone'] is None or f['zone'] == "None")),
-                None
-            )
-            if baseline_file_data is None:
-                baseline_file_data = next(
-                    (f for f in group_data['uniform_files'] if f['zone'] == 'DC'),
-                    None
-                )
-
-            if baseline_file_data is None:
+        for rf in regrets:
+            zone = rf['zone']
+            total_obj = rf.get('total_obj')
+            if total_obj is None:
                 continue
 
-            zone_files = group_data['zone_files']
-            if not zone_files:
-                continue
+            is_uniform_source = is_uniform_representation(zone)
 
-            baseline_total_obj = baseline_file_data.get('total_obj')
-            baseline_zone = baseline_file_data.get('zone')
-            baseline_wu = baseline_file_data.get('work_units')
-            baseline_label = "zoiNone" if (baseline_zone is None or baseline_zone == "None") else f"zoi{baseline_zone}"
+            # Work units come from the non-regret source run
+            if is_uniform_source:
+                source = uniform_source_map.get((group_key, zone))
+            else:
+                source = zone_source_map.get((group_key, zone, rf.get('dc_buffer'), rf.get('tp_buffer')))
+            source_wu = source.get('work_units') if source else None
 
-            printer.information(f"\nZone-Specific Comparisons (Baseline: {baseline_label})")
-            printer.information(f"Parameters: {group_desc}, dcBuffer={dc_buf}, tpBuffer={tp_buf}")
+            abs_regret = total_obj - dc_total_obj
+            rel_regret = (abs_regret / dc_total_obj * 100) if dc_total_obj != 0 else 0.0
+            wu_rel = ((source_wu - dc_wu) / dc_wu * 100) if (source_wu is not None and dc_wu is not None and dc_wu != 0) else None
+
+            rows.append({
+                'source': zone if is_uniform_source else f"zoi({zone})",
+                'is_uniform': is_uniform_source,
+                'dc_buf': rf.get('dc_buffer'), 'tp_buf': rf.get('tp_buffer'),
+                'total_obj': total_obj,
+                'abs_regret': abs_regret, 'rel_regret': rel_regret,
+                'wu': source_wu, 'wu_rel': wu_rel,
+                'sort': (-1, 0, 0, zone) if is_uniform_source else (0, rf.get('dc_buffer') or 0, rf.get('tp_buffer') or 0, zone),
+            })
+
+        rows.sort(key=lambda r: r['sort'])
+
+        # Print merged regret comparison table
+        printer.information(f"\nRegret Comparisons (baseline: DC, total obj = {dc_total_obj:.2f})")
+        printer.information("-" * 155)
+        printer.information(f"  {'Source':<12s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Total Objective':>18s} {'Abs. Regret':>15s} {'Rel. Regret (%)':>15s} {'Work Units':>12s} {'WU Rel. (%)':>12s}")
+        printer.information("-" * 155)
+
+        for row in rows:
+            dc_str = "-" if row['is_uniform'] else (str(row['dc_buf']) if row['dc_buf'] is not None else "N/A")
+            tp_str = "-" if row['is_uniform'] else (str(row['tp_buf']) if row['tp_buf'] is not None else "N/A")
+            wu_str = f"{row['wu']:.2f}" if row['wu'] is not None else "N/A"
+            wu_rel_str = f"{row['wu_rel']:.1f}%" if row['wu_rel'] is not None else "-"
+            printer.information(f"  {row['source']:<12s} {dc_str:>8s} {tp_str:>8s} {row['total_obj']:>18.2f} {row['abs_regret']:>15.2f} {row['rel_regret']:>14.1f}% {wu_str:>12s} {wu_rel_str:>12s}")
+
+        # Safety check: sum of baseline's per-zone ZOI objectives == baseline total
+        buf_configs = zone_files_by_group.get(group_key, {})
+        if buf_configs and dc_baseline.get('zoi_data'):
+            first_buf_key = next(iter(sorted(buf_configs.keys())))
+            zone_files_for_check = buf_configs[first_buf_key]
+            baseline_data = dc_baseline['zoi_data']
+            sum_baseline_zones = 0.0
+            for zf in sorted(zone_files_for_check, key=lambda z: z['zone']):
+                zone_zoi_i = zf['zoi_data']['sets']['zoi_i']
+                sum_baseline_zones += LEGOUtilities.evaluate_zoi_objective_from_data(
+                    baseline_data, new_zoi_i=zone_zoi_i, line_filter="both"
+                )
+
             printer.information("-" * 155)
-            printer.information(f"  {'Zone':<12s} {'Baseline for Zone':>18s} {'Zone-Specific Run':>18s} {'Difference':>15s} {'Rel. Diff (%)':>15s} {'Work Units':>12s} {'WU Rel. (%)':>12s}")
-            printer.information("-" * 155)
-
-            sum_of_baseline_zone_objectives = 0.0
-
-            for zone_file_data in zone_files:
-                try:
-                    zone = zone_file_data['zone']
-                    original_zoi_value = zone_file_data['zoi_value']
-                    baseline_data = baseline_file_data['zoi_data']
-                    zone_zoi_i = zone_file_data['zoi_data']['sets']['zoi_i']
-
-                    # Recalculate ZOI objective for baseline data with zone's ZOI definition
-                    baseline_zone_objective = LEGOUtilities.evaluate_zoi_objective_from_data(
-                        baseline_data, new_zoi_i=zone_zoi_i, line_filter="both"
-                    )
-
-                    difference = baseline_zone_objective - original_zoi_value
-                    rel_diff_pct = (difference / baseline_zone_objective * 100) if baseline_zone_objective != 0 else 0.0
-                    sum_of_baseline_zone_objectives += baseline_zone_objective
-                    wu = zone_file_data.get('work_units')
-                    wu_str = f"{wu:.2f}" if wu is not None else "N/A"
-                    wu_rel = (wu - baseline_wu) / baseline_wu * 100 if (wu is not None and baseline_wu is not None and baseline_wu != 0) else None
-                    wu_rel_str = f"{wu_rel:.1f}%" if wu_rel is not None else "N/A"
-                    printer.information(f"  {zone:<12s} {baseline_zone_objective:>18.2f} {original_zoi_value:>18.2f} {difference:>15.2f} {rel_diff_pct:>14.1f}% {wu_str:>12s} {wu_rel_str:>12s}")
-
-                except Exception as e:
-                    printer.error(f"  Failed to compare zone {zone}: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-            # Safety check: sum of baseline's zone objectives should equal baseline's overall objective
-            printer.information("-" * 155)
-            if baseline_total_obj is not None:
-                printer.information(f"  {'SAFETY CHECK':<12s} {'Sum Baseline':>18s} {'Baseline Total':>18s} {'Difference':>15s} {'Rel. Diff (%)':>15s}")
-                safety_difference = sum_of_baseline_zone_objectives - baseline_total_obj
-                safety_rel_diff_pct = (safety_difference / baseline_total_obj * 100) if baseline_total_obj != 0 else 0.0
-                tolerance_pct = 0.01  # 0.01% relative tolerance
-                if abs(safety_rel_diff_pct) < tolerance_pct:
-                    printer.success(f"  {'[PASSED]':<12s} {sum_of_baseline_zone_objectives:>18.2f} {baseline_total_obj:>18.2f} {safety_difference:>15.2f} {safety_rel_diff_pct:>14.1f}%")
-                else:
-                    printer.error(f"  {'[FAILED]':<12s} {sum_of_baseline_zone_objectives:>18.2f} {baseline_total_obj:>18.2f} {safety_difference:>15.2f} {safety_rel_diff_pct:>14.1f}%")
+            printer.information(f"  {'SAFETY CHECK':<12s} {'Sum Baseline':>18s} {'Baseline Total':>18s} {'Difference':>15s} {'Rel. Diff (%)':>15s}")
+            safety_diff = sum_baseline_zones - dc_total_obj
+            safety_rel = (safety_diff / dc_total_obj * 100) if dc_total_obj != 0 else 0.0
+            if abs(safety_rel) < 0.01:
+                printer.success(f"  {'[PASSED]':<12s} {sum_baseline_zones:>18.2f} {dc_total_obj:>18.2f} {safety_diff:>15.2f} {safety_rel:>14.1f}%")
+            else:
+                printer.error(f"  {'[FAILED]':<12s} {sum_baseline_zones:>18.2f} {dc_total_obj:>18.2f} {safety_diff:>15.2f} {safety_rel:>14.1f}%")
+        printer.information("-" * 155)
 
 
 if __name__ == "__main__":
