@@ -15,7 +15,7 @@ import pandas as pd
 
 from InOutModule.printer import Printer
 from LEGO import LEGOUtilities
-from TechnicalRepresentation import is_uniform_representation, ZONE_LABELS, load_file_metadata, print_run_parameters, make_run_sort_key
+from TechnicalRepresentation import is_uniform_representation, load_file_metadata, print_run_parameters, make_run_sort_key
 
 printer = Printer.getInstance()
 
