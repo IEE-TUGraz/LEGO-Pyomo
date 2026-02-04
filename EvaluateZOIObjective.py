@@ -1,4 +1,5 @@
 import argparse
+import ast
 import glob
 import os
 import sqlite3
@@ -65,27 +66,14 @@ def load_zoi_data_from_sqlite(sqlite_file):
             df_terms = pd.read_sql_query('SELECT * FROM objective_terms', conn)
             # Parse string indices back to their original types (tuples, strings, etc.)
             linear_vars_info = []  # List of (var_name, var_index) tuples
-            import ast
-
-            # Check if var_name column exists (new format) or not (old format)
-            if 'var_name' in df_terms.columns:
-                # New format: includes variable names
-                for _, row in df_terms.iterrows():
-                    var_name = row['var_name']
-                    idx_str = row['var_index']
-                    try:
-                        idx = ast.literal_eval(idx_str)
-                    except (ValueError, SyntaxError):
-                        idx = idx_str
-                    linear_vars_info.append((var_name, idx))
-            else:
-                # Old format: only indices (backward compatibility)
-                for idx_str in df_terms['var_index']:
-                    try:
-                        idx = ast.literal_eval(idx_str)
-                    except (ValueError, SyntaxError):
-                        idx = idx_str
-                    linear_vars_info.append((None, idx))  # No var_name available
+            for _, row in df_terms.iterrows():
+                var_name = row['var_name']
+                idx_str = row['var_index']
+                try:
+                    idx = ast.literal_eval(idx_str)
+                except (ValueError, SyntaxError):
+                    idx = idx_str
+                linear_vars_info.append((var_name, idx))
 
             linear_coefs = df_terms['coefficient'].tolist()
         except Exception as e:
