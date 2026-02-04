@@ -152,6 +152,32 @@ def load_zoi_data_from_sqlite(sqlite_file):
         conn.close()
 
 
+def load_ens_pns_from_sqlite(sqlite_file):
+    """
+    Compute weighted total ENS and PNS from SQLite file.
+
+    Total ENS = sum over (rp, k, i) of vEPS[rp,k,i] * pWeight_rp[rp] * pWeight_k[k]
+    Total PNS = sum over (rp, k, i) of vPNS[rp,k,i] * pWeight_rp[rp] * pWeight_k[k]
+
+    :return: (ens, pns) tuple of floats
+    """
+    conn = sqlite3.connect(sqlite_file)
+    try:
+        df_wk = pd.read_sql_query('SELECT * FROM pWeight_k', conn)
+        df_wrp = pd.read_sql_query('SELECT * FROM pWeight_rp', conn)
+        wk = dict(zip(df_wk.iloc[:, 0], df_wk['values']))
+        wrp = dict(zip(df_wrp.iloc[:, 0], df_wrp['values']))
+
+        totals = {}
+        for var_name in ['vEPS', 'vPNS']:
+            df = pd.read_sql_query(f'SELECT * FROM {var_name}', conn)
+            df['_w'] = df['rp'].map(wrp) * df['k'].map(wk)
+            totals[var_name] = (df['values'] * df['_w']).sum()
+        return totals['vEPS'], totals['vPNS']
+    finally:
+        conn.close()
+
+
 def main(folder="."):
     # Find all SQLite files in the specified folder
     sqlite_pattern = os.path.join(folder, "*.sqlite")
@@ -187,6 +213,14 @@ def main(folder="."):
             zoi_data = load_zoi_data_from_sqlite(sqlite_file)
             load_time = time.time() - start_time
             printer.information(f"  Loaded in {load_time:.2f} seconds")
+
+            # Load weighted ENS and PNS
+            try:
+                ens, pns = load_ens_pns_from_sqlite(sqlite_file)
+                printer.information(f"  ENS: {ens:.2f}, PNS: {pns:.2f}")
+            except Exception as e:
+                printer.warning(f"  Could not load ENS/PNS: {e}")
+                ens, pns = None, None
 
             # Calculate objectives based on type
             zoi_value = None
@@ -236,7 +270,7 @@ def main(folder="."):
                 else:
                     printer.warning(f"  Stored Total Objective: Not available in data")
 
-            results.append((sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, calc_total_obj, is_regret_file))
+            results.append((sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, calc_total_obj, is_regret_file, ens, pns))
 
             # Store file data
             file_data = {
@@ -251,7 +285,9 @@ def main(folder="."):
                 'zoi_value': zoi_value,
                 'zoi_data': zoi_data,
                 'total_obj': calc_total_obj,
-                'work_units': zoi_data.get('work_units')
+                'work_units': zoi_data.get('work_units'),
+                'ens': ens,
+                'pns': pns,
             }
 
             # Separate into uniform, zone-specific, and regret
@@ -268,28 +304,28 @@ def main(folder="."):
     # Print summary
     if results:
         def sort_key(result):
-            sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj, is_regret = result
+            sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj, is_regret, _, _ = result
             return make_run_sort_key(input_dir, limit_k, demand, pmax, dc_buffer, tp_buffer, zone) + (1 if is_regret else 0,)
 
         sorted_results = sorted(results, key=sort_key)
 
         # Calculate the maximum filename length for proper alignment
-        max_filename_len = max(len(sqlite_file) for sqlite_file, _, _, _, _, _, _, _, _, _, _ in sorted_results)
+        max_filename_len = max(len(sqlite_file) for sqlite_file, _, _, _, _, _, _, _, _, _, _, _, _ in sorted_results)
         # Ensure minimum width for readability
         filename_width = max(max_filename_len, len("Filename"))
         # Calculate total table width
-        table_width = filename_width + 2 + 16 + 8 + 8 + 8 + 8 + 14 + 16
+        table_width = filename_width + 2 + 16 + 8 + 8 + 8 + 8 + 14 + 16 + 14 + 14
 
         printer.information("\n" + "=" * table_width)
         printer.information("Summary of Objective Values (grouped by parameters):")
         printer.information("=" * table_width)
-        printer.information(f"  {'Filename':<{filename_width}s} {'LimitK':>16s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Demand':>8s} {'PMax':>8s} {'ZOI Objective':>14s} {'Total Objective':>16s}")
+        printer.information(f"  {'Filename':<{filename_width}s} {'LimitK':>16s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Demand':>8s} {'PMax':>8s} {'ZOI Objective':>14s} {'Total Objective':>16s} {'ENS':>14s} {'PNS':>14s}")
         printer.information("-" * table_width)
 
         # Track previous group to insert separators
         prev_group = None
 
-        for sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj, _ in sorted_results:
+        for sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj, _, ens, pns in sorted_results:
             # Check if we're starting a new group (input_dir, limit_k, demand, pmax)
             current_group = (input_dir, limit_k, demand, pmax)
             if prev_group is not None and current_group != prev_group:
@@ -308,7 +344,9 @@ def main(folder="."):
             # Show total objective if available
             total_str = f"{total_obj:.2f}" if total_obj is not None else "N/A"
             limit_k_str = limit_k if limit_k else "N/A"
-            printer.information(f"  {sqlite_file:<{filename_width}s} {limit_k_str:>16s} {dc_str:>8s} {tp_str:>8s} {demand_str:>8s} {pmax_str:>8s} {zoi_str:>14s} {total_str:>16s}")
+            ens_str = f"{ens:.2f}" if ens is not None else "N/A"
+            pns_str = f"{pns:.2f}" if pns is not None else "N/A"
+            printer.information(f"  {sqlite_file:<{filename_width}s} {limit_k_str:>16s} {dc_str:>8s} {tp_str:>8s} {demand_str:>8s} {pmax_str:>8s} {zoi_str:>14s} {total_str:>16s} {ens_str:>14s} {pns_str:>14s}")
 
     # Group uniform files by all grouping parameters for easier access
     uniform_groups = {}
@@ -385,6 +423,7 @@ def main(folder="."):
             'total_obj': dc_total_obj,
             'abs_regret': 0.0, 'rel_regret': 0.0,
             'wu': dc_wu, 'wu_rel': None,
+            'ens': dc_baseline.get('ens'), 'pns': dc_baseline.get('pns'),
             'sort': (-2, 0, 0, ''),
         })
 
@@ -414,6 +453,7 @@ def main(folder="."):
                 'total_obj': total_obj,
                 'abs_regret': abs_regret, 'rel_regret': rel_regret,
                 'wu': source_wu, 'wu_rel': wu_rel,
+                'ens': rf.get('ens'), 'pns': rf.get('pns'),
                 'sort': (-1, 0, 0, zone) if is_uniform_source else (0, rf.get('dc_buffer') or 0, rf.get('tp_buffer') or 0, zone),
             })
 
@@ -422,7 +462,7 @@ def main(folder="."):
         # Print merged regret comparison table
         printer.information(f"\nRegret Comparisons (baseline: DC, total obj = {dc_total_obj:.2f})")
         printer.information("-" * 155)
-        printer.information(f"  {'Source':<12s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Total Objective':>18s} {'Abs. Regret':>15s} {'Rel. Regret (%)':>15s} {'Work Units':>12s} {'WU Rel. (%)':>12s}")
+        printer.information(f"  {'Source':<12s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Total Objective':>18s} {'Abs. Regret':>15s} {'Rel. Regret (%)':>15s} {'Work Units':>12s} {'WU Rel. (%)':>12s} {'ENS':>14s} {'PNS':>14s}")
         printer.information("-" * 155)
 
         for row in rows:
@@ -430,7 +470,9 @@ def main(folder="."):
             tp_str = "-" if row['is_uniform'] else (str(row['tp_buf']) if row['tp_buf'] is not None else "N/A")
             wu_str = f"{row['wu']:.2f}" if row['wu'] is not None else "N/A"
             wu_rel_str = f"{row['wu_rel']:.1f}%" if row['wu_rel'] is not None else "-"
-            printer.information(f"  {row['source']:<12s} {dc_str:>8s} {tp_str:>8s} {row['total_obj']:>18.2f} {row['abs_regret']:>15.2f} {row['rel_regret']:>14.1f}% {wu_str:>12s} {wu_rel_str:>12s}")
+            ens_str = f"{row['ens']:.2f}" if row.get('ens') is not None else "N/A"
+            pns_str = f"{row['pns']:.2f}" if row.get('pns') is not None else "N/A"
+            printer.information(f"  {row['source']:<12s} {dc_str:>8s} {tp_str:>8s} {row['total_obj']:>18.2f} {row['abs_regret']:>15.2f} {row['rel_regret']:>14.1f}% {wu_str:>12s} {wu_rel_str:>12s} {ens_str:>14s} {pns_str:>14s}")
 
         # Safety check: sum of baseline's per-zone ZOI objectives == baseline total
         buf_configs = zone_files_by_group.get(group_key, {})
