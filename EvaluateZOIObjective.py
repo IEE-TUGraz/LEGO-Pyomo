@@ -9,14 +9,9 @@ import pandas as pd
 
 from InOutModule.printer import Printer
 from LEGO import LEGOUtilities
+from TechnicalRepresentation import DC_BUFFER_DEFAULT, TP_BUFFER_DEFAULT, SCALE_DEFAULT, is_uniform_representation, ZONE_LABELS
 
 printer = Printer.getInstance()
-
-# Default values from TechnicalRepresentation.py
-DEFAULT_DC_BUFFER = 1
-DEFAULT_TP_BUFFER = 1
-DEFAULT_SCALE_DEMAND = 1.0
-DEFAULT_SCALE_PMAX = 1.0
 
 
 def load_zoi_data_from_sqlite(sqlite_file):
@@ -206,14 +201,14 @@ def extract_parameters(filename):
     zone_match = re.search(r'-zoi([^-]+?)(?:-|$)', filename_no_ext)
     if not zone_match:
         # No zone found - return all defaults
-        return (input_dir, limit_k, None, None, None, DEFAULT_SCALE_DEMAND, DEFAULT_SCALE_PMAX, {
+        return (input_dir, limit_k, None, None, None, SCALE_DEFAULT, SCALE_DEFAULT, {
             'input_dir': params_dict.get('input_dir', {'value': None, 'is_default': True}),
             'limit_k': params_dict.get('limit_k', {'value': None, 'is_default': True}),
             'zone': {'value': None, 'is_default': True},
             'dc_buffer': {'value': None, 'is_default': True},
             'tp_buffer': {'value': None, 'is_default': True},
-            'scale_demand': {'value': DEFAULT_SCALE_DEMAND, 'is_default': True},
-            'scale_pmax': {'value': DEFAULT_SCALE_PMAX, 'is_default': True}
+            'scale_demand': {'value': SCALE_DEFAULT, 'is_default': True},
+            'scale_pmax': {'value': SCALE_DEFAULT, 'is_default': True}
         })
 
     zone = zone_match.group(1)
@@ -225,7 +220,7 @@ def extract_parameters(filename):
         dc_buffer = int(dc_match.group(1))
         params_dict['dc_buffer'] = {'value': dc_buffer, 'is_default': False}
     else:
-        dc_buffer = DEFAULT_DC_BUFFER
+        dc_buffer = DC_BUFFER_DEFAULT
         params_dict['dc_buffer'] = {'value': dc_buffer, 'is_default': True}
 
     # Extract tpBuffer (optional)
@@ -234,7 +229,7 @@ def extract_parameters(filename):
         tp_buffer = int(tp_match.group(1))
         params_dict['tp_buffer'] = {'value': tp_buffer, 'is_default': False}
     else:
-        tp_buffer = DEFAULT_TP_BUFFER
+        tp_buffer = TP_BUFFER_DEFAULT
         params_dict['tp_buffer'] = {'value': tp_buffer, 'is_default': True}
 
     # Extract demand (optional)
@@ -243,7 +238,7 @@ def extract_parameters(filename):
         demand = float(demand_match.group(1))
         params_dict['scale_demand'] = {'value': demand, 'is_default': False}
     else:
-        demand = DEFAULT_SCALE_DEMAND
+        demand = SCALE_DEFAULT
         params_dict['scale_demand'] = {'value': demand, 'is_default': True}
 
     # Extract pmax (optional)
@@ -252,7 +247,7 @@ def extract_parameters(filename):
         pmax = float(pmax_match.group(1))
         params_dict['scale_pmax'] = {'value': pmax, 'is_default': False}
     else:
-        pmax = DEFAULT_SCALE_PMAX
+        pmax = SCALE_DEFAULT
         params_dict['scale_pmax'] = {'value': pmax, 'is_default': True}
 
     return input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, params_dict
@@ -270,7 +265,6 @@ def print_run_parameters(params_dict):
     # Check if zone is a uniform representation (None, DC, TP, SN)
     zone_info = params_dict.get('zone', {})
     zone = zone_info.get('value')
-    is_uniform_repr = zone in ['DC', 'TP', 'SN'] or zone is None or zone == "None"
 
     param_strs = []
     for key, info in params_dict.items():
@@ -278,7 +272,7 @@ def print_run_parameters(params_dict):
         is_default = info['is_default']
 
         # Mark dc_buffer and tp_buffer as unused for uniform representations
-        if is_uniform_repr and key in ['dc_buffer', 'tp_buffer']:
+        if is_uniform_representation(zone) and key in ['dc_buffer', 'tp_buffer']:
             param_strs.append(f"{key}= (unused)")
         elif is_default:
             param_strs.append(f"{key}={value} (default)")
@@ -319,12 +313,9 @@ def main(folder="."):
             load_time = time.time() - start_time
             printer.information(f"  Loaded in {load_time:.2f} seconds")
 
-            # Check if this is a uniform representation
-            is_uniform_repr = zone in ['DC', 'TP', 'SN'] or zone is None or zone == "None"
-
             # Calculate objectives based on type
             zoi_value = None
-            if is_uniform_repr:
+            if is_uniform_representation(zone):
                 # Uniform representation: skip ZOI objective, only calculate total objective
                 printer.information(f"  Uniform representation detected - skipping ZOI objective calculation")
             else:
@@ -390,7 +381,7 @@ def main(folder="."):
             }
 
             # Separate uniform representations from zone-specific runs
-            if zone in ['DC', 'TP', 'SN'] or zone is None or zone == "None":
+            if is_uniform_representation(zone):
                 uniform_files.append(file_data)
             else:
                 all_files_data.append(file_data)
@@ -430,7 +421,7 @@ def main(folder="."):
         def sort_key(result):
             sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj = result
             # For uniform representations (None, TP, SN), put them first in each group
-            is_uniform = zone in ['DC', 'TP', 'SN'] or zone is None or zone == "None"
+            is_uniform = is_uniform_representation(zone)
             # Sort order: input_dir, limit_k, demand, pmax, uniform flag, dcBuffer, tpBuffer, zone
             zone_str = str(zone) if zone is not None else ""
             input_dir_str = str(input_dir) if input_dir is not None else ""
@@ -466,7 +457,7 @@ def main(folder="."):
             prev_group = current_group
 
             # Show '-' for dcBuffer and tpBuffer for uniform representations
-            is_uniform = zone in ['DC', 'TP', 'SN'] or zone is None or zone == "None"
+            is_uniform = is_uniform_representation(zone)
             dc_str = "-" if is_uniform else (str(dc_buffer) if dc_buffer is not None else "N/A")
             tp_str = "-" if is_uniform else (str(tp_buffer) if tp_buffer is not None else "N/A")
             demand_str = f"{demand:.1f}" if demand is not None else "N/A"
@@ -533,15 +524,10 @@ def main(folder="."):
 
                 if dc_opf_total_obj is not None and other_files:
                     # Build label/description for baseline
-                    zone_labels = {
-                        'DC': ('DC-OPF', 'DC Optimal Power Flow (all lines as DC-OPF)'),
-                        'TP': ('TP', 'Transport Model (all lines as TP)'),
-                        'SN': ('SN', 'Single Node / Copper Plate (all lines as SN)'),
-                    }
                     if baseline_zone is None or baseline_zone == "None":
                         baseline_label, baseline_desc = 'None', 'No ZOI adjustment (original Excel settings)'
                     else:
-                        baseline_label, baseline_desc = zone_labels.get(baseline_zone, (baseline_zone, f'Uniform {baseline_zone}'))
+                        baseline_label, baseline_desc = ZONE_LABELS.get(baseline_zone, (baseline_zone, f'Uniform {baseline_zone}'))
 
                     # Collect (label, desc, total_obj, abs_diff, rel_diff_pct, sort_order, work_units)
                     entries = []
@@ -554,7 +540,7 @@ def main(folder="."):
                         if zone is None or zone == "None":
                             label, desc, so = 'None', 'No ZOI adjustment (original Excel settings)', -1
                         else:
-                            label, desc = zone_labels.get(zone, (zone, f'Uniform {zone}'))
+                            label, desc = ZONE_LABELS.get(zone, (zone, f'Uniform {zone}'))
                             so = sort_order_map.get(zone, 3)
                         total_obj = uf.get('total_obj')
                         if total_obj is not None:

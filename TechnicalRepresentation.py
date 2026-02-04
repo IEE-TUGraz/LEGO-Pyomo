@@ -24,6 +24,17 @@ TP_BUFFER_DEFAULT = 1
 
 SCALE_DEFAULT = 1.0  # Scaling default should always be 1.0 (no scaling)
 
+ZONE_LABELS = {
+    'DC': ('DC-OPF', 'DC Optimal Power Flow (all lines as DC-OPF)'),
+    'TP': ('TP', 'Transport Model (all lines as TP)'),
+    'SN': ('SN', 'Single Node / Copper Plate (all lines as SN)'),
+}
+
+
+def is_uniform_representation(zone: str | None) -> bool:
+    """Check if zone represents a uniform technical representation (DC, TP, SN, or None)."""
+    return zone in ('DC', 'TP', 'SN', None) or zone == "None"
+
 
 def assign_technical_representation_by_layers(cs: CaseStudy, dc_buffer: int, tp_buffer: int) -> None:
     """
@@ -178,7 +189,7 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
         identifier_parts_base.append(f"pmax{scale_pmax:.1f}")
         cs_base.dPower_Network['pPmax'] *= scale_pmax
 
-    if (zoi in ['DC', 'TP', 'SN', 'None'] or zoi is None) and not all_zones:
+    if is_uniform_representation(zoi) and not all_zones:
         if dc_buffer != DC_BUFFER_DEFAULT:
             printer.warning("DC buffer specified but using uniform or unchanged technical representation - DC buffer will be ignored")
         if tp_buffer != TP_BUFFER_DEFAULT:

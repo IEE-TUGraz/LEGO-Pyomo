@@ -7,6 +7,7 @@ from collections import defaultdict
 import pandas as pd
 
 from InOutModule.printer import Printer
+from TechnicalRepresentation import is_uniform_representation, ZONE_LABELS
 
 printer = Printer.getInstance()
 printer.set_width(180)
@@ -85,7 +86,7 @@ def print_run_parameters(meta):
     if meta['limit_k']:
         parts.append(f"limit_k={meta['limit_k']}")
     parts.append(f"zone={meta['zone']}")
-    if meta['zone'] in ['DC', 'TP', 'SN'] or meta['zone'] is None:
+    if is_uniform_representation(meta['zone']):
         parts.append(f"dc_buffer= (unused)")
         parts.append(f"tp_buffer= (unused)")
     else:
@@ -258,7 +259,7 @@ def main(folder="."):
     zone_entries = []
     for entry in all_entries:
         zone = entry['meta']['zone']
-        if zone in ['DC', 'TP', 'SN'] or zone is None or zone == "None":
+        if is_uniform_representation(zone):
             uniform_entries.append(entry)
         else:
             zone_entries.append(entry)
@@ -318,15 +319,10 @@ def main(folder="."):
             other_uniforms = [e for e in uniforms if e['meta']['zone'] != baseline_zone]
 
             if other_uniforms:
-                zone_labels = {
-                    'DC': ('DC-OPF', 'DC Optimal Power Flow (all lines as DC-OPF)'),
-                    'TP': ('TP', 'Transport Model (all lines as TP)'),
-                    'SN': ('SN', 'Single Node / Copper Plate (all lines as SN)'),
-                }
                 if baseline_zone is None or baseline_zone == "None":
                     bl_label, bl_desc = 'None', 'No ZOI adjustment (original Excel settings)'
                 else:
-                    bl_label, bl_desc = zone_labels.get(baseline_zone, (baseline_zone, f'Uniform {baseline_zone}'))
+                    bl_label, bl_desc = ZONE_LABELS.get(baseline_zone, (baseline_zone, f'Uniform {baseline_zone}'))
 
                 # (label, desc, total_cap, abs_diff, rel_diff, sort_order, work_units)
                 entries = [(bl_label, bl_desc + ' (BASELINE)', baseline_total_cap, 0.0, 0.0, -99,
@@ -338,7 +334,7 @@ def main(folder="."):
                     if zone is None or zone == "None":
                         label, desc, so = 'None', 'No ZOI adjustment (original Excel settings)', -1
                     else:
-                        label, desc = zone_labels.get(zone, (zone, f'Uniform {zone}'))
+                        label, desc = ZONE_LABELS.get(zone, (zone, f'Uniform {zone}'))
                         so = sort_order_map.get(zone, 3)
                     total_cap = sum(e['total_invest'].values())
                     abs_diff = total_cap - baseline_total_cap
@@ -361,7 +357,7 @@ def main(folder="."):
                     zone = e['meta']['zone']
                     if zone is None or zone == "None":
                         continue
-                    _, desc = zone_labels.get(zone, (zone, f'Uniform {zone}'))
+                    _, desc = ZONE_LABELS.get(zone, (zone, f'Uniform {zone}'))
 
                     printer.information(f"\nComparing: {desc} ({zone}) vs {bl_label} (Baseline)")
                     printer.information("-" * 160)
@@ -476,7 +472,7 @@ def print_summary_table(entries):
     def sort_key(e):
         m = e['meta']
         zone = m['zone']
-        is_uniform = zone in ['DC', 'TP', 'SN'] or zone is None or zone == "None"
+        is_uniform = is_uniform_representation(zone)
         return (m['input_dir'] or '', m['limit_k'] or '', m['demand'], m['pmax'],
                 0 if is_uniform else 1,
                 -1 if is_uniform else (m['dc_buffer'] or 999),
@@ -492,7 +488,7 @@ def print_summary_table(entries):
         prev_group = current_group
 
         zone = m['zone']
-        is_uniform = zone in ['DC', 'TP', 'SN'] or zone is None or zone == "None"
+        is_uniform = is_uniform_representation(zone)
         dc_str = "-" if is_uniform else (str(m['dc_buffer']) if m['dc_buffer'] is not None else "N/A")
         tp_str = "-" if is_uniform else (str(m['tp_buffer']) if m['tp_buffer'] is not None else "N/A")
         zone_str = zone if zone is not None else "None"
