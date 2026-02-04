@@ -301,6 +301,10 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
         if tp_buffer != TP_BUFFER_DEFAULT:
             printer.warning("TP buffer specified but using uniform or unchanged technical representation - TP buffer will be ignored")
 
+    if dc_buffer == 0 and tp_buffer == 0:
+        printer.warning("dcBuffer=0 and tpBuffer=0 would make all cross-boundary lines SN, collapsing ZOI into the merged bus. Setting tpBuffer=1.")
+        tp_buffer = 1
+
     # Determine which zones to run
     if all_zones:
         printer.information("Running for all zones (--all specified)")
@@ -358,6 +362,7 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
             continue
 
         cs.merge_single_node_buses()
+
         printer.information(f"Building LEGO model for case study with '{current_zoi}' as zoi...")
         lego = LEGO(cs)
         model, timing = lego.build_model()
