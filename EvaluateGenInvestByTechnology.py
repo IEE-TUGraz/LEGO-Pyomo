@@ -7,94 +7,10 @@ from collections import defaultdict
 import pandas as pd
 
 from InOutModule.printer import Printer
-from TechnicalRepresentation import is_uniform_representation, ZONE_LABELS
+from TechnicalRepresentation import is_uniform_representation, ZONE_LABELS, load_file_metadata, print_run_parameters
 
 printer = Printer.getInstance()
 printer.set_width(180)
-
-
-def load_file_metadata(sqlite_file):
-    """
-    Load all metadata for a file from run_parameters and solver_statistics.
-
-    Returns:
-        dict with keys: input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, work_units
-    """
-    meta = {
-        'input_dir': None,
-        'limit_k': None,
-        'dc_buffer': None,
-        'tp_buffer': None,
-        'zone': None,
-        'demand': 1.0,
-        'pmax': 1.0,
-        'work_units': None,
-    }
-
-    try:
-        conn = sqlite3.connect(sqlite_file)
-
-        # --- run_parameters ---
-        try:
-            df = pd.read_sql_query('SELECT * FROM run_parameters', conn)
-            if len(df) > 0:
-                row = df.iloc[0]
-                # input_dir from case_study_directory (e.g. "data/NREL-118")
-                if 'case_study_directory' in row and row['case_study_directory'] not in (None, 'None'):
-                    meta['input_dir'] = str(row['case_study_directory'])
-                # limit_k
-                if 'limit_k' in row and row['limit_k'] not in (None, 'None'):
-                    meta['limit_k'] = str(row['limit_k'])
-                # zone / zoi
-                if 'zoi' in row and row['zoi'] not in (None, 'None'):
-                    meta['zone'] = str(row['zoi'])
-                # buffers
-                if 'dc_buffer' in row and row['dc_buffer'] not in (None, 'None'):
-                    meta['dc_buffer'] = int(float(row['dc_buffer']))
-                if 'tp_buffer' in row and row['tp_buffer'] not in (None, 'None'):
-                    meta['tp_buffer'] = int(float(row['tp_buffer']))
-                # scales
-                if 'scale_demand' in row and row['scale_demand'] not in (None, 'None'):
-                    meta['demand'] = float(row['scale_demand'])
-                if 'scale_pmax' in row and row['scale_pmax'] not in (None, 'None'):
-                    meta['pmax'] = float(row['scale_pmax'])
-        except Exception:
-            pass
-
-        # --- solver_statistics (work_units) ---
-        try:
-            df_stats = pd.read_sql_query('SELECT * FROM solver_statistics', conn)
-            if 'work_units' in df_stats.columns:
-                val = df_stats.iloc[0]['work_units']
-                if val is not None:
-                    meta['work_units'] = float(val)
-        except Exception:
-            pass
-
-        conn.close()
-    except Exception:
-        pass
-
-    return meta
-
-
-def print_run_parameters(meta):
-    """Print run parameters extracted from metadata."""
-    parts = []
-    if meta['input_dir']:
-        parts.append(f"input_dir={meta['input_dir']}")
-    if meta['limit_k']:
-        parts.append(f"limit_k={meta['limit_k']}")
-    parts.append(f"zone={meta['zone']}")
-    if is_uniform_representation(meta['zone']):
-        parts.append(f"dc_buffer= (unused)")
-        parts.append(f"tp_buffer= (unused)")
-    else:
-        parts.append(f"dc_buffer={meta['dc_buffer']}" + (" (default)" if meta['dc_buffer'] == 1 else ""))
-        parts.append(f"tp_buffer={meta['tp_buffer']}" + (" (default)" if meta['tp_buffer'] == 1 else ""))
-    parts.append(f"scale_demand={meta['demand']}")
-    parts.append(f"scale_pmax={meta['pmax']}")
-    printer.information(f"  Run parameters: {', '.join(parts)}")
 
 
 def evaluate_gen_investment_by_technology_from_sqlite(sqlite_file, filter_zoi=True):

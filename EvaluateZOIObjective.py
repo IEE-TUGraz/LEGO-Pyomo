@@ -1,7 +1,6 @@
 import argparse
 import glob
 import os
-import re
 import sqlite3
 import time
 
@@ -9,7 +8,7 @@ import pandas as pd
 
 from InOutModule.printer import Printer
 from LEGO import LEGOUtilities
-from TechnicalRepresentation import DC_BUFFER_DEFAULT, TP_BUFFER_DEFAULT, SCALE_DEFAULT, is_uniform_representation, ZONE_LABELS
+from TechnicalRepresentation import is_uniform_representation, ZONE_LABELS, load_file_metadata, print_run_parameters
 
 printer = Printer.getInstance()
 
@@ -161,127 +160,6 @@ def load_zoi_data_from_sqlite(sqlite_file):
         conn.close()
 
 
-def extract_parameters(filename):
-    """
-    Extract all parameters from filename.
-    Uses default values if parameters are missing from the filename.
-
-    Handles both old and new filename formats:
-    - Old: TR-datadata_<name>-zoi<zone>-limitK<k>-dcBuffer<dc>-tpBuffer<tp>-demand<d>-pmax<p>
-    - New: TR-datadata_<name>-limitK<k>-demand<d>-pmax<p>-dcBuffer<dc>-tpBuffer<tp>-zoi<zone>
-
-    Returns:
-        tuple: (input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, params_dict)
-               where params_dict contains info about which values are defaults
-    """
-    params_dict = {}
-
-    # Remove file extension first
-    filename_no_ext = filename.replace('.sqlite', '')
-
-    # Extract input directory name (everything after "TR-data" until first parameter)
-    input_dir = None
-    input_dir_match = re.search(r'TR-data(.+?)(?:-(?:limitK|demand|pmax|dcBuffer|tpBuffer|zoi))', filename_no_ext)
-    if input_dir_match:
-        input_dir = input_dir_match.group(1)
-        params_dict['input_dir'] = {'value': input_dir, 'is_default': False}
-    else:
-        params_dict['input_dir'] = {'value': None, 'is_default': True}
-
-    # Extract limitK (optional) - format: -limitKk0001-k0048
-    limit_k = None
-    limit_k_match = re.search(r'-limitK(k\d+-k\d+)', filename_no_ext)
-    if limit_k_match:
-        limit_k = limit_k_match.group(1)
-        params_dict['limit_k'] = {'value': limit_k, 'is_default': False}
-    else:
-        params_dict['limit_k'] = {'value': None, 'is_default': True}
-
-    # Extract zone - can appear anywhere in the filename
-    zone_match = re.search(r'-zoi([^-]+?)(?:-|$)', filename_no_ext)
-    if not zone_match:
-        # No zone found - return all defaults
-        return (input_dir, limit_k, None, None, None, SCALE_DEFAULT, SCALE_DEFAULT, {
-            'input_dir': params_dict.get('input_dir', {'value': None, 'is_default': True}),
-            'limit_k': params_dict.get('limit_k', {'value': None, 'is_default': True}),
-            'zone': {'value': None, 'is_default': True},
-            'dc_buffer': {'value': None, 'is_default': True},
-            'tp_buffer': {'value': None, 'is_default': True},
-            'scale_demand': {'value': SCALE_DEFAULT, 'is_default': True},
-            'scale_pmax': {'value': SCALE_DEFAULT, 'is_default': True}
-        })
-
-    zone = zone_match.group(1)
-    params_dict['zone'] = {'value': zone, 'is_default': False}
-
-    # Extract dcBuffer (optional)
-    dc_match = re.search(r'-dcBuffer(\d+)', filename_no_ext)
-    if dc_match:
-        dc_buffer = int(dc_match.group(1))
-        params_dict['dc_buffer'] = {'value': dc_buffer, 'is_default': False}
-    else:
-        dc_buffer = DC_BUFFER_DEFAULT
-        params_dict['dc_buffer'] = {'value': dc_buffer, 'is_default': True}
-
-    # Extract tpBuffer (optional)
-    tp_match = re.search(r'-tpBuffer(\d+)', filename_no_ext)
-    if tp_match:
-        tp_buffer = int(tp_match.group(1))
-        params_dict['tp_buffer'] = {'value': tp_buffer, 'is_default': False}
-    else:
-        tp_buffer = TP_BUFFER_DEFAULT
-        params_dict['tp_buffer'] = {'value': tp_buffer, 'is_default': True}
-
-    # Extract demand (optional)
-    demand_match = re.search(r'-demand(\d+(?:\.\d+)?)', filename_no_ext)
-    if demand_match:
-        demand = float(demand_match.group(1))
-        params_dict['scale_demand'] = {'value': demand, 'is_default': False}
-    else:
-        demand = SCALE_DEFAULT
-        params_dict['scale_demand'] = {'value': demand, 'is_default': True}
-
-    # Extract pmax (optional)
-    pmax_match = re.search(r'-pmax(\d+(?:\.\d+)?)', filename_no_ext)
-    if pmax_match:
-        pmax = float(pmax_match.group(1))
-        params_dict['scale_pmax'] = {'value': pmax, 'is_default': False}
-    else:
-        pmax = SCALE_DEFAULT
-        params_dict['scale_pmax'] = {'value': pmax, 'is_default': True}
-
-    return input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, params_dict
-
-
-def print_run_parameters(params_dict):
-    """
-    Print run parameters extracted from filename.
-    :param params_dict: Dictionary of parameters with default flags
-    """
-    if not params_dict:
-        printer.warning("  Could not extract parameters from filename")
-        return
-
-    # Check if zone is a uniform representation (None, DC, TP, SN)
-    zone_info = params_dict.get('zone', {})
-    zone = zone_info.get('value')
-
-    param_strs = []
-    for key, info in params_dict.items():
-        value = info['value']
-        is_default = info['is_default']
-
-        # Mark dc_buffer and tp_buffer as unused for uniform representations
-        if is_uniform_representation(zone) and key in ['dc_buffer', 'tp_buffer']:
-            param_strs.append(f"{key}= (unused)")
-        elif is_default:
-            param_strs.append(f"{key}={value} (default)")
-        else:
-            param_strs.append(f"{key}={value}")
-
-    printer.information(f"  Run parameters: {', '.join(param_strs)}")
-
-
 def main(folder="."):
     # Find all SQLite files in the specified folder
     sqlite_pattern = os.path.join(folder, "*.sqlite")
@@ -302,9 +180,12 @@ def main(folder="."):
         printer.information(f"\nProcessing '{sqlite_file}'...")
 
         try:
-            # Extract parameters from filename
-            input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, params_dict = extract_parameters(sqlite_file)
-            print_run_parameters(params_dict)
+            # Load metadata from SQLite
+            meta = load_file_metadata(sqlite_file)
+            print_run_parameters(meta)
+            input_dir, limit_k = meta['input_dir'], meta['limit_k']
+            dc_buffer, tp_buffer = meta['dc_buffer'], meta['tp_buffer']
+            zone, demand, pmax = meta['zone'], meta['demand'], meta['pmax']
 
             # Load the ZOI data from SQLite
             start_time = time.time()
