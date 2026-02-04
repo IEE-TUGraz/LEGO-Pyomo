@@ -122,6 +122,22 @@ def print_run_parameters(meta):
     printer.information(f"  Run parameters: {', '.join(parts)}")
 
 
+def make_run_sort_key(input_dir, limit_k, demand, pmax, dc_buffer, tp_buffer, zone):
+    """Generate a sort key for ordering runs: groups by (input_dir, limit_k, demand, pmax),
+    uniform representations first, then by buffer sizes and zone."""
+    is_uniform = is_uniform_representation(zone)
+    return (
+        input_dir or '',
+        limit_k or '',
+        demand,
+        pmax,
+        0 if is_uniform else 1,
+        -1 if is_uniform else (dc_buffer if dc_buffer is not None else 999),
+        -1 if is_uniform else (tp_buffer if tp_buffer is not None else 999),
+        str(zone) if zone else '',
+    )
+
+
 def assign_technical_representation_by_layers(cs: CaseStudy, dc_buffer: int, tp_buffer: int) -> None:
     """
     Assigns technical representation (DC-OPF, TP, or SN) to network lines based on their distance

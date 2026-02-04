@@ -9,7 +9,7 @@ import pandas as pd
 
 from InOutModule.printer import Printer
 from LEGO import LEGOUtilities
-from TechnicalRepresentation import is_uniform_representation, ZONE_LABELS, load_file_metadata, print_run_parameters
+from TechnicalRepresentation import is_uniform_representation, ZONE_LABELS, load_file_metadata, print_run_parameters, make_run_sort_key
 
 printer = Printer.getInstance()
 
@@ -286,18 +286,9 @@ def main(folder="."):
 
     # Print summary
     if results:
-        # Sort results by groups: input_dir, limit_k, demand, pmax, then by dcBuffer/tpBuffer (with uniform reps first), then by zone
         def sort_key(result):
             sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj = result
-            # For uniform representations (None, TP, SN), put them first in each group
-            is_uniform = is_uniform_representation(zone)
-            # Sort order: input_dir, limit_k, demand, pmax, uniform flag, dcBuffer, tpBuffer, zone
-            zone_str = str(zone) if zone is not None else ""
-            input_dir_str = str(input_dir) if input_dir is not None else ""
-            limit_k_str = str(limit_k) if limit_k is not None else ""
-            dc_sort = -1 if is_uniform else (dc_buffer if dc_buffer is not None else 999)
-            tp_sort = -1 if is_uniform else (tp_buffer if tp_buffer is not None else 999)
-            return (input_dir_str, limit_k_str, demand, pmax, 0 if is_uniform else 1, dc_sort, tp_sort, zone_str)
+            return make_run_sort_key(input_dir, limit_k, demand, pmax, dc_buffer, tp_buffer, zone)
 
         sorted_results = sorted(results, key=sort_key)
 

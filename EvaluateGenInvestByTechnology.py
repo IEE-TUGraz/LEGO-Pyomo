@@ -7,7 +7,7 @@ from collections import defaultdict
 import pandas as pd
 
 from InOutModule.printer import Printer
-from TechnicalRepresentation import is_uniform_representation, ZONE_LABELS, load_file_metadata, print_run_parameters
+from TechnicalRepresentation import is_uniform_representation, ZONE_LABELS, load_file_metadata, print_run_parameters, make_run_sort_key
 
 printer = Printer.getInstance()
 printer.set_width(180)
@@ -384,16 +384,10 @@ def print_summary_table(entries):
     )
     printer.information("-" * table_width)
 
-    # Sort by input_dir, limit_k, demand, pmax, then uniform first, then zone
     def sort_key(e):
         m = e['meta']
-        zone = m['zone']
-        is_uniform = is_uniform_representation(zone)
-        return (m['input_dir'] or '', m['limit_k'] or '', m['demand'], m['pmax'],
-                0 if is_uniform else 1,
-                -1 if is_uniform else (m['dc_buffer'] or 999),
-                -1 if is_uniform else (m['tp_buffer'] or 999),
-                str(zone) if zone else '')
+        return make_run_sort_key(m['input_dir'], m['limit_k'], m['demand'], m['pmax'],
+                                 m['dc_buffer'], m['tp_buffer'], m['zone'])
 
     prev_group = None
     for e in sorted(entries, key=sort_key):
