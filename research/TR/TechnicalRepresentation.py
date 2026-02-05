@@ -327,20 +327,31 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
         zones_to_run = [zoi]
         regret_sources = [zoi] if zoi != 'DC' else []  # No regret run for DC
 
-    # Normal runs first (so their sqlite files exist when regret runs need them), then regret
+    # Normal runs first (so their sqlite files exist when regret runs need them), then regret,
+    # then zone-specific uniform regrets (need both uniform and DC sources loaded)
     runs = [{'type': 'normal', 'zoi': z} for z in zones_to_run]
     runs += [{'type': 'regret', 'zoi': z} for z in regret_sources]
+    if all_zones or zoi == 'TP':
+        runs += [{'type': 'regret_zone_specific', 'uniform_zoi': 'TP', 'target_zone': z} for z in available_zones]
+    if all_zones or zoi == 'SN':
+        runs += [{'type': 'regret_zone_specific', 'uniform_zoi': 'SN', 'target_zone': z} for z in available_zones]
 
     # Lazy-load caches for regret (populated on demand from sqlite)
     dc_vGenInvest = None  # None = not yet loaded; {} = load failed
     source_vGenInvest = {}  # source name -> {g: value} or None (file not found)
 
     for run in runs:
-        current_zoi = run['zoi']
         is_regret = run['type'] == 'regret'
+        is_regret_zone_specific = run['type'] == 'regret_zone_specific'
+        current_zoi = run.get('zoi') if not is_regret_zone_specific else run['uniform_zoi']
 
         # --- Header ---
-        label = f"{current_zoi} (regret)" if is_regret else str(current_zoi)
+        if is_regret_zone_specific:
+            label = f"{run['uniform_zoi']} zone-specific regret (zone {run['target_zone']})"
+        elif is_regret:
+            label = f"{current_zoi} (regret)"
+        else:
+            label = str(current_zoi)
         printer.information(f"\n{'=' * 60}")
         printer.information(f"  {label}")
         printer.information(f"{'=' * 60}\n")
@@ -395,6 +406,42 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
             identifier_parts.append(f"zoi{current_zoi}")
             identifier_parts.append("regret")
 
+        elif is_regret_zone_specific:
+            uniform_zoi = run['uniform_zoi']
+            target_zone = run['target_zone']
+
+            # Lazy-load uniform source vGenInvest
+            if uniform_zoi not in source_vGenInvest:
+                source_id = "-".join(identifier_parts_base + [f"zoi{uniform_zoi}"])
+                source_file = f"TR-{source_id}.sqlite"
+                if os.path.exists(source_file):
+                    source_vGenInvest[uniform_zoi] = load_vGenInvest_from_sqlite(source_file)
+                else:
+                    printer.error(f"  Source model '{source_file}' not found — zone-specific regret for '{uniform_zoi}' skipped.")
+                    source_vGenInvest[uniform_zoi] = None
+            if source_vGenInvest[uniform_zoi] is None:
+                continue
+
+            # Lazy-load DC baseline vGenInvest
+            if dc_vGenInvest is None:
+                dc_file = f"TR-{'-'.join(identifier_parts_base + ['zoiDC'])}.sqlite"
+                if os.path.exists(dc_file):
+                    dc_vGenInvest = load_vGenInvest_from_sqlite(dc_file)
+                else:
+                    printer.error(f"DC baseline '{dc_file}' not found — zone-specific regret requires a solved DC model.")
+                    dc_vGenInvest = {}
+            if not dc_vGenInvest:
+                continue
+
+            # DC-OPF topology + target zone as ZOI
+            cs.dPower_Network['pTecRepr'] = 'DC-OPF'
+            cs.dPower_BusInfo['zoi'] = 0
+            cs.dPower_BusInfo.loc[cs.dPower_BusInfo['z'] == target_zone, 'zoi'] = 1
+
+            identifier_parts.append(f"zoi{uniform_zoi}")
+            identifier_parts.append("regret")
+            identifier_parts.append(f"zone{target_zone}")
+
         elif current_zoi is None or current_zoi == 'None':
             printer.information("No ZOI adjustment - using original technical representations from data files")
 
@@ -445,6 +492,12 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
                 for g in model.vGenInvest:
                     source = source_vGenInvest[current_zoi] if g in zoi_gens else dc_vGenInvest
                     model.vGenInvest[g].fix(source[g])
+        elif is_regret_zone_specific:
+            # Zone-specific uniform regret: target zone gens from uniform source, rest from DC
+            zoi_gens = set(g for g, i in model.gi if i in cs_base.dPower_BusInfo.loc[cs_base.dPower_BusInfo['z'] == run['target_zone']].index)
+            for g in model.vGenInvest:
+                source = source_vGenInvest[run['uniform_zoi']] if g in zoi_gens else dc_vGenInvest
+                model.vGenInvest[g].fix(source[g])
 
         # --- Solve ---
         printer.information(f"  Solving...")
