@@ -7,6 +7,7 @@ import argparse
 import ast
 import glob
 import os
+import re
 import sqlite3
 import time
 from collections import defaultdict
@@ -205,7 +206,12 @@ def main(folder="."):
             input_dir, limit_k = meta['input_dir'], meta['limit_k']
             dc_buffer, tp_buffer = meta['dc_buffer'], meta['tp_buffer']
             zone, demand, pmax = meta['zone'], meta['demand'], meta['pmax']
-            is_regret_file = os.path.basename(sqlite_file).endswith('-regret.sqlite')
+            basename = os.path.basename(sqlite_file)
+            zs_match = re.search(r'-zoi(TP|SN)-regret-zone(\w+)\.sqlite$', basename)
+            is_regret_file = basename.endswith('-regret.sqlite') or zs_match is not None
+            is_zone_specific_regret = zs_match is not None
+            regret_uniform_zoi = zs_match.group(1) if zs_match else None
+            regret_target_zone = zs_match.group(2) if zs_match else None
 
             # Load the ZOI data from SQLite
             start_time = time.time()
@@ -288,6 +294,9 @@ def main(folder="."):
                 'work_units': zoi_data.get('work_units'),
                 'ens': ens,
                 'pns': pns,
+                'is_zone_specific_regret': is_zone_specific_regret,
+                'regret_uniform_zoi': regret_uniform_zoi,
+                'regret_target_zone': regret_target_zone,
             }
 
             # Separate into uniform, zone-specific, and regret
@@ -424,7 +433,7 @@ def main(folder="."):
             'abs_regret': 0.0, 'rel_regret': 0.0,
             'wu': dc_wu, 'wu_rel': None,
             'ens': dc_baseline.get('ens'), 'pns': dc_baseline.get('pns'),
-            'sort': (-2, 0, 0, ''),
+            'sort': (-2, '', 0, 0, 0),
         })
 
         for rf in regrets:
@@ -433,29 +442,56 @@ def main(folder="."):
             if total_obj is None:
                 continue
 
-            is_uniform_source = is_uniform_representation(zone)
-
-            # Work units come from the non-regret source run
-            if is_uniform_source:
-                source = uniform_source_map.get((group_key, zone))
-            else:
-                source = zone_source_map.get((group_key, zone, rf.get('dc_buffer'), rf.get('tp_buffer')))
-            source_wu = source.get('work_units') if source else None
-
             abs_regret = total_obj - dc_total_obj
             rel_regret = (abs_regret / dc_total_obj * 100) if dc_total_obj != 0 else 0.0
-            wu_rel = ((source_wu - dc_wu) / dc_wu * 100) if (source_wu is not None and dc_wu is not None and dc_wu != 0) else None
 
-            rows.append({
-                'source': zone if is_uniform_source else f"zoi({zone})",
-                'is_uniform': is_uniform_source,
-                'dc_buf': rf.get('dc_buffer'), 'tp_buf': rf.get('tp_buffer'),
-                'total_obj': total_obj,
-                'abs_regret': abs_regret, 'rel_regret': rel_regret,
-                'wu': source_wu, 'wu_rel': wu_rel,
-                'ens': rf.get('ens'), 'pns': rf.get('pns'),
-                'sort': (-1, 0, 0, zone) if is_uniform_source else (0, rf.get('dc_buffer') or 0, rf.get('tp_buffer') or 0, zone),
-            })
+            if rf.get('is_zone_specific_regret'):
+                # Zone-specific regret: WU from the uniform source run
+                uniform_zoi = rf['regret_uniform_zoi']
+                target_zone = rf['regret_target_zone']
+                source = uniform_source_map.get((group_key, uniform_zoi))
+                source_wu = source.get('work_units') if source else None
+                wu_rel = ((source_wu - dc_wu) / dc_wu * 100) if (source_wu is not None and dc_wu is not None and dc_wu != 0) else None
+                rows.append({
+                    'source': f"{uniform_zoi} zoi({target_zone})",
+                    'is_uniform': True,  # suppress dc/tp buf display
+                    'dc_buf': None, 'tp_buf': None,
+                    'total_obj': total_obj,
+                    'abs_regret': abs_regret, 'rel_regret': rel_regret,
+                    'wu': source_wu, 'wu_rel': wu_rel,
+                    'ens': rf.get('ens'), 'pns': rf.get('pns'),
+                    'sort': (0, target_zone, -2 if uniform_zoi == 'SN' else -1, 0, 0),
+                })
+            elif is_uniform_representation(zone):
+                # Uniform regret (TP/SN)
+                source = uniform_source_map.get((group_key, zone))
+                source_wu = source.get('work_units') if source else None
+                wu_rel = ((source_wu - dc_wu) / dc_wu * 100) if (source_wu is not None and dc_wu is not None and dc_wu != 0) else None
+                rows.append({
+                    'source': zone,
+                    'is_uniform': True,
+                    'dc_buf': None, 'tp_buf': None,
+                    'total_obj': total_obj,
+                    'abs_regret': abs_regret, 'rel_regret': rel_regret,
+                    'wu': source_wu, 'wu_rel': wu_rel,
+                    'ens': rf.get('ens'), 'pns': rf.get('pns'),
+                    'sort': (-1, zone, 0, 0, 0),
+                })
+            else:
+                # Regular zone regret
+                source = zone_source_map.get((group_key, zone, rf.get('dc_buffer'), rf.get('tp_buffer')))
+                source_wu = source.get('work_units') if source else None
+                wu_rel = ((source_wu - dc_wu) / dc_wu * 100) if (source_wu is not None and dc_wu is not None and dc_wu != 0) else None
+                rows.append({
+                    'source': f"zoi({zone})",
+                    'is_uniform': False,
+                    'dc_buf': rf.get('dc_buffer'), 'tp_buf': rf.get('tp_buffer'),
+                    'total_obj': total_obj,
+                    'abs_regret': abs_regret, 'rel_regret': rel_regret,
+                    'wu': source_wu, 'wu_rel': wu_rel,
+                    'ens': rf.get('ens'), 'pns': rf.get('pns'),
+                    'sort': (0, zone, 0, rf.get('dc_buffer') or 0, rf.get('tp_buffer') or 0),
+                })
 
         rows.sort(key=lambda r: r['sort'])
 

@@ -365,8 +365,10 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
 
             # Lazy-load the source model's vGenInvest
             if current_zoi not in source_vGenInvest:
-                if is_uniform_regret:
-                    source_id = "-".join(identifier_parts_base + [f"zoi{current_zoi}"])
+                if is_uniform_regret or current_zoi is None or current_zoi == 'None':
+                    source_id = "-".join(identifier_parts_base)  # Don't include buffers for uniform or None
+                    if is_uniform_regret:
+                        source_id += f"-zoi{current_zoi}"  # But include uniform label (not for None)
                 else:
                     source_id = "-".join(identifier_parts_base +
                                          ([f"dcBuffer{dc_buffer}"] if dc_buffer != DC_BUFFER_DEFAULT else []) +
