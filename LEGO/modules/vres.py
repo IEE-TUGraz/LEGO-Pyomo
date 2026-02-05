@@ -44,7 +44,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
             capacityFactors = cs.dPower_Inflows.loc[(slice(None), slice(None), g), 'value'] / model.pMaxProd[g]
             if capacityFactors.max() > 1.0:
-                capacityFactors.loc[(slice(None), slice(None), g), 'value'] = capacityFactors.loc[(slice(None), slice(None), g), 'value'].clip(upper=1.0)  # If inflows exceed maximum production, forced spillage occurs and we need to clip the values
+                capacityFactors.loc[(slice(None), slice(None), g)] = capacityFactors.loc[(slice(None), slice(None), g)].clip(upper=1.0)  # If inflows exceed maximum production, forced spillage occurs and we need to clip the values
                 ror_with_spillage.append(g)
             dCapacityFactor = pd.concat([dCapacityFactor, capacityFactors], axis=0)
         elif g not in cs.dPower_VRESProfiles.index.get_level_values("g"):
