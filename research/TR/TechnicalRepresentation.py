@@ -325,7 +325,7 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
         regret_sources = ['TP', 'SN'] + available_zones  # No regret run for DC (would fix DC into DC)
     else:
         zones_to_run = [zoi]
-        regret_sources = [zoi]
+        regret_sources = [zoi] if zoi != 'DC' else []  # No regret run for DC
 
     # Normal runs first (so their sqlite files exist when regret runs need them), then regret
     runs = [{'type': 'normal', 'zoi': z} for z in zones_to_run]

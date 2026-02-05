@@ -11,7 +11,7 @@ from collections import defaultdict
 import pandas as pd
 
 from InOutModule.printer import Printer
-from TechnicalRepresentation import is_uniform_representation, ZONE_LABELS, load_file_metadata, print_run_parameters, make_run_sort_key
+from TechnicalRepresentation import is_uniform_representation, load_file_metadata, print_run_parameters, make_run_sort_key
 
 printer = Printer.getInstance()
 printer.set_width(180)
@@ -143,6 +143,8 @@ def main(folder="."):
             meta = load_file_metadata(sqlite_file)
             print_run_parameters(meta)
 
+            is_regret = os.path.basename(sqlite_file).endswith('-regret.sqlite')
+
             # Calculate investments (both total and ZOI)
             total_invest = evaluate_gen_investment_by_technology_from_sqlite(sqlite_file, filter_zoi=False)
             zoi_invest = evaluate_gen_investment_by_technology_from_sqlite(sqlite_file, filter_zoi=True)
@@ -161,6 +163,7 @@ def main(folder="."):
                 'meta': meta,
                 'total_invest': total_invest,
                 'zoi_invest': zoi_invest,
+                'is_regret': is_regret,
             })
 
         except Exception as e:
@@ -171,13 +174,33 @@ def main(folder="."):
     if not all_entries:
         return
 
-    # --- Summary table ---
-    print_summary_table(all_entries)
+    # --- Recalculate ZOI Cap for regret entries using source's zoi_i ---
+    entry_by_file = {e['sqlite_file']: e for e in all_entries}
+    for entry in all_entries:
+        if entry['is_regret']:
+            source_file = entry['sqlite_file'].replace('-regret.sqlite', '.sqlite')
+            if source_file in entry_by_file:
+                entry['zoi_invest'] = evaluate_gen_investment_with_custom_zoi(
+                    entry['sqlite_file'], source_file
+                )
+
+    # Build regret lookup: source_file -> regret_entry
+    regret_by_source = {}
+    for entry in all_entries:
+        if entry['is_regret']:
+            source_file = entry['sqlite_file'].replace('-regret.sqlite', '.sqlite')
+            regret_by_source[source_file] = entry
+
+    # Non-regret entries for summary and comparisons
+    non_regret_entries = [e for e in all_entries if not e['is_regret']]
+
+    # --- Summary table (non-regret only, with Safety Check) ---
+    print_summary_table(non_regret_entries, regret_by_source)
 
     # --- Split into uniform (DC/TP/SN/None) and zone-specific entries ---
     uniform_entries = []
     zone_entries = []
-    for entry in all_entries:
+    for entry in non_regret_entries:
         zone = entry['meta']['zone']
         if is_uniform_representation(zone):
             uniform_entries.append(entry)
@@ -224,167 +247,146 @@ def main(folder="."):
         group_key = (input_dir, limit_k, demand, pmax)
         uniforms = uniform_groups.get(group_key, [])
 
-        # Find baseline among uniforms: prefer zoiNone, fall back to zoiDC
-        baseline_entry = next((e for e in uniforms if e['meta']['zone'] in (None, "None")), None)
-        if baseline_entry is None:
-            baseline_entry = next((e for e in uniforms if e['meta']['zone'] == 'DC'), None)
+        # DC-OPF baseline
+        dc_baseline = next((e for e in uniforms if e['meta']['zone'] == 'DC'), None)
+        if dc_baseline is None or group_key not in zone_groups:
+            continue
 
-        baseline_zone = baseline_entry['meta']['zone'] if baseline_entry else None
-        baseline_label = "zoiNone" if (baseline_zone is None or baseline_zone == "None") else f"zoi{baseline_zone}"
+        dc_total_invest = dc_baseline['total_invest']
+        dc_total_cap = sum(dc_total_invest.values())
+        dc_wu = dc_baseline['meta'].get('work_units')
+        dc_sqlite = dc_baseline['sqlite_file']
 
-        # --- 1) Uniform Technical Representation Comparisons ---
-        if uniforms and baseline_entry is not None:
-            baseline_total = baseline_entry['total_invest']
-            baseline_total_cap = sum(baseline_total.values())
-            other_uniforms = [e for e in uniforms if e['meta']['zone'] != baseline_zone]
+        # --- Zone-Specific Comparisons (one block per dc_buf / tp_buf) ---
+        for (dc_buf, tp_buf), zone_file_entries in sorted(zone_groups[group_key].items()):
+            if not zone_file_entries:
+                continue
 
-            if other_uniforms:
-                if baseline_zone is None or baseline_zone == "None":
-                    bl_label, bl_desc = 'None', 'No ZOI adjustment (original Excel settings)'
+            printer.information(f"\nZone-Specific Comparisons (Baseline: DC-OPF)")
+            printer.information(f"Parameters: {group_desc}, dcBuffer={dc_buf}, tpBuffer={tp_buf}")
+            printer.information("-" * 160)
+            printer.information(
+                f"  {'Zone':<12s} "
+                f"{'ZOI Cap (DC)':>15s} {'ZOI Cap (Zone)':>15s} {'ZOI Diff':>12s} {'ZOI Rel%':>10s} "
+                f"{'Total (DC)':>14s} {'Total (Regret)':>15s} {'Regret Diff':>12s} {'Regret Rel%':>11s} "
+                f"{'WU':>12s} {'WU Rel%':>10s}"
+            )
+            printer.information("-" * 160)
+
+            sum_baseline_zones = 0.0
+            baseline_zone_cache = {}  # zone -> {tec: capacity}
+
+            for entry in sorted(zone_file_entries, key=lambda e: e['meta']['zone']):
+                zone = entry['meta']['zone']
+                zone_zoi_cap = sum(entry['zoi_invest'].values())
+
+                # DC baseline's investment in this zone's ZOI
+                baseline_zone_invest = evaluate_gen_investment_with_custom_zoi(dc_sqlite, entry['sqlite_file'])
+                baseline_zone_cache[zone] = baseline_zone_invest
+                baseline_zone_cap = sum(baseline_zone_invest.values())
+                sum_baseline_zones += baseline_zone_cap
+
+                zoi_diff = zone_zoi_cap - baseline_zone_cap
+                zoi_rel = (zoi_diff / baseline_zone_cap * 100) if baseline_zone_cap != 0 else 0.0
+
+                # Regret comparison
+                regret_entry = regret_by_source.get(entry['sqlite_file'])
+                if regret_entry:
+                    regret_total_cap = sum(regret_entry['total_invest'].values())
+                    regret_diff = regret_total_cap - dc_total_cap
+                    regret_rel = (regret_diff / dc_total_cap * 100) if dc_total_cap != 0 else 0.0
+                    regret_total_str = f"{regret_total_cap:.2f}"
+                    regret_diff_str = f"{regret_diff:.2f}"
+                    regret_rel_str = f"{regret_rel:.1f}%"
                 else:
-                    bl_label, bl_desc = ZONE_LABELS.get(baseline_zone, (baseline_zone, f'Uniform {baseline_zone}'))
+                    regret_total_str = "N/A"
+                    regret_diff_str = "N/A"
+                    regret_rel_str = "N/A"
 
-                # (label, desc, total_cap, abs_diff, rel_diff, sort_order, work_units)
-                entries = [(bl_label, bl_desc + ' (BASELINE)', baseline_total_cap, 0.0, 0.0, -99,
-                            baseline_entry['meta'].get('work_units'))]
+                # Work units (of the zone model, relative to DC)
+                wu = entry['meta'].get('work_units')
+                wu_str = f"{wu:.2f}" if wu is not None else "N/A"
+                wu_rel = ((wu - dc_wu) / dc_wu * 100) if (wu is not None and dc_wu is not None and dc_wu != 0) else None
+                wu_rel_str = f"{wu_rel:.1f}%" if wu_rel is not None else "-"
 
-                sort_order_map = {'DC': 0, 'TP': 1, 'SN': 2}
-                for e in other_uniforms:
-                    zone = e['meta']['zone']
-                    if zone is None or zone == "None":
-                        label, desc, so = 'None', 'No ZOI adjustment (original Excel settings)', -1
-                    else:
-                        label, desc = ZONE_LABELS.get(zone, (zone, f'Uniform {zone}'))
-                        so = sort_order_map.get(zone, 3)
-                    total_cap = sum(e['total_invest'].values())
-                    abs_diff = total_cap - baseline_total_cap
-                    rel_diff = (abs_diff / baseline_total_cap * 100) if baseline_total_cap != 0 else 0.0
-                    entries.append((label, desc, total_cap, abs_diff, rel_diff, so, e['meta'].get('work_units')))
-
-                entries.sort(key=lambda x: x[5])
-
-                printer.information(f"\nUniform Technical Representation Comparisons")
-                printer.information("-" * 160)
-                printer.information(f"  {'Type':<10s} {'Description':<60s} {'Total Cap (MW)':>18s} {'Abs. Diff (MW)':>18s} {'Rel. Diff (%)':>15s} {'Work Units':>12s}")
-                printer.information("-" * 160)
-                for label, desc, total_cap, abs_diff, rel_diff, _, wu in entries:
-                    wu_str = f"{wu:.2f}" if wu is not None else "N/A"
-                    printer.information(f"  {label:<10s} {desc:<60s} {total_cap:>18.2f} {abs_diff:>18.2f} {rel_diff:>14.1f}% {wu_str:>12s}")
-                printer.information("-" * 160)
-
-                # Detailed technology breakdown for each non-baseline uniform type
-                for e in sorted(other_uniforms, key=lambda x: sort_order_map.get(x['meta']['zone'], 99)):
-                    zone = e['meta']['zone']
-                    if zone is None or zone == "None":
-                        continue
-                    _, desc = ZONE_LABELS.get(zone, (zone, f'Uniform {zone}'))
-
-                    printer.information(f"\nComparing: {desc} ({zone}) vs {bl_label} (Baseline)")
-                    printer.information("-" * 160)
-                    printer.information(
-                        f"  {'Technology':<30s} "
-                        f"{'Total (' + bl_label + ')':>18s} {'Total (' + zone + ')':>18s} {'Diff':>15s} {'Rel%':>10s}"
-                    )
-                    printer.information("-" * 160)
-                    for tec in sorted(all_technologies):
-                        base_val = baseline_total.get(tec, 0.0)
-                        zone_val = e['total_invest'].get(tec, 0.0)
-                        diff = zone_val - base_val
-                        rel = (diff / base_val * 100) if base_val != 0 else 0.0
-                        printer.information(
-                            f"  {tec:<30s} "
-                            f"{base_val:>18.2f} {zone_val:>18.2f} {diff:>15.2f} {rel:>9.1f}%"
-                        )
-
-        # --- 2) Zone-Specific Comparisons (one block per dc_buf / tp_buf) ---
-        if group_key in zone_groups and baseline_entry is not None:
-            baseline_total = baseline_entry['total_invest']
-            baseline_total_cap = sum(baseline_total.values())
-            baseline_sqlite = baseline_entry['sqlite_file']
-
-            for (dc_buf, tp_buf), zone_file_entries in sorted(zone_groups[group_key].items()):
-                if not zone_file_entries:
-                    continue
-
-                printer.information(f"\nZone-Specific Comparisons (Baseline: {baseline_label})")
-                printer.information(f"Parameters: {group_desc}, dcBuffer={dc_buf}, tpBuffer={tp_buf}")
-                printer.information("-" * 160)
                 printer.information(
-                    f"  {'Zone':<12s} "
-                    f"{'Baseline for Zone':>18s} {'Zone-Specific Run':>18s} {'Diff':>15s} {'Rel. Diff (%)':>15s} {'Work Units':>12s}"
+                    f"  {zone:<12s} "
+                    f"{baseline_zone_cap:>15.2f} {zone_zoi_cap:>15.2f} {zoi_diff:>12.2f} {zoi_rel:>9.1f}% "
+                    f"{dc_total_cap:>14.2f} {regret_total_str:>15s} {regret_diff_str:>12s} {regret_rel_str:>11s} "
+                    f"{wu_str:>12s} {wu_rel_str:>10s}"
                 )
-                printer.information("-" * 160)
 
-                sum_baseline_zones = 0.0
+            # Safety check: sum of DC per-zone investments == DC total
+            printer.information("-" * 160)
+            printer.information(f"  {'SAFETY CHECK':<12s} {'Sum of Zones':>15s} {'DC Total':>15s} {'Diff':>12s} {'Rel%':>10s}")
+            safety_diff = sum_baseline_zones - dc_total_cap
+            safety_rel = (safety_diff / dc_total_cap * 100) if dc_total_cap != 0 else 0.0
+            if abs(safety_rel) < 0.01:
+                printer.success(f"  {'[PASSED]':<12s} {sum_baseline_zones:>15.2f} {dc_total_cap:>15.2f} {safety_diff:>12.2f} {safety_rel:>9.1f}%")
+            else:
+                printer.error(f"  {'[FAILED]':<12s} {sum_baseline_zones:>15.2f} {dc_total_cap:>15.2f} {safety_diff:>12.2f} {safety_rel:>9.1f}%")
 
-                for entry in sorted(zone_file_entries, key=lambda e: e['meta']['zone']):
-                    zone = entry['meta']['zone']
-                    zone_zoi_cap = sum(entry['zoi_invest'].values())
+            # Detailed technology comparisons per zone
+            for entry in sorted(zone_file_entries, key=lambda e: e['meta']['zone']):
+                zone = entry['meta']['zone']
+                zone_zoi = entry['zoi_invest']
+                baseline_zone_invest = baseline_zone_cache[zone]
 
-                    # Recalculate baseline investment using this zone's zoi_i
-                    baseline_zone_invest = evaluate_gen_investment_with_custom_zoi(baseline_sqlite, entry['sqlite_file'])
-                    baseline_zone_cap = sum(baseline_zone_invest.values())
-                    sum_baseline_zones += baseline_zone_cap
-
-                    diff = baseline_zone_cap - zone_zoi_cap
-                    rel_diff = (diff / baseline_zone_cap * 100) if baseline_zone_cap != 0 else 0.0
-                    wu = entry['meta'].get('work_units')
-                    wu_str = f"{wu:.2f}" if wu is not None else "N/A"
-
+                # 1) ZOI investment comparison (DC-OPF vs zone model, in ZOI)
+                printer.information(f"\n  Comparing Zone {zone}: DC-OPF vs zoi{zone} (ZOI investments)")
+                printer.information("  " + "-" * 100)
+                printer.information(
+                    f"  {'Technology':<30s} "
+                    f"{'ZOI (DC-OPF)':>18s} {'ZOI (zoi' + zone + ')':>18s} {'Diff':>15s} {'Rel%':>10s}"
+                )
+                printer.information("  " + "-" * 100)
+                for tec in sorted(all_technologies):
+                    base_val = baseline_zone_invest.get(tec, 0.0)
+                    zone_val = zone_zoi.get(tec, 0.0)
+                    diff = zone_val - base_val
+                    rel = (diff / base_val * 100) if base_val != 0 else 0.0
                     printer.information(
-                        f"  {zone:<12s} "
-                        f"{baseline_zone_cap:>18.2f} {zone_zoi_cap:>18.2f} {diff:>15.2f} {rel_diff:>14.1f}% {wu_str:>12s}"
+                        f"  {tec:<30s} "
+                        f"{base_val:>18.2f} {zone_val:>18.2f} {diff:>15.2f} {rel:>9.1f}%"
                     )
 
-                # Safety check
-                printer.information("-" * 160)
-                printer.information(f"  {'SAFETY CHECK':<12s} {'Sum Baseline':>18s} {'Baseline Total':>18s} {'Difference':>15s} {'Rel. Diff (%)':>15s}")
-                safety_diff = sum_baseline_zones - baseline_total_cap
-                safety_rel = (safety_diff / baseline_total_cap * 100) if baseline_total_cap != 0 else 0.0
-                if abs(safety_rel) < 0.01:
-                    printer.success(f"  {'[PASSED]':<12s} {sum_baseline_zones:>18.2f} {baseline_total_cap:>18.2f} {safety_diff:>15.2f} {safety_rel:>14.1f}%")
-                else:
-                    printer.error(f"  {'[FAILED]':<12s} {sum_baseline_zones:>18.2f} {baseline_total_cap:>18.2f} {safety_diff:>15.2f} {safety_rel:>14.1f}%")
-
-                # Detailed technology comparison per zone
-                for entry in sorted(zone_file_entries, key=lambda e: e['meta']['zone']):
-                    zone = entry['meta']['zone']
-                    zone_zoi = entry['zoi_invest']
-                    baseline_zone_invest = evaluate_gen_investment_with_custom_zoi(baseline_sqlite, entry['sqlite_file'])
-
-                    printer.information(f"\n  Comparing Zone {zone}: {baseline_label} vs zoi{zone}")
+                # 2) Regret total investment comparison (DC-OPF vs regret model)
+                regret_entry = regret_by_source.get(entry['sqlite_file'])
+                if regret_entry:
+                    regret_total_invest = regret_entry['total_invest']
+                    printer.information(f"\n  Comparing Zone {zone}: DC-OPF vs Regret (Total investments)")
                     printer.information("  " + "-" * 100)
                     printer.information(
                         f"  {'Technology':<30s} "
-                        f"{'ZOI (' + baseline_label + ')':>18s} {'ZOI (zoi' + zone + ')':>18s} {'Diff':>15s} {'Rel%':>10s}"
+                        f"{'Total (DC-OPF)':>18s} {'Total (Regret)':>18s} {'Diff':>15s} {'Rel%':>10s}"
                     )
                     printer.information("  " + "-" * 100)
                     for tec in sorted(all_technologies):
-                        base_val = baseline_zone_invest.get(tec, 0.0)
-                        zone_val = zone_zoi.get(tec, 0.0)
-                        diff = zone_val - base_val
+                        base_val = dc_total_invest.get(tec, 0.0)
+                        regret_val = regret_total_invest.get(tec, 0.0)
+                        diff = regret_val - base_val
                         rel = (diff / base_val * 100) if base_val != 0 else 0.0
                         printer.information(
                             f"  {tec:<30s} "
-                            f"{base_val:>18.2f} {zone_val:>18.2f} {diff:>15.2f} {rel:>9.1f}%"
+                            f"{base_val:>18.2f} {regret_val:>18.2f} {diff:>15.2f} {rel:>9.1f}%"
                         )
 
 
-def print_summary_table(entries):
-    """Print summary table of all files."""
+def print_summary_table(entries, regret_by_source):
+    """Print summary table of all non-regret files with Safety Check against regret models."""
     if not entries:
         return
 
     max_filename_len = max(len(e['sqlite_file']) for e in entries)
     filename_width = max(max_filename_len, len("Filename"))
-    table_width = filename_width + 2 + 8 + 8 + 15 + 8 + 8 + 15 + 15
+    table_width = filename_width + 2 + 16 + 8 + 8 + 8 + 8 + 15 + 15 + 16
 
     printer.information("\n" + "=" * table_width)
-    printer.information("Summary of Generator Investment Capacity by Zone")
+    printer.information("Summary of Generator Investment Capacity")
     printer.information("=" * table_width)
     printer.information(
-        f"  {'Filename':<{filename_width}s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Zone':>15s} {'Demand':>8s} {'PMax':>8s} "
-        f"{'Total Cap (MW)':>15s} {'ZOI Cap (MW)':>15s}"
+        f"  {'Filename':<{filename_width}s} {'LimitK':>16s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Demand':>8s} {'PMax':>8s} "
+        f"{'Total Cap (MW)':>15s} {'ZOI Cap (MW)':>15s} {'Safety Check':>16s}"
     )
     printer.information("-" * table_width)
 
@@ -405,13 +407,27 @@ def print_summary_table(entries):
         is_uniform = is_uniform_representation(zone)
         dc_str = "-" if is_uniform else (str(m['dc_buffer']) if m['dc_buffer'] is not None else "N/A")
         tp_str = "-" if is_uniform else (str(m['tp_buffer']) if m['tp_buffer'] is not None else "N/A")
-        zone_str = zone if zone is not None else "None"
+        limit_k_str = m['limit_k'] if m['limit_k'] else "N/A"
         total_cap = sum(e['total_invest'].values())
         zoi_cap = sum(e['zoi_invest'].values())
 
+        # Safety Check: compare ZOI Cap with regret model's ZOI Cap
+        regret_entry = regret_by_source.get(e['sqlite_file'])
+        if regret_entry is None:
+            # DC and None have no regret model
+            safety_str = "-"
+        else:
+            regret_zoi_cap = sum(regret_entry['zoi_invest'].values())
+            safety_diff = abs(zoi_cap - regret_zoi_cap)
+            safety_rel = (safety_diff / zoi_cap * 100) if zoi_cap != 0 else 0.0
+            if safety_rel < 0.01:
+                safety_str = "PASS"
+            else:
+                safety_str = f"FAIL ({safety_rel:.2f}%)"
+
         printer.information(
-            f"  {e['sqlite_file']:<{filename_width}s} {dc_str:>8s} {tp_str:>8s} {zone_str:>15s} "
-            f"{m['demand']:>8.1f} {m['pmax']:>8.1f} {total_cap:>15.2f} {zoi_cap:>15.2f}"
+            f"  {e['sqlite_file']:<{filename_width}s} {limit_k_str:>16s} {dc_str:>8s} {tp_str:>8s} "
+            f"{m['demand']:>8.1f} {m['pmax']:>8.1f} {total_cap:>15.2f} {zoi_cap:>15.2f} {safety_str:>16s}"
         )
 
 
