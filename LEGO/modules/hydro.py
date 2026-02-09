@@ -28,7 +28,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     LEGO.addToParameter(model, "pMaxInvest", cs.dPower_HydroAssets["MaxInvest"], 'Maximum investable units for hydro plants')
     LEGO.addToParameter(model, "pEnabInv", cs.dPower_HydroAssets["EnableInvest"], 'Enable investment for hydro plants')
     LEGO.addToParameter(model, "pInvestCost", cs.dPower_HydroAssets["InvestCostPerMW"], 'Investment cost for hydro plants [€/energy amount]')
-    model.pEnergy2PowerRatio = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["Ene2PowRatio"], doc='Energy to Power Ratio (how many time-steps can the unit discharge from a full reservoir)')
+    model.pEnergy2PowerRatio = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["Ene2PowRatio"], doc='Energy to Power Ratio (how many time-steps can the unit discharge from a full reservoir)')  # Todo: Could be dropped (since we have "Storage Capacity")
     model.pLowerLimitReservoir = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["MinReserve"] * cs.dPower_HydroAssets["StorageCapacity"], doc='Lower limit of reservoir levels for hydro plants [water amount]')  # TODO: not yet used, but can be added if needed
     model.pInitialStorage = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["IniReserve"] * cs.dPower_HydroAssets["StorageCapacity"], doc='Initial storage levels for hydro plants [water amount]')
     model.pPowerFactorTurbine = pyo.Param(model.Hydroplants, initialize=cs.dPower_HydroAssets["PowerFactorTurbine"], doc='Power factor for hydro plants (water amount to energy output)')
@@ -90,13 +90,10 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     model.eHydroBalance = pyo.Constraint(model.rp, model.k, model.Hydroplants, rule=eHydroBalance_rule, doc='Hydro balance for hydro plants based on graph structure')
 
     def eStorageLeveling_rule(model, rp, k, g):
-        # enforce that storage levels at the end of the time horizon are the same as at the beginning for each hydro plant and each scenario, to avoid end-of-horizon effects and ensure cyclic operation
-        if k == model.k.last():
-            return model.vStorage[rp, k, g] == model.pInitialStorage[g]
-        else:
-            return pyo.Constraint.Skip
+        # Enforce that storage levels at the end of the time horizon are the same as at the beginning for each hydro plant and each scenario, to avoid end-of-horizon effects and ensure cyclic operation
+        return model.vStorage[rp, k, g] == model.pInitialStorage[g]
 
-    model.eStorageLeveling = pyo.Constraint(model.rp, model.k, model.Hydroplants,
+    model.eStorageLeveling = pyo.Constraint(model.rp, [model.k.last()], model.Hydroplants,
                                         rule=eStorageLeveling_rule,
                                         doc='Cyclic storage constraint to ensure storage levels at the end of the time horizon are the same as at the beginning')
 
