@@ -8,6 +8,9 @@ from LEGO import LEGOUtilities
 
 printer = Printer.getInstance()
 
+# for reseach different heat formulations, select here
+heat_storage_formulation = "advanced_storage"  # options: "no_storage", "simple_storage", "advanced_storage"
+heat_conversion_formulation = "linear" # options: "linear", "conic" (works only with advanced storage formulation)
 
 @LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
 def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> typing.Tuple[list[pyo.Var], list[pyo.Var]]:
@@ -75,24 +78,34 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
-    # Heat Balance Constraint
-    def heat_balance_rule(m, rp, k, hn, dt, htec):
-        return (m.vHeatProduction[rp, k, hn, dt, htec]
-                + m.vHeatStorageDischarge[rp, k, hn, dt, htec]
-                + m.vHeatNotServed[rp, k, hn, dt, htec]
-                ) == (m.pHeatDemandPerTechnology[rp, k, hn, dt, htec]
-                      + m.vHeatStorageCharge[rp, k, hn, dt, htec]
-                      + m.vExcessHeatServed[rp, k, hn, dt, htec]
-                      )
 
 
-    model.HeatBalanceConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_balance_rule)
+    # heat conversion rule --> will be replaced by special formulation!
+    if heat_conversion_formulation == "linear":
+        printer.information("Using linear heat conversion formulation")
+        def heat_conversion_rule(m, rp, k, hn, dt, htec):
+            return m.vHeatProduction[rp, k, hn, dt, htec] == m.pP2HConversionEfficiency[rp, k, hn, dt, htec] * m.vPower2Heat[rp, k, hn, dt, htec]
 
-    # heat conversion rule
-    def heat_conversion_rule(m, rp, k, hn, dt, htec):
-        return m.vHeatProduction[rp, k, hn, dt, htec] == m.pP2HConversionEfficiency[rp, k, hn, dt, htec] * m.vPower2Heat[rp, k, hn, dt, htec]
+        model.HeatConversionConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_conversion_rule)
 
-    model.HeatConversionConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_conversion_rule)
+    elif heat_conversion_formulation == "conic":
+        printer.information("Using conic heat conversion formulation")
+
+        # define additional parameters and variables
+        model.s_conic_relaxation = pyo.Var(model.rp, model.k, model.hn, model.dt, model.htec ,within=pyo.NonNegativeReals, doc='Auxiliary variable for conic relaxation of power to heat conversion')
+        model.A = pyo.Param(initialize=1.0, doc='Scaling parameter for conic relaxation')
+        model.B = pyo.Param(initialize=1.0, doc='Scaling parameter for conic relaxation')
+        model.C = pyo.Param(initialize=1.0, doc='Scaling parameter for conic relaxation')
+
+        def heat_conversion_rule(m, rp, k, hn, dt, htec):
+            return m.vHeatProduction[rp, k, hn, dt, htec] == m.pP2HConversionEfficiency[rp, k, hn, dt, htec] * (m.vPower2Heat[rp, k, hn, dt, htec] + m.A * m.s_conic_relaxation[rp, k, hn, dt, htec])
+        model.HeatConversionConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_conversion_rule)
+
+        def conic_relaxation_rule(m, rp, k, hn, dt, htec):
+            return m.s_conic_relaxation[rp, k, hn, dt, htec] * (m.q_floor[rp, k, hn, dt, htec] / m.C_floor[hn] + m.B) >= m.vPower2Heat[rp, k, hn, dt, htec]**2
+        model.ConicRelaxationConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=conic_relaxation_rule)
+
+
 
     # max heat production rule
     def max_heat_production_rule(m, rp, k, hn, dt, htec):
@@ -100,30 +113,201 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     model.MaxHeatProductionConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=max_heat_production_rule)
 
-    # heat storage balance rule: cyclic over each rp for short term storage
-    def heat_storage_balance_rule(m, rp, k, hn, dt, htec):
-        # predecessor hour (cyclic)
-        if k == m.k.first():
-            k_prev = m.k.last()
-        else:
-            k_prev = m.k.prev(k)
 
-        return (m.vHeatStorageLevel[rp, k, hn, dt, htec]
-                ==
-                m.vHeatStorageLevel[rp, k_prev, hn, dt, htec]
-                * (1 - m.pHeatStorageSelfDischarge[hn, dt, htec])
-                + m.vHeatStorageCharge[rp, k_prev, hn, dt, htec]
-                * m.pHeatStorageChEfficiency[hn, dt, htec]
-                - m.vHeatStorageDischarge[rp, k_prev, hn, dt, htec]
-                / m.pHeatStorageDischEfficiency[hn, dt, htec]
-        )
-    model.HeatStorageBalanceConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_storage_balance_rule)
+    if heat_storage_formulation == "no_storage":
+        printer.information("Using no storage formulation")
 
-    # max storage level value
-    def max_storage_level_rule(m, rp, k, hn, dt, htec):
-        return m.vHeatStorageLevel[rp, k, hn, dt, htec] <= m.pHeatStorageCapacity[hn, dt, htec]
+        # Heat Balance Constraint
+        def heat_balance_rule(m, rp, k, hn, dt, htec):
+            return (m.vHeatProduction[rp, k, hn, dt, htec]
+                    + m.vHeatStorageDischarge[rp, k, hn, dt, htec]
+                    + m.vHeatNotServed[rp, k, hn, dt, htec]
+                    ) == (m.pHeatDemandPerTechnology[rp, k, hn, dt, htec]
+                          + m.vHeatStorageCharge[rp, k, hn, dt, htec]
+                          + m.vExcessHeatServed[rp, k, hn, dt, htec]
+                          )
+        model.HeatBalanceConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_balance_rule)
+        def heat_storage_balance_rule(m, rp, k, hn, dt, htec):
+            return m.vHeatStorageLevel[rp, k, hn, dt, htec] == 0
+        model.HeatStorageBalanceConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_balance_rule)
 
-    model.MaxHeatStorageLevelConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=max_storage_level_rule)
+        def heat_storage_charge_rule(m, rp, k, hn, dt, htec):
+            return m.vHeatStorageCharge[rp, k, hn, dt, htec] == 0
+        model.HeatStorageChargeConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_storage_charge_rule)
+
+        def heat_storage_discharge_rule(m, rp, k, hn, dt, htec):
+            return m.vHeatStorageDischarge[rp, k, hn, dt, htec] == 0
+        model.HeatStorageDischargeConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_storage_discharge_rule)
+
+    elif heat_storage_formulation == "simple_storage":
+        # heat storage balance rule: cyclic over each rp for short term storage
+        printer.information("Using simple storage formulation")
+        model.C_building = pyo.Param(model.hn, initialize=1.0, doc="Building heat storage capacity for cyclic storage balance rule")
+        model.T_base = pyo.Param(initialize=305, doc="Room base temperatre")
+        model.T_max = pyo.Param(initialize=320, doc="Maximum room temperature")
+
+        model.q_room_pos_dev = pyo.Var(model.rp, model.k, model.hn, model.dt, model.htec, within=pyo.NonNegativeReals, doc='Positive deviation of room temperature from base temperature')
+        model.q_room_neg_dev = pyo.Var(model.rp, model.k, model.hn, model.dt, model.htec, within=pyo.NonNegativeReals, doc='Negative deviation of room temperature from base temperature')
+        model.Cost_Pos_Temp_Dev = pyo.Param(initialize=1.0, doc="Cost for positive deviation of room temperature from base temperature")
+        model.Cost_Neg_Temp_Dev = pyo.Param(initialize=1.0, doc="Cost for negative deviation of room temperature from base temperature")
+
+        # Heat Balance Constraint
+        def heat_balance_rule(m, rp, k, hn, dt, htec):
+            return (m.vHeatProduction[rp, k, hn, dt, htec]
+                    + m.vHeatStorageDischarge[rp, k, hn, dt, htec]
+                    + m.vHeatNotServed[rp, k, hn, dt, htec]
+                    ) == (m.pHeatDemandPerTechnology[rp, k, hn, dt, htec]
+                          + m.vHeatStorageCharge[rp, k, hn, dt, htec]
+                          + m.vExcessHeatServed[rp, k, hn, dt, htec]
+                          )
+
+        model.HeatBalanceConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_balance_rule)
+
+        # fix initial storage level to room base temperature
+        def initial_storage_level_rule(m, rp, hn, dt, htec):
+            return m.vHeatStorageLevel[rp, m.k.first(), hn, dt, htec] == m.C_building[hn] * m.T_base
+        model.InitialStorageLevelConstr = pyo.Constraint(model.rp, model.hn_dt_htec, rule=initial_storage_level_rule)
+
+        def heat_storage_balance_rule(m, rp, k, hn, dt, htec):
+            # predecessor hour (cyclic)
+            if k == m.k.first():
+                k_prev = m.k.last()
+            else:
+                k_prev = m.k.prev(k)
+
+            return (m.vHeatStorageLevel[rp, k, hn, dt, htec]
+                    ==
+                    m.vHeatStorageLevel[rp, k_prev, hn, dt, htec]
+                    + m.vHeatStorageCharge[rp, k_prev, hn, dt, htec]
+                    - m.vHeatStorageDischarge[rp, k_prev, hn, dt, htec]
+            )
+        model.HeatStorageBalanceConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_storage_balance_rule)
+
+        # max storage level value
+        def max_storage_level_rule(m, rp, k, hn, dt, htec):
+            return m.vHeatStorageLevel[rp, k, hn, dt, htec] <= m.C_building[hn] * m.T_max
+        model.MaxHeatStorageLevelConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=max_storage_level_rule)
+
+        # temperature deviation rules
+        def temp_dev_pos_rule(m, rp, k, hn, dt, htec):
+            return m.vHeatStorageLevel[rp, k, hn, dt, htec] - m.C_building[hn] * m.T_base == m.q_room_pos_dev[rp, k, hn, dt, htec] - m.q_room_neg_dev[rp, k, hn, dt, htec]
+        model.TempDevPosConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=temp_dev_pos_rule)
+
+        # objective function adjustment for temperature deviation costs
+        def temp_dev_cost_rule(m):
+            return sum(m.pWeight_rp[rp] *
+                       sum(m.pWeight_k[k] *
+                           sum(m.Cost_Pos_Temp_Dev * m.q_room_pos_dev[rp, k, hn, dt, htec] + m.Cost_Neg_Temp_Dev * m.q_room_neg_dev[rp, k, hn, dt, htec]
+                               for (hn, dt, htec) in m.hn_dt_htec)
+                           for k in m.k)
+                       for rp in m.rp)
+        model.objective.expr += temp_dev_cost_rule(model)
+
+    elif heat_storage_formulation == "advanced_storage":
+        # tbd: add more complex storage formulation, e.g. with state of charge variables, or with storage level variables that are decoupled from charge/discharge variables
+        printer.information(f"Using heat storage formulation: {heat_storage_formulation}")
+
+        # define additional varialbes and parameters for advanced storage formulation
+        model.q_floor = pyo.Var(model.rp, model.k, model.hn, within=pyo.NonNegativeReals, doc="Storage level of the floor")
+        model.q_floor_charge = pyo.Var(model.rp, model.k, model.hn, within=pyo.NonNegativeReals, doc="Heat storage charging to the floor")
+        model.q_floor_discharge = pyo.Var(model.rp, model.k, model.hn, within=pyo.NonNegativeReals, doc="Heat storage discharging from the floor")
+        model.q_transfer = pyo.Var(model.rp, model.k, model.hn, model.dt, model.htec, within=pyo.NonNegativeReals, doc="Heat transfer between floor and room")
+        model.C_floor = pyo.Param(model.hn, within=pyo.NonNegativeReals, initialize=1, doc="Storage capacity of the floor")
+        model.C_room = pyo.Param(model.hn, within=pyo.NonNegativeReals, initialize=1, doc="Storage capacity of the room")
+        model.alpha = pyo.Param(model.hn, within=pyo.NonNegativeReals, initialize=0.5, doc="Heat transfer coefficient between floor and room")
+
+        model.T_base = pyo.Param(initialize=305, doc="Room base temperatre")
+        model.T_max = pyo.Param(initialize=320, doc="Maximum room temperature")
+
+        model.q_room_pos_dev = pyo.Var(model.rp, model.k, model.hn, model.dt, model.htec, within=pyo.NonNegativeReals, doc='Positive deviation of room temperature from base temperature')
+        model.q_room_neg_dev = pyo.Var(model.rp, model.k, model.hn, model.dt, model.htec, within=pyo.NonNegativeReals, doc='Negative deviation of room temperature from base temperature')
+        model.Cost_Pos_Temp_Dev = pyo.Param(initialize=1.0, doc="Cost for positive deviation of room temperature from base temperature")
+        model.Cost_Neg_Temp_Dev = pyo.Param(initialize=1.0, doc="Cost for negative deviation of room temperature from base temperature")
+
+        # Heat Balance Constraint room
+        def heat_balance_rule(m, rp, k, hn, dt, htec):
+            return (m.q_transfer[rp, k, hn, dt, htec]
+                    + m.vHeatStorageDischarge[rp, k, hn, dt, htec]
+                    + m.vHeatNotServed[rp, k, hn, dt, htec]
+                    ) == (m.pHeatDemandPerTechnology[rp, k, hn, dt, htec]
+                          + m.vHeatStorageCharge[rp, k, hn, dt, htec]
+                          + m.vExcessHeatServed[rp, k, hn, dt, htec]
+                          )
+        model.HeatBalanceConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_balance_rule)
+
+        # heat balance rule for the floor
+        def floor_heat_balance_rule(m, rp, k, hn, dt, htec):
+            return m.q_transfer[rp, k, hn, dt, htec] == m.vHeatProduction[rp, k, hn, dt, htec] + m.q_floor_discharge[rp, k, hn] - m.q_floor_charge[rp, k, hn]
+        model.FloorHeatBalanceConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=floor_heat_balance_rule)
+
+        # fix initial storage level to room base temperature
+        def initial_storage_level_rule(m, rp, hn, dt, htec):
+            return m.vHeatStorageLevel[rp, m.k.first(), hn, dt, htec] == m.C_room[hn] * m.T_base
+        model.InitialStorageLevelConstr = pyo.Constraint(model.rp, model.hn_dt_htec, rule=initial_storage_level_rule)
+
+        # fix floor temperature
+        def initial_floor_storage_level_rule(m, rp, hn):
+            return m.q_floor[rp, m.k.first(), hn] == m.C_floor[hn] * m.T_base
+        model.InitialFloorStorageLevelConstr = pyo.Constraint(model.rp, model.hn, rule=initial_floor_storage_level_rule)
+
+        def heat_storage_balance_rule(m, rp, k, hn, dt, htec):
+            # predecessor hour (cyclic)
+            if k == m.k.first():
+                k_prev = m.k.last()
+            else:
+                k_prev = m.k.prev(k)
+
+            return (m.vHeatStorageLevel[rp, k, hn, dt, htec]
+                    ==
+                    m.vHeatStorageLevel[rp, k_prev, hn, dt, htec]
+                    + m.vHeatStorageCharge[rp, k_prev, hn, dt, htec]
+                    - m.vHeatStorageDischarge[rp, k_prev, hn, dt, htec]
+                    )
+        model.HeatStorageBalanceConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_storage_balance_rule)
+
+        # max storage level value
+        def max_storage_level_rule(m, rp, k, hn, dt, htec):
+            return m.vHeatStorageLevel[rp, k, hn, dt, htec] <= m.C_room[hn] * m.T_max
+        model.MaxHeatStorageLevelConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=max_storage_level_rule)
+
+        # temperature deviation rules
+        def temp_dev_pos_rule(m, rp, k, hn, dt, htec):
+            return m.vHeatStorageLevel[rp, k, hn, dt, htec] - m.C_room[hn] * m.T_base == m.q_room_pos_dev[rp, k, hn, dt, htec] - m.q_room_neg_dev[rp, k, hn, dt, htec]
+        model.TempDevPosConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=temp_dev_pos_rule)
+
+        # objective function adjustment for temperature deviation costs
+        def temp_dev_cost_rule(m):
+            return sum(m.pWeight_rp[rp] *
+                       sum(m.pWeight_k[k] *
+                           sum(m.Cost_Pos_Temp_Dev * m.q_room_pos_dev[rp, k, hn, dt, htec] + m.Cost_Neg_Temp_Dev * m.q_room_neg_dev[rp, k, hn, dt, htec]
+                               for (hn, dt, htec) in m.hn_dt_htec)
+                           for k in m.k)
+                       for rp in m.rp)
+
+        model.objective.expr += temp_dev_cost_rule(model)
+
+        # storage constraint for the floor
+        def floor_storage_balance_rule(m, rp, k, hn):
+            # predecessor hour (cyclic)
+            if k == m.k.first():
+                k_prev = m.k.last()
+            else:
+                k_prev = m.k.prev(k)
+
+            return (m.q_floor[rp, k, hn]
+                    ==
+                    m.q_floor[rp, k_prev, hn]
+                    + m.q_floor_charge[rp, k_prev, hn]
+                    - m.q_floor_discharge[rp, k_prev, hn]
+            )
+        model.FloorStorageBalanceConstr = pyo.Constraint(model.rp, model.k, model.hn, rule=floor_storage_balance_rule)
+
+        # heat transfer between floor and room
+        def floor_room_heat_transfer_rule(m, rp, k, hn, dt, htec):
+            return m.q_transfer[rp, k, hn, dt, htec] == m.alpha[hn] * (m.q_floor[rp, k, hn] / m.C_floor[hn] - m.vHeatStorageLevel[rp, k, hn, dt, htec] / m.C_room[hn])
+        model.FloorRoomHeatTransferConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=floor_room_heat_transfer_rule)
+
+
 
     # power demand per power node
     def power2heat_demand_rule(m, rp, k, i):
