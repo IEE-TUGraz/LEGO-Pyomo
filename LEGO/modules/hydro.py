@@ -104,7 +104,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     first_stage_objective = 0.0
     # TODO: Add weight of RP and K
     second_stage_objective = (sum(model.vPumpedWater[rp, k, i, j] * model.pCostPumps[i] for (i, j) in model.PumpNetwork for rp in model.rp for k in model.k)  # Cost for pumping
-                              + sum(model.vSlackWES[rp, k, g] * 10000 for g in model.Hydroplants for rp in model.rp for k in model.k)  # Cost for excess water served  # TODO: Scale slack cost with cost factor
+                              + sum(model.vSlackWES[rp, k, g] * 0 for g in model.Hydroplants for rp in model.rp for k in model.k)  # Cost for excess water served  # TODO: Scale slack cost with cost factor
                               + sum(model.vSlackWNS[rp, k, g] * 10000 for g in model.Hydroplants for rp in model.rp for k in model.k)  # Cost for unmet water inflow  # TODO: Scale slack cost with cost factor
                               )
 
