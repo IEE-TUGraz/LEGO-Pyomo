@@ -179,6 +179,201 @@ def load_ens_pns_from_sqlite(sqlite_file):
         conn.close()
 
 
+def load_bus_zones_from_sqlite(sqlite_file):
+    """
+    Load i_zone set table from SQLite file. The set contains (i, zone) tuples,
+    stored as columns '0' (bus) and '1' (zone).
+
+    :param sqlite_file: Path to SQLite database file
+    :return: dict mapping bus name to zone name {bus: zone}
+    """
+    conn = sqlite3.connect(sqlite_file)
+    try:
+        df = pd.read_sql_query('SELECT * FROM i_zone', conn)
+        # Drop the 'index' column added by pandas
+        if 'index' in df.columns:
+            df = df.drop(columns=['index'])
+        # Set stored as columns '0' and '1'
+        if '0' in df.columns and '1' in df.columns:
+            return dict(zip(df['0'], df['1']))
+        else:
+            # Fallback: first two columns
+            return dict(zip(df.iloc[:, 0], df.iloc[:, 1]))
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+
+def load_ens_pns_per_zone_from_sqlite(sqlite_file, bus_zones):
+    """
+    Compute weighted ENS and PNS per zone and total from SQLite file.
+
+    :param sqlite_file: Path to SQLite database file
+    :param bus_zones: dict mapping bus name to zone name
+    :return: dict {'_total': (ens, pns), 'Zone1': (ens, pns), ...}
+    """
+    conn = sqlite3.connect(sqlite_file)
+    try:
+        df_wk = pd.read_sql_query('SELECT * FROM pWeight_k', conn)
+        df_wrp = pd.read_sql_query('SELECT * FROM pWeight_rp', conn)
+        wk = dict(zip(df_wk.iloc[:, 0], df_wk['values']))
+        wrp = dict(zip(df_wrp.iloc[:, 0], df_wrp['values']))
+
+        result = {}
+        for var_name in ['vEPS', 'vPNS']:
+            df = pd.read_sql_query(f'SELECT * FROM {var_name}', conn)
+            df['_w'] = df['rp'].map(wrp) * df['k'].map(wk)
+            df['_weighted'] = df['values'] * df['_w']
+            df['_zone'] = df['i'].map(bus_zones)
+
+            # Total
+            result[('_total', var_name)] = df['_weighted'].sum()
+
+            # Per zone
+            for zone, grp in df.groupby('_zone'):
+                result[(zone, var_name)] = grp['_weighted'].sum()
+
+        # Build output dict
+        zones = sorted(set(bus_zones.values()))
+        output = {
+            '_total': (result.get(('_total', 'vEPS'), 0), result.get(('_total', 'vPNS'), 0))
+        }
+        for zone in zones:
+            output[zone] = (result.get((zone, 'vEPS'), 0), result.get((zone, 'vPNS'), 0))
+        return output
+    finally:
+        conn.close()
+
+
+def compute_per_zone_objectives(zoi_data, bus_zones):
+    """
+    Compute objective value per zone using evaluate_zoi_objective_from_data.
+
+    The objective constant is included in each call to evaluate_zoi_objective_from_data,
+    so we subtract it from each per-zone value and distribute it proportionally across zones
+    to ensure the sum of per-zone values equals the total objective.
+
+    :param zoi_data: ZOI data loaded from sqlite
+    :param bus_zones: dict mapping bus name to zone name
+    :return: dict {'Zone1': objective, 'Zone2': objective, ...}
+    """
+    zones = sorted(set(bus_zones.values()))
+    all_buses = set(zoi_data['sets']['i'])
+    constant = zoi_data['objective']['constant']
+
+    # Compute raw per-zone objectives (each includes the constant)
+    raw = {}
+    for zone in zones:
+        zone_buses = [bus for bus in all_buses if bus_zones.get(bus) == zone]
+        if zone_buses:
+            obj = LEGOUtilities.evaluate_zoi_objective_from_data(zoi_data, new_zoi_i=zone_buses, line_filter="both")
+            raw[zone] = obj - constant
+        else:
+            raw[zone] = 0.0
+
+    # Distribute the constant proportionally across zones
+    raw_total = sum(raw.values())
+    result = {}
+    if raw_total != 0:
+        for zone in zones:
+            result[zone] = raw[zone] + constant * (raw[zone] / raw_total)
+    else:
+        # Equal distribution when all raw values are zero
+        share = constant / len(zones) if zones else 0
+        for zone in zones:
+            result[zone] = share
+
+    return result
+
+
+def print_metric_table(title, rows, zones, dc_row_value, metric_key, wu_key=None):
+    """
+    Print a generic metric comparison table with per-zone breakdowns.
+
+    :param title: Table title
+    :param rows: list of dicts, each with 'source', metric_key (total value), 'per_zone' (dict zone->value),
+                 optionally wu_key, 'is_uniform', 'dc_buf', 'tp_buf'
+    :param zones: sorted list of zone names
+    :param dc_row_value: the DC baseline value for this metric (for regret calculation)
+    :param metric_key: key in row dict for the total metric value
+    :param wu_key: optional key for work units column
+    """
+    # Calculate column widths
+    zone_cols = len(zones)
+    # Each zone gets: value col (14) + rel% col (10)
+    zone_width = zone_cols * 24
+
+    # Base columns: Source(14) + DC-Buf(8) + TP-Buf(8) + Total(16) + SumZones(16) + Check(10) + Rel%(10) + WU(12) + WU%(10)
+    base_width = 14 + 8 + 8 + 16 + 16 + 10 + 10
+    if wu_key:
+        base_width += 12 + 10
+    total_width = base_width + zone_width + 2
+
+    printer.information(f"\n{title}")
+    printer.information("-" * total_width)
+
+    # Header
+    header = f"  {'Source':<12s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Total':>14s} {'Sum(zones)':>14s} {'Check':>8s} {'Rel%':>8s}"
+    if wu_key:
+        header += f" {'WU':>10s} {'WU%':>8s}"
+    for zone in zones:
+        header += f" {zone:>12s} {zone + '%':>10s}"
+    printer.information(header)
+    printer.information("-" * total_width)
+
+    for row in rows:
+        total_val = row.get(metric_key)
+        if total_val is None:
+            continue
+
+        per_zone = row.get('per_zone', {})
+        sum_zones = sum(per_zone.get(z, 0) for z in zones)
+        check_diff = total_val - sum_zones if total_val != 0 else 0
+
+        # Regret relative to DC baseline
+        if dc_row_value is not None and dc_row_value != 0:
+            rel_pct = ((total_val - dc_row_value) / dc_row_value * 100)
+        else:
+            rel_pct = None
+
+        dc_str = "-" if row.get('is_uniform') else (str(row.get('dc_buf')) if row.get('dc_buf') is not None else "N/A")
+        tp_str = "-" if row.get('is_uniform') else (str(row.get('tp_buf')) if row.get('tp_buf') is not None else "N/A")
+
+        check_str = f"{check_diff:.2f}" if abs(check_diff) > 0.01 else "OK"
+        rel_str = f"{rel_pct:.1f}%" if (row['source'] != 'DC' and rel_pct is not None) else ("-" if row['source'] == 'DC' else "N/A")
+
+        line = f"  {row['source']:<12s} {dc_str:>8s} {tp_str:>8s} {total_val:>14.2f} {sum_zones:>14.2f} {check_str:>8s} {rel_str:>8s}"
+
+        if wu_key:
+            wu_val = row.get(wu_key)
+            wu_str = f"{wu_val:.2f}" if wu_val is not None else "N/A"
+            dc_wu = rows[0].get(wu_key) if rows else None  # First row is DC
+            if wu_val is not None and dc_wu is not None and dc_wu != 0 and row['source'] != 'DC':
+                wu_rel = (wu_val - dc_wu) / dc_wu * 100
+                wu_rel_str = f"{wu_rel:.1f}%"
+            else:
+                wu_rel_str = "-"
+            line += f" {wu_str:>10s} {wu_rel_str:>8s}"
+
+        for zone in zones:
+            zone_val = per_zone.get(zone, 0)
+            # Per-zone relative to DC baseline's per-zone value
+            dc_zone_val = rows[0].get('per_zone', {}).get(zone, 0) if rows else 0
+            if row['source'] == 'DC':
+                zone_rel_str = "-"
+            elif dc_zone_val != 0:
+                zone_rel = (zone_val - dc_zone_val) / dc_zone_val * 100
+                zone_rel_str = f"{zone_rel:.1f}%"
+            else:
+                zone_rel_str = "N/A"
+            line += f" {zone_val:>12.2f} {zone_rel_str:>10s}"
+
+        printer.information(line)
+
+    printer.information("-" * total_width)
+
+
 def main(folder="."):
     # Find all SQLite files in the specified folder
     sqlite_pattern = os.path.join(folder, "*.sqlite")
@@ -207,11 +402,7 @@ def main(folder="."):
             dc_buffer, tp_buffer = meta['dc_buffer'], meta['tp_buffer']
             zone, demand, pmax = meta['zone'], meta['demand'], meta['pmax']
             basename = os.path.basename(sqlite_file)
-            zs_match = re.search(r'-zoi(TP|SN)-regret-zone(\w+)\.sqlite$', basename)
-            is_regret_file = basename.endswith('-regret.sqlite') or zs_match is not None
-            is_zone_specific_regret = zs_match is not None
-            regret_uniform_zoi = zs_match.group(1) if zs_match else None
-            regret_target_zone = zs_match.group(2) if zs_match else None
+            is_regret_file = basename.endswith('-regret.sqlite')
 
             # Load the ZOI data from SQLite
             start_time = time.time()
@@ -220,26 +411,27 @@ def main(folder="."):
             load_time = time.time() - start_time
             printer.information(f"  Loaded in {load_time:.2f} seconds")
 
-            # Load weighted ENS and PNS
+            # Load bus zones
+            bus_zones = load_bus_zones_from_sqlite(sqlite_file)
+
+            # Load weighted ENS and PNS (total and per-zone)
+            ens, pns = None, None
+            ens_pns_per_zone = {}
             try:
-                ens, pns = load_ens_pns_from_sqlite(sqlite_file)
+                if bus_zones:
+                    ens_pns_per_zone = load_ens_pns_per_zone_from_sqlite(sqlite_file, bus_zones)
+                    ens = ens_pns_per_zone.get('_total', (0, 0))[0]
+                    pns = ens_pns_per_zone.get('_total', (0, 0))[1]
+                else:
+                    ens, pns = load_ens_pns_from_sqlite(sqlite_file)
                 printer.information(f"  ENS: {ens:.2f}, PNS: {pns:.2f}")
             except Exception as e:
                 printer.warning(f"  Could not load ENS/PNS: {e}")
-                ens, pns = None, None
 
-            # Calculate objectives based on type
-            zoi_value = None
-            if is_uniform_representation(zone) or is_regret_file:
-                printer.information(f"  {'Regret' if is_regret_file else 'Uniform'} run — skipping ZOI objective calculation")
-            else:
-                # Zone-specific: calculate ZOI objective
-                calc_start_time = time.time()
-                zoi_i = zoi_data['sets']['zoi_i']
-                zoi_value = LEGOUtilities.evaluate_zoi_objective_from_data(zoi_data, new_zoi_i=zoi_i, line_filter="both")
-                calc_time = time.time() - calc_start_time
-                printer.information(f"  ZOI objective calculated in {calc_time:.2f} seconds")
-                printer.success(f"  ZOI Objective: {zoi_value:.2f}")
+            # Compute per-zone objectives
+            per_zone_objectives = {}
+            if bus_zones:
+                per_zone_objectives = compute_per_zone_objectives(zoi_data, bus_zones)
 
             # Calculate total objective from data (for all cases)
             calc_total_obj = None
@@ -276,7 +468,7 @@ def main(folder="."):
                 else:
                     printer.warning(f"  Stored Total Objective: Not available in data")
 
-            results.append((sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, calc_total_obj, is_regret_file, ens, pns))
+            results.append((sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, calc_total_obj, is_regret_file, ens, pns))
 
             # Store file data
             file_data = {
@@ -288,15 +480,14 @@ def main(folder="."):
                 'zone': zone,
                 'demand': demand,
                 'pmax': pmax,
-                'zoi_value': zoi_value,
                 'zoi_data': zoi_data,
                 'total_obj': calc_total_obj,
                 'work_units': zoi_data.get('work_units'),
                 'ens': ens,
                 'pns': pns,
-                'is_zone_specific_regret': is_zone_specific_regret,
-                'regret_uniform_zoi': regret_uniform_zoi,
-                'regret_target_zone': regret_target_zone,
+                'bus_zones': bus_zones,
+                'per_zone_objectives': per_zone_objectives,
+                'ens_pns_per_zone': ens_pns_per_zone,
             }
 
             # Separate into uniform, zone-specific, and regret
@@ -313,28 +504,28 @@ def main(folder="."):
     # Print summary
     if results:
         def sort_key(result):
-            sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj, is_regret, _, _ = result
+            sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, total_obj, is_regret, _, _ = result
             return make_run_sort_key(input_dir, limit_k, demand, pmax, dc_buffer, tp_buffer, zone) + (1 if is_regret else 0,)
 
         sorted_results = sorted(results, key=sort_key)
 
         # Calculate the maximum filename length for proper alignment
-        max_filename_len = max(len(sqlite_file) for sqlite_file, _, _, _, _, _, _, _, _, _, _, _, _ in sorted_results)
+        max_filename_len = max(len(sqlite_file) for sqlite_file, _, _, _, _, _, _, _, _, _, _, _ in sorted_results)
         # Ensure minimum width for readability
         filename_width = max(max_filename_len, len("Filename"))
         # Calculate total table width
-        table_width = filename_width + 2 + 16 + 8 + 8 + 8 + 8 + 14 + 16 + 14 + 14
+        table_width = filename_width + 2 + 16 + 8 + 8 + 8 + 8 + 16 + 14 + 14
 
         printer.information("\n" + "=" * table_width)
         printer.information("Summary of Objective Values (grouped by parameters):")
         printer.information("=" * table_width)
-        printer.information(f"  {'Filename':<{filename_width}s} {'LimitK':>16s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Demand':>8s} {'PMax':>8s} {'ZOI Objective':>14s} {'Total Objective':>16s} {'ENS':>14s} {'PNS':>14s}")
+        printer.information(f"  {'Filename':<{filename_width}s} {'LimitK':>16s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Demand':>8s} {'PMax':>8s} {'Total Objective':>16s} {'ENS':>14s} {'PNS':>14s}")
         printer.information("-" * table_width)
 
         # Track previous group to insert separators
         prev_group = None
 
-        for sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, zoi_value, total_obj, _, ens, pns in sorted_results:
+        for sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, total_obj, _, ens, pns in sorted_results:
             # Check if we're starting a new group (input_dir, limit_k, demand, pmax)
             current_group = (input_dir, limit_k, demand, pmax)
             if prev_group is not None and current_group != prev_group:
@@ -348,14 +539,12 @@ def main(folder="."):
             tp_str = "-" if is_uniform else (str(tp_buffer) if tp_buffer is not None else "N/A")
             demand_str = f"{demand:.1f}" if demand is not None else "N/A"
             pmax_str = f"{pmax:.1f}" if pmax is not None else "N/A"
-            # Show N/A for ZOI objective if it's a uniform representation
-            zoi_str = "N/A" if (is_uniform or zoi_value is None) else f"{zoi_value:.2f}"
             # Show total objective if available
             total_str = f"{total_obj:.2f}" if total_obj is not None else "N/A"
             limit_k_str = limit_k if limit_k else "N/A"
             ens_str = f"{ens:.2f}" if ens is not None else "N/A"
             pns_str = f"{pns:.2f}" if pns is not None else "N/A"
-            printer.information(f"  {sqlite_file:<{filename_width}s} {limit_k_str:>16s} {dc_str:>8s} {tp_str:>8s} {demand_str:>8s} {pmax_str:>8s} {zoi_str:>14s} {total_str:>16s} {ens_str:>14s} {pns_str:>14s}")
+            printer.information(f"  {sqlite_file:<{filename_width}s} {limit_k_str:>16s} {dc_str:>8s} {tp_str:>8s} {demand_str:>8s} {pmax_str:>8s} {total_str:>16s} {ens_str:>14s} {pns_str:>14s}")
 
     # Group uniform files by all grouping parameters for easier access
     uniform_groups = {}
@@ -423,16 +612,30 @@ def main(folder="."):
         dc_total_obj = dc_baseline['total_obj']
         dc_wu = dc_baseline.get('work_units')
 
-        # Build rows: DC baseline first, then uniform regret (SN/TP), then zone regret sorted by buffers
-        rows = []
-        rows.append({
+        # Determine available zones from DC baseline's bus_zones
+        dc_bus_zones = dc_baseline.get('bus_zones', {})
+        zones = sorted(set(dc_bus_zones.values())) if dc_bus_zones else []
+
+        # Build rows for per-zone tables
+        table_rows = []
+
+        # DC baseline row
+        dc_per_zone_obj = dc_baseline.get('per_zone_objectives', {})
+        dc_ens_pns_pz = dc_baseline.get('ens_pns_per_zone', {})
+        dc_per_zone_ens = {z: dc_ens_pns_pz.get(z, (0, 0))[0] for z in zones}
+        dc_per_zone_pns = {z: dc_ens_pns_pz.get(z, (0, 0))[1] for z in zones}
+
+        table_rows.append({
             'source': 'DC',
             'is_uniform': True,
             'dc_buf': None, 'tp_buf': None,
             'total_obj': dc_total_obj,
-            'abs_regret': 0.0, 'rel_regret': 0.0,
-            'wu': dc_wu, 'wu_rel': None,
-            'ens': dc_baseline.get('ens'), 'pns': dc_baseline.get('pns'),
+            'per_zone': dc_per_zone_obj,
+            'wu': dc_wu,
+            'ens': dc_baseline.get('ens'),
+            'pns': dc_baseline.get('pns'),
+            'per_zone_ens': dc_per_zone_ens,
+            'per_zone_pns': dc_per_zone_pns,
             'sort': (-2, '', 0, 0, 0),
         })
 
@@ -442,96 +645,78 @@ def main(folder="."):
             if total_obj is None:
                 continue
 
-            abs_regret = total_obj - dc_total_obj
-            rel_regret = (abs_regret / dc_total_obj * 100) if dc_total_obj != 0 else 0.0
-
-            if rf.get('is_zone_specific_regret'):
-                # Zone-specific regret: WU from the uniform source run
-                uniform_zoi = rf['regret_uniform_zoi']
-                target_zone = rf['regret_target_zone']
-                source = uniform_source_map.get((group_key, uniform_zoi))
-                source_wu = source.get('work_units') if source else None
-                wu_rel = ((source_wu - dc_wu) / dc_wu * 100) if (source_wu is not None and dc_wu is not None and dc_wu != 0) else None
-                rows.append({
-                    'source': f"{uniform_zoi} zoi({target_zone})",
-                    'is_uniform': True,  # suppress dc/tp buf display
-                    'dc_buf': None, 'tp_buf': None,
-                    'total_obj': total_obj,
-                    'abs_regret': abs_regret, 'rel_regret': rel_regret,
-                    'wu': source_wu, 'wu_rel': wu_rel,
-                    'ens': rf.get('ens'), 'pns': rf.get('pns'),
-                    'sort': (0, target_zone, -2 if uniform_zoi == 'SN' else -1, 0, 0),
-                })
-            elif is_uniform_representation(zone):
-                # Uniform regret (TP/SN)
+            # Look up source model for work units
+            if is_uniform_representation(zone):
                 source = uniform_source_map.get((group_key, zone))
-                source_wu = source.get('work_units') if source else None
-                wu_rel = ((source_wu - dc_wu) / dc_wu * 100) if (source_wu is not None and dc_wu is not None and dc_wu != 0) else None
-                rows.append({
-                    'source': zone,
-                    'is_uniform': True,
-                    'dc_buf': None, 'tp_buf': None,
-                    'total_obj': total_obj,
-                    'abs_regret': abs_regret, 'rel_regret': rel_regret,
-                    'wu': source_wu, 'wu_rel': wu_rel,
-                    'ens': rf.get('ens'), 'pns': rf.get('pns'),
-                    'sort': (-1, zone, 0, 0, 0),
-                })
             else:
-                # Regular zone regret
                 source = zone_source_map.get((group_key, zone, rf.get('dc_buffer'), rf.get('tp_buffer')))
-                source_wu = source.get('work_units') if source else None
-                wu_rel = ((source_wu - dc_wu) / dc_wu * 100) if (source_wu is not None and dc_wu is not None and dc_wu != 0) else None
-                rows.append({
-                    'source': f"zoi({zone})",
-                    'is_uniform': False,
-                    'dc_buf': rf.get('dc_buffer'), 'tp_buf': rf.get('tp_buffer'),
-                    'total_obj': total_obj,
-                    'abs_regret': abs_regret, 'rel_regret': rel_regret,
-                    'wu': source_wu, 'wu_rel': wu_rel,
-                    'ens': rf.get('ens'), 'pns': rf.get('pns'),
-                    'sort': (0, zone, 0, rf.get('dc_buffer') or 0, rf.get('tp_buffer') or 0),
-                })
+            source_wu = source.get('work_units') if source else None
 
-        rows.sort(key=lambda r: r['sort'])
+            # Per-zone objectives for regret file
+            rf_per_zone_obj = rf.get('per_zone_objectives', {})
+            rf_ens_pns_pz = rf.get('ens_pns_per_zone', {})
+            rf_per_zone_ens = {z: rf_ens_pns_pz.get(z, (0, 0))[0] for z in zones}
+            rf_per_zone_pns = {z: rf_ens_pns_pz.get(z, (0, 0))[1] for z in zones}
 
-        # Print merged regret comparison table
-        printer.information(f"\nRegret Comparisons (baseline: DC, total obj = {dc_total_obj:.2f})")
-        printer.information("-" * 155)
-        printer.information(f"  {'Source':<12s} {'DC-Buf':>8s} {'TP-Buf':>8s} {'Total Objective':>18s} {'Abs. Regret':>15s} {'Rel. Regret (%)':>15s} {'Work Units':>12s} {'WU Rel. (%)':>12s} {'ENS':>14s} {'PNS':>14s}")
-        printer.information("-" * 155)
+            source_label = zone if is_uniform_representation(zone) else f"zoi({zone})"
 
-        for row in rows:
-            dc_str = "-" if row['is_uniform'] else (str(row['dc_buf']) if row['dc_buf'] is not None else "N/A")
-            tp_str = "-" if row['is_uniform'] else (str(row['tp_buf']) if row['tp_buf'] is not None else "N/A")
-            wu_str = f"{row['wu']:.2f}" if row['wu'] is not None else "N/A"
-            wu_rel_str = f"{row['wu_rel']:.1f}%" if row['wu_rel'] is not None else "-"
-            ens_str = f"{row['ens']:.2f}" if row.get('ens') is not None else "N/A"
-            pns_str = f"{row['pns']:.2f}" if row.get('pns') is not None else "N/A"
-            printer.information(f"  {row['source']:<12s} {dc_str:>8s} {tp_str:>8s} {row['total_obj']:>18.2f} {row['abs_regret']:>15.2f} {row['rel_regret']:>14.1f}% {wu_str:>12s} {wu_rel_str:>12s} {ens_str:>14s} {pns_str:>14s}")
+            table_rows.append({
+                'source': source_label,
+                'is_uniform': is_uniform_representation(zone),
+                'dc_buf': rf.get('dc_buffer'), 'tp_buf': rf.get('tp_buffer'),
+                'total_obj': total_obj,
+                'per_zone': rf_per_zone_obj,
+                'wu': source_wu,
+                'ens': rf.get('ens'),
+                'pns': rf.get('pns'),
+                'per_zone_ens': rf_per_zone_ens,
+                'per_zone_pns': rf_per_zone_pns,
+                'sort': (-1 if is_uniform_representation(zone) else 0,
+                         str(zone), 0,
+                         rf.get('dc_buffer') or 0, rf.get('tp_buffer') or 0),
+            })
 
-        # Safety check: sum of baseline's per-zone ZOI objectives == baseline total
-        buf_configs = zone_files_by_group.get(group_key, {})
-        if buf_configs and dc_baseline.get('zoi_data'):
-            first_buf_key = next(iter(sorted(buf_configs.keys())))
-            zone_files_for_check = buf_configs[first_buf_key]
-            baseline_data = dc_baseline['zoi_data']
-            sum_baseline_zones = 0.0
-            for zf in sorted(zone_files_for_check, key=lambda z: z['zone']):
-                zone_zoi_i = zf['zoi_data']['sets']['zoi_i']
-                sum_baseline_zones += LEGOUtilities.evaluate_zoi_objective_from_data(
-                    baseline_data, new_zoi_i=zone_zoi_i, line_filter="both"
-                )
+        table_rows.sort(key=lambda r: r['sort'])
 
-            printer.information("-" * 155)
-            printer.information(f"  {'SAFETY CHECK':<12s} {'Sum Baseline':>18s} {'Baseline Total':>18s} {'Difference':>15s} {'Rel. Diff (%)':>15s}")
-            safety_diff = sum_baseline_zones - dc_total_obj
-            safety_rel = (safety_diff / dc_total_obj * 100) if dc_total_obj != 0 else 0.0
-            if abs(safety_rel) < 0.01:
-                printer.success(f"  {'[PASSED]':<12s} {sum_baseline_zones:>18.2f} {dc_total_obj:>18.2f} {safety_diff:>15.2f} {safety_rel:>14.1f}%")
-            else:
-                printer.error(f"  {'[FAILED]':<12s} {sum_baseline_zones:>18.2f} {dc_total_obj:>18.2f} {safety_diff:>15.2f} {safety_rel:>14.1f}%")
-        printer.information("-" * 155)
+        # Print Objective table with per-zone breakdown
+        print_metric_table(
+            f"Objectives + WU (baseline: DC, total obj = {dc_total_obj:.2f})",
+            table_rows, zones, dc_total_obj, 'total_obj', wu_key='wu'
+        )
+
+        # Print PNS table with per-zone breakdown
+        pns_rows = []
+        for row in table_rows:
+            pns_rows.append({
+                'source': row['source'],
+                'is_uniform': row['is_uniform'],
+                'dc_buf': row['dc_buf'], 'tp_buf': row['tp_buf'],
+                'pns_total': row.get('pns', 0) or 0,
+                'per_zone': row.get('per_zone_pns', {}),
+                'sort': row['sort'],
+            })
+        dc_pns = dc_baseline.get('pns', 0) or 0
+        print_metric_table(
+            f"PNS (Power Not Served)",
+            pns_rows, zones, dc_pns, 'pns_total'
+        )
+
+        # Print ENS table with per-zone breakdown
+        ens_rows = []
+        for row in table_rows:
+            ens_rows.append({
+                'source': row['source'],
+                'is_uniform': row['is_uniform'],
+                'dc_buf': row['dc_buf'], 'tp_buf': row['tp_buf'],
+                'ens_total': row.get('ens', 0) or 0,
+                'per_zone': row.get('per_zone_ens', {}),
+                'sort': row['sort'],
+            })
+        dc_ens = dc_baseline.get('ens', 0) or 0
+        print_metric_table(
+            f"ENS (Excess Not Served / Excess Power Served)",
+            ens_rows, zones, dc_ens, 'ens_total'
+        )
 
 
 if __name__ == "__main__":

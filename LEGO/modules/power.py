@@ -19,6 +19,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     # Sets
     model.i = pyo.Set(doc='Buses', initialize=cs.dPower_BusInfo.index.tolist())
+    model.i_zone = pyo.Set(doc='Bus-zone mapping (i, zone)', initialize=[(i, z) for i, z in cs.dPower_BusInfo['z'].items()])
 
     model.c = pyo.Set(doc='Circuits', initialize=cs.dPower_Network.index.get_level_values('c').unique().tolist())
     model.la = pyo.Set(doc='All lines', initialize=cs.dPower_Network.index.tolist(), within=model.i * model.i * model.c)
