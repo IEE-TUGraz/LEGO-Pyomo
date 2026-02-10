@@ -90,13 +90,10 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     model.eHydroBalance = pyo.Constraint(model.rp, model.k, model.Hydroplants, rule=eHydroBalance_rule, doc='Hydro balance for hydro plants based on graph structure')
 
     def eStorageLeveling_rule(model, rp, k, g):
-        # enforce that storage levels at the end of the time horizon are the same as at the beginning for each hydro plant and each scenario, to avoid end-of-horizon effects and ensure cyclic operation
-        if k == model.k.last():
-            return model.vStorage[rp, k, g] == model.pInitialStorage[g]
-        else:
-            return pyo.Constraint.Skip
+        # Enforce that storage levels at the end of the time horizon are the same as at the beginning for each hydro plant and each scenario, to avoid end-of-horizon effects and ensure cyclic operation
+        return model.vStorage[rp, k, g] == model.pInitialStorage[g]
 
-    model.eStorageLeveling = pyo.Constraint(model.rp, model.k, model.Hydroplants,
+    model.eStorageLeveling = pyo.Constraint(model.rp, [model.k.last()], model.Hydroplants,
                                         rule=eStorageLeveling_rule,
                                         doc='Cyclic storage constraint to ensure storage levels at the end of the time horizon are the same as at the beginning')
 
