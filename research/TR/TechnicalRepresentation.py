@@ -291,7 +291,7 @@ def load_vGenInvest_from_sqlite(sqlite_file):
     return dict(zip(df['g'], df['values']))
 
 
-def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand, scale_pmax, all_zones, no_overwrite=False):
+def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand, scale_pmax, all_zones, no_overwrite, prevent_cross_zone_merging):
     caseStudyName = case_study_directory.replace("/", "_").replace("\\", "_")
 
     printer.information(f"Loading case study from '{case_study_directory}'")
@@ -424,6 +424,12 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
             printer.information(f"Assigning technical representations with DC-Buffer={dc_buffer}, TP-Buffer={tp_buffer}")
             assign_technical_representation_by_layers(cs, dc_buffer, tp_buffer)
 
+        # --- Prevent cross-zone SN connections ---
+        if prevent_cross_zone_merging:
+            printer.information(f"Ensuring no SN connections between different zones (upgrading to TP if needed)")
+            identifier_parts.append(f"noCrossZoneSN")
+            prevent_cross_zone_sn(cs)
+
         # --- Filename + noOverwrite check ---
         identifier = "-".join(identifier_parts)
         sqlite_filename = f"TR-{identifier}.sqlite"
@@ -431,9 +437,6 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
         if no_overwrite and os.path.exists(sqlite_filename):
             printer.information(f"  File '{sqlite_filename}' already exists, skipping (--noOverwrite)")
             continue
-
-        # --- Prevent cross-zone SN connections ---
-        prevent_cross_zone_sn(cs)
 
         # --- Build ---
         cs.merge_single_node_buses()
@@ -488,6 +491,7 @@ if __name__ == "__main__":
     parser.add_argument("--scaleDemand", type=float, help=f"Scaling factor for demand (default: {SCALE_DEFAULT} = no scaling)", nargs="?", default=SCALE_DEFAULT)
     parser.add_argument("--scalePMax", type=float, help=f"Scaling factor for pPmax (line capacity) (default: {SCALE_DEFAULT} = no scaling)", nargs="?", default=SCALE_DEFAULT)
     parser.add_argument("--noOverwrite", action="store_true", help="Skip cases where the output .sqlite file already exists")
+    parser.add_argument("--preventCrossZoneMerging", action="store_true", help="Prevent SN connections between different zones by upgrading them to TP. This keeps zones electrically separated even in the SN representation, preventing them from being merged into one bus. This is especially relevant when using a ZOI that does not encompass all buses of a zone, or when using multiple zones.")
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory, args.zoi, args.limitK, args.dcBuffer, args.tpBuffer, args.scaleDemand, args.scalePMax, args.all, args.noOverwrite)
+    main(args.caseStudyDirectory, args.zoi, args.limitK, args.dcBuffer, args.tpBuffer, args.scaleDemand, args.scalePMax, args.all, args.noOverwrite, args.preventCrossZoneMerging)
