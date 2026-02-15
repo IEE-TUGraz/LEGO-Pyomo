@@ -37,7 +37,7 @@ SCENARIOS = {
     ),
 }
 
-scenario = "SC1"   # <- change here only
+scenario = "SC4"   # <- change here only
 config = SCENARIOS[scenario]
 
 
@@ -234,18 +234,21 @@ def add_heat_conversion_constraints(model, config):
 
         model.s_conic_relaxation = pyo.Var(
             model.rp, model.k, model.hn, model.dt, model.htec,
-            within=pyo.NonNegativeReals
+            within=pyo.Reals
         )
 
-        model.A = pyo.Param(initialize=-0.001)
-        model.B = pyo.Param(initialize=1.0)
-        model.M = pyo.Param(initialize=-50.0)
+
+        #'Normalised fitted parameters: A=-5.2444, B=1.1670, M=318.2700
+        #Normalised fitted parameters: A=-3.4162, B=0.7602, M=318.2701
+        model.A = pyo.Param(initialize=-3.4162)
+        model.B = pyo.Param(initialize=0.7602)
+        model.M = pyo.Param(initialize=318.2701)
 
         def heat_conversion_rule(m, rp, k, hn, dt, htec):
             return (
                     m.vHeatProduction[rp, k, hn, dt, htec]
                     == m.pP2HConversionEfficiency[rp, k, hn, dt, htec]
-                    * (m.A/m.pHeatInstalledCapacity[hn, dt, htec]**2 * m.s_conic_relaxation[rp, k, hn, dt, htec] + m.B/m.pHeatInstalledCapacity[hn, dt, htec] * m.vPower2Heat[rp, k, hn, dt, htec])
+                    * (m.A/m.pHeatInstalledCapacity[hn, dt, htec] * m.s_conic_relaxation[rp, k, hn, dt, htec] + m.B * m.vPower2Heat[rp, k, hn, dt, htec])
             )
 
         model.HeatConversionConstr = pyo.Constraint(
@@ -253,16 +256,15 @@ def add_heat_conversion_constraints(model, config):
         )
 
         def conic_relaxation_rule(m, rp, k, hn, dt, htec):
-            return (
-                    m.s_conic_relaxation[rp, k, hn, dt, htec]
-                    * (m.q_floor[rp, k, hn] / m.C_floor[hn, dt] + m.M)
-                    >= m.vPower2Heat[rp, k, hn, dt, htec] ** 2
+            return (m.s_conic_relaxation[rp, k, hn, dt, htec] * (m.M - m.q_floor[rp, k, hn] / m.C_floor[hn, dt]) >= m.vPower2Heat[rp, k, hn, dt, htec]**2
             )
-
         model.ConicRelaxationConstr = pyo.Constraint(
             model.rp, model.k, model.hn_dt_htec, rule=conic_relaxation_rule
         )
 
+        model.HeatConversionConstr.pprint()
+        model.ConicRelaxationConstr.pprint()
+        model.pHeatInstalledCapacity.pprint()
 
 def add_no_storage_constraints(model):
     printer.information("Using no storage formulation")
