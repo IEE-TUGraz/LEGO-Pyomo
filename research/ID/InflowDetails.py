@@ -1,3 +1,8 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import argparse
 import logging
 import os
@@ -12,6 +17,10 @@ from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO
 
+SCALE_DEFAULT = 1.0  # Scaling default should always be 1.0 (no scaling)
+NUMBER_OF_RPS_DEFAULT = 0
+LENGTH_OF_RPS_DEFAULT = 24
+
 printer = Printer.getInstance()
 
 # Set up logging so that infeasible constraints are logged by pyomo
@@ -19,39 +28,100 @@ logger = logging.getLogger("pyomo")
 logger.setLevel("INFO")
 
 
-def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows, scaleVRESMaxProd, clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode):
+def build_run_parameters(case_study_directory, inflow_aggregation, number_of_rps, length_of_rps,
+                         scale_demand, scale_inflows, scale_vres_max_prod, scale_pmax,
+                         cluster_on_original_data, scale_ror_to_inflow_scaling, rmip, single_node,
+                         limit_k, is_regret=False):
+    """Build a dict of run parameters for storage in sqlite."""
+    params = {
+        'case_study_directory': case_study_directory,
+        'inflow_aggregation': inflow_aggregation,
+        'is_regret': is_regret,
+    }
+    if number_of_rps != NUMBER_OF_RPS_DEFAULT:
+        params['number_of_rps'] = number_of_rps
+    if length_of_rps != LENGTH_OF_RPS_DEFAULT:
+        params['length_of_rps'] = length_of_rps
+    if scale_demand != SCALE_DEFAULT:
+        params['scale_demand'] = scale_demand
+    if scale_inflows != SCALE_DEFAULT:
+        params['scale_inflows'] = scale_inflows
+    if scale_vres_max_prod != SCALE_DEFAULT:
+        params['scale_vres_max_prod'] = scale_vres_max_prod
+    if scale_pmax != SCALE_DEFAULT:
+        params['scale_pmax'] = scale_pmax
+    if cluster_on_original_data:
+        params['cluster_on_original_data'] = True
+    if scale_ror_to_inflow_scaling:
+        params['scale_ror_to_inflow_scaling'] = True
+    if rmip:
+        params['rmip'] = True
+    if single_node:
+        params['single_node'] = True
+    if limit_k is not None:
+        params['limit_k'] = limit_k
+    return params
+
+
+def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows, scaleVRESMaxProd,
+         clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, scalePMax, limitK, noOverwrite):
     caseStudyName = caseStudyDirectory.replace("/", "_").replace("\\", "_")
 
     printer.information(f"Loading original case study from '{caseStudyDirectory}'")
+    identifier_parts_base = [f"data{caseStudyName}"]  # Build identifier with only non-default parameters
     start_time = time.time()
     cs_inflow_hourly = CaseStudy(caseStudyDirectory)
     printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
 
-    if scaleDemand != 1.0:
+    if limitK is not None:
+        printer.information(f"Limiting K values to '{limitK}'")
+        identifier_parts_base.append(f"limitK{limitK}")
+        start, end = limitK.split("-")
+        cs_inflow_hourly.filter_timesteps(start, end, inplace=True)
+
+    if scaleDemand != SCALE_DEFAULT:
         printer.information(f"Scaling demand by factor {scaleDemand}")
+        identifier_parts_base.append(f"demand{scaleDemand:.1f}")
         cs_inflow_hourly.dPower_Demand['value'] *= scaleDemand
 
-    if scaleVRESMaxProd != 1.0:
+    if scaleVRESMaxProd != SCALE_DEFAULT:
         printer.information(f"Scaling VRES maximum production by factor {scaleVRESMaxProd}")
+        identifier_parts_base.append(f"vresMaxProd{scaleVRESMaxProd:.1f}")
         cs_inflow_hourly.dPower_VRES['MaxProd'] *= scaleVRESMaxProd
 
-    if scaleInflows != 1.0:
-        printer.information(f"Scaling inflows by factor {scaleInflows}")
-        cs_inflow_hourly.dPower_Inflows['value'] *= scaleInflows
+    if scalePMax != SCALE_DEFAULT:
+        printer.information(f"Scaling pPmax (line capacity) by factor {scalePMax}")
+        identifier_parts_base.append(f"pmax{scalePMax:.1f}")
+        cs_inflow_hourly.dPower_Network['pPmax'] *= scalePMax
 
     if scaleRoRToInflowScaling:
         printer.information(f"Scaling run-of-river generation capacity by inflow scaling factor {scaleInflows} to prevent inflows that exceed maximum production of RoR plants")
+        identifier_parts_base.append("rorScaled")
         ror_gens = cs_inflow_hourly.dPower_VRES[cs_inflow_hourly.dPower_VRES['tec'].str.lower() == 'ror'].index
         cs_inflow_hourly.dPower_VRES.loc[ror_gens, 'MaxProd'] *= scaleInflows
 
     if rMIP:
         printer.information("Setting up case study as rMIP")
+        identifier_parts_base.append("rMIP")
         cs_inflow_hourly.dGlobal_Parameters["pEnableRMIP"] = True
 
     if singleNode:
         printer.information("Setting up case study as single node (no network constraints)")
+        identifier_parts_base.append("SN")
         cs_inflow_hourly.dPower_Network["pTecRepr"] = "SN"
         cs_inflow_hourly.merge_single_node_buses()
+
+    if numberOfRPs != NUMBER_OF_RPS_DEFAULT:
+        identifier_parts_base.append(f"rps{numberOfRPs}")
+    if lengthOfRPs != LENGTH_OF_RPS_DEFAULT:
+        identifier_parts_base.append(f"ks{lengthOfRPs}")
+    if clusterOnOriginalData:
+        identifier_parts_base.append("clustOriginal")
+
+    if scaleInflows != SCALE_DEFAULT:
+        printer.information(f"Scaling inflows by factor {scaleInflows}")
+        identifier_parts_base.append(f"inflows{scaleInflows:.1f}")
+        cs_inflow_hourly.dPower_Inflows['value'] *= scaleInflows
 
     printer.information("Creating copies of case study with different levels of aggregation for inflow data")
     cs_inflow_yearly_aggregated = cs_inflow_hourly.copy()
@@ -123,6 +193,17 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
     hourly_objective = None
     printer.information("Solving LEGO models and calculating regret")
     for name, (lego, model) in legos.items():
+        identifier_parts = identifier_parts_base.copy() + [name]
+        sqlite_filename = f"ID-{'-'.join(identifier_parts)}.sqlite"
+
+        if noOverwrite and os.path.exists(sqlite_filename):
+            printer.information(f"  File '{sqlite_filename}' already exists, skipping (--noOverwrite)")
+            continue
+
+        printer.information(f"\n{'=' * 60}")
+        printer.information(f"  {name} inflows")
+        printer.information(f"{'=' * 60}\n")
+
         printer.information(f"Solving LEGO model for case study with {name} inflows")
         results, timing, objective_value = lego.solve_model()
         printer.information(f"Solving LEGO model for case study with {name} inflows took {timing:.2f} seconds")
@@ -136,45 +217,77 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
             case _:
                 printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
 
-        SQLiteWriter.model_to_sqlite(model, f"model_{name}-{caseStudyName}-rps{numberOfRPs}-ks{lengthOfRPs}-demand{scaleDemand}-inflows{scaleInflows}-vresMaxProd{scaleVRESMaxProd}-clusteredOnOriginal{clusterOnOriginalData}-rMIP{rMIP}-singleNode{singleNode}.sqlite")
+        # --- Export ---
+        SQLiteWriter.model_to_sqlite(model, sqlite_filename)
+        SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_filename, results, work_units=lego.work_units)
+        SQLiteWriter.add_run_parameters_to_sqlite(
+            sqlite_filename,
+            **build_run_parameters(
+                caseStudyDirectory, name, numberOfRPs, lengthOfRPs,
+                scaleDemand, scaleInflows, scaleVRESMaxProd, scalePMax,
+                clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, limitK,
+                is_regret=False
+            )
+        )
+        printer.information(f"  Saved to '{sqlite_filename}'")
 
         if name == "hourly":
             hourly_objective = objective_value
             continue  # No regret calculation for hourly inflows (since this is the reference case)
+
+        # --- Regret ---
+        regret_identifier_parts = identifier_parts + ["regret"]
+        regret_sqlite_filename = f"ID-{'-'.join(regret_identifier_parts)}.sqlite"
+
+        if noOverwrite and os.path.exists(regret_sqlite_filename):
+            printer.information(f"  File '{regret_sqlite_filename}' already exists, skipping (--noOverwrite)")
+            continue
+
+        printer.information(f"Calculating regret for case study with {name} inflows")
+        cs = cs_inflow_hourly.copy()
+        lego_regret = LEGO(cs)
+        lego_regret_model, timing = lego_regret.build_model()
+        for var in lego_regret_model.component_objects(pyo.Var, active=True):
+            if var.name == "vGenInvest":
+                for index in var:
+                    var[index].value = model.vGenInvest[index].value
+                    var[index].fixed = True
+        results_regret, timing, objective_value_regret = lego_regret.solve_model()
+        printer.information(f"Solving regret model for case study with {name} inflows took {timing:.2f} seconds")
+
+        match results_regret.solver.termination_condition:
+            case pyo.TerminationCondition.optimal:
+                printer.success(f"Optimal regret solution: {pyo.value(lego_regret_model.objective):.4f}")
+            case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
+                printer.error(f"Regret model returned as {results_regret.solver.termination_condition}, logging infeasible constraints:")
+                log_infeasible_constraints(lego_regret_model, log_expression=False)
+            case _:
+                printer.warning(f"Regret solver terminated with condition: {results_regret.solver.termination_condition}")
+
+        if hourly_objective is not None:
+            regret = objective_value_regret - hourly_objective
+            printer.information(f"Regret for case study with {name} inflows: {regret:.4f}")
         else:
-            printer.information(f"Calculating regret for case study with {name} inflows")
-            cs = cs_inflow_hourly.copy()
-            lego_regret = LEGO(cs)
-            lego_regret_model, timing = lego_regret.build_model()
-            for var in lego_regret_model.component_objects(pyo.Var, active=True):
-                if var.name == "vGenInvest":
-                    for index in var:
-                        var[index].value = model.vGenInvest[index].value
-                        var[index].fixed = True
-            results_regret, timing, objective_value_regret = lego_regret.solve_model()
-            printer.information(f"Solving regret model for case study with {name} inflows took {timing:.2f} seconds")
+            printer.warning("Hourly objective is None, cannot calculate regret (yet?)")
 
-            match results.solver.termination_condition:
-                case pyo.TerminationCondition.optimal:
-                    printer.success(f"Optimal solution: {pyo.value(model.objective):.4f}")
-                case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
-                    printer.error(f"Model returned as {results.solver.termination_condition}, logging infeasible constraints:")
-                    log_infeasible_constraints(model, log_expression=False)
-                case _:
-                    printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
-
-            if hourly_objective is not None:
-                regret = objective_value_regret - objective_value
-                printer.information(f"Regret for case study with {name} inflows: {regret:.4f}")
-            else:
-                printer.warning("Hourly objective is None, cannot calculate regret (yet?)")
-
-        SQLiteWriter.model_to_sqlite(lego_regret_model, f"model_{name}-regret-{caseStudyName}-rps{numberOfRPs}-ks{lengthOfRPs}-demand{scaleDemand}-inflows{scaleInflows}-vresMaxProd{scaleVRESMaxProd}-clusteredOnOriginal{clusterOnOriginalData}-rMIP{rMIP}-singleNode{singleNode}.sqlite")
+        # --- Export regret ---
+        SQLiteWriter.model_to_sqlite(lego_regret_model, regret_sqlite_filename)
+        SQLiteWriter.add_solver_statistics_to_sqlite(regret_sqlite_filename, results_regret, work_units=lego_regret.work_units)
+        SQLiteWriter.add_run_parameters_to_sqlite(
+            regret_sqlite_filename,
+            **build_run_parameters(
+                caseStudyDirectory, name, numberOfRPs, lengthOfRPs,
+                scaleDemand, scaleInflows, scaleVRESMaxProd, scalePMax,
+                clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, limitK,
+                is_regret=True
+            )
+        )
+        printer.information(f"  Saved regret to '{regret_sqlite_filename}'")
 
 
 if __name__ == "__main__":
     # Parse command line arguments and automatically check for correct usage
-    parser = argparse.ArgumentParser(description="Shows difference of detailed and averaged inflow data for given case study", formatter_class=RichHelpFormatter)
+    parser = argparse.ArgumentParser(description="Shows difference of detailed and averaged inflow data for given case study", formatter_class=RichHelpFormatter, fromfile_prefix_chars='@')
 
 
     # Check if given string path is a directory
@@ -204,15 +317,18 @@ if __name__ == "__main__":
 
 
     parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to folder containing data for LEGO model")
-    parser.add_argument("--numberOfRPs", type=check_NumberOfRPs, default=0, help="Number of representative periods to cluster data into")
-    parser.add_argument("--lengthOfRPs", type=check_lengthOfRPs, default=24, help="Length of representative periods (in number of time steps)")
-    parser.add_argument("--scaleDemand", type=float, default=1.0, help="Scaling factor for demand (default: 1.0 = no scaling)")
-    parser.add_argument("--scaleVRESMaxProd", type=float, default=1.0, help="Scaling factor for VRES maximum production (default: 1.0 = no scaling)")
-    parser.add_argument("--scaleInflows", type=float, default=1.0, help="Scaling factor for inflows (default: 1.0 = no scaling)")
+    parser.add_argument("--numberOfRPs", type=check_NumberOfRPs, default=NUMBER_OF_RPS_DEFAULT, help=f"Number of representative periods to cluster data into (default: {NUMBER_OF_RPS_DEFAULT})")
+    parser.add_argument("--lengthOfRPs", type=check_lengthOfRPs, default=LENGTH_OF_RPS_DEFAULT, help=f"Length of representative periods (in number of time steps) (default: {LENGTH_OF_RPS_DEFAULT})")
+    parser.add_argument("--limitK", type=str, help="Limit the ks, format: 'k0025-k0048'", nargs="?", default=None)
+    parser.add_argument("--scaleDemand", type=float, help=f"Scaling factor for demand (default: {SCALE_DEFAULT} = no scaling)", default=SCALE_DEFAULT)
+    parser.add_argument("--scaleVRESMaxProd", type=float, help=f"Scaling factor for VRES maximum production (default: {SCALE_DEFAULT} = no scaling)", default=SCALE_DEFAULT)
+    parser.add_argument("--scaleInflows", type=float, help=f"Scaling factor for inflows (default: {SCALE_DEFAULT} = no scaling)", default=SCALE_DEFAULT)
+    parser.add_argument("--scalePMax", type=float, help=f"Scaling factor for pPmax (line capacity) (default: {SCALE_DEFAULT} = no scaling)", nargs="?", default=SCALE_DEFAULT)
     parser.add_argument("--clusterOnOriginalData", action="store_true", help="Cluster data on original data (instead of after aggregation)")
     parser.add_argument("--scaleRoRToInflowScaling", action="store_true", help="Scale run-of-river generation capacity according to inflow scaling factor to prevent inflows that exceed maximum production of RoR plants. Note: This happens ON-TOP of the VRES scaling.")
     parser.add_argument("--rMIP", action="store_true", help="Solve model as rMIP")
     parser.add_argument("--singleNode", action="store_true", help="Solve model as single node (no network constraints)")
+    parser.add_argument("--noOverwrite", action="store_true", help="Skip cases where the output .sqlite file already exists")
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory, args.numberOfRPs, args.lengthOfRPs, args.scaleDemand, args.scaleInflows, args.scaleVRESMaxProd, args.clusterOnOriginalData, args.scaleRoRToInflowScaling, args.rMIP, args.singleNode)
+    main(args.caseStudyDirectory, args.numberOfRPs, args.lengthOfRPs, args.scaleDemand, args.scaleInflows, args.scaleVRESMaxProd, args.clusterOnOriginalData, args.scaleRoRToInflowScaling, args.rMIP, args.singleNode, args.scalePMax, args.limitK, args.noOverwrite)
