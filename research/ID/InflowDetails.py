@@ -21,6 +21,14 @@ SCALE_DEFAULT = 1.0  # Scaling default should always be 1.0 (no scaling)
 NUMBER_OF_RPS_DEFAULT = 0
 LENGTH_OF_RPS_DEFAULT = 24
 
+
+class _AggregationProxy:
+    """Lightweight proxy that provides the tsam attributes needed by apply_representative_periods."""
+    def __init__(self, clusterCenterIndices, clusterOrder, clusterPeriodNoOccur):
+        self.clusterCenterIndices = clusterCenterIndices
+        self._clusterOrder = clusterOrder
+        self._clusterPeriodNoOccur = clusterPeriodNoOccur
+
 printer = Printer.getInstance()
 
 # Set up logging so that infeasible constraints are logged by pyomo
@@ -64,7 +72,20 @@ def build_run_parameters(case_study_directory, inflow_aggregation, number_of_rps
 
 
 def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows, scaleVRESMaxProd,
-         clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, scalePMax, limitK, noOverwrite):
+         clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, scalePMax, limitK, noOverwrite, rerunWithRPLength, aggregationToBeApplied=None):
+    if rerunWithRPLength is not None:
+        if rerunWithRPLength >= lengthOfRPs:
+            raise ValueError(f"rerunWithRPLength ({rerunWithRPLength}) must be smaller than original lengthOfRPs ({lengthOfRPs})")
+        if lengthOfRPs % rerunWithRPLength != 0:
+            raise ValueError(f"lengthOfRPs ({lengthOfRPs}) must be divisible by rerunWithRPLength ({rerunWithRPLength})")
+        if not clusterOnOriginalData and aggregationToBeApplied is None:
+            raise ValueError("rerunWithRPLength requires --clusterOnOriginalData (aggregation results must exist)")
+        if numberOfRPs == 0:
+            raise ValueError("rerunWithRPLength requires --numberOfRPs > 0")
+
+    if scaleRoRToInflowScaling and scaleInflows == SCALE_DEFAULT:
+        printer.warning("--scaleRoRToInflowScaling is set but --scaleInflows is 1.0 (no scaling), so RoR scaling has no effect")
+
     caseStudyName = caseStudyDirectory.replace("/", "_").replace("\\", "_")
 
     printer.information(f"Loading original case study from '{caseStudyDirectory}'")
@@ -130,7 +151,6 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
     cs_inflow_daily_aggregated = cs_inflow_hourly.copy()
 
     printer.information("Aggregating inflow data based on yearly, monthly, weekly, and daily averages")
-    generators = cs_inflow_monthly_aggregated.dPower_Inflows.index.get_level_values("g").unique()
 
     # Yearly
     mean_inflows = cs_inflow_yearly_aggregated.dPower_Inflows["value"].groupby(["g"]).mean()  # Calculate mean inflow per generator
@@ -162,10 +182,17 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
         "daily": cs_inflow_daily_aggregated}
     printer.information("Aggregation of inflow data completed")
 
+    aggregation_results = None
     if numberOfRPs > 0:
         printer.information(f"Clustering data into {numberOfRPs} representative periods of length {lengthOfRPs}")
 
-        if clusterOnOriginalData:
+        if aggregationToBeApplied is not None:
+            printer.information("Using pre-computed aggregation results (from rerun)")
+            aggregation_results = aggregationToBeApplied
+            for name, cs in caseStudy_objects.items():
+                printer.information(f"Applying pre-computed clustering to case study with {name} inflows")
+                cs.apply_representative_periods(aggregation_results, lengthOfRPs)
+        elif clusterOnOriginalData:
             printer.information("Calculating representative periods based on original hourly data")
 
             aggregation_results = caseStudy_objects["hourly"].get_kmedoids_representative_periods(numberOfRPs, lengthOfRPs)
@@ -284,6 +311,45 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
         )
         printer.information(f"  Saved regret to '{regret_sqlite_filename}'")
 
+    if rerunWithRPLength is not None:
+        printer.information(f"\n{'=' * 60}")
+        printer.information(f"Re-running with lengthOfRPs={rerunWithRPLength}")
+        printer.information(f"{'=' * 60}\n")
+
+        multiplier = lengthOfRPs // rerunWithRPLength  # sub-periods per original RP (e.g. 168/24 = 7)
+        newNumberOfRPs = numberOfRPs * multiplier       # e.g. 2 * 7 = 14
+
+        printer.information(f"Splitting {numberOfRPs} RPs of length {lengthOfRPs} into {newNumberOfRPs} RPs of length {rerunWithRPLength} (multiplier={multiplier})")
+
+        newAggregationResults = {}
+        for scenario, tsa in aggregation_results.items():
+            # clusterCenterIndices: each original medoid period spawns `multiplier` new sub-period medoids
+            newClusterCenterIndices = []
+            for center in tsa.clusterCenterIndices:
+                for i in range(multiplier):
+                    newClusterCenterIndices.append(center * multiplier + i)
+
+            # _clusterOrder: each original period maps to a cluster; now each original period
+            # splits into `multiplier` sub-periods, each mapping to a new sub-cluster
+            # Original period p in cluster c -> sub-periods map to clusters c*multiplier+0, c*multiplier+1, ...
+            newClusterOrder = []
+            for old_cluster in tsa._clusterOrder:
+                for i in range(multiplier):
+                    newClusterOrder.append(old_cluster * multiplier + i)
+
+            # _clusterPeriodNoOccur: each old cluster spawns `multiplier` new clusters,
+            # each with the same occurrence count
+            newClusterPeriodNoOccur = {}
+            for old_cluster, count in tsa._clusterPeriodNoOccur.items():
+                for i in range(multiplier):
+                    newClusterPeriodNoOccur[old_cluster * multiplier + i] = count
+
+            newAggregationResults[scenario] = _AggregationProxy(
+                newClusterCenterIndices, newClusterOrder, newClusterPeriodNoOccur)
+
+        main(caseStudyDirectory, newNumberOfRPs, rerunWithRPLength, scaleDemand, scaleInflows, scaleVRESMaxProd,
+             clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, scalePMax, limitK, noOverwrite, None, newAggregationResults)
+
 
 if __name__ == "__main__":
     # Parse command line arguments and automatically check for correct usage
@@ -329,6 +395,7 @@ if __name__ == "__main__":
     parser.add_argument("--rMIP", action="store_true", help="Solve model as rMIP")
     parser.add_argument("--singleNode", action="store_true", help="Solve model as single node (no network constraints)")
     parser.add_argument("--noOverwrite", action="store_true", help="Skip cases where the output .sqlite file already exists")
+    parser.add_argument("--rerunWithRPLength", type=check_lengthOfRPs, help="Re-run with given length of RPs", nargs="?", default=None)
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory, args.numberOfRPs, args.lengthOfRPs, args.scaleDemand, args.scaleInflows, args.scaleVRESMaxProd, args.clusterOnOriginalData, args.scaleRoRToInflowScaling, args.rMIP, args.singleNode, args.scalePMax, args.limitK, args.noOverwrite)
+    main(args.caseStudyDirectory, args.numberOfRPs, args.lengthOfRPs, args.scaleDemand, args.scaleInflows, args.scaleVRESMaxProd, args.clusterOnOriginalData, args.scaleRoRToInflowScaling, args.rMIP, args.singleNode, args.scalePMax, args.limitK, args.noOverwrite, args.rerunWithRPLength)
