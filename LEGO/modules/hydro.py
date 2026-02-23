@@ -82,7 +82,11 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         elif len(model.rp) > 1:
             raise NotImplementedError("Multiple RPs not yet implemented for hydro balance.")
         else:
-            inflow_from_upstream = sum(model.vTotalIntake[rp, model.k.prevw(k), u] * model.pDistributionFactor[u, g] for u in model.UpstreamPlants[g])
+            # Include upstream intake and upstream slack flows (both excess and purchase/unmet) from previous time step
+            inflow_from_upstream = sum((model.vTotalIntake[rp, model.k.prevw(k), u]
+                                        + model.vSlackWES[rp, model.k.prevw(k), u]
+                                        + model.vSlackWNS[rp, model.k.prevw(k), u]) * model.pDistributionFactor[u, g]
+                                       for u in model.UpstreamPlants[g])
 
             pumped_in = sum(model.vPumpedWater[rp, model.k.prevw(k), i, j] for (i, j) in model.PumpNetwork if g == j)
             return model.vStorage[rp, k, g] == model.vStorage[rp, model.k.prevw(k), g] + inflow_from_upstream + model.pInflowRiver[rp, k, g] - model.vTotalIntake[rp, k, g] + pumped_in - pumped_out + model.vSlackWNS[rp, k, g] - model.vSlackWES[rp, k, g]
