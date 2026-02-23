@@ -28,3 +28,4 @@ model.mps
 
 # Operating system files
 .DS_Store
+*.sqlite
