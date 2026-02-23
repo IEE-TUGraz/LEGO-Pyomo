@@ -45,6 +45,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.hindex = cs.dPower_Hindex.index
 
     # General Parameters
+    model.pEnableSoftVoltageLimits = pyo.Param(doc='Whether to enable soft voltage limits', initialize=cs.dPower_Parameters['pEnableSoftVoltageLimits'])
     model.pDemandP = pyo.Param(model.rp, model.k, model.i, initialize=cs.dPower_Demand['value'], doc='Demand at bus i in representative period rp and timestep k')
     model.pMovWindowLDS = cs.dGlobal_Parameters['pMovWindowLDS']
 
@@ -100,13 +101,12 @@ def _build_gi_node_helper(model: pyo.ConcreteModel) -> dict:
 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
-
     # Build helper dictionary for generator-to-bus mapping (now that gi is complete)
     model.gi_node = _build_gi_node_helper(model)
-    
+
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = (sum(model.pInvestCost[g] * model.vGenInvest[g] for g in model.g))  # Investment cost of generators
-    
+
     def ens_terms(rp, k):
         return sum(
             model.vPNS[rp, k, i] * model.pENSCost

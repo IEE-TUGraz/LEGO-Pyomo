@@ -69,7 +69,7 @@ args = parser.parse_args()
 printer.information(f"Loading case study from '{args.caseStudyDirectory}'\n")
 start_time = time.time()
 cs = CaseStudy(args.caseStudyDirectory)
-cs = cs.filter_timesteps('k00001','k00012')
+cs = cs.filter_timesteps('k00001','k00100')
 
 
 rh_length = cs.dGlobal_Parameters["pMovingWindowLength"]
@@ -171,5 +171,5 @@ else:
 printer.information(f"Finished in {time.time() - start_time:.2f} seconds")
 
 SQLiteWriter.model_to_sqlite(model, "model.sqlite")
-ExcelWriter.model_to_excel(model, "model.xlsx")
+#ExcelWriter.model_to_excel(model, "model.xlsx")
 model.write("model.mps", io_options={'labeler': NameLabeler()})
