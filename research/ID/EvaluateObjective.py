@@ -5,15 +5,15 @@ Evaluates the impact of inflow aggregation on optimization objectives.
 
 Reads all ID-*.sqlite files in the target folder and prints a table:
 
-  Inflow Mult | Hydro Share | Daily              | Weekly             | Monthly            | Yearly
-              |             | abs diff   | %      | abs diff   | %      | abs diff   | %      | ...
+  Inflow Mult | Hydro Share | Hourly Obj | Daily          | Weekly         | Monthly        | Yearly
+              |             |            | Diff    | %     | Diff    | %     | ...
 
 Where:
   - Inflow Multiplier : scale_inflows value from run_parameters
-  - Hydro Share       : weighted generation of Hydro+RoR generators / total weighted generation
-                        (from the hourly baseline model)
-  - Daily/Weekly/Monthly/Yearly : relative regret = regret_obj − hourly_obj
-                                  shown as both absolute difference and percentage
+  - Hydro Share       : weighted generation of Hydro+RoR generators / total weighted generation,
+                        shown as a range across the hourly baseline and all regret files
+  - Hourly Obj        : absolute objective value of the hourly baseline model
+  - Daily/Weekly/Monthly/Yearly : regret_obj − hourly_obj (signed), shown as difference and percentage
 
 Results are grouped by all run parameters other than scale_inflows, inflow_aggregation, is_regret.
 """
@@ -222,33 +222,35 @@ def _print_table(group_label, rows):
     # Fixed column widths
     W_MULT = 14
     W_HYDRO = 15
-    W_ABS = 12  # "Abs Diff" value
-    W_PCT = 8  # "Rel%" value (includes the % sign)
+    W_OBJ = 16  # hourly objective value
+    W_ABS = 12  # abs diff per aggregation
+    W_PCT = 8  # rel% per aggregation (includes % sign)
     # Prefix before the aggregation blocks
-    prefix_width = 2 + W_MULT + 2 + W_HYDRO  # "  " + mult + "  " + hydro
+    prefix_width = 2 + W_MULT + 2 + W_HYDRO + 2 + W_OBJ
 
     def agg_header(agg):
         """Aggregation name centred over the block (excluding the leading ' | ')."""
-        inner = W_ABS + 2 + W_PCT  # 22 chars
+        inner = W_ABS + 2 + W_PCT
         return agg.capitalize().center(inner)
 
     def agg_subheader():
-        return f"{'Abs Diff':>{W_ABS}s}  {'Rel%':>{W_PCT}s}"
+        return f"{'Diff':>{W_ABS}s}  {'Rel%':>{W_PCT}s}"
 
     def agg_separator():
-        return "-" * (W_ABS + 2 + W_PCT)  # 22 dashes
+        return "-" * (W_ABS + 2 + W_PCT)
 
     header1 = (
-            f"  {'Inflow Mult':>{W_MULT}s}  {'Hydro Share':>{W_HYDRO}s}"
+            f"  {'Inflow Mult':>{W_MULT}s}  {'Hydro Share':>{W_HYDRO}s}  {'Hourly Obj':>{W_OBJ}s}"
             + "".join(f" | {agg_header(agg)}" for agg in AGGREGATION_LEVELS)
+            + " |"
     )
     header2 = (
-            f"  {'':>{W_MULT}s}  {'':>{W_HYDRO}s}"
+            f"  {'':>{W_MULT}s}  {'':>{W_HYDRO}s}  {'':>{W_OBJ}s}"
             + "".join(f" | {agg_subheader()}" for _ in AGGREGATION_LEVELS)
+            + " |"
     )
-    # Separator row: plain dashes for the fixed columns, agg-dashes separated by " | "
-    sep_fixed = "-" * (prefix_width)
-    sep_row = sep_fixed + "".join(f"-+-{agg_separator()}" for _ in AGGREGATION_LEVELS)
+    sep_fixed = "-" * prefix_width
+    sep_row = sep_fixed + "".join(f"-+-{agg_separator()}" for _ in AGGREGATION_LEVELS) + "-+"
 
     total_width = len(header1)
 
@@ -262,21 +264,20 @@ def _print_table(group_label, rows):
     for row in rows:
         mult_str = f"{row['inflow_mult']:.4g}"
         hydro_str = row["hydro_share"] if row["hydro_share"] is not None else "N/A"
+        obj_str = f"{row['hourly_obj']:>{W_OBJ},.0f}"
 
-        line = f"  {mult_str:>{W_MULT}s}  {hydro_str:>{W_HYDRO}s}"
+        line = f"  {mult_str:>{W_MULT}s}  {hydro_str:>{W_HYDRO}s}  {obj_str}"
         for agg in AGGREGATION_LEVELS:
             val = row.get(agg)
             if val is None:
                 line += f" | {'N/A':>{W_ABS}s}  {'N/A':>{W_PCT}s}"
             else:
-                abs_diff, pct = val
-                line += f" | {abs_diff:>{W_ABS},.0f}  {pct:>+{W_PCT - 1}.2f}%"
+                diff, pct = val
+                line += f" | {diff:>+{W_ABS},.0f}  {pct:>+{W_PCT - 1}.2f}%"
 
-        printer.information(line)
+        printer.information(line + " |")
 
     printer.information(sep_row)
-
-    printer.information("-" * total_width)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -342,6 +343,7 @@ def main(folder="."):
 
             row = {
                 "inflow_mult": mult,
+                "hourly_obj": hourly_obj,
             }
 
             for agg in AGGREGATION_LEVELS:

@@ -8,7 +8,7 @@ Reads all ID-*.sqlite files (non-regret only) in the target folder and prints,
 per comparison group and inflow multiplier, a table:
 
   Technology | Hourly MW | Daily              | Weekly             | Monthly            | Yearly
-             |           | Abs Diff   | %      | Abs Diff   | %      | ...
+             |           | Diff       | %     | Diff       | %     | ...
 
 Results are grouped by all run parameters other than scale_inflows,
 inflow_aggregation, and is_regret.  Within each group, one sub-table is printed
@@ -200,10 +200,10 @@ def _print_group(group_label, mult_data):
     mult_data: dict { scale_inflows: { 'hourly': {tec: MW}, 'daily': ..., ... } }
     """
     # Fixed column widths
-    W_TEC    = 14
-    W_HOURLY = 12   # "Hourly MW" value
-    W_ABS    = 12   # abs diff
-    W_PCT    =  8   # rel%
+    W_TEC = 14
+    W_HOURLY = 12  # "Hourly MW" value
+    W_ABS = 12  # abs diff
+    W_PCT = 8  # rel%
 
     # Build header
     def agg_header(agg):
@@ -211,21 +211,21 @@ def _print_group(group_label, mult_data):
         return agg.capitalize().center(inner)
 
     def agg_subheader():
-        return f"{'Abs Diff':>{W_ABS}s}  {'Rel%':>{W_PCT}s}"
+        return f"{'Diff':>{W_ABS}s}  {'Rel%':>{W_PCT}s}"
 
     def agg_sep():
         return "-" * (W_ABS + 2 + W_PCT)
 
     prefix_width = 2 + W_TEC + 2 + W_HOURLY
     header1 = (
-        f"  {'Technology':<{W_TEC}s}  {'Hourly MW':>{W_HOURLY}s}"
-        + "".join(f" | {agg_header(agg)}" for agg in AGGREGATION_LEVELS)
-        + " |"
+            f"  {'Technology':<{W_TEC}s}  {'Hourly MW':>{W_HOURLY}s}"
+            + "".join(f" | {agg_header(agg)}" for agg in AGGREGATION_LEVELS)
+            + " |"
     )
     header2 = (
-        f"  {'':>{W_TEC}s}  {'':>{W_HOURLY}s}"
-        + "".join(f" | {agg_subheader()}" for _ in AGGREGATION_LEVELS)
-        + " |"
+            f"  {'':>{W_TEC}s}  {'':>{W_HOURLY}s}"
+            + "".join(f" | {agg_subheader()}" for _ in AGGREGATION_LEVELS)
+            + " |"
     )
     sep_fixed = "-" * prefix_width
     sep_row = sep_fixed + "".join(f"-+-{agg_sep()}" for _ in AGGREGATION_LEVELS) + "-+"
@@ -300,7 +300,7 @@ def main(folder="."):
         mult_data = {}
         for entry in entries:
             mult = entry["params"]["scale_inflows"]
-            agg  = entry["params"]["inflow_aggregation"]
+            agg = entry["params"]["inflow_aggregation"]
             mult_data.setdefault(mult, {})[agg] = entry["investments"]
 
         _print_group(label, mult_data)
