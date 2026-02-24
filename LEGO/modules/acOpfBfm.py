@@ -206,7 +206,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     def eSOCP_FlowDef_rule(m, rp, k, i, j, c):
         if any((i, j, c) in m.la for c in m.c):
-            return m.vSOCP_lij[rp, k, i, j, c] * m.vSOCP_ui[rp, k, i] >= m.vLineP[rp, k, i, j, c] ** 2 + m.vLineQ[rp, k, i, j, c] ** 2
+            return m.vSOCP_lij[rp, k, i, j, c] * (m.vSOCP_ui[rp, k, i] + m.vSOCP_ui_slack_pos[rp, k, i] - m.vSOCP_ui_slack_neg[rp, k, i])>= m.vLineP[rp, k, i, j, c] ** 2 + m.vLineQ[rp, k, i, j, c] ** 2
         else:
             return pyo.Constraint.Skip
 
