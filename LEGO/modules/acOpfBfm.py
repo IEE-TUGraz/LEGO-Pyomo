@@ -147,6 +147,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
             v.setlb(slack_voltage_squared)
 
         model.vSOCP_ui[:, :, slack_node].fix(slack_voltage_squared)
+        if model.pEnableSoftVoltageLimits:
+            model.vSOCP_ui_slack_neg[:, :, slack_node].fix(0)
+            model.vSOCP_ui_slack_pos[:, :, slack_node].fix(0)
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
