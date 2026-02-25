@@ -16,7 +16,7 @@ import pandas as pd
 
 from InOutModule.printer import Printer
 from LEGO import LEGOUtilities
-from TechnicalRepresentation import is_uniform_representation, load_file_metadata, print_run_parameters, make_run_sort_key
+from TechnicalRepresentation import is_uniform_representation, is_utilization_run, load_file_metadata, print_run_parameters, make_run_sort_key
 
 printer = Printer.getInstance()
 
@@ -337,8 +337,9 @@ def print_metric_table(title, rows, zones, dc_row_value, metric_key, wu_key=None
         else:
             rel_pct = None
 
-        dc_str = "-" if row.get('is_uniform') else (str(row.get('dc_buf')) if row.get('dc_buf') is not None else "N/A")
-        tp_str = "-" if row.get('is_uniform') else (str(row.get('tp_buf')) if row.get('tp_buf') is not None else "N/A")
+        no_buf = row.get('is_uniform') or (row.get('dc_buf') is None and row.get('tp_buf') is None)
+        dc_str = "-" if no_buf else str(row.get('dc_buf'))
+        tp_str = "-" if no_buf else str(row.get('tp_buf'))
 
         check_str = f"{check_diff:.2f}" if abs(check_diff) > 0.01 else "OK"
         rel_str = f"{rel_pct:.1f}%" if (row['source'] != 'DC' and rel_pct is not None) else ("-" if row['source'] == 'DC' else "N/A")
@@ -376,8 +377,7 @@ def print_metric_table(title, rows, zones, dc_row_value, metric_key, wu_key=None
 
 def main(folder="."):
     # Find all SQLite files in the specified folder
-    sqlite_pattern = os.path.join(folder, "*.sqlite")
-    sqlite_files = sorted(glob.glob(sqlite_pattern))
+    sqlite_files = sorted(f for f in glob.glob(os.path.join(folder, "*.sqlite")) if os.path.basename(f).startswith("TR-"))
 
     if not sqlite_files:
         printer.warning(f"No SQLite files found in '{folder}'")
@@ -390,6 +390,7 @@ def main(folder="."):
     all_files_data = []  # Store all file data for flexible grouping
     uniform_files = []  # Store uniform representation files (DC, TP, SN)
     regret_files = []  # Store regret files
+    utilization_files = []  # Store utilization-based run files
 
     for sqlite_file in sqlite_files:
         printer.information(f"\nProcessing '{sqlite_file}'...")
@@ -488,11 +489,16 @@ def main(folder="."):
                 'bus_zones': bus_zones,
                 'per_zone_objectives': per_zone_objectives,
                 'ens_pns_per_zone': ens_pns_per_zone,
+                'util_source_csv': meta.get('util_source_csv'),
+                'util_dc_threshold': meta.get('util_dc_threshold'),
+                'util_tp_threshold': meta.get('util_tp_threshold'),
             }
 
-            # Separate into uniform, zone-specific, and regret
+            # Separate into uniform, zone-specific, regret, and utilization
             if is_regret_file:
                 regret_files.append(file_data)
+            elif is_utilization_run(meta):
+                utilization_files.append(file_data)
             elif is_uniform_representation(zone):
                 uniform_files.append(file_data)
             else:
@@ -577,9 +583,23 @@ def main(folder="."):
         zone_source_map[(gk, fd['zone'], fd['dc_buffer'], fd['tp_buffer'])] = fd
         zone_files_by_group[gk][(fd['dc_buffer'], fd['tp_buffer'])].append(fd)
 
+    # Group utilization files by (input_dir, limit_k, demand, pmax)
+    utilization_groups = {}
+    for uf in utilization_files:
+        group_key = (uf['input_dir'], uf['limit_k'], uf['demand'], uf['pmax'])
+        if group_key not in utilization_groups:
+            utilization_groups[group_key] = []
+        utilization_groups[group_key].append(uf)
+
+    # Lookup map for utilization source work units: (group_key, dc_th, tp_th) -> file_data
+    utilization_source_map = {}
+    for uf in utilization_files:
+        gk = (uf['input_dir'], uf['limit_k'], uf['demand'], uf['pmax'])
+        utilization_source_map[(gk, uf['util_dc_threshold'], uf['util_tp_threshold'])] = uf
+
     # Process each comparison group
     all_group_keys = sorted(
-        set(uniform_groups.keys()) | set(regret_groups.keys()) | set(zone_files_by_group.keys()),
+        set(uniform_groups.keys()) | set(regret_groups.keys()) | set(zone_files_by_group.keys()) | set(utilization_groups.keys()),
         key=lambda k: (k[0] or '', k[1] or '', k[2], k[3])
     )
 
@@ -608,6 +628,7 @@ def main(folder="."):
         regrets = regret_groups.get(group_key, [])
         if dc_baseline is None or not regrets:
             continue
+        utils = utilization_groups.get(group_key, [])
 
         dc_total_obj = dc_baseline['total_obj']
         dc_wu = dc_baseline.get('work_units')
@@ -646,7 +667,10 @@ def main(folder="."):
                 continue
 
             # Look up source model for work units
-            if is_uniform_representation(zone):
+            rf_is_util = is_utilization_run(rf)
+            if rf_is_util:
+                source = utilization_source_map.get((group_key, rf.get('util_dc_threshold'), rf.get('util_tp_threshold')))
+            elif is_uniform_representation(zone):
                 source = uniform_source_map.get((group_key, zone))
             else:
                 source = zone_source_map.get((group_key, zone, rf.get('dc_buffer'), rf.get('tp_buffer')))
@@ -658,11 +682,16 @@ def main(folder="."):
             rf_per_zone_ens = {z: rf_ens_pns_pz.get(z, (0, 0))[0] for z in zones}
             rf_per_zone_pns = {z: rf_ens_pns_pz.get(z, (0, 0))[1] for z in zones}
 
-            source_label = zone if is_uniform_representation(zone) else f"zoi({zone})"
+            if rf_is_util:
+                dc_th = rf.get('util_dc_threshold')
+                tp_th = rf.get('util_tp_threshold')
+                source_label = f"DC{dc_th}/TP{tp_th}"
+            else:
+                source_label = (str(zone) if zone is not None else "None") if is_uniform_representation(zone) else f"zoi({zone})"
 
             table_rows.append({
                 'source': source_label,
-                'is_uniform': is_uniform_representation(zone),
+                'is_uniform': is_uniform_representation(zone) and not rf_is_util,
                 'dc_buf': rf.get('dc_buffer'), 'tp_buf': rf.get('tp_buffer'),
                 'total_obj': total_obj,
                 'per_zone': rf_per_zone_obj,
@@ -671,7 +700,7 @@ def main(folder="."):
                 'pns': rf.get('pns'),
                 'per_zone_ens': rf_per_zone_ens,
                 'per_zone_pns': rf_per_zone_pns,
-                'sort': (-1 if is_uniform_representation(zone) else 0,
+                'sort': (1 if rf_is_util else -1 if is_uniform_representation(zone) else 0,
                          str(zone), 0,
                          rf.get('dc_buffer') or 0, rf.get('tp_buffer') or 0),
             })

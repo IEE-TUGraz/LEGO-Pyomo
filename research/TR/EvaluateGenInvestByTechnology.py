@@ -11,7 +11,7 @@ from collections import defaultdict
 import pandas as pd
 
 from InOutModule.printer import Printer
-from TechnicalRepresentation import is_uniform_representation, load_file_metadata, print_run_parameters, make_run_sort_key
+from TechnicalRepresentation import is_uniform_representation, is_utilization_run, load_file_metadata, print_run_parameters, make_run_sort_key
 from EvaluateZOIObjective import print_metric_table, load_bus_zones_from_sqlite
 
 printer = Printer.getInstance()
@@ -64,7 +64,7 @@ def compute_per_zone_investments(sqlite_file, bus_zones):
 
 def main(folder="."):
     # Find all SQLite files in the specified folder
-    sqlite_files = sorted(glob.glob(os.path.join(folder, "*.sqlite")))
+    sqlite_files = sorted(f for f in glob.glob(os.path.join(folder, "*.sqlite")) if os.path.basename(f).startswith("TR-"))
 
     if not sqlite_files:
         printer.warning(f"No SQLite files found in '{folder}'")
@@ -98,6 +98,7 @@ def main(folder="."):
                 all_entries.append({
                     'sqlite_file': sqlite_file,
                     'meta': meta,
+                    'is_util': is_utilization_run(meta),
                 })
 
         except Exception as e:
@@ -112,7 +113,7 @@ def main(folder="."):
     for entry in all_entries:
         zone = entry['meta']['zone']
         sf = entry['sqlite_file']
-        if sf not in regret_invest and (zone == 'DC' or zone is None or zone == "None"):
+        if sf not in regret_invest and not entry['is_util'] and (zone == 'DC' or zone is None or zone == "None"):
             bus_zones = load_bus_zones_from_sqlite(sf)
             tech_totals, tech_per_zone = compute_per_zone_investments(sf, bus_zones)
             regret_invest[sf] = (tech_totals, tech_per_zone, bus_zones)
@@ -175,9 +176,9 @@ def main(folder="."):
         entries = groups[group_key]
 
         # DC baseline
-        dc_baseline = next((e for e in entries if e['meta']['zone'] == 'DC'), None)
+        dc_baseline = next((e for e in entries if e['meta']['zone'] == 'DC' and not e['is_util']), None)
         if dc_baseline is None:
-            dc_baseline = next((e for e in entries if (e['meta']['zone'] is None or e['meta']['zone'] == "None")), None)
+            dc_baseline = next((e for e in entries if (e['meta']['zone'] is None or e['meta']['zone'] == "None") and not e['is_util']), None)
         if dc_baseline is None:
             printer.warning("  No DC baseline found, skipping comparison group")
             continue
@@ -186,11 +187,12 @@ def main(folder="."):
         dc_bus_zones = dc_baseline.get('bus_zones', {})
         zones = sorted(set(dc_bus_zones.values())) if dc_bus_zones else []
 
-        # Sort entries: DC first, then by sort key
+        # Sort entries: DC first, then uniform, then zoi, then util last
         def entry_sort_key(entry_):
             m_ = entry_['meta']
-            return make_run_sort_key(m_['input_dir'], m_['limit_k'], m_['demand'], m_['pmax'],
+            base = make_run_sort_key(m_['input_dir'], m_['limit_k'], m_['demand'], m_['pmax'],
                                      m_['dc_buffer'], m_['tp_buffer'], m_['zone'])
+            return (1,) + base if entry_['is_util'] else (0,) + base
 
         sorted_entries = sorted(entries, key=entry_sort_key)
 
@@ -207,10 +209,12 @@ def main(folder="."):
             for entry in sorted_entries:
                 m = entry['meta']
                 zone = m['zone']
-                is_uniform = is_uniform_representation(zone)
-                source_label = zone if is_uniform else f"zoi({zone})"
-                if zone is None or zone == "None":
-                    source_label = "None"
+                if entry['is_util']:
+                    source_label = f"DC{m['util_dc_threshold']}/TP{m['util_tp_threshold']}"
+                    is_uniform = False
+                else:
+                    is_uniform = is_uniform_representation(zone)
+                    source_label = (str(zone) if zone is not None else "None") if is_uniform else f"zoi({zone})"
 
                 tec_total = entry['tech_totals'].get(tec, 0)
                 tec_per_zone = entry['tech_per_zone'].get(tec, {})
@@ -265,17 +269,21 @@ def print_summary_table(entries, regret_invest):
         prev_group = current_group
 
         zone = m['zone']
-        is_uniform = is_uniform_representation(zone)
-        dc_str = "-" if is_uniform else (str(m['dc_buffer']) if m['dc_buffer'] is not None else "N/A")
-        tp_str = "-" if is_uniform else (str(m['tp_buffer']) if m['tp_buffer'] is not None else "N/A")
+        no_buf = is_uniform_representation(zone) or (m['dc_buffer'] is None and m['tp_buffer'] is None)
+        dc_str = "-" if no_buf else str(m['dc_buffer'])
+        tp_str = "-" if no_buf else str(m['tp_buffer'])
         limit_k_str = m['limit_k'] if m['limit_k'] else "N/A"
         total_cap = sum(e['tech_totals'].values())
 
         # Data source indicator
         sf = e['sqlite_file']
         if sf in regret_invest:
-            is_dc = (zone == 'DC' or zone is None or zone == "None")
-            source_str = "DC (self)" if is_dc else "regret"
+            if e['is_util']:
+                source_str = "regret"
+            elif zone == 'DC' or zone is None or zone == "None":
+                source_str = "DC (self)"
+            else:
+                source_str = "regret"
         else:
             source_str = "MISSING"
 
