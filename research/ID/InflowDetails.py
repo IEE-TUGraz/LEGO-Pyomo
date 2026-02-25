@@ -24,10 +24,12 @@ LENGTH_OF_RPS_DEFAULT = 24
 
 class _AggregationProxy:
     """Lightweight proxy that provides the tsam attributes needed by apply_representative_periods."""
+
     def __init__(self, clusterCenterIndices, clusterOrder, clusterPeriodNoOccur):
         self.clusterCenterIndices = clusterCenterIndices
         self._clusterOrder = clusterOrder
         self._clusterPeriodNoOccur = clusterPeriodNoOccur
+
 
 printer = Printer.getInstance()
 
@@ -71,8 +73,11 @@ def build_run_parameters(case_study_directory, inflow_aggregation, number_of_rps
     return params
 
 
+AGGREGATION_LEVELS = ["daily", "weekly", "monthly", "yearly"]
+
+
 def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows, scaleVRESMaxProd,
-         clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, scalePMax, limitK, noOverwrite, rerunWithRPLength, aggregationToBeApplied=None):
+         clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, scalePMax, limitK, noOverwrite, rerunWithRPLength, aggregations, aggregationToBeApplied=None):
     if rerunWithRPLength is not None:
         if rerunWithRPLength >= lengthOfRPs:
             raise ValueError(f"rerunWithRPLength ({rerunWithRPLength}) must be smaller than original lengthOfRPs ({lengthOfRPs})")
@@ -144,42 +149,42 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
         identifier_parts_base.append(f"inflows{scaleInflows:.1f}")
         cs_inflow_hourly.dPower_Inflows['value'] *= scaleInflows
 
-    printer.information("Creating copies of case study with different levels of aggregation for inflow data")
-    cs_inflow_yearly_aggregated = cs_inflow_hourly.copy()
-    cs_inflow_monthly_aggregated = cs_inflow_hourly.copy()
-    cs_inflow_weekly_aggregated = cs_inflow_hourly.copy()
-    cs_inflow_daily_aggregated = cs_inflow_hourly.copy()
+    active_aggregations = set(aggregations)
 
-    printer.information("Aggregating inflow data based on yearly, monthly, weekly, and daily averages")
+    printer.information(f"Creating copies of case study for aggregation levels: {', '.join(sorted(active_aggregations))}")
+    caseStudy_objects = {"hourly": cs_inflow_hourly}
 
-    # Yearly
-    mean_inflows = cs_inflow_yearly_aggregated.dPower_Inflows["value"].groupby(["g"]).mean()  # Calculate mean inflow per generator
-    cs_inflow_yearly_aggregated.dPower_Inflows.loc[:, "value"] = mean_inflows[cs_inflow_yearly_aggregated.dPower_Inflows.index.droplevel(["rp", "k"])].values  # Set all inflows to mean inflow of respective generator
+    printer.information("Aggregating inflow data based on selected levels")
 
-    # Monthly
-    cs_inflow_monthly_aggregated.dPower_Inflows["k_int"] = cs_inflow_monthly_aggregated.dPower_Inflows.index.get_level_values("k").str[1:].astype(int)
-    cs_inflow_monthly_aggregated.dPower_Inflows["month"] = (cs_inflow_monthly_aggregated.dPower_Inflows["k_int"] - 1) // 720
-    cs_inflow_monthly_aggregated.dPower_Inflows["value"] = cs_inflow_monthly_aggregated.dPower_Inflows.groupby(["g", "month"])["value"].transform("mean")
-    cs_inflow_monthly_aggregated.dPower_Inflows.drop(columns=["k_int", "month"], inplace=True)
+    if "yearly" in active_aggregations:
+        cs_inflow_yearly_aggregated = cs_inflow_hourly.copy()
+        mean_inflows = cs_inflow_yearly_aggregated.dPower_Inflows["value"].groupby(["g"]).mean()  # Calculate mean inflow per generator
+        cs_inflow_yearly_aggregated.dPower_Inflows.loc[:, "value"] = mean_inflows[cs_inflow_yearly_aggregated.dPower_Inflows.index.droplevel(["rp", "k"])].values  # Set all inflows to mean inflow of respective generator
+        caseStudy_objects["yearly"] = cs_inflow_yearly_aggregated
 
-    # Weekly
-    cs_inflow_weekly_aggregated.dPower_Inflows["k_int"] = cs_inflow_weekly_aggregated.dPower_Inflows.index.get_level_values("k").str[1:].astype(int)
-    cs_inflow_weekly_aggregated.dPower_Inflows["week"] = (cs_inflow_weekly_aggregated.dPower_Inflows["k_int"] - 1) // 168
-    cs_inflow_weekly_aggregated.dPower_Inflows["value"] = cs_inflow_weekly_aggregated.dPower_Inflows.groupby(["g", "week"])["value"].transform("mean")
-    cs_inflow_weekly_aggregated.dPower_Inflows.drop(columns=["k_int", "week"], inplace=True)
+    if "monthly" in active_aggregations:
+        cs_inflow_monthly_aggregated = cs_inflow_hourly.copy()
+        cs_inflow_monthly_aggregated.dPower_Inflows["k_int"] = cs_inflow_monthly_aggregated.dPower_Inflows.index.get_level_values("k").str[1:].astype(int)
+        cs_inflow_monthly_aggregated.dPower_Inflows["month"] = (cs_inflow_monthly_aggregated.dPower_Inflows["k_int"] - 1) // 720
+        cs_inflow_monthly_aggregated.dPower_Inflows["value"] = cs_inflow_monthly_aggregated.dPower_Inflows.groupby(["g", "month"])["value"].transform("mean")
+        cs_inflow_monthly_aggregated.dPower_Inflows.drop(columns=["k_int", "month"], inplace=True)
+        caseStudy_objects["monthly"] = cs_inflow_monthly_aggregated
 
-    # Daily
-    cs_inflow_daily_aggregated.dPower_Inflows["k_int"] = cs_inflow_daily_aggregated.dPower_Inflows.index.get_level_values("k").str[1:].astype(int)
-    cs_inflow_daily_aggregated.dPower_Inflows["day"] = (cs_inflow_daily_aggregated.dPower_Inflows["k_int"] - 1) // 24
-    cs_inflow_daily_aggregated.dPower_Inflows["value"] = cs_inflow_daily_aggregated.dPower_Inflows.groupby(["g", "day"])["value"].transform("mean")
-    cs_inflow_daily_aggregated.dPower_Inflows.drop(columns=["k_int", "day"], inplace=True)
+    if "weekly" in active_aggregations:
+        cs_inflow_weekly_aggregated = cs_inflow_hourly.copy()
+        cs_inflow_weekly_aggregated.dPower_Inflows["k_int"] = cs_inflow_weekly_aggregated.dPower_Inflows.index.get_level_values("k").str[1:].astype(int)
+        cs_inflow_weekly_aggregated.dPower_Inflows["week"] = (cs_inflow_weekly_aggregated.dPower_Inflows["k_int"] - 1) // 168
+        cs_inflow_weekly_aggregated.dPower_Inflows["value"] = cs_inflow_weekly_aggregated.dPower_Inflows.groupby(["g", "week"])["value"].transform("mean")
+        cs_inflow_weekly_aggregated.dPower_Inflows.drop(columns=["k_int", "week"], inplace=True)
+        caseStudy_objects["weekly"] = cs_inflow_weekly_aggregated
 
-    caseStudy_objects = {
-        "hourly": cs_inflow_hourly,
-        "yearly": cs_inflow_yearly_aggregated,
-        "monthly": cs_inflow_monthly_aggregated,
-        "weekly": cs_inflow_weekly_aggregated,
-        "daily": cs_inflow_daily_aggregated}
+    if "daily" in active_aggregations:
+        cs_inflow_daily_aggregated = cs_inflow_hourly.copy()
+        cs_inflow_daily_aggregated.dPower_Inflows["k_int"] = cs_inflow_daily_aggregated.dPower_Inflows.index.get_level_values("k").str[1:].astype(int)
+        cs_inflow_daily_aggregated.dPower_Inflows["day"] = (cs_inflow_daily_aggregated.dPower_Inflows["k_int"] - 1) // 24
+        cs_inflow_daily_aggregated.dPower_Inflows["value"] = cs_inflow_daily_aggregated.dPower_Inflows.groupby(["g", "day"])["value"].transform("mean")
+        cs_inflow_daily_aggregated.dPower_Inflows.drop(columns=["k_int", "day"], inplace=True)
+        caseStudy_objects["daily"] = cs_inflow_daily_aggregated
     printer.information("Aggregation of inflow data completed")
 
     aggregation_results = None
@@ -317,7 +322,7 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
         printer.information(f"{'=' * 60}\n")
 
         multiplier = lengthOfRPs // rerunWithRPLength  # sub-periods per original RP (e.g. 168/24 = 7)
-        newNumberOfRPs = numberOfRPs * multiplier       # e.g. 2 * 7 = 14
+        newNumberOfRPs = numberOfRPs * multiplier  # e.g. 2 * 7 = 14
 
         printer.information(f"Splitting {numberOfRPs} RPs of length {lengthOfRPs} into {newNumberOfRPs} RPs of length {rerunWithRPLength} (multiplier={multiplier})")
 
@@ -348,7 +353,7 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
                 newClusterCenterIndices, newClusterOrder, newClusterPeriodNoOccur)
 
         main(caseStudyDirectory, newNumberOfRPs, rerunWithRPLength, scaleDemand, scaleInflows, scaleVRESMaxProd,
-             clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, scalePMax, limitK, noOverwrite, None, newAggregationResults)
+             clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, scalePMax, limitK, noOverwrite, None, aggregations, newAggregationResults)
 
 
 if __name__ == "__main__":
@@ -396,6 +401,7 @@ if __name__ == "__main__":
     parser.add_argument("--singleNode", action="store_true", help="Solve model as single node (no network constraints)")
     parser.add_argument("--noOverwrite", action="store_true", help="Skip cases where the output .sqlite file already exists")
     parser.add_argument("--rerunWithRPLength", type=check_lengthOfRPs, help="Re-run with given length of RPs", nargs="?", default=None)
+    parser.add_argument("--aggregations", nargs="+", choices=AGGREGATION_LEVELS, default=AGGREGATION_LEVELS, metavar="LEVEL", help=f"Aggregation levels to run, choose from {AGGREGATION_LEVELS} (default: all). hourly is always included.")
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory, args.numberOfRPs, args.lengthOfRPs, args.scaleDemand, args.scaleInflows, args.scaleVRESMaxProd, args.clusterOnOriginalData, args.scaleRoRToInflowScaling, args.rMIP, args.singleNode, args.scalePMax, args.limitK, args.noOverwrite, args.rerunWithRPLength)
+    main(args.caseStudyDirectory, args.numberOfRPs, args.lengthOfRPs, args.scaleDemand, args.scaleInflows, args.scaleVRESMaxProd, args.clusterOnOriginalData, args.scaleRoRToInflowScaling, args.rMIP, args.singleNode, args.scalePMax, args.limitK, args.noOverwrite, args.rerunWithRPLength, args.aggregations)
