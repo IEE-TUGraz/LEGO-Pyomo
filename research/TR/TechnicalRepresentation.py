@@ -46,6 +46,11 @@ def is_uniform_representation(zone: str | None) -> bool:
     return zone in UNIFORM_REPR_MAP or zone is None or zone == "None"
 
 
+def is_utilization_run(meta: dict) -> bool:
+    """Check if a file was produced by a utilization-based run (--utilization flag)."""
+    return meta.get('util_source_csv') is not None
+
+
 def load_file_metadata(sqlite_file):
     """
     Load all metadata for a file from run_parameters and solver_statistics.
@@ -62,6 +67,9 @@ def load_file_metadata(sqlite_file):
         'demand': 1.0,
         'pmax': 1.0,
         'work_units': None,
+        'util_source_csv': None,
+        'util_dc_threshold': None,
+        'util_tp_threshold': None,
     }
 
     try:
@@ -91,6 +99,12 @@ def load_file_metadata(sqlite_file):
                     meta['demand'] = float(row['scale_demand'])
                 if 'scale_pmax' in row and row['scale_pmax'] not in (None, 'None'):
                     meta['pmax'] = float(row['scale_pmax'])
+                if 'util_source_csv' in row and row['util_source_csv'] not in (None, 'None'):
+                    meta['util_source_csv'] = str(row['util_source_csv'])
+                if 'util_dc_threshold' in row and row['util_dc_threshold'] not in (None, 'None'):
+                    meta['util_dc_threshold'] = float(row['util_dc_threshold'])
+                if 'util_tp_threshold' in row and row['util_tp_threshold'] not in (None, 'None'):
+                    meta['util_tp_threshold'] = float(row['util_tp_threshold'])
         except Exception:
             pass
 
@@ -283,6 +297,50 @@ def prevent_cross_zone_sn(cs):
         printer.information(f"  Upgraded {count} cross-zone SN connections to TP")
 
 
+def load_utilization_from_csv(csv_path):
+    """Load line utilization from an EvaluateLines CSV. Returns dict {(i, j, c): mean_util}."""
+    df = pd.read_csv(csv_path)
+    return {(row['i'], row['j'], row['c']): row['mean_util'] for _, row in df.iterrows()}
+
+
+def assign_technical_representation_by_utilization(cs: CaseStudy, util_dict: dict, dc_threshold: float, tp_threshold: float) -> None:
+    """
+    Assigns technical representation based on line utilization thresholds.
+    Lines >= dc_threshold -> DC-OPF, >= tp_threshold -> TP, else -> SN.
+    Modifies cs.dPower_Network in place.
+    """
+    dc_lines, tp_lines, sn_lines, missing_lines = [], [], [], []
+
+    for idx in cs.dPower_Network.index:
+        i, j, c = idx
+        util = util_dict.get((i, j, c))
+        if util is None:
+            util = util_dict.get((j, i, c))
+        if util is None:
+            missing_lines.append(idx)
+            sn_lines.append(idx)
+        elif util >= dc_threshold:
+            dc_lines.append(idx)
+        elif util >= tp_threshold:
+            tp_lines.append(idx)
+        else:
+            sn_lines.append(idx)
+
+    if missing_lines:
+        for idx in missing_lines:
+            printer.warning(f"  Line {idx} not found in utilization CSV — defaulting to SN")
+
+    if dc_lines:
+        cs.dPower_Network.loc[dc_lines, 'pTecRepr'] = 'DC-OPF'
+    if tp_lines:
+        cs.dPower_Network.loc[tp_lines, 'pTecRepr'] = 'TP'
+    if sn_lines:
+        cs.dPower_Network.loc[sn_lines, 'pTecRepr'] = 'SN'
+
+    printer.information(f"Technical representation by utilization (DC>={dc_threshold}, TP>={tp_threshold}):")
+    printer.information(f"  DC-OPF: {len(dc_lines)} lines, TP: {len(tp_lines)} lines, SN: {len(sn_lines)} lines ({len(missing_lines)} missing)")
+
+
 def load_vGenInvest_from_sqlite(sqlite_file):
     """Load vGenInvest values from a solved model's sqlite file. Returns {g: value}."""
     conn = sqlite3.connect(sqlite_file)
@@ -291,7 +349,7 @@ def load_vGenInvest_from_sqlite(sqlite_file):
     return dict(zip(df['g'], df['values']))
 
 
-def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand, scale_pmax, all_zones, no_overwrite, prevent_cross_zone_merging):
+def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand, scale_pmax, all_zones, no_overwrite, prevent_cross_zone_merging, utilization=None):
     caseStudyName = case_study_directory.replace("/", "_").replace("\\", "_")
 
     printer.information(f"Loading case study from '{case_study_directory}'")
@@ -322,20 +380,32 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
         identifier_parts_base.append(f"pmax{scale_pmax:.1f}")
         cs_base.dPower_Network['pPmax'] *= scale_pmax
 
-    if is_uniform_representation(zoi) and not all_zones:
+    # --- Parse utilization args ---
+    if utilization is not None:
+        util_csv, dc_th, tp_th = utilization
+        dc_th, tp_th = float(dc_th), float(tp_th)
+        printer.information(f"Loading utilization from '{util_csv}'")
+        util_dict = load_utilization_from_csv(util_csv)
+    else:
+        util_csv = dc_th = tp_th = util_dict = None
+
+    if utilization is None and is_uniform_representation(zoi) and not all_zones:
         if dc_buffer != DC_BUFFER_DEFAULT:
             printer.warning("DC buffer specified but using uniform or unchanged technical representation - DC buffer will be ignored")
         if tp_buffer != TP_BUFFER_DEFAULT:
             printer.warning("TP buffer specified but using uniform or unchanged technical representation - TP buffer will be ignored")
 
-    if dc_buffer == 0 and tp_buffer == 0:
+    if utilization is None and dc_buffer == 0 and tp_buffer == 0:
         printer.warning("dcBuffer=0 and tpBuffer=0 would make all cross-boundary lines SN, collapsing ZOI into the merged bus. Setting tpBuffer=1.")
         tp_buffer = 1
 
     # --- Determine runs ---
     available_zones = sorted(cs_base.dPower_BusInfo['z'].unique().tolist())
 
-    if all_zones:
+    if utilization is not None:
+        zones_to_run = [None]
+        regret_sources = ['__utilization__']
+    elif all_zones:
         zones_to_run = list(UNIFORM_REPR_MAP) + available_zones
         regret_sources = ['TP', 'SN'] + available_zones  # No regret run for DC (would fix DC into DC)
     else:
@@ -355,7 +425,7 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
 
         # --- Header ---
         if is_regret:
-            label = f"{current_zoi} (regret)"
+            label = f"utilization (regret)" if current_zoi == '__utilization__' else f"{current_zoi} (regret)"
         else:
             label = str(current_zoi)
         printer.information(f"\n{'=' * 60}")
@@ -368,10 +438,14 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
 
         if is_regret:
             is_uniform_regret = current_zoi in ('TP', 'SN')
+            is_utilization_regret = current_zoi == '__utilization__'
 
             # Lazy-load the source model's vGenInvest
             if current_zoi not in source_vGenInvest:
-                if is_uniform_regret or current_zoi is None or current_zoi == 'None':
+                if is_utilization_regret:
+                    source_identifier = Path(util_csv).stem.removeprefix("TR-EvaluateLines-")
+                    source_id = f"{source_identifier}-utilDC{dc_th}-TP{tp_th}"
+                elif is_uniform_regret or current_zoi is None or current_zoi == 'None':
                     source_id = "-".join(identifier_parts_base)  # Don't include buffers for uniform or None
                     if is_uniform_regret:
                         source_id += f"-zoi{current_zoi}"  # But include uniform label (not for None)
@@ -392,13 +466,24 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
             # Uniform DC-OPF topology, all buses as ZOI
             cs.dPower_Network['pTecRepr'] = 'DC-OPF'
             cs.dPower_BusInfo['zoi'] = 1
-            if not is_uniform_regret:
-                if dc_buffer != DC_BUFFER_DEFAULT:
-                    identifier_parts.append(f"dcBuffer{dc_buffer}")
-                if tp_buffer != TP_BUFFER_DEFAULT:
-                    identifier_parts.append(f"tpBuffer{tp_buffer}")
-            identifier_parts.append(f"zoi{current_zoi}")
-            identifier_parts.append("regret")
+            if is_utilization_regret:
+                identifier_parts = [f"{source_id}-regret"]
+            else:
+                if not is_uniform_regret:
+                    if dc_buffer != DC_BUFFER_DEFAULT:
+                        identifier_parts.append(f"dcBuffer{dc_buffer}")
+                    if tp_buffer != TP_BUFFER_DEFAULT:
+                        identifier_parts.append(f"tpBuffer{tp_buffer}")
+                identifier_parts.append(f"zoi{current_zoi}")
+                identifier_parts.append("regret")
+
+        elif utilization is not None:
+            printer.information(f"Assigning technical representations by utilization (DC>={dc_th}, TP>={tp_th})")
+            assign_technical_representation_by_utilization(cs, util_dict, dc_th, tp_th)
+            printer.information(f"Ensuring no SN connections between different zones (upgrading to TP if needed)")
+            prevent_cross_zone_sn(cs)
+            source_identifier = Path(util_csv).stem.removeprefix("TR-EvaluateLines-")
+            identifier_parts = [f"{source_identifier}-utilDC{dc_th}-TP{tp_th}"]
 
         elif current_zoi is None or current_zoi == 'None':
             printer.information("No ZOI adjustment - using original technical representations from data files")
@@ -469,12 +554,17 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
         SQLiteWriter.add_run_parameters_to_sqlite(
             sqlite_filename,
             case_study_directory=case_study_directory,
-            zoi=current_zoi,
             limit_k=limit_k,
-            dc_buffer=dc_buffer,
-            tp_buffer=tp_buffer,
             scale_demand=scale_demand,
-            scale_pmax=scale_pmax
+            scale_pmax=scale_pmax,
+            zoi=None if utilization is not None else current_zoi,
+            dc_buffer=None if utilization is not None else dc_buffer,
+            tp_buffer=None if utilization is not None else tp_buffer,
+            **(dict(
+                util_source_csv=Path(util_csv).name,
+                util_dc_threshold=dc_th,
+                util_tp_threshold=tp_th,
+            ) if utilization is not None else {}),
         )
         printer.information(f"  Saved to '{sqlite_filename}'")
 
@@ -492,6 +582,21 @@ if __name__ == "__main__":
     parser.add_argument("--scalePMax", type=float, help=f"Scaling factor for pPmax (line capacity) (default: {SCALE_DEFAULT} = no scaling)", nargs="?", default=SCALE_DEFAULT)
     parser.add_argument("--noOverwrite", action="store_true", help="Skip cases where the output .sqlite file already exists")
     parser.add_argument("--preventCrossZoneMerging", action="store_true", help="Prevent SN connections between different zones by upgrading them to TP. This keeps zones electrically separated even in the SN representation, preventing them from being merged into one bus. This is especially relevant when using a ZOI that does not encompass all buses of a zone, or when using multiple zones.")
+    parser.add_argument("--utilization", nargs=3, metavar=("CSV_FILE", "DC_THRESHOLD", "TP_THRESHOLD"),
+                        help="Assign line representations based on utilization from CSV. Lines >= DC_THRESHOLD get DC-OPF, >= TP_THRESHOLD get TP, else SN. Mutually exclusive with --zoi and --all.")
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory, args.zoi, args.limitK, args.dcBuffer, args.tpBuffer, args.scaleDemand, args.scalePMax, args.all, args.noOverwrite, args.preventCrossZoneMerging)
+    if args.utilization:
+        conflicts = []
+        if args.zoi:
+            conflicts.append("--zoi")
+        if args.all:
+            conflicts.append("--all")
+        if args.dcBuffer != DC_BUFFER_DEFAULT:
+            conflicts.append("--dcBuffer")
+        if args.tpBuffer != TP_BUFFER_DEFAULT:
+            conflicts.append("--tpBuffer")
+        if conflicts:
+            raise ValueError(f"--utilization cannot be combined with: {', '.join(conflicts)}")
+
+    main(args.caseStudyDirectory, args.zoi, args.limitK, args.dcBuffer, args.tpBuffer, args.scaleDemand, args.scalePMax, args.all, args.noOverwrite, args.preventCrossZoneMerging, utilization=args.utilization)
