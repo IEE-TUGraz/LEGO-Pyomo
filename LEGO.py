@@ -4,7 +4,8 @@ import os
 import time
 
 import pyomo.environ as pyo
-from InOutModule import SQLiteWriter, ExcelWriter
+from InOutModule import SQLiteWriter
+from InOutModule.ExcelWriter import ExcelWriter
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from pyomo.core import NameLabeler
@@ -71,7 +72,7 @@ def main(case_study_directory, model_type):
             printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
 
     SQLiteWriter.model_to_sqlite(model, "model.sqlite")
-    ExcelWriter.ExcelWriter.model_to_excel(model, "model.xlsx")
+    ExcelWriter.model_to_excel(model, "model.xlsx")
     model.write("model.mps", io_options={'labeler': NameLabeler()})
 
 
