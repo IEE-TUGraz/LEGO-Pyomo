@@ -81,36 +81,47 @@ while True:
             barrier_waited.pop(i, None)
             continue  # barrier cleared, keep scanning for next job
 
-        if not os.path.exists(started_job_flag) and not os.path.exists(finished_job_flag) and not os.path.exists(error_job_flag):
-            if barrier_waited:
-                barrier_waited.clear()
-            start_datetime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            with open(started_job_flag, 'w') as f:
+        try:
+            fd = os.open(started_job_flag, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            continue  # Another worker already claimed this job
+        if os.path.exists(finished_job_flag) or os.path.exists(error_job_flag):
+            os.close(fd)
+            continue
+
+        if barrier_waited:
+            barrier_waited.clear()
+        start_datetime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with os.fdopen(fd, 'w') as f:
+            f.write(f"Command: {line.strip()}\n")
+            f.write(f"Started at: {start_datetime}")
+        found_one = True
+        try:
+            printer.information(f"Executing job {i} from '{args.jobs}': {line.strip()}")
+            os.system(f"title Job {i} from '{args.jobs}': {line.strip()}")
+
+            start_time = time.time()
+            exit_code = os.system(line.strip())
+            end_time = time.time()
+
+            if exit_code != 0:
+                raise RuntimeError(f"Command exited with code {exit_code}")
+
+            with open(finished_job_flag, 'w') as f:
                 f.write(f"Command: {line.strip()}\n")
-                f.write(f"Started at: {start_datetime}")
-            found_one = True
-            try:
-                printer.information(f"Executing job {i} from '{args.jobs}': {line.strip()}")
-                os.system(f"title Job {i} from '{args.jobs}': {line.strip()}")
+                f.write(f"Started at:  {start_datetime}\n")
+                f.write(f"Finished at: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n")
+                f.write(f"Execution time: {end_time - start_time:.2f} seconds (= {(end_time - start_time) / 60 / 60:.2f} hours)\n")
 
-                start_time = time.time()
-                os.system(line.strip())
-                end_time = time.time()
-                with open(finished_job_flag, 'w') as f:
-                    f.write(f"Command: {line.strip()}\n")
-                    f.write(f"Started at:  {start_datetime}\n")
-                    f.write(f"Finished at: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n")
-                    f.write(f"Execution time: {end_time - start_time:.2f} seconds (= {(end_time - start_time) / 60 / 60:.2f} hours)\n")
-
-                printer.information(f"Finished job {i} from '{args.jobs}' after {end_time - start_time:.2f} seconds (= {(end_time - start_time) / 60 / 60:.2f} hours).")
-            except Exception as e:
-                printer.error(f"Error while executing job {i}: {e}")
-                with open(error_job_flag, 'w') as f:
-                    f.write(f"Command: {line.strip()}\n")
-                    f.write(f"Error while executing job {i} from '{args.jobs}': {e}\n")
-                    f.write(f"Started at:  {start_datetime}\n")
-                    f.write(f"Occurred at: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}")
-            break
+            printer.information(f"Finished job {i} from '{args.jobs}' after {end_time - start_time:.2f} seconds (= {(end_time - start_time) / 60 / 60:.2f} hours).")
+        except Exception as e:
+            printer.error(f"Error while executing job {i}: {e}")
+            with open(error_job_flag, 'w') as f:
+                f.write(f"Command: {line.strip()}\n")
+                f.write(f"Error while executing job {i} from '{args.jobs}': {e}\n")
+                f.write(f"Started at:  {start_datetime}\n")
+                f.write(f"Occurred at: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}")
+        break
 
     if not found_one and not restart:
         printer.information(f"No more jobs to execute in '{args.jobs}', exiting.")
