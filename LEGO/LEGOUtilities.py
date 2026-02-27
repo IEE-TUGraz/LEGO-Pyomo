@@ -1,9 +1,11 @@
 import functools
 import os
+import sys
 import typing
 import zipfile
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
-from typing import Union, List
+from typing import Union, List, Tuple, Optional, Dict
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -11,6 +13,7 @@ import py7zr
 import pyomo.environ as pyo
 from pyomo.core.expr import identify_variables
 from pyomo.util.infeasible import find_infeasible_constraints, find_infeasible_bounds
+from pyomo.repn import generate_standard_repn
 
 from InOutModule import ExcelReader
 from InOutModule.printer import Printer
@@ -496,6 +499,444 @@ class MPSFileManager:
             for mps_path in self.originally_compressed:
                 if mps_path.exists():
                     mps_path.unlink()  # Delete the decompressed file
+
+
+def _compute_variable_weight(idx, zoi_i, all_i, all_g, zoi_g, line_weights, hub_connections):
+    """
+    Compute the weight for a variable based on its index and zone of interest.
+
+    Shared helper function used by both sequential and parallel processing.
+
+    :param idx: Variable index (can be None, scalar, or tuple)
+    :param zoi_i: Set of buses in zone of interest
+    :param all_i: Set of all buses
+    :param all_g: Set of all generators
+    :param zoi_g: Set of generators in zone of interest
+    :param line_weights: Dict mapping line tuples to weights
+    :param hub_connections: Set of hub connection tuples
+    :return: Weight (0.0, 0.5, or 1.0)
+    """
+    if idx is None:
+        return 1.0
+
+    if not isinstance(idx, tuple):
+        idx = (idx,)
+
+    # Early rejection: if variable has bus indices and all buses are outside ZOI, reject immediately
+    buses_in_idx = set(idx) & all_i
+    if buses_in_idx and not (buses_in_idx & zoi_i):
+        return 0.0
+
+    # Check for line indices using pre-computed weights
+    if len(idx) >= 3:
+        for start in range(len(idx) - 2):
+            potential_line = (idx[start], idx[start + 1], idx[start + 2])
+            if potential_line in line_weights:
+                return line_weights[potential_line]
+
+    # Check for hub connection indices
+    if hub_connections:
+        for start in range(len(idx) - 1):
+            potential_hub_conn = (idx[start], idx[start + 1])
+            if potential_hub_conn in hub_connections:
+                return 1.0 if potential_hub_conn[1] in zoi_i else 0.0
+
+    # Check bus/generator membership
+    has_bus_index = False
+    has_generator_index = False
+    bus_in_zoi = True
+    generator_in_zoi = True
+
+    for elem in idx:
+        if elem in all_i:
+            has_bus_index = True
+            if elem not in zoi_i:
+                bus_in_zoi = False
+        if elem in all_g:
+            has_generator_index = True
+            if elem not in zoi_g:
+                generator_in_zoi = False
+
+    if has_bus_index:
+        return 1.0 if bus_in_zoi else 0.0
+    if has_generator_index:
+        return 1.0 if generator_in_zoi else 0.0
+
+    return 1.0
+
+
+def _process_variables_chunk(chunk_data):
+    """
+    Worker function for parallel processing of variable weights.
+    Must be at module level to be picklable.
+
+    :param chunk_data: Tuple of (var_indices, var_values, zoi_i, all_i, all_g, zoi_g,
+                                  line_weights, hub_connections, line_filter)
+    :return: Sum of weighted contributions for this chunk
+    """
+    var_indices, var_values, var_coefs, zoi_i, all_i, all_g, zoi_g, line_weights, hub_connections, line_filter = chunk_data
+
+    zoi_i = set(zoi_i)
+    all_i = set(all_i)
+    all_g = set(all_g)
+    zoi_g = set(zoi_g)
+    hub_connections = set(hub_connections) if hub_connections else set()
+
+    # Compute sum for this chunk
+    total = 0.0
+    weight_cache = {}
+
+    for idx, val, coef in zip(var_indices, var_values, var_coefs):
+        if idx not in weight_cache:
+            weight_cache[idx] = _compute_variable_weight(idx, zoi_i, all_i, all_g, zoi_g, line_weights, hub_connections)
+        weight = weight_cache[idx]
+        if weight > 0.0:
+            total += weight * coef * val
+
+    return total
+
+
+def evaluate_zoi_objective(model: pyo.ConcreteModel, line_filter: str = "both", force_build_expression: bool = False,
+                           enable_parallel: bool = True, parallel_threshold: int = 50000) -> Tuple[Optional[pyo.Expression], Optional[float]]:
+    """
+    Evaluate the objective function for components within the zone of interest (ZOI).
+
+    This function introspects the actual objective expression and filters terms based on
+    variable indices. It (should) automatically adapt when the objective changes - please check anyway!
+
+    :param model: The relevant model (can be already solved or not)
+    :param line_filter: How to filter transmission lines by ZOI buses.
+        "both" (default): include line only if both endpoints are in ZOI. Inter-zone lines
+                          (exactly one endpoint in ZOI) get 50% weight.
+        "any": include line if at least one endpoint is in ZOI (full weight).
+    :param force_build_expression: If True, always build the symbolic expression even if model is solved.
+        If False (default), compute value directly when model is solved (faster).
+    :param enable_parallel: If True, use multiprocessing for large models (experimental).
+        Default True.
+    :param parallel_threshold: Minimum number of variables to trigger parallel processing.
+        Default 50000.
+    :return: Tuple of (expression, value) where:
+        - expression: Pyomo expression for the ZOI-filtered objective (None if not built)
+        - value: float value if model is solved, else None
+    """
+    if line_filter not in ("both", "any"):
+        raise ValueError(f"line_filter must be 'both' or 'any', got '{line_filter}'")
+
+    zoi_i = set(model.zoi_i)
+    all_i = set(model.i)
+    all_g = set(model.g)
+
+    zoi_g = {g for g, i in model.gi if i in zoi_i}  # All g in ZOI based on bus location
+
+    # Build line sets for quick lookup
+    all_lines = set(model.la)
+
+    # Hub connections: (hub, bus) pairs
+    hub_connections = set(model.hubConnections) if hasattr(model, 'hubConnections') else set()
+
+    # Pre-compute line weights for all lines (avoids repeated ZOI membership checks)
+    line_weights = {}
+    for i, j, c in all_lines:
+        i_in_zoi = i in zoi_i
+        j_in_zoi = j in zoi_i
+
+        if line_filter == "both":
+            if i_in_zoi and j_in_zoi:
+                line_weights[(i, j, c)] = 1.0
+            elif i_in_zoi or j_in_zoi:
+                line_weights[(i, j, c)] = 0.5
+            else:
+                line_weights[(i, j, c)] = 0.0
+        else:  # line_filter == "any"
+            if i_in_zoi or j_in_zoi:
+                line_weights[(i, j, c)] = 1.0
+            else:
+                line_weights[(i, j, c)] = 0.0
+
+    def _get_var_weight(var_data: pyo.Var) -> float:
+        """
+        Determine the weight for a variable in the ZOI objective calculation.
+
+        Returns:
+            1.0 if variable fully belongs to ZOI
+            0.5 if variable is on inter-zone boundary (line with exactly one endpoint in ZOI)
+            0.0 if variable is outside ZOI
+        """
+        return _compute_variable_weight(var_data.index(), zoi_i, all_i, all_g, zoi_g, line_weights, hub_connections)
+
+    # Decompose objective into linear representation
+    repn = generate_standard_repn(model.objective.expr, quadratic=False)
+
+    # Cache variable weights by index to avoid repeated computations
+    weight_cache = {}
+
+    # Quick path: compute value directly if model is solved and expression not needed
+    if not force_build_expression:
+        try:
+            # Use parallel processing for large models if enabled
+            num_vars = len(repn.linear_vars)
+            if enable_parallel and num_vars >= parallel_threshold:
+                # Use multiprocessing for large models
+                value = repn.constant if repn.constant else 0.0
+
+                # Prepare data for workers (convert to serializable formats)
+                var_indices = [var.index() for var in repn.linear_vars]
+                var_values = [var.value for var in repn.linear_vars]
+                var_coefs = list(repn.linear_coefs)
+
+                # Prepare shared data structures (as tuples/lists for pickling)
+                shared_data = (
+                    list(zoi_i),
+                    list(all_i),
+                    list(all_g),
+                    list(zoi_g),
+                    dict(line_weights),
+                    list(hub_connections) if hub_connections else [],
+                    line_filter
+                )
+
+                # Split work into chunks (one per CPU core)
+                # Windows has a limit of 63 handles for WaitForMultipleObjects
+                # Pool creates workers + ~2 management handles, so cap at 60 to stay under 63
+                max_workers = cpu_count()
+                if sys.platform == 'win32':
+                    max_workers = min(max_workers, 60)
+                n_workers = max_workers
+                printer.information(f"Evaluating ZOI objective in parallel using {n_workers} workers...")
+                chunk_size = max(1, num_vars // n_workers)
+                chunks = []
+
+                for i in range(0, num_vars, chunk_size):
+                    chunk = (
+                        var_indices[i:i + chunk_size],
+                        var_values[i:i + chunk_size],
+                        var_coefs[i:i + chunk_size],
+                        *shared_data
+                    )
+                    chunks.append(chunk)
+
+                # Process chunks in parallel
+                with Pool(processes=n_workers) as pool:
+                    chunk_results = pool.map(_process_variables_chunk, chunks)
+
+                # Sum results from all chunks
+                value += sum(chunk_results)
+                return None, value
+
+            else:
+                # Sequential processing for small models
+                value = repn.constant if repn.constant else 0.0
+                for coef, var in zip(repn.linear_coefs, repn.linear_vars):
+                    idx_key = var.index()
+                    if idx_key not in weight_cache:
+                        weight_cache[idx_key] = _get_var_weight(var)
+                    weight = weight_cache[idx_key]
+                    if weight > 0.0:
+                        value += weight * coef * var.value
+                return None, value
+        except (ValueError, AttributeError):
+            # Model not solved or variable has no value, fall through to build expression
+            pass
+
+    # Slow path: build symbolic expression (needed if model not solved or forced)
+    zoi_expr = repn.constant if repn.constant else 0.0
+
+    for coef, var in zip(repn.linear_coefs, repn.linear_vars):
+        idx_key = var.index()
+        if idx_key not in weight_cache:
+            weight_cache[idx_key] = _get_var_weight(var)
+        weight = weight_cache[idx_key]
+        if weight > 0.0:
+            zoi_expr += weight * coef * var
+
+    # Try to evaluate if model is solved
+    value = None
+    try:
+        value = pyo.value(zoi_expr)
+    except ValueError:
+        pass
+
+    return zoi_expr, value
+
+
+def extract_zoi_objective_data(model: pyo.ConcreteModel) -> Dict:
+    """
+    Extract minimal data needed to recalculate ZOI objectives from a solved model.
+    This creates a lightweight representation that can be pickled efficiently.
+
+    :param model: Solved Pyomo model
+    :return: Dictionary with ZOI objective data
+    """
+    from pyomo.repn import generate_standard_repn
+
+    printer.information("Extracting ZOI objective data from model...")
+
+    # Decompose objective into linear representation
+    repn = generate_standard_repn(model.objective.expr, quadratic=False)
+
+    # Extract variable values with composite keys (var_name, index)
+    var_data = {}
+    for var in repn.linear_vars:
+        var_name = var.parent_component().name
+        idx = var.index()
+        var_data[(var_name, idx)] = pyo.value(var)
+
+    # Extract sets
+    sets_data = {
+        'i': list(model.i),
+        'g': list(model.g),
+        'gi': list(model.gi),
+        'la': list(model.la),
+        'zoi_i': list(model.zoi_i),
+    }
+
+    # Check for hub connections
+    if hasattr(model, 'hubConnections'):
+        sets_data['hubConnections'] = list(model.hubConnections)
+    else:
+        sets_data['hubConnections'] = []
+
+    # Extract objective components
+    objective_data = {
+        'constant': repn.constant if repn.constant else 0.0,
+        'linear_vars_info': [(var.parent_component().name, var.index()) for var in repn.linear_vars],
+        'linear_coefs': list(repn.linear_coefs),
+    }
+
+    # Calculate original ZOI objective
+    _, zoi_value = evaluate_zoi_objective(model, line_filter="both")
+
+    zoi_data = {
+        'var_values': var_data,
+        'sets': sets_data,
+        'objective': objective_data,
+        'zoi_objective_value': zoi_value,
+    }
+
+    printer.success(f"Extracted ZOI objective data (ZOI value: {zoi_value:.2f})")
+    return zoi_data
+
+
+def evaluate_zoi_objective_from_data(zoi_data: Dict, new_zoi_i: Optional[List] = None,
+                                      line_filter: str = "both") -> float:
+    """
+    Recalculate ZOI objective from extracted data with optionally different ZOI definition.
+
+    :param zoi_data: Dictionary returned by extract_zoi_objective_data
+    :param new_zoi_i: Optional new ZOI bus set. If None, uses original zoi_i from data
+    :param line_filter: How to filter transmission lines ("both" or "any")
+    :return: ZOI objective value
+    """
+    if line_filter not in ("both", "any"):
+        raise ValueError(f"line_filter must be 'both' or 'any', got '{line_filter}'")
+
+    # Use provided ZOI or fall back to original
+    zoi_i = set(new_zoi_i) if new_zoi_i is not None else set(zoi_data['sets']['zoi_i'])
+    all_i = set(zoi_data['sets']['i'])
+    all_g = set(zoi_data['sets']['g'])
+
+    # Get zoi_g based on ZOI buses
+    gi_set = set(zoi_data['sets']['gi'])
+    zoi_g = {g for g, i in gi_set if i in zoi_i}
+
+    # Build line sets
+    all_lines = set(zoi_data['sets']['la'])
+    hub_connections = set(zoi_data['sets']['hubConnections']) if zoi_data['sets']['hubConnections'] else set()
+
+    # Pre-compute line weights
+    line_weights = {}
+    for i, j, c in all_lines:
+        i_in_zoi = i in zoi_i
+        j_in_zoi = j in zoi_i
+
+        if line_filter == "both":
+            if i_in_zoi and j_in_zoi:
+                line_weights[(i, j, c)] = 1.0
+            elif i_in_zoi or j_in_zoi:
+                line_weights[(i, j, c)] = 0.5
+            else:
+                line_weights[(i, j, c)] = 0.0
+        else:  # line_filter == "any"
+            if i_in_zoi or j_in_zoi:
+                line_weights[(i, j, c)] = 1.0
+            else:
+                line_weights[(i, j, c)] = 0.0
+
+    # Calculate ZOI objective value
+    value = zoi_data['objective']['constant']
+    var_values = zoi_data['var_values']
+
+    weight_cache = {}
+
+    # Check if we have new format (linear_vars_info) or old format (linear_vars_indices)
+    if 'linear_vars_info' in zoi_data['objective']:
+        # New format: (var_name, idx) pairs
+        for (var_name, idx), coef in zip(zoi_data['objective']['linear_vars_info'],
+                                          zoi_data['objective']['linear_coefs']):
+            if idx not in weight_cache:
+                weight_cache[idx] = _compute_variable_weight(
+                    idx, zoi_i, all_i, all_g, zoi_g, line_weights, hub_connections
+                )
+            weight = weight_cache[idx]
+            if weight > 0.0:
+                var_key = (var_name, idx)
+                value += weight * coef * var_values.get(var_key, 0.0)
+    else:
+        # Old format: indices only (backward compatibility)
+        for idx, coef in zip(zoi_data['objective']['linear_vars_indices'],
+                             zoi_data['objective']['linear_coefs']):
+            if idx not in weight_cache:
+                weight_cache[idx] = _compute_variable_weight(
+                    idx, zoi_i, all_i, all_g, zoi_g, line_weights, hub_connections
+                )
+            weight = weight_cache[idx]
+            if weight > 0.0:
+                value += weight * coef * var_values.get(idx, 0.0)
+
+    return value
+
+
+def evaluate_gen_investment_by_technology(model: pyo.ConcreteModel, filter_zoi: bool = True) -> Dict[str, float]:
+    """
+    Evaluate generator investment capacity by technology.
+
+    Calculates invested capacity as vGenInvest × pMaxProd and aggregates by technology.
+
+    :param model: The Pyomo model with solved vGenInvest values
+    :param filter_zoi: If True, only include generators in zone of interest (zoi_i).
+                       If False, include all generators.
+    :return: Dictionary mapping technology -> total invested capacity
+    """
+    from collections import defaultdict
+
+    # Get sets
+    zoi_i = set(model.zoi_i) if filter_zoi else None
+
+    # Calculate zoi_g if filtering by ZOI
+    if filter_zoi and zoi_i:
+        zoi_g = {g for g, i in model.gi if i in zoi_i}
+    else:
+        zoi_g = None
+
+    # Aggregate investments by technology
+    tech_capacity = defaultdict(float)
+
+    for g, tec in model.gtec:
+        # Skip if filtering by ZOI and generator not in ZOI
+        if zoi_g is not None and g not in zoi_g:
+            continue
+
+        # Calculate invested capacity: vGenInvest × pMaxProd
+        invest_units = pyo.value(model.vGenInvest[g])
+        if invest_units is None or invest_units == 0:
+            continue
+
+        max_prod = pyo.value(model.pMaxProd[g])
+        capacity = invest_units * max_prod
+
+        tech_capacity[tec] += capacity
+
+    return dict(tech_capacity)
 
 
 if __name__ == "__main__":

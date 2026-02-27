@@ -74,10 +74,6 @@ class LEGO:
 
         return self.model, self.timings["model_building"]
 
-    # Returns the objective value of this model (either overall or within the zone of interest)
-    def get_objective_value(self, zoi: bool):
-        return get_objective_value(self.model, zoi)
-
     def solve_model(self, model_type: ModelType = ModelType.DETERMINISTIC, solver_name: str = None, already_solved_ok=False) -> (pyomo.opt.results.results_.SolverResults, float, float):
 
         if not already_solved_ok and self.results is not None:
@@ -88,12 +84,30 @@ class LEGO:
         elif self.cs.dGlobal_Parameters["pSolver"] != solver_name:
             printer.warning(f"Solver name {solver_name} does not match the one used in the case study ({self.cs.dGlobal_Parameters['pSolver']}) - using {solver_name}")
 
+        # Add suffixes to request dual values from solver
+        if not hasattr(self.model, 'dual'):
+            self.model.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
+
         start_time = time.time()
+        self.work_units = None  # Initialize work_units
         match model_type:
             case ModelType.DETERMINISTIC:
-                optimizer = pyo.SolverFactory(solver_name, tee = True)
-                results = optimizer.solve(self.model, tee = True)
-                objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+                # Use persistent solver for Gurobi to access work units
+                if solver_name.lower() in ['gurobi', 'gurobi_persistent']:
+                    optimizer = pyo.SolverFactory('gurobi_persistent')
+                    optimizer.set_instance(self.model)
+                    results = optimizer.solve(tee=True, load_solutions=True)
+                    objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+                    # Extract work units from Gurobi model
+                    try:
+                        self.work_units = optimizer._solver_model.Work
+                    except Exception as e:
+                        printer.warning(f"Could not extract work units from Gurobi: {e}")
+                        self.work_units = None
+                else:
+                    optimizer = pyo.SolverFactory(solver_name, tee=True)
+                    results = optimizer.solve(self.model, tee=True, load_solutions=True)
+                    objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
             case ModelType.EXTENSIVE_FORM:
                 if solver_name != self.solver_name:
                     raise RuntimeError(f"Optimizer name {solver_name} does not match the one used to build the model ({self.solver_name}), please use the same optimizer name when solving using the 'ExtensiveForm' model type")
@@ -192,32 +206,6 @@ class LEGO:
         return copy.deepcopy(self)
 
 
-def get_objective_value(model: pyo.Model, zoi: bool):
-    # This is calculated in any case to make sure that the objective is calculated correctly - please ALWAYS update this AND the calculation below whenever something changes in the objective function
-    result_overall = (sum(pyo.value(model.pInterVarCost[g]) * sum(pyo.value(model.bUC[g, :, :])) +  # Fixed cost of thermal generators
-                          pyo.value(model.pStartupCost[g]) * sum(pyo.value(model.bStartup[g, :, :])) +  # Startup cost of thermal generators
-                          pyo.value(model.pSlopeVarCost[g]) * sum(pyo.value(model.vGenP[g, :, :])) for g in model.thermalGenerators) +  # Production cost of thermal generators
-                      sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.vGenP[g, :, :])) for g in model.vresGenerators) +
-                      sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.vGenP[g, :, :])) for g in model.rorGenerators) +
-                      sum(pyo.value(model.pOMVarCost[g]) * sum(pyo.value(model.vGenP[g, :, :])) for g in model.storageUnits) +
-                      (sum(pyo.value(model.vSlack_DemandNotServed[:, :, :])) + sum(pyo.value(model.vSlack_OverProduction[:, :, :]))) * pyo.value(model.pSlackPrice))
-
-    if (abs(result_overall - pyo.value(model.objective)) / pyo.value(model.objective)) > 1e-12:
-        raise RuntimeError(f"Check calculation of objective value, something is off: {result_overall} != {pyo.value(model.objective)}")
-    if not zoi:
-        return result_overall
-    else:
-        result_zoi = (sum(pyo.value(model.pInterVarCost[g]) * sum(pyo.value(model.bUC[g, :, :])) +  # Fixed cost of thermal generators
-                          pyo.value(model.pStartupCost[g]) * sum(pyo.value(model.bStartup[g, :, :])) +  # Startup cost of thermal generators
-                          pyo.value(model.pSlopeVarCost[g]) * sum(pyo.value(model.vGenP[g, :, :])) for g in (model.thermalGenerators & model.zoi_g)) +  # Production cost of thermal generators
-                      #                                                                    0.0 for g in (model.thermalGenerators & model.zoi_g)) +  # Production cost of thermal generators -> Removed variable cost to test TODO: Discuss with Sonja & Diego
-                      # sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.vGenP[g, :, :])) for g in model.vresGenerators) +
-                      # sum(pyo.value(model.pProductionCost[g]) * sum(pyo.value(model.vGenP[g, :, :])) for g in model.rorGenerators) +
-                      sum(sum(pyo.value(model.vSlack_DemandNotServed[:, :, i])) + sum(pyo.value(model.vSlack_OverProduction[:, :, i])) for i in model.zoi_i) * pyo.value(model.pSlackPrice))
-
-        return result_zoi
-
-
 # Clone given model and fix specified variables to values from another model
 def build_from_clone_with_fixed_results(model_to_be_cloned: pyo.Model, model_with_fixed_results: pyo.Model, variables_to_fix: list[str]) -> LEGO:
     model_new = model_to_be_cloned.clone()
@@ -286,7 +274,6 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
 
     # Helper Sets for zone of interest
     model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=cs.dPower_BusInfo.loc[cs.dPower_BusInfo["zoi"] == 1].index.tolist(), within=model.i)
-    model.zoi_g = pyo.Set(doc="Generators in zone of interest", initialize=[g for g in model.g for i in model.i if (g, i) in model.gi], within=model.g)
 
     # Add constraints
     # Todo: implement way to change between socp ac opfs

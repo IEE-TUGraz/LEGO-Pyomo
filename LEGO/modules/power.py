@@ -21,6 +21,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     model.c = pyo.Set(doc='Circuits', initialize=cs.dPower_Network.index.get_level_values('c').unique().tolist())
     model.la = pyo.Set(doc='All lines', initialize=cs.dPower_Network.index.tolist(), within=model.i * model.i * model.c)
+    if any(cs.dPower_Network["pTecRepr"] == "SN"):
+        printer.warning("Technical representation 'SN' (Single Node) detected in power network - please execute 'merge_single_node_buses' again if you've adjusted the case-study in code! Continuing anyway...")
     model.la_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.la if node == i or node == j] for node in model.i}
     model.le = pyo.Set(doc='Existing lines', initialize=cs.dPower_Network[(cs.dPower_Network["pEnableInvest"] == 0)].index.tolist(), within=model.la)
     model.le_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.le if node == i or node == j] for node in model.i}
