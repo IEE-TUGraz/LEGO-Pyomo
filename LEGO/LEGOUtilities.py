@@ -566,12 +566,7 @@ def _compute_variable_weight(idx, zoi_i, all_i, all_g, zoi_g, line_weights, hub_
     if not isinstance(idx, tuple):
         idx = (idx,)
 
-    # Early rejection: if variable has bus indices and all buses are outside ZOI, reject immediately
-    buses_in_idx = set(idx) & all_i
-    if buses_in_idx and not (buses_in_idx & zoi_i):
-        return 0.0
-
-    # Check for line indices using pre-computed weights
+    # Check for line indices using pre-computed weights (most common for large models)
     if len(idx) >= 3:
         for start in range(len(idx) - 2):
             potential_line = (idx[start], idx[start + 1], idx[start + 2])
@@ -585,7 +580,7 @@ def _compute_variable_weight(idx, zoi_i, all_i, all_g, zoi_g, line_weights, hub_
             if potential_hub_conn in hub_connections:
                 return 1.0 if potential_hub_conn[1] in zoi_i else 0.0
 
-    # Check bus/generator membership
+    # Check bus/generator membership directly (avoid creating intermediate sets)
     has_bus_index = False
     has_generator_index = False
     bus_in_zoi = True
