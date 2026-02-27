@@ -41,7 +41,7 @@ logger.setLevel("INFO")
 def build_run_parameters(case_study_directory, inflow_aggregation, number_of_rps, length_of_rps,
                          scale_demand, scale_inflows, scale_vres_max_prod, scale_pmax,
                          cluster_on_original_data, scale_ror_to_inflow_scaling, rmip, single_node,
-                         limit_k, is_regret=False):
+                         limit_k, tp, is_regret=False):
     """Build a dict of run parameters for storage in sqlite."""
     params = {
         'case_study_directory': case_study_directory,
@@ -70,6 +70,8 @@ def build_run_parameters(case_study_directory, inflow_aggregation, number_of_rps
         params['single_node'] = True
     if limit_k is not None:
         params['limit_k'] = limit_k
+    if tp:
+        params['tp'] = True
     return params
 
 
@@ -77,7 +79,7 @@ AGGREGATION_LEVELS = ["daily", "weekly", "monthly", "yearly"]
 
 
 def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows, scaleVRESMaxProd,
-         clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, scalePMax, limitK, noOverwrite, rerunWithRPLength, aggregations, aggregationToBeApplied=None):
+         clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, scalePMax, limitK, noOverwrite, rerunWithRPLength, aggregations, tp=False, aggregationToBeApplied=None):
     if rerunWithRPLength is not None:
         if rerunWithRPLength >= lengthOfRPs:
             raise ValueError(f"rerunWithRPLength ({rerunWithRPLength}) must be smaller than original lengthOfRPs ({lengthOfRPs})")
@@ -136,6 +138,11 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
         identifier_parts_base.append("SN")
         cs_inflow_hourly.dPower_Network["pTecRepr"] = "SN"
         cs_inflow_hourly.merge_single_node_buses()
+
+    if tp:
+        printer.information("Setting technical representation of all lines to TP (Transport Problem)")
+        identifier_parts_base.append("TP")
+        cs_inflow_hourly.dPower_Network["pTecRepr"] = "TP"
 
     if numberOfRPs != NUMBER_OF_RPS_DEFAULT:
         identifier_parts_base.append(f"rps{numberOfRPs}")
@@ -257,7 +264,7 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
             **build_run_parameters(
                 caseStudyDirectory, name, numberOfRPs, lengthOfRPs,
                 scaleDemand, scaleInflows, scaleVRESMaxProd, scalePMax,
-                clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, limitK,
+                clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, limitK, tp,
                 is_regret=False
             )
         )
@@ -310,7 +317,7 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
             **build_run_parameters(
                 caseStudyDirectory, name, numberOfRPs, lengthOfRPs,
                 scaleDemand, scaleInflows, scaleVRESMaxProd, scalePMax,
-                clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, limitK,
+                clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, limitK, tp,
                 is_regret=True
             )
         )
@@ -353,7 +360,7 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
                 newClusterCenterIndices, newClusterOrder, newClusterPeriodNoOccur)
 
         main(caseStudyDirectory, newNumberOfRPs, rerunWithRPLength, scaleDemand, scaleInflows, scaleVRESMaxProd,
-             clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, scalePMax, limitK, noOverwrite, None, aggregations, newAggregationResults)
+             clusterOnOriginalData, scaleRoRToInflowScaling, rMIP, singleNode, scalePMax, limitK, noOverwrite, None, aggregations, tp, newAggregationResults)
 
 
 if __name__ == "__main__":
@@ -399,9 +406,10 @@ if __name__ == "__main__":
     parser.add_argument("--scaleRoRToInflowScaling", action="store_true", help="Scale run-of-river generation capacity according to inflow scaling factor to prevent inflows that exceed maximum production of RoR plants. Note: This happens ON-TOP of the VRES scaling.")
     parser.add_argument("--rMIP", action="store_true", help="Solve model as rMIP")
     parser.add_argument("--singleNode", action="store_true", help="Solve model as single node (no network constraints)")
+    parser.add_argument("--TP", action="store_true", help="Set technical representation of all lines to TP (Transport Problem)")
     parser.add_argument("--noOverwrite", action="store_true", help="Skip cases where the output .sqlite file already exists")
     parser.add_argument("--rerunWithRPLength", type=check_lengthOfRPs, help="Re-run with given length of RPs", nargs="?", default=None)
     parser.add_argument("--aggregations", nargs="+", choices=AGGREGATION_LEVELS, default=AGGREGATION_LEVELS, metavar="LEVEL", help=f"Aggregation levels to run, choose from {AGGREGATION_LEVELS} (default: all). hourly is always included.")
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory, args.numberOfRPs, args.lengthOfRPs, args.scaleDemand, args.scaleInflows, args.scaleVRESMaxProd, args.clusterOnOriginalData, args.scaleRoRToInflowScaling, args.rMIP, args.singleNode, args.scalePMax, args.limitK, args.noOverwrite, args.rerunWithRPLength, args.aggregations)
+    main(args.caseStudyDirectory, args.numberOfRPs, args.lengthOfRPs, args.scaleDemand, args.scaleInflows, args.scaleVRESMaxProd, args.clusterOnOriginalData, args.scaleRoRToInflowScaling, args.rMIP, args.singleNode, args.scalePMax, args.limitK, args.noOverwrite, args.rerunWithRPLength, args.aggregations, args.TP)
