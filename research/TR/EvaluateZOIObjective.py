@@ -7,7 +7,6 @@ import argparse
 import ast
 import glob
 import os
-import re
 import sqlite3
 import time
 from collections import defaultdict
@@ -16,8 +15,7 @@ from concurrent.futures import ProcessPoolExecutor
 import pandas as pd
 
 from InOutModule.printer import Printer
-from LEGO import LEGOUtilities
-from TechnicalRepresentation import is_uniform_representation, is_utilization_run, load_file_metadata, print_run_parameters, make_run_sort_key
+from TechnicalRepresentation import is_uniform_representation, is_utilization_run, load_file_metadata, make_run_sort_key
 
 printer = Printer.getInstance()
 
@@ -651,7 +649,7 @@ def main(folder="."):
     utilization_files = []
 
     start_time = time.time()
-    n_workers = min(len(sqlite_files), os.cpu_count() or 1)
+    n_workers = min(len(sqlite_files), os.cpu_count() or 1, 61)  # Windows limits ProcessPoolExecutor to 61 workers
 
     if n_workers > 1:
         printer.information(f"Processing files with {n_workers} parallel workers")
