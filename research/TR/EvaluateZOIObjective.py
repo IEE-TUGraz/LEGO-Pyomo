@@ -11,6 +11,7 @@ import re
 import sqlite3
 import time
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 
 import pandas as pd
 
@@ -551,6 +552,87 @@ def print_metric_table(title, rows, zones, dc_row_value, metric_key, wu_key=None
     printer.information("-" * total_width)
 
 
+def _process_single_file(sqlite_file):
+    """
+    Process a single SQLite file: load all data, compute per-zone objectives, and return results.
+    Designed to be called in parallel via ThreadPoolExecutor.
+
+    :return: (file_data dict, result tuple, log messages list) or None on failure
+    """
+    logs = []  # Collect log messages for deferred printing
+    try:
+        meta = load_file_metadata(sqlite_file)
+        input_dir, limit_k = meta['input_dir'], meta['limit_k']
+        dc_buffer, tp_buffer = meta['dc_buffer'], meta['tp_buffer']
+        zone, demand, pmax = meta['zone'], meta['demand'], meta['pmax']
+        basename = os.path.basename(sqlite_file)
+        is_regret_file = basename.endswith('-regret.sqlite')
+
+        start_time = time.time()
+        zoi_data, bus_zones, ens_pns_per_zone, ens, pns = load_all_file_data_from_sqlite(sqlite_file)
+        load_time = time.time() - start_time
+        logs.append(('info', f"  '{basename}': loaded in {load_time:.2f}s"))
+
+        per_zone_objectives = {}
+        if bus_zones:
+            per_zone_objectives = compute_per_zone_objectives(zoi_data, bus_zones)
+
+        calc_total_obj = None
+        stored_total_obj = None
+        try:
+            if 'total_objective' in zoi_data:
+                stored_total_obj = zoi_data['total_objective']
+
+            obj_data = zoi_data['objective']
+            var_data = zoi_data['var_values']
+            calc_total_obj = obj_data['constant']
+
+            for (var_name, idx), coef in zip(obj_data['linear_vars_info'], obj_data['linear_coefs']):
+                key = (var_name, idx)
+                if key in var_data:
+                    calc_total_obj += coef * var_data[key]
+        except Exception as e:
+            logs.append(('warn', f"  '{basename}': could not calculate total objective: {e}"))
+
+        if calc_total_obj is not None:
+            if stored_total_obj is not None:
+                diff = abs(calc_total_obj - stored_total_obj)
+                if diff > 0.01:
+                    rel_diff_pct = (diff / stored_total_obj * 100) if stored_total_obj != 0 else 0.0
+                    logs.append(('warn', f"  '{basename}': obj={calc_total_obj:.2f}, stored={stored_total_obj:.2f} (DIFF: {diff:.4f}, {rel_diff_pct:.4f}%)"))
+                else:
+                    logs.append(('info', f"  '{basename}': obj={calc_total_obj:.2f} (matches stored)"))
+
+        result_tuple = (sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, calc_total_obj, is_regret_file, ens, pns)
+
+        file_data = {
+            'sqlite_file': sqlite_file,
+            'input_dir': input_dir,
+            'limit_k': limit_k,
+            'dc_buffer': dc_buffer,
+            'tp_buffer': tp_buffer,
+            'zone': zone,
+            'demand': demand,
+            'pmax': pmax,
+            'zoi_data': zoi_data,
+            'total_obj': calc_total_obj,
+            'work_units': zoi_data.get('work_units'),
+            'ens': ens,
+            'pns': pns,
+            'bus_zones': bus_zones,
+            'per_zone_objectives': per_zone_objectives,
+            'ens_pns_per_zone': ens_pns_per_zone,
+            'util_source_csv': meta.get('util_source_csv'),
+            'util_dc_threshold': meta.get('util_dc_threshold'),
+            'util_tp_threshold': meta.get('util_tp_threshold'),
+        }
+
+        return file_data, result_tuple, is_regret_file, meta, logs
+
+    except Exception as e:
+        return None, None, None, None, [('error', f"  Failed to process '{sqlite_file}': {e}")]
+
+
 def main(folder="."):
     # Find all SQLite files in the specified folder
     sqlite_files = sorted(f for f in glob.glob(os.path.join(folder, "*.sqlite")) if os.path.basename(f).startswith("TR-"))
@@ -561,112 +643,51 @@ def main(folder="."):
 
     printer.information(f"Found {len(sqlite_files)} SQLite file(s) in '{folder}'")
 
-    # Process each file and group by base identifier
+    # Process each file
     results = []
-    all_files_data = []  # Store all file data for flexible grouping
-    uniform_files = []  # Store uniform representation files (DC, TP, SN)
-    regret_files = []  # Store regret files
-    utilization_files = []  # Store utilization-based run files
+    all_files_data = []
+    uniform_files = []
+    regret_files = []
+    utilization_files = []
 
-    for sqlite_file in sqlite_files:
-        printer.information(f"\nProcessing '{sqlite_file}'...")
+    start_time = time.time()
+    n_workers = min(len(sqlite_files), os.cpu_count() or 1)
 
-        try:
-            # Load metadata from SQLite
-            meta = load_file_metadata(sqlite_file)
-            print_run_parameters(meta)
-            input_dir, limit_k = meta['input_dir'], meta['limit_k']
-            dc_buffer, tp_buffer = meta['dc_buffer'], meta['tp_buffer']
-            zone, demand, pmax = meta['zone'], meta['demand'], meta['pmax']
-            basename = os.path.basename(sqlite_file)
-            is_regret_file = basename.endswith('-regret.sqlite')
+    if n_workers > 1:
+        printer.information(f"Processing files with {n_workers} parallel workers")
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            processed = list(executor.map(_process_single_file, sqlite_files))
+    else:
+        processed = [_process_single_file(f) for f in sqlite_files]
 
-            # Load all data from SQLite using a single connection
-            start_time = time.time()
-            printer.information(f"  Loading from SQLite database...")
-            zoi_data, bus_zones, ens_pns_per_zone, ens, pns = load_all_file_data_from_sqlite(sqlite_file)
-            load_time = time.time() - start_time
-            printer.information(f"  Loaded in {load_time:.2f} seconds")
-            if ens is not None:
-                printer.information(f"  ENS: {ens:.2f}, PNS: {pns:.2f}")
-
-            # Compute per-zone objectives
-            per_zone_objectives = {}
-            if bus_zones:
-                per_zone_objectives = compute_per_zone_objectives(zoi_data, bus_zones)
-
-            # Calculate total objective from data (for all cases)
-            calc_total_obj = None
-            stored_total_obj = None
-            try:
-                # Get stored objective if available
-                if 'total_objective' in zoi_data:
-                    stored_total_obj = zoi_data['total_objective']
-
-                # Calculate total objective from components
-                obj_data = zoi_data['objective']
-                var_data = zoi_data['var_values']
-                calc_total_obj = obj_data['constant']
-
-                # Use (var_name, index) composite keys
-                for (var_name, idx), coef in zip(obj_data['linear_vars_info'], obj_data['linear_coefs']):
-                    key = (var_name, idx)
-                    if key in var_data:
-                        calc_total_obj += coef * var_data[key]
-            except Exception as e:
-                printer.warning(f"  Could not calculate total objective: {e}")
-
-            if calc_total_obj is not None:
-                printer.success(f"  Calculated Total Objective: {calc_total_obj:.2f}")
-
-                # Compare with stored objective
-                if stored_total_obj is not None:
-                    diff = abs(calc_total_obj - stored_total_obj)
-                    rel_diff_pct = (diff / stored_total_obj * 100) if stored_total_obj != 0 else 0.0
-                    if diff > 0.01:  # Tolerance of 0.01
-                        printer.warning(f"  Stored Total Objective: {stored_total_obj:.2f} (DIFFERENCE: {diff:.4f}, {rel_diff_pct:.4f}%)")
-                    else:
-                        printer.information(f"  Stored Total Objective: {stored_total_obj:.2f} (matches calculated)")
-                else:
-                    printer.warning(f"  Stored Total Objective: Not available in data")
-
-            results.append((sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, calc_total_obj, is_regret_file, ens, pns))
-
-            # Store file data
-            file_data = {
-                'sqlite_file': sqlite_file,
-                'input_dir': input_dir,
-                'limit_k': limit_k,
-                'dc_buffer': dc_buffer,
-                'tp_buffer': tp_buffer,
-                'zone': zone,
-                'demand': demand,
-                'pmax': pmax,
-                'zoi_data': zoi_data,
-                'total_obj': calc_total_obj,
-                'work_units': zoi_data.get('work_units'),
-                'ens': ens,
-                'pns': pns,
-                'bus_zones': bus_zones,
-                'per_zone_objectives': per_zone_objectives,
-                'ens_pns_per_zone': ens_pns_per_zone,
-                'util_source_csv': meta.get('util_source_csv'),
-                'util_dc_threshold': meta.get('util_dc_threshold'),
-                'util_tp_threshold': meta.get('util_tp_threshold'),
-            }
-
-            # Separate into uniform, zone-specific, regret, and utilization
-            if is_regret_file:
-                regret_files.append(file_data)
-            elif is_utilization_run(meta):
-                utilization_files.append(file_data)
-            elif is_uniform_representation(zone):
-                uniform_files.append(file_data)
+    for file_data, result_tuple, is_regret_file, meta, logs in processed:
+        # Print log messages
+        for level, msg in logs:
+            if level == 'error':
+                printer.error(msg)
+            elif level == 'warn':
+                printer.warning(msg)
+            elif level == 'success':
+                printer.success(msg)
             else:
-                all_files_data.append(file_data)
+                printer.information(msg)
 
-        except Exception as e:
-            printer.error(f"  Failed to process '{sqlite_file}': {e}")
+        if file_data is None:
+            continue
+
+        results.append(result_tuple)
+        zone = file_data['zone']
+
+        if is_regret_file:
+            regret_files.append(file_data)
+        elif is_utilization_run(meta):
+            utilization_files.append(file_data)
+        elif is_uniform_representation(zone):
+            uniform_files.append(file_data)
+        else:
+            all_files_data.append(file_data)
+
+    printer.information(f"\nProcessed {len(sqlite_files)} files in {time.time() - start_time:.2f}s")
 
     # Print summary
     if results:
