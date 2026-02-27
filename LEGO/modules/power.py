@@ -19,9 +19,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     # Sets
     model.i = pyo.Set(doc='Buses', initialize=cs.dPower_BusInfo.index.tolist())
+    model.i_zone = pyo.Set(doc='Bus-zone mapping (i, zone)', initialize=[(i, z) for i, z in cs.dPower_BusInfo['z'].items()])
 
     model.c = pyo.Set(doc='Circuits', initialize=cs.dPower_Network.index.get_level_values('c').unique().tolist())
     model.la = pyo.Set(doc='All lines', initialize=cs.dPower_Network.index.tolist(), within=model.i * model.i * model.c)
+    if any(cs.dPower_Network["pTecRepr"] == "SN"):
+        printer.warning("Technical representation 'SN' (Single Node) detected in power network - please execute 'merge_single_node_buses' again if you've adjusted the case-study in code! Continuing anyway...")
     model.la_nodeRelevant = {node: [(i, j, c) for (i, j, c) in model.la if node == i or node == j] for node in model.i}
     model.le = pyo.Set(doc='Existing lines', initialize=cs.dPower_Network[(cs.dPower_Network["pEnableInvest"] == 0)].index.tolist(), within=model.la)
     model.lc = pyo.Set(doc='Candidate lines', initialize=cs.dPower_Network[(cs.dPower_Network["pEnableInvest"] == 1)].index.tolist(), within=model.la)
@@ -178,9 +181,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         completed_buses.add(index)
 
         # Set slack node
-        # slack_node = cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
-        slack_node = cs.dPower_Parameters["is"]  # TODO: Switch this again to be calculated (fixed to 'is' for compatibility)
-        if i == 0: printer.information("Setting slack nodes for technical representation islands:")
+        if cs.dPower_Parameters["is"] == None:
+            printer.information(f"Determining slack node based on highest demand in this island...")
+            slack_node = cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
+        else:
+            printer.information(f"Using predefined slack node from Power_Parameters: {cs.dPower_Parameters['is']}")
+            slack_node = cs.dPower_Parameters["is"]
         i += 1
         printer.information(f"Zone {i:>2} - Slack node: {slack_node}")
         for rp in model.rp:
