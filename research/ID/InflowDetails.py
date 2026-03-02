@@ -109,17 +109,17 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
 
     if scaleDemand != SCALE_DEFAULT:
         printer.information(f"Scaling demand by factor {scaleDemand}")
-        identifier_parts_base.append(f"demand{scaleDemand:.1f}")
+        identifier_parts_base.append(f"demand{scaleDemand:g}")
         cs_inflow_hourly.dPower_Demand['value'] *= scaleDemand
 
     if scaleVRESMaxProd != SCALE_DEFAULT:
         printer.information(f"Scaling VRES maximum production by factor {scaleVRESMaxProd}")
-        identifier_parts_base.append(f"vresMaxProd{scaleVRESMaxProd:.1f}")
+        identifier_parts_base.append(f"vresMaxProd{scaleVRESMaxProd:g}")
         cs_inflow_hourly.dPower_VRES['MaxProd'] *= scaleVRESMaxProd
 
     if scalePMax != SCALE_DEFAULT:
         printer.information(f"Scaling pPmax (line capacity) by factor {scalePMax}")
-        identifier_parts_base.append(f"pmax{scalePMax:.1f}")
+        identifier_parts_base.append(f"pmax{scalePMax:g}")
         cs_inflow_hourly.dPower_Network['pPmax'] *= scalePMax
 
     if scaleRoRToInflowScaling:
@@ -153,7 +153,7 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
 
     if scaleInflows != SCALE_DEFAULT:
         printer.information(f"Scaling inflows by factor {scaleInflows}")
-        identifier_parts_base.append(f"inflows{scaleInflows:.1f}")
+        identifier_parts_base.append(f"inflows{scaleInflows:g}")
         cs_inflow_hourly.dPower_Inflows['value'] *= scaleInflows
 
     active_aggregations = set(aggregations)

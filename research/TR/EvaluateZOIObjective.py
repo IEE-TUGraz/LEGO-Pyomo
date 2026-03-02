@@ -107,7 +107,7 @@ def load_zoi_data_from_sqlite(sqlite_file, conn=None):
                     else:
                         sets_data[set_name] = []
             except Exception as e:
-                printer.warning(f"Could not load set {set_name}: {e}")
+                printer.warning(f"'{os.path.basename(sqlite_file)}': Could not load set {set_name}: {e}")
                 sets_data[set_name] = []
 
         # Check for hubConnections (optional)
@@ -122,7 +122,7 @@ def load_zoi_data_from_sqlite(sqlite_file, conn=None):
             df_constant = pd.read_sql_query('SELECT * FROM objective_constant', conn)
             constant = df_constant.iloc[0]['constant']
         except Exception as e:
-            printer.error(f"Could not load objective_constant: {e}")
+            printer.error(f"'{os.path.basename(sqlite_file)}': Could not load objective_constant: {e}")
             raise
 
         try:
@@ -133,7 +133,7 @@ def load_zoi_data_from_sqlite(sqlite_file, conn=None):
             ]
             linear_coefs = df_terms['coefficient'].tolist()
         except Exception as e:
-            printer.error(f"Could not load objective_terms: {e}")
+            printer.error(f"'{os.path.basename(sqlite_file)}': Could not load objective_terms: {e}")
             raise
 
         objective_data = {
@@ -166,7 +166,7 @@ def load_zoi_data_from_sqlite(sqlite_file, conn=None):
                         for idx, val in zip(zip(*(df[col] for col in index_cols)), df['values'])
                     })
             except Exception as e:
-                printer.warning(f"Could not load variable {var_name}: {e}")
+                printer.warning(f"'{os.path.basename(sqlite_file)}': Could not load variable {var_name}: {e}")
 
         # Load total objective
         try:
@@ -330,7 +330,7 @@ def load_all_file_data_from_sqlite(sqlite_file):
             else:
                 ens, pns = load_ens_pns_from_sqlite(sqlite_file, conn=conn)
         except Exception as e:
-            printer.warning(f"  Could not load ENS/PNS: {e}")
+            printer.warning(f"  '{os.path.basename(sqlite_file)}': Could not load ENS/PNS: {e}")
 
         return zoi_data, bus_zones, ens_pns_per_zone, ens, pns
     finally:
