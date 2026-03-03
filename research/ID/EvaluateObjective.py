@@ -277,7 +277,10 @@ def _print_table(group_label, rows):
                 line += f" | {'N/A':>{W_ABS}s}  {'N/A':>{W_PCT}s}"
             else:
                 diff, pct = val
-                line += f" | {diff:>+{W_ABS},.0f}  {pct:>+{W_PCT - 1}.2f}%"
+                if pct is None:
+                    line += f" | {diff:>+{W_ABS},.0f}  {'N/A':>{W_PCT}s}"
+                else:
+                    line += f" | {diff:>+{W_ABS},.0f}  {pct:>+{W_PCT - 1}.2f}%"
 
         printer.information(line + " |")
 
