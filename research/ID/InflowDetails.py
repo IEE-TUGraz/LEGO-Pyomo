@@ -90,6 +90,9 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
         if numberOfRPs == 0:
             raise ValueError("rerunWithRPLength requires --numberOfRPs > 0")
 
+    if singleNode and tp:
+        raise ValueError("Options --singleNode and --TP cannot be combined since both modify the technical representation of lines")
+
     if scaleRoRToInflowScaling and scaleInflows == SCALE_DEFAULT:
         printer.warning("--scaleRoRToInflowScaling is set but --scaleInflows is 1.0 (no scaling), so RoR scaling has no effect")
 

@@ -379,7 +379,7 @@ def compute_per_zone_objectives(zoi_data, bus_zones):
         for (var_name, idx), coef in zip(obj_data['linear_vars_info'], obj_data['linear_coefs']):
             var_key = (var_name, idx)
             val = var_values.get(var_key, 0.0)
-            if val == 0.0 and coef != 0.0:
+            if val == 0.0 or coef == 0.0:
                 continue
             contribution = coef * val
 
@@ -553,7 +553,7 @@ def print_metric_table(title, rows, zones, dc_row_value, metric_key, wu_key=None
 def _process_single_file(sqlite_file):
     """
     Process a single SQLite file: load all data, compute per-zone objectives, and return results.
-    Designed to be called in parallel via ThreadPoolExecutor.
+    Designed to be called in parallel via ProcessPoolExecutor.
 
     :return: (file_data dict, result tuple, log messages list) or None on failure
     """
