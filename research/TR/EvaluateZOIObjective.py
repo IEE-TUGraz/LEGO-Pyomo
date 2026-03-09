@@ -7,16 +7,15 @@ import argparse
 import ast
 import glob
 import os
-import re
 import sqlite3
 import time
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 
 import pandas as pd
 
 from InOutModule.printer import Printer
-from LEGO import LEGOUtilities
-from TechnicalRepresentation import is_uniform_representation, is_utilization_run, load_file_metadata, print_run_parameters, make_run_sort_key
+from TechnicalRepresentation import is_uniform_representation, is_utilization_run, load_file_metadata, make_run_sort_key
 
 printer = Printer.getInstance()
 
@@ -29,14 +28,63 @@ def _safe_literal_eval(s):
         return s
 
 
-def load_zoi_data_from_sqlite(sqlite_file):
+def _fast_parse_index(s):
+    """Fast tuple/scalar parser for objective term indices.
+
+    Handles the common formats stored by SQLiteWriter:
+    - "(val1, val2, ...)" -> tuple
+    - "scalar" -> scalar string
+    - "123" or "1.5" -> number
+
+    Much faster than ast.literal_eval for the simple cases we encounter.
+    """
+    if not isinstance(s, str):
+        return s
+    stripped = s.strip()
+    if stripped.startswith('(') and stripped.endswith(')'):
+        # Tuple: strip parens, split by comma, strip quotes from each element
+        inner = stripped[1:-1]
+        if not inner:
+            return ()
+        parts = []
+        for part in inner.split(','):
+            part = part.strip()
+            if not part:
+                continue
+            # Strip surrounding quotes
+            if (part.startswith("'") and part.endswith("'")) or (part.startswith('"') and part.endswith('"')):
+                parts.append(part[1:-1])
+            else:
+                # Try numeric
+                try:
+                    parts.append(int(part))
+                except ValueError:
+                    try:
+                        parts.append(float(part))
+                    except ValueError:
+                        parts.append(part)
+        return tuple(parts) if len(parts) != 1 else parts[0]
+    # Scalar
+    try:
+        return int(stripped)
+    except ValueError:
+        try:
+            return float(stripped)
+        except ValueError:
+            return stripped
+
+
+def load_zoi_data_from_sqlite(sqlite_file, conn=None):
     """
     Load ZOI objective data from SQLite file.
 
     :param sqlite_file: Path to SQLite database file
+    :param conn: Optional existing SQLite connection to reuse
     :return: Dictionary with ZOI data in the same format as extract_zoi_objective_data
     """
-    conn = sqlite3.connect(sqlite_file)
+    own_conn = conn is None
+    if own_conn:
+        conn = sqlite3.connect(sqlite_file)
 
     try:
         # Load sets
@@ -59,7 +107,7 @@ def load_zoi_data_from_sqlite(sqlite_file):
                     else:
                         sets_data[set_name] = []
             except Exception as e:
-                printer.warning(f"Could not load set {set_name}: {e}")
+                printer.warning(f"'{os.path.basename(sqlite_file)}': Could not load set {set_name}: {e}")
                 sets_data[set_name] = []
 
         # Check for hubConnections (optional)
@@ -74,18 +122,18 @@ def load_zoi_data_from_sqlite(sqlite_file):
             df_constant = pd.read_sql_query('SELECT * FROM objective_constant', conn)
             constant = df_constant.iloc[0]['constant']
         except Exception as e:
-            printer.error(f"Could not load objective_constant: {e}")
+            printer.error(f"'{os.path.basename(sqlite_file)}': Could not load objective_constant: {e}")
             raise
 
         try:
             df_terms = pd.read_sql_query('SELECT * FROM objective_terms', conn)
             linear_vars_info = [
-                (var_name, _safe_literal_eval(idx_str))
+                (var_name, _fast_parse_index(idx_str))
                 for var_name, idx_str in zip(df_terms['var_name'], df_terms['var_index'])
             ]
             linear_coefs = df_terms['coefficient'].tolist()
         except Exception as e:
-            printer.error(f"Could not load objective_terms: {e}")
+            printer.error(f"'{os.path.basename(sqlite_file)}': Could not load objective_terms: {e}")
             raise
 
         objective_data = {
@@ -118,7 +166,7 @@ def load_zoi_data_from_sqlite(sqlite_file):
                         for idx, val in zip(zip(*(df[col] for col in index_cols)), df['values'])
                     })
             except Exception as e:
-                printer.warning(f"Could not load variable {var_name}: {e}")
+                printer.warning(f"'{os.path.basename(sqlite_file)}': Could not load variable {var_name}: {e}")
 
         # Load total objective
         try:
@@ -150,19 +198,23 @@ def load_zoi_data_from_sqlite(sqlite_file):
         return zoi_data
 
     finally:
-        conn.close()
+        if own_conn:
+            conn.close()
 
 
-def load_ens_pns_from_sqlite(sqlite_file):
+def load_ens_pns_from_sqlite(sqlite_file, conn=None):
     """
     Compute weighted total ENS and PNS from SQLite file.
 
     Total ENS = sum over (rp, k, i) of vEPS[rp,k,i] * pWeight_rp[rp] * pWeight_k[k]
     Total PNS = sum over (rp, k, i) of vPNS[rp,k,i] * pWeight_rp[rp] * pWeight_k[k]
 
+    :param conn: Optional existing SQLite connection to reuse
     :return: (ens, pns) tuple of floats
     """
-    conn = sqlite3.connect(sqlite_file)
+    own_conn = conn is None
+    if own_conn:
+        conn = sqlite3.connect(sqlite_file)
     try:
         df_wk = pd.read_sql_query('SELECT * FROM pWeight_k', conn)
         df_wrp = pd.read_sql_query('SELECT * FROM pWeight_rp', conn)
@@ -176,18 +228,22 @@ def load_ens_pns_from_sqlite(sqlite_file):
             totals[var_name] = (df['values'] * df['_w']).sum()
         return totals['vEPS'], totals['vPNS']
     finally:
-        conn.close()
+        if own_conn:
+            conn.close()
 
 
-def load_bus_zones_from_sqlite(sqlite_file):
+def load_bus_zones_from_sqlite(sqlite_file, conn=None):
     """
     Load i_zone set table from SQLite file. The set contains (i, zone) tuples,
     stored as columns '0' (bus) and '1' (zone).
 
     :param sqlite_file: Path to SQLite database file
+    :param conn: Optional existing SQLite connection to reuse
     :return: dict mapping bus name to zone name {bus: zone}
     """
-    conn = sqlite3.connect(sqlite_file)
+    own_conn = conn is None
+    if own_conn:
+        conn = sqlite3.connect(sqlite_file)
     try:
         df = pd.read_sql_query('SELECT * FROM i_zone', conn)
         # Drop the 'index' column added by pandas
@@ -202,18 +258,22 @@ def load_bus_zones_from_sqlite(sqlite_file):
     except Exception:
         return {}
     finally:
-        conn.close()
+        if own_conn:
+            conn.close()
 
 
-def load_ens_pns_per_zone_from_sqlite(sqlite_file, bus_zones):
+def load_ens_pns_per_zone_from_sqlite(sqlite_file, bus_zones, conn=None):
     """
     Compute weighted ENS and PNS per zone and total from SQLite file.
 
     :param sqlite_file: Path to SQLite database file
     :param bus_zones: dict mapping bus name to zone name
+    :param conn: Optional existing SQLite connection to reuse
     :return: dict {'_total': (ens, pns), 'Zone1': (ens, pns), ...}
     """
-    conn = sqlite3.connect(sqlite_file)
+    own_conn = conn is None
+    if own_conn:
+        conn = sqlite3.connect(sqlite_file)
     try:
         df_wk = pd.read_sql_query('SELECT * FROM pWeight_k', conn)
         df_wrp = pd.read_sql_query('SELECT * FROM pWeight_rp', conn)
@@ -243,34 +303,101 @@ def load_ens_pns_per_zone_from_sqlite(sqlite_file, bus_zones):
             output[zone] = (result.get((zone, 'vEPS'), 0), result.get((zone, 'vPNS'), 0))
         return output
     finally:
+        if own_conn:
+            conn.close()
+
+
+def load_all_file_data_from_sqlite(sqlite_file):
+    """
+    Load all needed data from a single SQLite file using one connection.
+    Consolidates load_zoi_data_from_sqlite, load_bus_zones_from_sqlite,
+    and load_ens_pns_per_zone_from_sqlite into a single connection.
+
+    :return: (zoi_data, bus_zones, ens_pns_per_zone, ens, pns) tuple
+    """
+    conn = sqlite3.connect(sqlite_file)
+    try:
+        zoi_data = load_zoi_data_from_sqlite(sqlite_file, conn=conn)
+        bus_zones = load_bus_zones_from_sqlite(sqlite_file, conn=conn)
+
+        ens, pns = None, None
+        ens_pns_per_zone = {}
+        try:
+            if bus_zones:
+                ens_pns_per_zone = load_ens_pns_per_zone_from_sqlite(sqlite_file, bus_zones, conn=conn)
+                ens = ens_pns_per_zone.get('_total', (0, 0))[0]
+                pns = ens_pns_per_zone.get('_total', (0, 0))[1]
+            else:
+                ens, pns = load_ens_pns_from_sqlite(sqlite_file, conn=conn)
+        except Exception as e:
+            printer.warning(f"  '{os.path.basename(sqlite_file)}': Could not load ENS/PNS: {e}")
+
+        return zoi_data, bus_zones, ens_pns_per_zone, ens, pns
+    finally:
         conn.close()
 
 
 def compute_per_zone_objectives(zoi_data, bus_zones):
     """
-    Compute objective value per zone using evaluate_zoi_objective_from_data.
+    Compute objective value per zone in a single pass over all objective terms.
 
-    The objective constant is included in each call to evaluate_zoi_objective_from_data,
-    so we subtract it from each per-zone value and distribute it proportionally across zones
-    to ensure the sum of per-zone values equals the total objective.
+    Instead of calling evaluate_zoi_objective_from_data N times (once per zone),
+    this determines each variable's zone assignment once and accumulates per-zone
+    contributions in a single loop over all objective terms.
 
     :param zoi_data: ZOI data loaded from sqlite
     :param bus_zones: dict mapping bus name to zone name
     :return: dict {'Zone1': objective, 'Zone2': objective, ...}
     """
     zones = sorted(set(bus_zones.values()))
-    all_buses = set(zoi_data['sets']['i'])
-    constant = zoi_data['objective']['constant']
+    all_i = set(zoi_data['sets']['i'])
+    all_g = set(zoi_data['sets']['g'])
+    gi_set = set(zoi_data['sets']['gi'])
+    all_lines = set(zoi_data['sets']['la'])
+    hub_connections = set(zoi_data['sets']['hubConnections']) if zoi_data['sets']['hubConnections'] else set()
 
-    # Compute raw per-zone objectives (each includes the constant)
-    raw = {}
-    for zone in zones:
-        zone_buses = [bus for bus in all_buses if bus_zones.get(bus) == zone]
-        if zone_buses:
-            obj = LEGOUtilities.evaluate_zoi_objective_from_data(zoi_data, new_zoi_i=zone_buses, line_filter="both")
-            raw[zone] = obj - constant
-        else:
-            raw[zone] = 0.0
+    # Pre-compute: bus -> zone, generator -> zone (via gi mapping)
+    g_to_zone = {}
+    for g, i in gi_set:
+        if i in bus_zones:
+            g_to_zone[g] = bus_zones[i]
+
+    # Pre-compute: line -> (zone_i, zone_j) for cross-zone splitting
+    line_zones = {}
+    for i, j, c in all_lines:
+        line_zones[(i, j, c)] = (bus_zones.get(i), bus_zones.get(j))
+
+    constant = zoi_data['objective']['constant']
+    var_values = zoi_data['var_values']
+    obj_data = zoi_data['objective']
+
+    # Accumulate per-zone contributions in single pass
+    raw = {zone: 0.0 for zone in zones}
+    zone_cache = {}  # idx -> (zone, weight) or list of (zone, weight) for cross-zone
+
+    if 'linear_vars_info' in obj_data:
+        for (var_name, idx), coef in zip(obj_data['linear_vars_info'], obj_data['linear_coefs']):
+            var_key = (var_name, idx)
+            val = var_values.get(var_key, 0.0)
+            if val == 0.0 or coef == 0.0:
+                continue
+            contribution = coef * val
+
+            # Determine zone assignment for this index (cached)
+            if idx not in zone_cache:
+                zone_cache[idx] = _determine_variable_zone(idx, all_i, all_g, g_to_zone, bus_zones, line_zones, hub_connections)
+            zone_assignment = zone_cache[idx]
+
+            if zone_assignment is None:
+                continue  # Variable outside all zones
+            elif isinstance(zone_assignment, list):
+                # Cross-zone (e.g. line between zones): split proportionally
+                for zone, weight in zone_assignment:
+                    if zone in raw:
+                        raw[zone] += weight * contribution
+            else:
+                if zone_assignment in raw:
+                    raw[zone_assignment] += contribution
 
     # Distribute the constant proportionally across zones
     raw_total = sum(raw.values())
@@ -279,12 +406,60 @@ def compute_per_zone_objectives(zoi_data, bus_zones):
         for zone in zones:
             result[zone] = raw[zone] + constant * (raw[zone] / raw_total)
     else:
-        # Equal distribution when all raw values are zero
         share = constant / len(zones) if zones else 0
         for zone in zones:
             result[zone] = share
 
     return result
+
+
+def _determine_variable_zone(idx, all_i, all_g, g_to_zone, bus_zones, line_zones, hub_connections):
+    """
+    Determine which zone a variable belongs to based on its index.
+
+    :return: zone name (str), list of (zone, weight) for cross-zone, or None if outside all zones
+    """
+    if idx is None:
+        return None  # Constant term, handled separately
+
+    if not isinstance(idx, tuple):
+        idx = (idx,)
+
+    # Check for line indices (i, j, c) embedded in the index
+    if len(idx) >= 3:
+        for start in range(len(idx) - 2):
+            potential_line = (idx[start], idx[start + 1], idx[start + 2])
+            if potential_line in line_zones:
+                zone_i, zone_j = line_zones[potential_line]
+                if zone_i == zone_j:
+                    return zone_i
+                # Cross-zone line: split 50/50
+                result = []
+                if zone_i is not None:
+                    result.append((zone_i, 0.5))
+                if zone_j is not None:
+                    result.append((zone_j, 0.5))
+                return result if result else None
+
+    # Check for hub connections
+    if hub_connections:
+        for start in range(len(idx) - 1):
+            potential_hub = (idx[start], idx[start + 1])
+            if potential_hub in hub_connections:
+                bus = potential_hub[1]
+                return bus_zones.get(bus)
+
+    # Check bus membership
+    for elem in idx:
+        if elem in all_i:
+            return bus_zones.get(elem)
+
+    # Check generator membership
+    for elem in idx:
+        if elem in all_g:
+            return g_to_zone.get(elem)
+
+    return None  # Can't determine zone
 
 
 def print_metric_table(title, rows, zones, dc_row_value, metric_key, wu_key=None):
@@ -375,6 +550,87 @@ def print_metric_table(title, rows, zones, dc_row_value, metric_key, wu_key=None
     printer.information("-" * total_width)
 
 
+def _process_single_file(sqlite_file):
+    """
+    Process a single SQLite file: load all data, compute per-zone objectives, and return results.
+    Designed to be called in parallel via ProcessPoolExecutor.
+
+    :return: (file_data dict, result tuple, log messages list) or None on failure
+    """
+    logs = []  # Collect log messages for deferred printing
+    try:
+        meta = load_file_metadata(sqlite_file)
+        input_dir, limit_k = meta['input_dir'], meta['limit_k']
+        dc_buffer, tp_buffer = meta['dc_buffer'], meta['tp_buffer']
+        zone, demand, pmax = meta['zone'], meta['demand'], meta['pmax']
+        basename = os.path.basename(sqlite_file)
+        is_regret_file = basename.endswith('-regret.sqlite')
+
+        start_time = time.time()
+        zoi_data, bus_zones, ens_pns_per_zone, ens, pns = load_all_file_data_from_sqlite(sqlite_file)
+        load_time = time.time() - start_time
+        logs.append(('info', f"  '{basename}': loaded in {load_time:.2f}s"))
+
+        per_zone_objectives = {}
+        if bus_zones:
+            per_zone_objectives = compute_per_zone_objectives(zoi_data, bus_zones)
+
+        calc_total_obj = None
+        stored_total_obj = None
+        try:
+            if 'total_objective' in zoi_data:
+                stored_total_obj = zoi_data['total_objective']
+
+            obj_data = zoi_data['objective']
+            var_data = zoi_data['var_values']
+            calc_total_obj = obj_data['constant']
+
+            for (var_name, idx), coef in zip(obj_data['linear_vars_info'], obj_data['linear_coefs']):
+                key = (var_name, idx)
+                if key in var_data:
+                    calc_total_obj += coef * var_data[key]
+        except Exception as e:
+            logs.append(('warn', f"  '{basename}': could not calculate total objective: {e}"))
+
+        if calc_total_obj is not None:
+            if stored_total_obj is not None:
+                diff = abs(calc_total_obj - stored_total_obj)
+                if diff > 0.01:
+                    rel_diff_pct = (diff / stored_total_obj * 100) if stored_total_obj != 0 else 0.0
+                    logs.append(('warn', f"  '{basename}': obj={calc_total_obj:.2f}, stored={stored_total_obj:.2f} (DIFF: {diff:.4f}, {rel_diff_pct:.4f}%)"))
+                else:
+                    logs.append(('info', f"  '{basename}': obj={calc_total_obj:.2f} (matches stored)"))
+
+        result_tuple = (sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, calc_total_obj, is_regret_file, ens, pns)
+
+        file_data = {
+            'sqlite_file': sqlite_file,
+            'input_dir': input_dir,
+            'limit_k': limit_k,
+            'dc_buffer': dc_buffer,
+            'tp_buffer': tp_buffer,
+            'zone': zone,
+            'demand': demand,
+            'pmax': pmax,
+            'zoi_data': zoi_data,
+            'total_obj': calc_total_obj,
+            'work_units': zoi_data.get('work_units'),
+            'ens': ens,
+            'pns': pns,
+            'bus_zones': bus_zones,
+            'per_zone_objectives': per_zone_objectives,
+            'ens_pns_per_zone': ens_pns_per_zone,
+            'util_source_csv': meta.get('util_source_csv'),
+            'util_dc_threshold': meta.get('util_dc_threshold'),
+            'util_tp_threshold': meta.get('util_tp_threshold'),
+        }
+
+        return file_data, result_tuple, is_regret_file, meta, logs
+
+    except Exception as e:
+        return None, None, None, None, [('error', f"  Failed to process '{sqlite_file}': {e}")]
+
+
 def main(folder="."):
     # Find all SQLite files in the specified folder
     sqlite_files = sorted(f for f in glob.glob(os.path.join(folder, "*.sqlite")) if os.path.basename(f).startswith("TR-"))
@@ -385,127 +641,51 @@ def main(folder="."):
 
     printer.information(f"Found {len(sqlite_files)} SQLite file(s) in '{folder}'")
 
-    # Process each file and group by base identifier
+    # Process each file
     results = []
-    all_files_data = []  # Store all file data for flexible grouping
-    uniform_files = []  # Store uniform representation files (DC, TP, SN)
-    regret_files = []  # Store regret files
-    utilization_files = []  # Store utilization-based run files
+    all_files_data = []
+    uniform_files = []
+    regret_files = []
+    utilization_files = []
 
-    for sqlite_file in sqlite_files:
-        printer.information(f"\nProcessing '{sqlite_file}'...")
+    start_time = time.time()
+    n_workers = min(len(sqlite_files), os.cpu_count() or 1, 61)  # Windows limits ProcessPoolExecutor to 61 workers
 
-        try:
-            # Load metadata from SQLite
-            meta = load_file_metadata(sqlite_file)
-            print_run_parameters(meta)
-            input_dir, limit_k = meta['input_dir'], meta['limit_k']
-            dc_buffer, tp_buffer = meta['dc_buffer'], meta['tp_buffer']
-            zone, demand, pmax = meta['zone'], meta['demand'], meta['pmax']
-            basename = os.path.basename(sqlite_file)
-            is_regret_file = basename.endswith('-regret.sqlite')
+    if n_workers > 1:
+        printer.information(f"Processing files with {n_workers} parallel workers")
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            processed = list(executor.map(_process_single_file, sqlite_files))
+    else:
+        processed = [_process_single_file(f) for f in sqlite_files]
 
-            # Load the ZOI data from SQLite
-            start_time = time.time()
-            printer.information(f"  Loading from SQLite database...")
-            zoi_data = load_zoi_data_from_sqlite(sqlite_file)
-            load_time = time.time() - start_time
-            printer.information(f"  Loaded in {load_time:.2f} seconds")
-
-            # Load bus zones
-            bus_zones = load_bus_zones_from_sqlite(sqlite_file)
-
-            # Load weighted ENS and PNS (total and per-zone)
-            ens, pns = None, None
-            ens_pns_per_zone = {}
-            try:
-                if bus_zones:
-                    ens_pns_per_zone = load_ens_pns_per_zone_from_sqlite(sqlite_file, bus_zones)
-                    ens = ens_pns_per_zone.get('_total', (0, 0))[0]
-                    pns = ens_pns_per_zone.get('_total', (0, 0))[1]
-                else:
-                    ens, pns = load_ens_pns_from_sqlite(sqlite_file)
-                printer.information(f"  ENS: {ens:.2f}, PNS: {pns:.2f}")
-            except Exception as e:
-                printer.warning(f"  Could not load ENS/PNS: {e}")
-
-            # Compute per-zone objectives
-            per_zone_objectives = {}
-            if bus_zones:
-                per_zone_objectives = compute_per_zone_objectives(zoi_data, bus_zones)
-
-            # Calculate total objective from data (for all cases)
-            calc_total_obj = None
-            stored_total_obj = None
-            try:
-                # Get stored objective if available
-                if 'total_objective' in zoi_data:
-                    stored_total_obj = zoi_data['total_objective']
-
-                # Calculate total objective from components
-                obj_data = zoi_data['objective']
-                var_data = zoi_data['var_values']
-                calc_total_obj = obj_data['constant']
-
-                # Use (var_name, index) composite keys
-                for (var_name, idx), coef in zip(obj_data['linear_vars_info'], obj_data['linear_coefs']):
-                    key = (var_name, idx)
-                    if key in var_data:
-                        calc_total_obj += coef * var_data[key]
-            except Exception as e:
-                printer.warning(f"  Could not calculate total objective: {e}")
-
-            if calc_total_obj is not None:
-                printer.success(f"  Calculated Total Objective: {calc_total_obj:.2f}")
-
-                # Compare with stored objective
-                if stored_total_obj is not None:
-                    diff = abs(calc_total_obj - stored_total_obj)
-                    rel_diff_pct = (diff / stored_total_obj * 100) if stored_total_obj != 0 else 0.0
-                    if diff > 0.01:  # Tolerance of 0.01
-                        printer.warning(f"  Stored Total Objective: {stored_total_obj:.2f} (DIFFERENCE: {diff:.4f}, {rel_diff_pct:.4f}%)")
-                    else:
-                        printer.information(f"  Stored Total Objective: {stored_total_obj:.2f} (matches calculated)")
-                else:
-                    printer.warning(f"  Stored Total Objective: Not available in data")
-
-            results.append((sqlite_file, input_dir, limit_k, dc_buffer, tp_buffer, zone, demand, pmax, calc_total_obj, is_regret_file, ens, pns))
-
-            # Store file data
-            file_data = {
-                'sqlite_file': sqlite_file,
-                'input_dir': input_dir,
-                'limit_k': limit_k,
-                'dc_buffer': dc_buffer,
-                'tp_buffer': tp_buffer,
-                'zone': zone,
-                'demand': demand,
-                'pmax': pmax,
-                'zoi_data': zoi_data,
-                'total_obj': calc_total_obj,
-                'work_units': zoi_data.get('work_units'),
-                'ens': ens,
-                'pns': pns,
-                'bus_zones': bus_zones,
-                'per_zone_objectives': per_zone_objectives,
-                'ens_pns_per_zone': ens_pns_per_zone,
-                'util_source_csv': meta.get('util_source_csv'),
-                'util_dc_threshold': meta.get('util_dc_threshold'),
-                'util_tp_threshold': meta.get('util_tp_threshold'),
-            }
-
-            # Separate into uniform, zone-specific, regret, and utilization
-            if is_regret_file:
-                regret_files.append(file_data)
-            elif is_utilization_run(meta):
-                utilization_files.append(file_data)
-            elif is_uniform_representation(zone):
-                uniform_files.append(file_data)
+    for file_data, result_tuple, is_regret_file, meta, logs in processed:
+        # Print log messages
+        for level, msg in logs:
+            if level == 'error':
+                printer.error(msg)
+            elif level == 'warn':
+                printer.warning(msg)
+            elif level == 'success':
+                printer.success(msg)
             else:
-                all_files_data.append(file_data)
+                printer.information(msg)
 
-        except Exception as e:
-            printer.error(f"  Failed to process '{sqlite_file}': {e}")
+        if file_data is None:
+            continue
+
+        results.append(result_tuple)
+        zone = file_data['zone']
+
+        if is_regret_file:
+            regret_files.append(file_data)
+        elif is_utilization_run(meta):
+            utilization_files.append(file_data)
+        elif is_uniform_representation(zone):
+            uniform_files.append(file_data)
+        else:
+            all_files_data.append(file_data)
+
+    printer.information(f"\nProcessed {len(sqlite_files)} files in {time.time() - start_time:.2f}s")
 
     # Print summary
     if results:

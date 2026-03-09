@@ -50,6 +50,7 @@ DEFAULTS = {
     "number_of_rps": 0,
     "length_of_rps": 24,
     "limit_k": None,
+    "tp": False,
 }
 
 # Keys that form the comparison group (everything except scale_inflows / aggregation / is_regret)
@@ -65,6 +66,7 @@ GROUP_KEYS = [
     "number_of_rps",
     "length_of_rps",
     "limit_k",
+    "tp",
 ]
 
 
@@ -198,6 +200,8 @@ def _group_label(params):
         parts.append("rMIP")
     if params["single_node"]:
         parts.append("SN")
+    if params["tp"]:
+        parts.append("TP")
     if params["number_of_rps"] != 0:
         parts.append(f"rps={params['number_of_rps']}")
     if params["length_of_rps"] != 24:
@@ -273,7 +277,10 @@ def _print_table(group_label, rows):
                 line += f" | {'N/A':>{W_ABS}s}  {'N/A':>{W_PCT}s}"
             else:
                 diff, pct = val
-                line += f" | {diff:>+{W_ABS},.0f}  {pct:>+{W_PCT - 1}.2f}%"
+                if pct is None:
+                    line += f" | {diff:>+{W_ABS},.0f}  {'N/A':>{W_PCT}s}"
+                else:
+                    line += f" | {diff:>+{W_ABS},.0f}  {pct:>+{W_PCT - 1}.2f}%"
 
         printer.information(line + " |")
 

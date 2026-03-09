@@ -372,12 +372,12 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
 
     if scale_demand != SCALE_DEFAULT:
         printer.information(f"Scaling demand by factor {scale_demand}")
-        identifier_parts_base.append(f"demand{scale_demand:.1f}")
+        identifier_parts_base.append(f"demand{scale_demand:g}")
         cs_base.dPower_Demand['value'] *= scale_demand
 
     if scale_pmax != SCALE_DEFAULT:
         printer.information(f"Scaling pPmax (line capacity) by factor {scale_pmax}")
-        identifier_parts_base.append(f"pmax{scale_pmax:.1f}")
+        identifier_parts_base.append(f"pmax{scale_pmax:g}")
         cs_base.dPower_Network['pPmax'] *= scale_pmax
 
     # --- Parse utilization args ---
@@ -443,8 +443,7 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
             # Lazy-load the source model's vGenInvest
             if current_zoi not in source_vGenInvest:
                 if is_utilization_regret:
-                    source_identifier = Path(util_csv).stem.removeprefix("TR-EvaluateLines-")
-                    source_id = f"{source_identifier}-utilDC{dc_th}-TP{tp_th}"
+                    source_id = "-".join(identifier_parts_base + [f"utilDC{dc_th}-TP{tp_th}"])
                 elif is_uniform_regret or current_zoi is None or current_zoi == 'None':
                     source_id = "-".join(identifier_parts_base)  # Don't include buffers for uniform or None
                     if is_uniform_regret:
@@ -482,8 +481,7 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
             assign_technical_representation_by_utilization(cs, util_dict, dc_th, tp_th)
             printer.information(f"Ensuring no SN connections between different zones (upgrading to TP if needed)")
             prevent_cross_zone_sn(cs)
-            source_identifier = Path(util_csv).stem.removeprefix("TR-EvaluateLines-")
-            identifier_parts = [f"{source_identifier}-utilDC{dc_th}-TP{tp_th}"]
+            identifier_parts = identifier_parts_base.copy() + [f"utilDC{dc_th}-TP{tp_th}"]
 
         elif current_zoi is None or current_zoi == 'None':
             printer.information("No ZOI adjustment - using original technical representations from data files")

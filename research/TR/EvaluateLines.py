@@ -86,9 +86,9 @@ def build_identifier(meta):
     if meta.get('limit_k'):
         parts.append(f"limitK{meta['limit_k']}")
     if meta.get('demand', 1.0) != SCALE_DEFAULT:
-        parts.append(f"demand{meta['demand']:.1f}")
+        parts.append(f"demand{meta['demand']:g}")
     if meta.get('pmax', 1.0) != SCALE_DEFAULT:
-        parts.append(f"pmax{meta['pmax']:.1f}")
+        parts.append(f"pmax{meta['pmax']:g}")
 
     zone = meta.get('zone')
     if not is_uniform_representation(zone):
