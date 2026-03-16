@@ -17,7 +17,7 @@ import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
-from InOutModule import SQLiteWriter, ExcelWriter, Utilities
+from InOutModule import SQLiteWriter, Utilities
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.ExcelWriter import ExcelWriter
 from InOutModule.printer import Printer
@@ -33,6 +33,44 @@ printer.set_width(300)
 
 pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
+
+
+def write_results(model, file_prefix: str, no_sqlite: bool, no_excel: bool):
+    if not no_sqlite:
+        sqlite_timer = time.time()
+        sqlite_file = f"{file_prefix}.sqlite"
+        printer.information(f"Writing model to SQLite database: {sqlite_file}")
+        SQLiteWriter.model_to_sqlite(model, sqlite_file)
+        printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
+
+    if not no_excel:
+        excel_timer = time.time()
+        excel_file = f"{file_prefix}.xlsx"
+        printer.information(f"Writing model to Excel file: {excel_file}")
+        ExcelWriter.model_to_excel(model, excel_file)
+        printer.information(f"Writing model to Excel file took {time.time() - excel_timer:.2f} seconds")
+
+
+def collect_unit_commitment_data(case_label: str, model, is_regret: bool = False) -> typing.List[pd.Series]:
+    rows = []
+    for i in list(model.vCommit):
+        show_shutdown = (is_regret and model.vShutdown[i].fixed) or not model.vShutdown[i].stale
+        row = {"case": case_label, "rp": i[0], "k": i[1], "g": i[2],
+               "vCommit": pyo.value(model.vCommit[i]),
+               "vStartup": pyo.value(model.vStartup[i]),
+               "vShutdown": pyo.value(model.vShutdown[i]) if show_shutdown else None,
+               "vGenP": pyo.value(model.vGenP[i]),
+               "vGenP1": pyo.value(model.vGenP1[i]),
+               "pMinUpTime": pyo.value(model.pMinUpTime[i[2]]),
+               "pMinDownTime": pyo.value(model.pMinDownTime[i[2]]),
+               "pDemandP": sum(pyo.value(model.pDemandP[i[0], i[1], node]) for node in model.i),
+               "vPNS": sum(pyo.value(model.vPNS[i[0], i[1], node]) for node in model.i),
+               "vEPS": sum(pyo.value(model.vEPS[i[0], i[1], node]) for node in model.i)}
+        if is_regret:
+            row["vCommitCorrectHigher"] = pyo.value(model.vCommitCorrectHigher[i]) if not model.vCommitCorrectHigher[i].stale else None
+            row["vCommitCorrectLower"] = pyo.value(model.vCommitCorrectLower[i]) if not model.vCommitCorrectLower[i].stale else None
+        rows.append(pd.Series(row))
+    return rows
 
 
 def execute_case_studies(case_study_path: str, unit_commitment_result_file_template: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False,
@@ -175,19 +213,8 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
         work_time = optimizer._solver_model.Work
         printer.information(f"Solving model took {timing_solving:.2f} seconds ({work_time:.2f} work units)")
 
-        if not no_sqlite:
-            sqlite_timer = time.time()
-            sqlite_file = f"{case_name}-{edgeHandlingType.replace(".", "")}.sqlite"
-            printer.information(f"Writing model to SQLite database: {sqlite_file}")
-            SQLiteWriter.model_to_sqlite(lego.model, sqlite_file)
-            printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
-
-        if not no_excel:
-            excel_timer = time.time()
-            excel_file = f"{case_name}-{edgeHandlingType.replace('.', '')}.xlsx"
-            printer.information(f"Writing model to Excel file: {excel_file}")
-            ExcelWriter.model_to_excel(lego.model, excel_file)
-            printer.information(f"Writing model to Excel file took {time.time() - excel_timer:.2f} seconds")
+        file_prefix = f"{case_name}-{edgeHandlingType.replace('.', '')}"
+        write_results(lego.model, file_prefix, no_sqlite, no_excel)
 
         match result.solver.termination_condition:
             case pyo.TerminationCondition.optimal:
@@ -208,17 +235,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
                     counter_binaries += 1
 
         if result.solver.termination_condition == pyo.TerminationCondition.optimal and write_unit_commitment_result_file:
-            for x in [pd.Series({"case": edgeHandlingType, "rp": i[0], "k": i[1], "g": i[2],
-                                 "vCommit": pyo.value(model.vCommit[i]),
-                                 "vStartup": pyo.value(model.vStartup[i]),
-                                 "vShutdown": pyo.value(model.vShutdown[i]) if not model.vShutdown[i].stale else None,
-                                 "vGenP": pyo.value(model.vGenP[i]),
-                                 "vGenP1": pyo.value(model.vGenP1[i]),
-                                 "pMinUpTime": pyo.value(model.pMinUpTime[i[2]]),
-                                 "pMinDownTime": pyo.value(model.pMinDownTime[i[2]]),
-                                 "pDemandP": sum([pyo.value(model.pDemandP[i[0], i[1], node]) for node in model.i]),
-                                 "vPNS": sum([pyo.value(model.vPNS[i[0], i[1], node]) for node in model.i]),
-                                 "vEPS": sum([pyo.value(model.vEPS[i[0], i[1], node]) for node in model.i])}) for i in list(model.vCommit)]:
+            for x in collect_unit_commitment_data(edgeHandlingType, model):
                 df = pd.concat([df, x], axis=1)
 
             if calculate_regret and edgeHandlingType != "Truth " and not skip_truth:
@@ -231,36 +248,12 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
                 regret_result, regret_timing_solving, regret_objective_value = regret_lego.solve_model(already_solved_ok=True)
                 printer.information(f"Solving regret model took {regret_timing_solving:.2f} seconds")
 
-                if not no_sqlite:
-                    sqlite_timer = time.time()
-                    sqlite_file = f"{case_name}-{edgeHandlingType.replace(".", "")}-regret.sqlite"
-                    printer.information(f"Writing model to SQLite database: {sqlite_file}")
-                    SQLiteWriter.model_to_sqlite(regret_lego.model, sqlite_file)
-                    printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
-
-                if not no_excel:
-                    excel_timer = time.time()
-                    excel_file = f"{case_name}-{edgeHandlingType.replace('.', '')}-regret.xlsx"
-                    printer.information(f"Writing model to Excel file: {excel_file}")
-                    ExcelWriter.model_to_excel(regret_lego.model, excel_file)
-                    printer.information(f"Writing model to Excel file took {time.time() - excel_timer:.2f} seconds")
+                write_results(regret_lego.model, f"{file_prefix}-regret", no_sqlite, no_excel)
 
                 match regret_result.solver.termination_condition:
                     case pyo.TerminationCondition.optimal:
                         printer.success("Optimal solution found")
-                        for x in [pd.Series({"case": f"{edgeHandlingType}-regret", "rp": i[0], "k": i[1], "g": i[2],
-                                             "vCommit": pyo.value(regret_lego.model.vCommit[i]),
-                                             "vStartup": pyo.value(regret_lego.model.vStartup[i]),
-                                             "vShutdown": pyo.value(regret_lego.model.vShutdown[i]) if regret_lego.model.vShutdown[i].fixed or not regret_lego.model.vShutdown[i].stale else None,
-                                             "vGenP": pyo.value(regret_lego.model.vGenP[i]),
-                                             "vGenP1": pyo.value(regret_lego.model.vGenP1[i]),
-                                             "pMinUpTime": pyo.value(regret_lego.model.pMinUpTime[i[2]]),
-                                             "pMinDownTime": pyo.value(regret_lego.model.pMinDownTime[i[2]]),
-                                             "pDemandP": sum([pyo.value(regret_lego.model.pDemandP[i[0], i[1], node]) for node in regret_lego.model.i]),
-                                             "vPNS": sum([pyo.value(regret_lego.model.vPNS[i[0], i[1], node]) for node in regret_lego.model.i]),
-                                             "vEPS": sum([pyo.value(regret_lego.model.vEPS[i[0], i[1], node]) for node in regret_lego.model.i]),
-                                             "vCommitCorrectHigher": pyo.value(regret_lego.model.vCommitCorrectHigher[i]) if not regret_lego.model.vCommitCorrectHigher[i].stale else None,
-                                             "vCommitCorrectLower": pyo.value(regret_lego.model.vCommitCorrectLower[i]) if not regret_lego.model.vCommitCorrectLower[i].stale else None, }) for i in list(regret_lego.model.vCommit)]:
+                        for x in collect_unit_commitment_data(f"{edgeHandlingType}-regret", regret_lego.model, is_regret=True):
                             df = pd.concat([df, x], axis=1)
                     case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
                         printer.error(f"Model is {regret_result.solver.termination_condition}, logging infeasible constraints:")
@@ -478,7 +471,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-excel", action="store_true", help="Do not save results to Excel file")
     parser.add_argument("--no-regret-plot", action="store_true", help="Do not plot regret results")
     parser.add_argument("--calculate-regret", action="store_true", help="Calculate regret by re-solving the truth model with fixed unit commitment from the other models (can take a while)")
-    parser.add_argument("--dont-write-unit-commitment-result-file", action="store_true", help="Write unit commitment result file (can take a while)")
+    parser.add_argument("--dont-write-unit-commitment-result-file", action="store_true", help="Do not write unit commitment result file (can take a while)")
     parser.add_argument("--relax-percentage", type=float, default=0, help="Percentage of thermal-generators to be relaxed (default: 0 = no relaxation, all binary)")
     parser.add_argument("--skip-truth", action="store_true", help="Skip solving the truth model")
     parser.add_argument("--clusters", type=int, default=1, help="Number of clusters (default: 1, i.e., no clustering)")
