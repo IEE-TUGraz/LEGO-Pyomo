@@ -75,7 +75,7 @@ def collect_unit_commitment_data(case_label: str, model, is_regret: bool = False
 
 def execute_case_studies(case_study_path: str, unit_commitment_result_file_template: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False,
                          calculate_regret: bool = False, write_unit_commitment_result_file: bool = True, relax_percentage: float = 0, skip_truth: bool = False,
-                         markov_light_only: bool = False, save_mps: bool = False) -> typing.List[str]:
+                         markov_light_only: bool = False, save_mps: bool = False, invest_regret: bool = False) -> typing.List[str]:
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
@@ -139,6 +139,7 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
             printer.information(f"Saving MPS file for case study '{case_name}' to '{mps_file}'")
             lego.model.write(mps_file)
 
+    thermalGeneratorRelaxed = {}
     if relax_percentage == 0:
         printer.information(f"Not relaxing any unit commitment variables, all thermal generators stay binary")
         count_relaxed = 0
@@ -174,7 +175,7 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
             lego.model.ePushMarkov.deactivate()
         elif case_name == "Markov":
             for g in lego.model.thermalGenerators:
-                if thermalGeneratorRelaxed[g] and not (lego.model.pMinDownTime[g] == 1 and lego.model.pMinUpTime[g] == 1):  # If the generator is relaxed and not both MinDownTime and MinUpTime are 1
+                if thermalGeneratorRelaxed.get(g, False) and not (lego.model.pMinDownTime[g] == 1 and lego.model.pMinUpTime[g] == 1):  # If the generator is relaxed and not both MinDownTime and MinUpTime are 1
                     for rp in lego.model.rp:
                         for k in lego.model.k:
                             if lego.model.k.ord(k) > max(lego.model.pMinDownTime[g], lego.model.pMinUpTime[g]):
@@ -183,17 +184,18 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
                                 lego.model.ePushMarkov[rp, k, g, i].deactivate()
 
     unit_commitment_result_file = unit_commitment_result_file_template.replace(".xlsx", f"-relaxed{count_relaxed}.xlsx")
-    execute_case_study(lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file, no_sqlite, no_excel, calculate_regret, write_unit_commitment_result_file, skip_truth)
+    execute_case_study(lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file, no_sqlite, no_excel, calculate_regret, write_unit_commitment_result_file, skip_truth, invest_regret)
     unit_commitment_result_files.append(unit_commitment_result_file)
 
     return unit_commitment_result_files
 
 
-def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit_commitment_result_file: str, no_sqlite: bool, no_excel: bool, calculate_regret: bool, write_unit_commitment_result_file: bool, skip_truth: bool):
+def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit_commitment_result_file: str, no_sqlite: bool, no_excel: bool, calculate_regret: bool, write_unit_commitment_result_file: bool, skip_truth: bool, invest_regret: bool = False):
     ########################################################################################################################
     # Evaluation
     ########################################################################################################################
     results = []
+    truth_objective = None
 
     if not skip_truth:
         truth_lego = lego_models["Truth "]
@@ -212,6 +214,9 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
         timing_solving = time.time() - start_time
         work_time = optimizer._solver_model.Work
         printer.information(f"Solving model took {timing_solving:.2f} seconds ({work_time:.2f} work units)")
+
+        if edgeHandlingType == "Truth " and result.solver.termination_condition == pyo.TerminationCondition.optimal:
+            truth_objective = objective_value
 
         file_prefix = f"{case_name}-{edgeHandlingType.replace('.', '')}"
         write_results(lego.model, file_prefix, no_sqlite, no_excel)
@@ -261,6 +266,31 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
                     case _:
                         printer.warning("Solver terminated with condition:", regret_result.solver.termination_condition)
 
+            if invest_regret and edgeHandlingType != "Truth " and not skip_truth:
+                printer.information(f"Calculating invest-regret for '{edgeHandlingType}': fixing vGenInvest into truth model")
+                invest_regret_lego = truth_lego.copy()
+
+                # Fix vGenInvest to the values from the edge-handling model
+                for g in invest_regret_lego.model.g:
+                    invest_regret_lego.model.vGenInvest[g].value = model.vGenInvest[g].value
+                    invest_regret_lego.model.vGenInvest[g].fixed = True
+
+                # Re-solve the truth model with fixed investments
+                printer.information("Re-solving truth model with fixed vGenInvest for invest-regret calculation")
+                invest_regret_result, invest_regret_timing, invest_regret_objective = invest_regret_lego.solve_model(already_solved_ok=True)
+                printer.information(f"Solving invest-regret model took {invest_regret_timing:.2f} seconds")
+
+                write_results(invest_regret_lego.model, f"{file_prefix}-invest-regret", no_sqlite, no_excel)
+
+                match invest_regret_result.solver.termination_condition:
+                    case pyo.TerminationCondition.optimal:
+                        printer.success(f"Optimal invest-regret solution: {invest_regret_objective:.4f}")
+                    case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
+                        printer.error(f"Invest-regret model is {invest_regret_result.solver.termination_condition}, logging infeasible constraints:")
+                        log_infeasible_constraints(invest_regret_lego.model)
+                    case _:
+                        printer.warning("Invest-regret solver terminated with condition:", invest_regret_result.solver.termination_condition)
+
         entry = {
             "Case": f"{case_name}-{edgeHandlingType}",
             "Objective": objective_value if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1,
@@ -284,6 +314,8 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
             "vPNS": sum(model.vPNS[rp, k, i].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "vEPS": sum(model.vEPS[rp, k, i].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "vGenInvest": sum(model.vGenInvest[g].value if model.vGenInvest[g].value is not None else 0 for g in model.g),
+            "Invest Regret Obj.": -1 if not invest_regret else (invest_regret_objective if invest_regret_result.solver.termination_condition == pyo.TerminationCondition.optimal and edgeHandlingType != "Truth " else -1),
+            "Invest Regret": -1 if not invest_regret else ((invest_regret_objective - truth_objective) if edgeHandlingType != "Truth " and truth_objective is not None and invest_regret_result.solver.termination_condition == pyo.TerminationCondition.optimal else -1),
             "model": model
         }
         ddict = defaultdict(int)
@@ -303,7 +335,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
                 f.write(",".join(entry.keys()) + "\n")
                 f.write(",".join([f"{v}" for v in entry.values()]) + "\n")
 
-    values = ["Case", "Objective", "Solve Time", "vGenP", "vCommit", "vStartup", "vShutdown", "vPNS", "vEPS", "Objective Regret"]
+    values = ["Case", "Objective", "Solve Time", "vGenP", "vCommit", "vStartup", "vShutdown", "vPNS", "vEPS", "Objective Regret", "Invest Regret"]
     table = []
     for v in values:
         column = [v]
@@ -340,7 +372,7 @@ def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlit
          relax_percentage: float = 0.0, skip_truth: bool = False,
          clusters: int = 1, cluster_stepsize: int = 1, cluster_steps: int = 0,
          shorten_until_k: int | None = None, shift: int = 0, stretch_demand: float = 1,
-         reuse_inputfiles: bool = False, markov_light_only: bool = False, save_mps: bool = False):
+         reuse_inputfiles: bool = False, markov_light_only: bool = False, save_mps: bool = False, invest_regret: bool = False):
     ew = ExcelWriter()
 
     for folder in caseStudyFolder.split(","):
@@ -444,7 +476,7 @@ def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlit
                 printer.information(f"Logfile: '{printer.get_logfile()}'")
 
                 printer.information(f"Unit commitment result file template: '{unit_commitment_result_file_template}'")
-                unit_commitment_result_files = execute_case_studies(cluster_folder, unit_commitment_result_file_template, no_sqlite, no_excel, calculate_regret, not dont_write_unit_commitment_result_file, relax_percentage, skip_truth, markov_light_only, save_mps)
+                unit_commitment_result_files = execute_case_studies(cluster_folder, unit_commitment_result_file_template, no_sqlite, no_excel, calculate_regret, not dont_write_unit_commitment_result_file, relax_percentage, skip_truth, markov_light_only, save_mps, invest_regret)
 
                 if plot:
                     printer.information(f"Plotting unit commitment(s): {unit_commitment_result_files}")
@@ -483,6 +515,7 @@ if __name__ == "__main__":
     parser.add_argument("--reuse-inputfiles", action="store_true", help="Reuse input files (e.g., after shortening) instead of copying them to a new folder")
     parser.add_argument("--markov-light-only", action="store_true", help="Only execute the Markov-light-version of Markov")
     parser.add_argument("--save-mps", action="store_true", help="Save MPS files for each case study")
+    parser.add_argument("--invest-regret", action="store_true", help="Calculate invest-regret: fix vGenInvest from each edge-handling model into the truth model and compare objectives")
     args = parser.parse_args()
 
     kwargs = vars(args)
