@@ -517,16 +517,6 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
             entry[k] = v
         results.append(entry)
 
-        # Write entry to solutions logfile
-        log_file = printer.get_logfile().replace(".log", "-solutions.csv")
-        if os.path.exists(log_file):
-            with open(log_file, "a") as f:
-                f.write(",".join([f"{v}" for v in entry.values()]) + "\n")
-        else:
-            with open(log_file, "w") as f:
-                f.write(",".join(entry.keys()) + "\n")
-                f.write(",".join([f"{v}" for v in entry.values()]) + "\n")
-
     values = ["Case", "Objective", "Solve Time", "vGenP", "vCommit", "vStartup", "vShutdown", "vPNS", "vEPS", "Objective Regret", "Invest Regret"]
     table = []
     for v in values:
@@ -562,7 +552,7 @@ def copy_files_non_recursive(src_folder: str, dst_folder: str):
 def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlite: bool = False, calculate_regret: bool = False,
          relax_percentage: float = 0.0, skip_truth: bool = False,
          clusters: int = 1, cluster_stepsize: int = 1, cluster_steps: int = 0,
-         shorten_until_k: int | None = None, shift: int = 0, stretch_demand: float = 1,
+         limit_k: str | None = None, shift: int = 0, stretch_demand: float = 1,
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, save_mps: bool = False, invest_regret: bool = False):
     ew = ExcelWriter()
 
@@ -572,11 +562,12 @@ def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlit
                 folder += "/"
             folder_name = os.path.basename(os.path.normpath(folder))
 
-            if shorten_until_k is not None:
-                printer.information(f"Shortening case study to k<={shorten_until_k}")
-                new_folder = folder + f"untilK{shorten_until_k}/"
+            if limit_k is not None:
+                printer.information(f"Limiting K values to '{limit_k}'")
+                start_k, end_k = limit_k.split("-")
+                new_folder = folder + f"limitK{limit_k}/"
                 if reuse_inputfiles and os.path.exists(new_folder):
-                    printer.information(f"Reusing already shortened case study in '{new_folder}'")
+                    printer.information(f"Reusing already limited case study in '{new_folder}'")
                     folder = new_folder
                 else:
                     copy_files_non_recursive(folder, new_folder)  # Copy original data to new folder
@@ -584,13 +575,13 @@ def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlit
                     printer.information(f"Copied original case study to '{folder}'")
 
                     cs = CaseStudy(folder, do_not_scale_units=True)
-                    printer.information(f"Case study loaded, now shortening")
-                    cs = cs.filter_timesteps("k0001", f"k{shorten_until_k:04}")
+                    printer.information(f"Case study loaded, now limiting timesteps")
+                    cs = cs.filter_timesteps(start_k, end_k)
                     if not os.path.exists(folder):
                         os.makedirs(folder)
-                    printer.information(f"Shortened, now writing to '{folder}'")
+                    printer.information(f"Limited, now writing to '{folder}'")
                     ew.write_caseStudy(cs, folder)
-                    printer.information(f"Saved shortened case study to '{folder}'")
+                    printer.information(f"Saved limited case study to '{folder}'")
 
             if shift != 0:
                 printer.information(f"Shifting case study by {shift} hours")
@@ -692,7 +683,7 @@ if __name__ == "__main__":
     parser.add_argument("--clusters", type=int, default=1, help="Number of clusters (default: 1, i.e., no clustering)")
     parser.add_argument("--cluster-stepsize", type=int, default=1, help="If in-/decreasing number of clusters should be used (default: 1, leave cluster-steps default to not use in-/decreasing number of clusters)")
     parser.add_argument("--cluster-steps", type=int, default=0, help="Number of steps for in-/decreasing number of clusters (default: 0, i.e., leave clusters as given)")
-    parser.add_argument("--shorten-until-k", type=int, default=None, help="Shorten the case study to only consider k=1..N (for faster testing), e.g., 24 for one day, 168 for one week")
+    parser.add_argument("--limitK", type=str, help="Limit the ks, format: 'k0025-k0048'", nargs="?", default=None)
     parser.add_argument("--shift", type=int, default=0, help="Shift the time series by N hours (for testing purposes), e.g., 15 to shift by 15 hours")
     parser.add_argument("--stretch-demand", type=float, default=1.0, help="Stretch the demand by a factor (for testing purposes), e.g., 1.1 to increase max of demand by 5% and decrease min by 5%")
     parser.add_argument("--reuse-inputfiles", action="store_true", help="Reuse input files (e.g., after shortening) instead of copying them to a new folder")
