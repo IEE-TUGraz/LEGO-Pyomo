@@ -35,20 +35,13 @@ pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
 
-def write_results(model, file_prefix: str, no_sqlite: bool, no_excel: bool):
+def write_results(model, file_prefix: str, no_sqlite: bool):
     if not no_sqlite:
         sqlite_timer = time.time()
         sqlite_file = f"{file_prefix}.sqlite"
         printer.information(f"Writing model to SQLite database: {sqlite_file}")
         SQLiteWriter.model_to_sqlite(model, sqlite_file)
         printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
-
-    if not no_excel:
-        excel_timer = time.time()
-        excel_file = f"{file_prefix}.xlsx"
-        printer.information(f"Writing model to Excel file: {excel_file}")
-        ExcelWriter.model_to_excel(model, excel_file)
-        printer.information(f"Writing model to Excel file took {time.time() - excel_timer:.2f} seconds")
 
 
 def collect_unit_commitment_data(case_label: str, model, is_regret: bool = False) -> typing.List[pd.Series]:
@@ -73,7 +66,7 @@ def collect_unit_commitment_data(case_label: str, model, is_regret: bool = False
     return rows
 
 
-def execute_case_studies(case_study_path: str, unit_commitment_result_file_template: str = "markov.xlsx", no_sqlite: bool = False, no_excel: bool = False,
+def execute_case_studies(case_study_path: str, unit_commitment_result_file_template: str = "markov.xlsx", no_sqlite: bool = False,
                          calculate_regret: bool = False, write_unit_commitment_result_file: bool = True, relax_percentage: float = 0, skip_truth: bool = False,
                          markov_light_only: bool = False, save_mps: bool = False, invest_regret: bool = False) -> typing.List[str]:
     ########################################################################################################################
@@ -184,13 +177,13 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
                                 lego.model.ePushMarkov[rp, k, g, i].deactivate()
 
     unit_commitment_result_file = unit_commitment_result_file_template.replace(".xlsx", f"-relaxed{count_relaxed}.xlsx")
-    execute_case_study(lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file, no_sqlite, no_excel, calculate_regret, write_unit_commitment_result_file, skip_truth, invest_regret)
+    execute_case_study(lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file, no_sqlite, calculate_regret, write_unit_commitment_result_file, skip_truth, invest_regret)
     unit_commitment_result_files.append(unit_commitment_result_file)
 
     return unit_commitment_result_files
 
 
-def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit_commitment_result_file: str, no_sqlite: bool, no_excel: bool, calculate_regret: bool, write_unit_commitment_result_file: bool, skip_truth: bool, invest_regret: bool = False):
+def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit_commitment_result_file: str, no_sqlite: bool, calculate_regret: bool, write_unit_commitment_result_file: bool, skip_truth: bool, invest_regret: bool = False):
     ########################################################################################################################
     # Evaluation
     ########################################################################################################################
@@ -219,7 +212,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
             truth_objective = objective_value
 
         file_prefix = f"{case_name}-{edgeHandlingType.replace('.', '')}"
-        write_results(lego.model, file_prefix, no_sqlite, no_excel)
+        write_results(lego.model, file_prefix, no_sqlite)
 
         match result.solver.termination_condition:
             case pyo.TerminationCondition.optimal:
@@ -253,7 +246,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
                 regret_result, regret_timing_solving, regret_objective_value = regret_lego.solve_model(already_solved_ok=True)
                 printer.information(f"Solving regret model took {regret_timing_solving:.2f} seconds")
 
-                write_results(regret_lego.model, f"{file_prefix}-regret", no_sqlite, no_excel)
+                write_results(regret_lego.model, f"{file_prefix}-regret", no_sqlite)
 
                 match regret_result.solver.termination_condition:
                     case pyo.TerminationCondition.optimal:
@@ -280,7 +273,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
                 invest_regret_result, invest_regret_timing, invest_regret_objective = invest_regret_lego.solve_model(already_solved_ok=True)
                 printer.information(f"Solving invest-regret model took {invest_regret_timing:.2f} seconds")
 
-                write_results(invest_regret_lego.model, f"{file_prefix}-invest-regret", no_sqlite, no_excel)
+                write_results(invest_regret_lego.model, f"{file_prefix}-invest-regret", no_sqlite)
 
                 match invest_regret_result.solver.termination_condition:
                     case pyo.TerminationCondition.optimal:
@@ -368,7 +361,7 @@ def copy_files_non_recursive(src_folder: str, dst_folder: str):
             shutil.copy2(s, d)
 
 
-def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlite: bool = False, no_excel: bool = False, no_regret_plot: bool = False, calculate_regret: bool = False, dont_write_unit_commitment_result_file: bool = False,
+def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlite: bool = False, no_regret_plot: bool = False, calculate_regret: bool = False, dont_write_unit_commitment_result_file: bool = False,
          relax_percentage: float = 0.0, skip_truth: bool = False,
          clusters: int = 1, cluster_stepsize: int = 1, cluster_steps: int = 0,
          shorten_until_k: int | None = None, shift: int = 0, stretch_demand: float = 1,
@@ -476,7 +469,7 @@ def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlit
                 printer.information(f"Logfile: '{printer.get_logfile()}'")
 
                 printer.information(f"Unit commitment result file template: '{unit_commitment_result_file_template}'")
-                unit_commitment_result_files = execute_case_studies(cluster_folder, unit_commitment_result_file_template, no_sqlite, no_excel, calculate_regret, not dont_write_unit_commitment_result_file, relax_percentage, skip_truth, markov_light_only, save_mps, invest_regret)
+                unit_commitment_result_files = execute_case_studies(cluster_folder, unit_commitment_result_file_template, no_sqlite, calculate_regret, not dont_write_unit_commitment_result_file, relax_percentage, skip_truth, markov_light_only, save_mps, invest_regret)
 
                 if plot:
                     printer.information(f"Plotting unit commitment(s): {unit_commitment_result_files}")
@@ -500,7 +493,6 @@ if __name__ == "__main__":
     parser.add_argument("--plot", action="store_true", help="Plot unit commitment results")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode where exceptions are passed on")
     parser.add_argument("--no-sqlite", action="store_true", help="Do not save results to SQLite database")
-    parser.add_argument("--no-excel", action="store_true", help="Do not save results to Excel file")
     parser.add_argument("--no-regret-plot", action="store_true", help="Do not plot regret results")
     parser.add_argument("--calculate-regret", action="store_true", help="Calculate regret by re-solving the truth model with fixed unit commitment from the other models (can take a while)")
     parser.add_argument("--dont-write-unit-commitment-result-file", action="store_true", help="Do not write unit commitment result file (can take a while)")
