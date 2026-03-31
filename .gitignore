@@ -25,5 +25,8 @@ LEGO*.log*
 *.sqlite
 model.xlsx
 
+# Output files from scripts in research/
+MK-*.png
+
 # Operating system files
 .DS_Store

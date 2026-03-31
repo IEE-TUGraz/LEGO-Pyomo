@@ -517,13 +517,30 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
             entry[k] = v
         results.append(entry)
 
-    values = ["Case", "Objective", "Solve Time", "vGenP", "vCommit", "vStartup", "vShutdown", "vPNS", "vEPS", "Objective Regret", "Invest Regret"]
+    # Sort results: Truth first, then NoEnf., Cyclic, Markov, Markov-Strict
+    sort_order = {"Truth ": 0, "NoEnf.": 1, "Cyclic": 2, "Markov": 3, "Markov-Strict": 4}
+    results.sort(key=lambda r: sort_order.get(r["Case"].split("-")[-1], 99))
+
+    # Compute relative change columns (relative to Truth model)
+    truth_entry = next((r for r in results if r["Case"].endswith("Truth ")), None)
+    for result in results:
+        for key in ["Objective", "Solve Time", "vStartup", "vShutdown"]:
+            if truth_entry is not None and truth_entry[key] not in (-1, 0) and result[key] != -1:
+                result[f"{key} %"] = (result[key] - truth_entry[key]) / abs(truth_entry[key]) * 100
+            else:
+                result[f"{key} %"] = None
+
+    values = ["Case", "Objective", "Objective %", "Solve Time", "Solve Time %", "vGenP", "vCommit", "vStartup", "vStartup %", "vShutdown", "vShutdown %", "vPNS", "vEPS", "Objective Regret", "Invest Regret"]
     table = []
     for v in values:
         column = [v]
         for result in results:
             value = result[v]
-            if isinstance(value, float):
+            if value is None:
+                value = ""
+            elif v.endswith(" %"):
+                value = f"{value:+.0f}%"
+            elif isinstance(value, float):
                 value = f"{value:.2f}"
             elif isinstance(value, int):
                 value = f"{value:d}"
@@ -552,7 +569,7 @@ def copy_files_non_recursive(src_folder: str, dst_folder: str):
 def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlite: bool = False, calculate_regret: bool = False,
          relax_percentage: float = 0.0, skip_truth: bool = False,
          clusters: int = 1, cluster_stepsize: int = 1, cluster_steps: int = 0,
-         limit_k: str | None = None, shift: int = 0, stretch_demand: float = 1,
+         limitK: str | None = None, shift: int = 0, stretch_demand: float = 1,
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, save_mps: bool = False, invest_regret: bool = False):
     ew = ExcelWriter()
 
@@ -562,10 +579,10 @@ def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlit
                 folder += "/"
             folder_name = os.path.basename(os.path.normpath(folder))
 
-            if limit_k is not None:
-                printer.information(f"Limiting K values to '{limit_k}'")
-                start_k, end_k = limit_k.split("-")
-                new_folder = folder + f"limitK{limit_k}/"
+            if limitK is not None:
+                printer.information(f"Limiting K values to '{limitK}'")
+                start_k, end_k = limitK.split("-")
+                new_folder = folder + f"limitK{limitK}/"
                 if reuse_inputfiles and os.path.exists(new_folder):
                     printer.information(f"Reusing already limited case study in '{new_folder}'")
                     folder = new_folder
