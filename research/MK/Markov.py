@@ -19,7 +19,7 @@ import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
-from InOutModule import SQLiteWriter, Utilities
+from InOutModule import ExcelReader, SQLiteWriter, Utilities
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.ExcelWriter import ExcelWriter
 from InOutModule.printer import Printer
@@ -219,6 +219,60 @@ def plot_unit_commitment(sqlite_files: typing.List[str], case_labels: typing.Lis
     plt.show()
 
 
+def _add_push_markov_constraints(lego: LEGO, thermalGeneratorRelaxed: dict):
+    """Add ePushMarkov variables and constraints to a LEGO model (Markov-Strict only).
+
+    These constraints force vStartup and vShutdown to be either 0 or the maximum they
+    can be due to MinUp/DownTime, ensuring correct push behavior across representative
+    period boundaries.
+    """
+    model = lego.model
+    transition_matrix = lego.cs.rpTransitionMatrixRelativeFrom
+
+    # Variables
+    model.vU0 = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to indicate that vStartup is 0")
+    model.vUX = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to indicate that vStartup is X (the maximum it can be due to MinDownTime)")
+    model.vD0 = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to indicate that vShutdown is 0")
+    model.vDY = pyo.Var(model.rp, model.k, model.thermalGenerators, domain=pyo.Binary, doc="Binary variable to indicate that vShutdown is Y (the maximum it can be due to MinUpTime)")
+
+    model.pushMarkovCounter = pyo.Set(initialize=range(1, 11 + 1))
+    model.ePushMarkov = pyo.Constraint(model.rp, model.k, model.thermalGenerators, model.pushMarkovCounter,
+                                       doc="Constraints to force vStartup and vShutdown to be either 0 or the maximum it can be due to MinUp/DownTime")
+
+    for t in model.thermalGenerators:
+        if model.pMinDownTime[t] == 1 and model.pMinUpTime[t] == 1:
+            continue
+        is_relaxed = thermalGeneratorRelaxed.get(t, False)
+        for k in model.k:
+            if model.k.ord(k) > max(model.pMinDownTime[t], model.pMinUpTime[t]):
+                break
+            for rp in model.rp:
+                if model.k.ord(k) == 1:
+                    prev_commit = markov_summand(model.rp, rp, False, model.k.prevw(k), model.vCommit, transition_matrix, t)
+                else:
+                    prev_commit = model.vCommit[rp, model.k.prev(k), t]
+
+                X = 1 - prev_commit - markov_sum(model.rp, rp, model.k, model.k.ord(k) - model.pMinDownTime[t] + 1, model.k.ord(k), model.vShutdown, transition_matrix, t)
+                model.ePushMarkov[rp, k, t, 1] = (model.vStartup[rp, k, t] <= 1 - model.vU0[rp, k, t])
+                model.ePushMarkov[rp, k, t, 2] = (model.vStartup[rp, k, t] <= X + (1 - model.vUX[rp, k, t]))
+                model.ePushMarkov[rp, k, t, 3] = (model.vStartup[rp, k, t] >= X - (1 - model.vUX[rp, k, t]))
+                model.ePushMarkov[rp, k, t, 4] = (model.vU0[rp, k, t] <= model.vDY[rp, k, t] + (1 - prev_commit))
+                model.ePushMarkov[rp, k, t, 5] = (model.vUX[rp, k, t] <= model.vD0[rp, k, t])
+
+                Y = prev_commit - markov_sum(model.rp, rp, model.k, model.k.ord(k) - model.pMinUpTime[t] + 1, model.k.ord(k), model.vStartup, transition_matrix, t)
+                model.ePushMarkov[rp, k, t, 6] = (model.vShutdown[rp, k, t] <= 1 - model.vD0[rp, k, t])
+                model.ePushMarkov[rp, k, t, 7] = (model.vShutdown[rp, k, t] <= Y + (1 - model.vDY[rp, k, t]))
+                model.ePushMarkov[rp, k, t, 8] = (model.vShutdown[rp, k, t] >= Y - (1 - model.vDY[rp, k, t]))
+                model.ePushMarkov[rp, k, t, 9] = (model.vD0[rp, k, t] <= model.vUX[rp, k, t] + prev_commit)
+                model.ePushMarkov[rp, k, t, 10] = (model.vDY[rp, k, t] <= model.vU0[rp, k, t])
+                model.ePushMarkov[rp, k, t, 11] = (1 <= model.vU0[rp, k, t] / 2 + model.vUX[rp, k, t] + model.vD0[rp, k, t] / 2 + model.vDY[rp, k, t])
+
+                # Deactivate constraints for relaxed generators
+                if is_relaxed:
+                    for i in model.pushMarkovCounter:
+                        model.ePushMarkov[rp, k, t, i].deactivate()
+
+
 def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          calculate_regret: bool = False, relax_percentage: float = 0, skip_truth: bool = False,
                          enable_strict_markov: bool = False, save_mps: bool = False, invest_regret: bool = False) -> typing.Tuple[typing.List[str], typing.List[str]]:
@@ -245,16 +299,16 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
     cs_cyclic.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "cyclic"
     cs_cyclic.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"] = "cyclic"
 
-    if not markov_light_only:
-        cs_markov = cs_notEnforced.copy()
-        cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "markov"
-        cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "markov"
-        cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"] = "markov"
+    cs_markov = cs_notEnforced.copy()
+    cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "markov"
+    cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "markov"
+    cs_markov.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"] = "markov"
 
-    cs_markov_light = cs_notEnforced.copy()
-    cs_markov_light.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "markov"
-    cs_markov_light.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "markov"
-    cs_markov_light.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"] = "markov"
+    if enable_strict_markov:
+        cs_markov_strict = cs_notEnforced.copy()
+        cs_markov_strict.dPower_Parameters["pReprPeriodEdgeHandlingUnitCommitment"] = "markov"
+        cs_markov_strict.dPower_Parameters["pReprPeriodEdgeHandlingRamping"] = "markov"
+        cs_markov_strict.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"] = "markov"
     printer.information(f"Creating varied case studies took {time.time() - start_time:.2f} seconds")
 
     # Create "truth" case study for comparison
@@ -314,15 +368,15 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                             lego.model.vShutdown[rp, k, g].domain = pyo.PercentFraction
         printer.information(f"Relaxing {count_relaxed} thermal generators took {time.time() - start_time:.2f} seconds")
 
-    for case_name, lego in lego_models.items():
-        # Deactivate Markov push constraints for relaxed generators (or for all generators in case of Markov-light)
-        if case_name == "Markli":
-            lego.model.ePushMarkov.deactivate()
-        elif case_name == "Markov":
-            for g in lego.model.thermalGenerators:
-                if thermalGeneratorRelaxed.get(g, False) and not (lego.model.pMinDownTime[g] == 1 and lego.model.pMinUpTime[g] == 1):  # If the generator is relaxed and not both MinDownTime and MinUpTime are 1
-                    for rp in lego.model.rp:
-                        for k in lego.model.k:
+    if enable_strict_markov:
+        _add_push_markov_constraints(lego_models["Markov-Strict"], thermalGeneratorRelaxed)
+
+    # Build identifier parts for sqlite filenames (similar to TR/ID naming convention)
+    identifier_parts = [f"data{case_study_path.rstrip('/').replace('/', '_').replace(' ', '')}"]
+    if count_relaxed > 0:
+        identifier_parts.append(f"relaxed{count_relaxed}")
+    identifier = "-".join(identifier_parts)
+
     sqlite_files, sqlite_labels = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret)
 
     return sqlite_files, sqlite_labels
@@ -642,7 +696,7 @@ if __name__ == "__main__":
     parser.add_argument("--shift", type=int, default=0, help="Shift the time series by N hours (for testing purposes), e.g., 15 to shift by 15 hours")
     parser.add_argument("--stretch-demand", type=float, default=1.0, help="Stretch the demand by a factor (for testing purposes), e.g., 1.1 to increase max of demand by 5% and decrease min by 5%")
     parser.add_argument("--reuse-inputfiles", action="store_true", help="Reuse input files (e.g., after shortening) instead of copying them to a new folder")
-    parser.add_argument("--markov-light-only", action="store_true", help="Only execute the Markov-light-version of Markov")
+    parser.add_argument("--enable-strict-markov", action="store_true", help="Also execute the strict Markov variant (with push constraints active)")
     parser.add_argument("--save-mps", action="store_true", help="Save MPS files for each case study")
     parser.add_argument("--invest-regret", action="store_true", help="Calculate invest-regret: fix vGenInvest from each edge-handling model into the truth model and compare objectives")
     args = parser.parse_args()
