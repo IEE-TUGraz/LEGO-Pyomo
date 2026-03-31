@@ -275,7 +275,8 @@ def _add_push_markov_constraints(lego: LEGO, thermalGeneratorRelaxed: dict):
 
 def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          calculate_regret: bool = False, relax_percentage: float = 0, skip_truth: bool = False,
-                         enable_strict_markov: bool = False, save_mps: bool = False, invest_regret: bool = False) -> typing.Tuple[typing.List[str], typing.List[str]]:
+                         enable_strict_markov: bool = False, invest_regret: bool = False,
+                         no_investment: bool = False) -> typing.Tuple[typing.List[str], typing.List[str]]:
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
@@ -332,12 +333,6 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         printer.information(f"Building model for case study '{name}' took {build_time:.2f} seconds")
     printer.information(f"Building the LEGO models took {time.time() - start_time:.2f} seconds overall")
 
-    if save_mps:
-        for case_name, lego in lego_models.items():
-            mps_file = f"{case_name.replace('.', '')}.mps"
-            printer.information(f"Saving MPS file for case study '{case_name}' to '{mps_file}'")
-            lego.model.write(mps_file)
-
     thermalGeneratorRelaxed = {}
     if relax_percentage == 0:
         printer.information(f"Not relaxing any unit commitment variables, all thermal generators stay binary")
@@ -370,6 +365,13 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
 
     if enable_strict_markov:
         _add_push_markov_constraints(lego_models["Markov-Strict"], thermalGeneratorRelaxed)
+
+    if no_investment:
+        for name, lego in lego_models.items():
+            for g in lego.model.g:
+                lego.model.vGenInvest[g].value = 1
+                lego.model.vGenInvest[g].fixed = True
+        printer.information(f"Fixed vGenInvest to 1 for all generators in all models (--no-investment)")
 
     # Build identifier parts for sqlite filenames (similar to TR/ID naming convention)
     identifier_parts = [f"data{case_study_path.rstrip('/').replace('/', '_').replace(' ', '')}"]
@@ -570,14 +572,14 @@ def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlit
          relax_percentage: float = 0.0, skip_truth: bool = False,
          clusters: int = 1, cluster_stepsize: int = 1, cluster_steps: int = 0,
          limitK: str | None = None, shift: int = 0, stretch_demand: float = 1,
-         reuse_inputfiles: bool = False, enable_strict_markov: bool = False, save_mps: bool = False, invest_regret: bool = False):
+         reuse_inputfiles: bool = False, enable_strict_markov: bool = False, invest_regret: bool = False,
+         no_investment: bool = False):
     ew = ExcelWriter()
 
     for folder in caseStudyFolder.split(","):
         try:
             if not folder.endswith("/"):
                 folder += "/"
-            folder_name = os.path.basename(os.path.normpath(folder))
 
             if limitK is not None:
                 printer.information(f"Limiting K values to '{limitK}'")
@@ -622,7 +624,7 @@ def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlit
 
             if stretch_demand != 1.0:
                 printer.information(f"Stretching demand by factor {stretch_demand}")
-                new_folder = folder + f"stretchDemand{stretch_demand:.2f}/"
+                new_folder = folder + f"stretchDemand{stretch_demand:g}/"
                 if reuse_inputfiles and os.path.exists(new_folder):
                     printer.information(f"Reusing already demand-stretched case study in '{new_folder}'")
                     folder = new_folder
@@ -665,14 +667,14 @@ def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlit
                         cs_clustered = Utilities.apply_kmedoids_aggregation(cs, cluster)
                         ew.write_caseStudy(cs_clustered, cluster_folder)
 
-                    printer.set_logfile(f"markov-{folder_name}-{cluster}clusters.log")
+                    printer.set_logfile(f"MK-data{cluster_folder.rstrip('/').replace('/', '_').replace(' ', '')}-{cluster}clusters.log")
                 else:
-                    printer.set_logfile(f"markov-{folder_name}.log")
+                    printer.set_logfile(f"MK-data{cluster_folder.rstrip('/').replace('/', '_').replace(' ', '')}.log")
 
                 printer.information(f"Loading case study from '{cluster_folder}'")
                 printer.information(f"Logfile: '{printer.get_logfile()}'")
 
-                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, save_mps, invest_regret)
+                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment)
 
                 if plot and sqlite_files:
                     printer.information(f"Plotting unit commitment from sqlite files: {sqlite_files}")
@@ -705,8 +707,8 @@ if __name__ == "__main__":
     parser.add_argument("--stretch-demand", type=float, default=1.0, help="Stretch the demand by a factor (for testing purposes), e.g., 1.1 to increase max of demand by 5% and decrease min by 5%")
     parser.add_argument("--reuse-inputfiles", action="store_true", help="Reuse input files (e.g., after shortening) instead of copying them to a new folder")
     parser.add_argument("--enable-strict-markov", action="store_true", help="Also execute the strict Markov variant (with push constraints active)")
-    parser.add_argument("--save-mps", action="store_true", help="Save MPS files for each case study")
     parser.add_argument("--invest-regret", action="store_true", help="Calculate invest-regret: fix vGenInvest from each edge-handling model into the truth model and compare objectives")
+    parser.add_argument("--no-investment", action="store_true", help="Fix vGenInvest to 1 for all generators (skip investment decisions)")
     args = parser.parse_args()
 
     kwargs = vars(args)
