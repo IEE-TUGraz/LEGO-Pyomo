@@ -307,8 +307,8 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
             "vPNS": sum(model.vPNS[rp, k, i].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "vEPS": sum(model.vEPS[rp, k, i].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
             "vGenInvest": sum(model.vGenInvest[g].value if model.vGenInvest[g].value is not None else 0 for g in model.g),
-            "Invest Regret Obj.": -1 if not invest_regret else (invest_regret_objective if invest_regret_result.solver.termination_condition == pyo.TerminationCondition.optimal and edgeHandlingType != "Truth " else -1),
-            "Invest Regret": -1 if not invest_regret else ((invest_regret_objective - truth_objective) if edgeHandlingType != "Truth " and truth_objective is not None and invest_regret_result.solver.termination_condition == pyo.TerminationCondition.optimal else -1),
+            "Invest Regret Obj.": -1 if not invest_regret or edgeHandlingType == "Truth " else (invest_regret_objective if invest_regret_result.solver.termination_condition == pyo.TerminationCondition.optimal else -1),
+            "Invest Regret": -1 if not invest_regret or edgeHandlingType == "Truth " else ((invest_regret_objective - truth_objective) if truth_objective is not None and invest_regret_result.solver.termination_condition == pyo.TerminationCondition.optimal else -1),
             "model": model
         }
         ddict = defaultdict(int)
