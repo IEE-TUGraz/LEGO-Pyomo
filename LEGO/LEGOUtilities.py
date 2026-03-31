@@ -7,13 +7,11 @@ from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from typing import Union, List, Tuple, Optional, Dict
 
-import matplotlib.pyplot as plt
 import pandas as pd
 import py7zr
 import pyomo.environ as pyo
 from pyomo.repn import generate_standard_repn
 
-from InOutModule import ExcelReader
 from InOutModule.printer import Printer
 
 printer = Printer.getInstance()
@@ -197,140 +195,6 @@ def safetyCheck_addConstraints(required_functions: list[typing.Callable]):
         return wrapper
 
     return decorator
-
-
-def plot_unit_commitment(unit_commitment_result_file: str, case_study_folder: str, number_of_hours: int = 24 * 7, start_hour: int = 1, plot_regret: bool = True):
-    """
-    Plot the unit commitment of a given output file
-    :param unit_commitment_result_file: Path to Excel-File containing unit commitment results
-    :param case_study_folder: Path to folder containing Power_Hindex file
-    :param number_of_hours: Number of hours to plot (default: 24 * 7 = 168)
-    :param start_hour: Start hour for the plot (default: 1)
-    :param plot_regret: If True, plots the regret solution as well (default: True)
-    :return: Nothing (shows plot)
-    """
-    plt.rcParams['figure.dpi'] = 300  # Set resolution of the plot
-    df = pd.read_excel(unit_commitment_result_file)
-    df = df.set_index(["case", "rp", "k", "g"])
-
-    # Get original mapping from Power_Hindex
-    hindex = ExcelReader.get_Power_Hindex(case_study_folder + "Power_Hindex.xlsx")
-    hindex = hindex.reset_index()
-    hindex["p_int"] = hindex["p"].str.extract(r'(\d+)').astype(int)  # Extract the integer part of the "p" column
-    hindex["rp_int"] = hindex["rp"].str.extract(r'(\d+)').astype(int)  # Extract the integer part of the "rp" column
-    hindex["k_int"] = hindex["k"].str.extract(r'(\d+)').astype(int)  # Extract the integer part of the "k" column
-
-    # Filter the dataframe to only include the relevant hours
-    hindex = hindex.loc[(hindex["p_int"] >= start_hour) & (hindex["p_int"] <= start_hour + number_of_hours - 1)]
-
-    # Plot the data
-    index = [i + 1 for i in range(len(hindex))]
-
-    if plot_regret:
-        nr_cases = len(df.index.get_level_values("case").unique())
-    else:
-        nr_cases = len([case for case in df.index.get_level_values("case").unique() if "regret" not in case])
-
-    fig, axs = plt.subplots(nr_cases, len(df.index.get_level_values("g").unique()), figsize=(6 * len(df.index.get_level_values("g").unique()), 2 * nr_cases))
-
-    i_correction = 0  # Correction for skipped regret cases in the loop below
-    for i, case in enumerate(df.index.get_level_values("case").unique()):
-        if not plot_regret and "regret" in case:
-            i_correction += 1
-            continue
-        i = i - i_correction  # Adjust index if regret cases are skipped
-        for j, g in enumerate(df.index.get_level_values("g").unique()):
-
-            data_vGenP = {}
-            data_bar_startup = {}
-            data_bar_shutdown = {}
-            data_bar_min_uptime_height = {}
-            data_bar_min_downtime_bottom = {}
-            data_demand = {}
-            data_vPNS = {}
-            data_vEPS = {}
-            data_vCommit = {}
-
-            for counter, (_, row) in enumerate(hindex.iterrows()):
-                counter += 1
-                rp = row["rp"] if case != "Truth " and "regret" not in case else "rp01"
-                k = row["k"] if case != "Truth " and "regret" not in case else row["p"].replace("h", "k")
-                data_vGenP[counter] = df.loc[case, rp, k, g]["vGenP"]
-                data_vCommit[counter] = df.loc[case, rp, k, g]["vCommit"]
-                data_bar_startup[counter] = df.loc[case, rp, k, g]["vStartup"]
-                data_bar_shutdown[counter] = df.loc[case, rp, k, g]["vShutdown"]
-                data_demand[counter] = df.loc[case, rp, k, g]["pDemandP"]
-                data_vPNS[counter] = df.loc[case, rp, k, g]["vPNS"]
-                data_vEPS[counter] = df.loc[case, rp, k, g]["vEPS"]
-
-            for counter, (_, row) in enumerate(hindex.iterrows()):
-                counter += 1
-                data_bar_min_uptime_height[counter] = sum([data_bar_startup[a] for a in [counter - b for b in range(0, int(df.loc[case, rp, k, g]["pMinUpTime"] - 1)) if counter - b > 0]])
-                data_bar_min_downtime_bottom[counter] = 1 - sum([data_bar_shutdown[a] for a in [counter - b for b in range(0, int(df.loc[case, rp, k, g]["pMinDownTime"] - 1)) if counter - b > 0]])
-
-            axs2 = axs[i].twinx()
-            axs2.set_title(f"{case.replace("-regret", ": Nearest Feasible Truth-Solution")}")
-            axs2.set_ylim(0, 3)
-            axs2.bar(index, data_bar_startup.values(), color="green", alpha=0.5, bottom=[list(data_vCommit.values())[-1]] + list(data_vCommit.values())[:-1], width=1, label="Startup")
-            axs2.bar(index, data_bar_shutdown.values(), color="red", alpha=0.5, bottom=data_vCommit.values(), width=1, label="Shutd.")
-            axs2.plot(index, data_vCommit.values(), color="gray", alpha=0.5, label="Commit", linewidth=1.5)
-            axs2.set_ylabel("Startup / Shutdown", color="black")
-
-            axs2.bar(index, data_bar_min_uptime_height.values(), color="green", alpha=0.2, width=1)
-            axs2.bar(index, bottom=data_bar_min_downtime_bottom.values(), height=[1 - x for x in data_bar_min_downtime_bottom.values()], color="red", alpha=0.2, width=1)
-
-            axs2.hlines(y=1, xmin=0, xmax=len(data_bar_shutdown.values()), color="gray", linestyle=(0, (1, 1)), alpha=0.5)
-            axs2.set_yticks([0, 1], ["0", "1"])
-            axs2.legend(loc='lower right', fontsize='x-small')
-
-            # Plot demand on second y-axis, add PNS and EPS
-            axs[i].set_ylim(-1, 1)
-            axs[i].plot(index, data_demand.values(), color="blue", alpha=0.3, label="Demand")
-            axs[i].plot(index, data_vGenP.values(), color="black", alpha=0.3, label="Prod.")
-
-            axs[i].bar(index, data_vPNS.values(), color="orange", alpha=0.3, label="PNS", bottom=data_vGenP.values())
-            axs[i].bar(index, data_vEPS.values(), color="purple", alpha=0.3, label="EPS", bottom=data_demand.values())
-            axs[i].legend(loc='upper right', fontsize='x-small')
-
-            axs[i].hlines(y=0, xmin=0, xmax=len(data_bar_shutdown.values()), color="gray", linestyle=(0, (1, 1)), alpha=0.5)
-            axs[i].set_ylabel("Generation / Demand", color="black")
-            axs[i].set_yticks([0, 0.5, 1], ["0.0", "0.5", "1.0"])
-
-            # Set ticks and vertical lines
-            index_labels = []
-            index_positions = []
-            axvline_thick_positions = []
-            axvline_thin_positions = []
-            for x in index:
-                if x == index[0]:  # First index
-                    index_labels.append(x + start_hour - 1)
-                    index_positions.append(x)
-                    if (x + start_hour - 2) % 24 == 0:  # If it's the start of a new day, add a thick line, else a thin line
-                        axvline_thick_positions.append(x)
-                    else:
-                        axvline_thin_positions.append(x)
-                elif x == index[-1]:  # Last index
-                    index_labels.append(x + start_hour - 1)
-                    index_positions.append(x)
-                    if (x + start_hour - 2) % 24 == 0:  # If it's the start of a new day, add a thick line, else a thin line
-                        axvline_thick_positions.append(x)
-                    else:
-                        axvline_thin_positions.append(x)
-                elif (x + start_hour - 2) % 24 == 0:
-                    axvline_thick_positions.append(x)  # Every 24th index (i.e., every day)
-                    if abs(x - index[0]) > 2 and abs(x - index[-1]) > 2:  # Every 24th index (i.e., every day), if distance to first and last is big enough (to not overlap)
-                        index_labels.append(x + start_hour - 1)
-                        index_positions.append(x)
-
-            axs[i].set_xticks(index_positions)
-            axs[i].set_xticklabels(index_labels)
-            for x in axvline_thick_positions:
-                axs[i].axvline(x=x, color="gray", linestyle="--", alpha=0.5)
-            for x in axvline_thin_positions:
-                axs[i].axvline(x=x, color="gray", linestyle="-", alpha=0.2)
-
-    plt.tight_layout()
-    plt.show()
 
 
 def add_UnitCommitmentSlack_And_FixVariables(regret_lego, original_model: pyo.Model, hindex_df: pd.DataFrame, thermalGen_df: pd.DataFrame, PNS_cost: float):

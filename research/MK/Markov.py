@@ -8,10 +8,12 @@ import logging
 import math
 import os
 import shutil
+import sqlite3
 import time
 import typing
 from collections import defaultdict
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
@@ -22,7 +24,7 @@ from InOutModule.CaseStudy import CaseStudy
 from InOutModule.ExcelWriter import ExcelWriter
 from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO
-from LEGO.LEGOUtilities import plot_unit_commitment, add_UnitCommitmentSlack_And_FixVariables, getUnitCommitmentSlackCost
+from LEGO.LEGOUtilities import add_UnitCommitmentSlack_And_FixVariables, getUnitCommitmentSlackCost, markov_summand, markov_sum
 
 ########################################################################################################################
 # Setup
@@ -44,35 +46,185 @@ def write_results(model, file_prefix: str, no_sqlite: bool):
         printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
 
 
-def collect_unit_commitment_data(case_label: str, model, is_regret: bool = False) -> typing.List[pd.Series]:
-    rows = []
-    for i in list(model.vCommit):
-        show_shutdown = (is_regret and model.vShutdown[i].fixed) or not model.vShutdown[i].stale
-        row = {"case": case_label, "rp": i[0], "k": i[1], "g": i[2],
-               "vCommit": pyo.value(model.vCommit[i]),
-               "vStartup": pyo.value(model.vStartup[i]),
-               "vShutdown": pyo.value(model.vShutdown[i]) if show_shutdown else None,
-               "vGenP": pyo.value(model.vGenP[i]),
-               "vGenP1": pyo.value(model.vGenP1[i]),
-               "pMinUpTime": pyo.value(model.pMinUpTime[i[2]]),
-               "pMinDownTime": pyo.value(model.pMinDownTime[i[2]]),
-               "pDemandP": sum(pyo.value(model.pDemandP[i[0], i[1], node]) for node in model.i),
-               "vPNS": sum(pyo.value(model.vPNS[i[0], i[1], node]) for node in model.i),
-               "vEPS": sum(pyo.value(model.vEPS[i[0], i[1], node]) for node in model.i)}
-        if is_regret:
-            row["vCommitCorrectHigher"] = pyo.value(model.vCommitCorrectHigher[i]) if not model.vCommitCorrectHigher[i].stale else None
-            row["vCommitCorrectLower"] = pyo.value(model.vCommitCorrectLower[i]) if not model.vCommitCorrectLower[i].stale else None
-        rows.append(pd.Series(row))
-    return rows
+def _load_unit_commitment_from_sqlite(sqlite_file: str, case_label: str) -> pd.DataFrame:
+    """Load unit commitment data from a sqlite file and return a DataFrame with case/rp/k/g index."""
+    cnx = sqlite3.connect(sqlite_file)
+    # Rename 'thermalGenerators' -> 'g' to normalize index names across tables
+    g_rename = {"thermalGenerators": "g"}
+    vCommit = pd.read_sql("SELECT * FROM vCommit", cnx).rename(columns={"values": "vCommit", **g_rename})
+    vStartup = pd.read_sql("SELECT * FROM vStartup", cnx).rename(columns={"values": "vStartup", **g_rename})
+    vShutdown = pd.read_sql("SELECT * FROM vShutdown", cnx).rename(columns={"values": "vShutdown", **g_rename})
+    vGenP = pd.read_sql("SELECT * FROM vGenP", cnx).rename(columns={"values": "vGenP"})
+    vPNS = pd.read_sql("SELECT * FROM vPNS", cnx).rename(columns={"values": "vPNS"})
+    vEPS = pd.read_sql("SELECT * FROM vEPS", cnx).rename(columns={"values": "vEPS"})
+    pDemandP = pd.read_sql("SELECT * FROM pDemandP", cnx).rename(columns={"values": "pDemandP"})
+    pMinUpTime = pd.read_sql("SELECT * FROM pMinUpTime", cnx).rename(columns={"values": "pMinUpTime", **g_rename})
+    pMinDownTime = pd.read_sql("SELECT * FROM pMinDownTime", cnx).rename(columns={"values": "pMinDownTime", **g_rename})
+    cnx.close()
+
+    idx = ["rp", "k", "g"]
+    # Only keep thermal generators (vCommit index) — vGenP includes all generators
+    df = vCommit.set_index(idx)
+    df = df.join(vStartup.set_index(idx)["vStartup"])
+    df = df.join(vShutdown.set_index(idx)["vShutdown"])
+    df = df.join(vGenP.set_index(idx)["vGenP"])
+
+    # Aggregate demand, PNS, EPS across nodes (i) per rp/k
+    pDemandP_agg = pDemandP.groupby(["rp", "k"])["pDemandP"].sum()
+    vPNS_agg = vPNS.groupby(["rp", "k"])["vPNS"].sum()
+    vEPS_agg = vEPS.groupby(["rp", "k"])["vEPS"].sum()
+    df = df.join(pDemandP_agg, on=["rp", "k"])
+    df = df.join(vPNS_agg, on=["rp", "k"])
+    df = df.join(vEPS_agg, on=["rp", "k"])
+
+    # Join generator-level parameters
+    df = df.join(pMinUpTime.set_index("g"), on="g")
+    df = df.join(pMinDownTime.set_index("g"), on="g")
+
+    df["case"] = case_label
+    df = df.reset_index().set_index(["case", "rp", "k", "g"])
+    return df
 
 
-def execute_case_studies(case_study_path: str, unit_commitment_result_file_template: str = "markov.xlsx", no_sqlite: bool = False,
-                         calculate_regret: bool = False, write_unit_commitment_result_file: bool = True, relax_percentage: float = 0, skip_truth: bool = False,
-                         markov_light_only: bool = False, save_mps: bool = False, invest_regret: bool = False) -> typing.List[str]:
+def plot_unit_commitment(sqlite_files: typing.List[str], case_labels: typing.List[str], case_study_folder: str, number_of_hours: int = 24 * 7, start_hour: int = 1):
+    """
+    Plot the unit commitment from sqlite result files.
+    :param sqlite_files: List of paths to SQLite result files
+    :param case_labels: List of case labels corresponding to each sqlite file
+    :param case_study_folder: Path to folder containing Power_Hindex file
+    :param number_of_hours: Number of hours to plot (default: 24 * 7 = 168)
+    :param start_hour: Start hour for the plot (default: 1)
+    """
+    plt.rcParams['figure.dpi'] = 300
+
+    frames = [_load_unit_commitment_from_sqlite(f, label) for f, label in zip(sqlite_files, case_labels)]
+    df = pd.concat(frames)
+
+    # Get original mapping from Power_Hindex
+    hindex = ExcelReader.get_Power_Hindex(case_study_folder + "Power_Hindex.xlsx")
+    hindex = hindex.reset_index()
+    hindex["p_int"] = hindex["p"].str.extract(r'(\d+)').astype(int)
+    hindex["rp_int"] = hindex["rp"].str.extract(r'(\d+)').astype(int)
+    hindex["k_int"] = hindex["k"].str.extract(r'(\d+)').astype(int)
+
+    # Filter the dataframe to only include the relevant hours
+    hindex = hindex.loc[(hindex["p_int"] >= start_hour) & (hindex["p_int"] <= start_hour + number_of_hours - 1)]
+
+    index = [i + 1 for i in range(len(hindex))]
+    nr_cases = len(df.index.get_level_values("case").unique())
+
+    fig, axs = plt.subplots(nr_cases, len(df.index.get_level_values("g").unique()), figsize=(6 * len(df.index.get_level_values("g").unique()), 2 * nr_cases))
+
+    for i, case in enumerate(df.index.get_level_values("case").unique()):
+        for j, g in enumerate(df.index.get_level_values("g").unique()):
+
+            data_vGenP = {}
+            data_bar_startup = {}
+            data_bar_shutdown = {}
+            data_bar_min_uptime_height = {}
+            data_bar_min_downtime_bottom = {}
+            data_demand = {}
+            data_vPNS = {}
+            data_vEPS = {}
+            data_vCommit = {}
+
+            for counter, (_, row) in enumerate(hindex.iterrows()):
+                counter += 1
+                rp = row["rp"] if case != "Truth " else "rp01"
+                k = row["k"] if case != "Truth " else row["p"].replace("h", "k")
+                data_vGenP[counter] = df.loc[case, rp, k, g]["vGenP"]
+                data_vCommit[counter] = df.loc[case, rp, k, g]["vCommit"]
+                data_bar_startup[counter] = df.loc[case, rp, k, g]["vStartup"]
+                data_bar_shutdown[counter] = df.loc[case, rp, k, g]["vShutdown"]
+                data_demand[counter] = df.loc[case, rp, k, g]["pDemandP"]
+                data_vPNS[counter] = df.loc[case, rp, k, g]["vPNS"]
+                data_vEPS[counter] = df.loc[case, rp, k, g]["vEPS"]
+
+            for counter, (_, row) in enumerate(hindex.iterrows()):
+                counter += 1
+                data_bar_min_uptime_height[counter] = sum([data_bar_startup[a] for a in [counter - b for b in range(0, int(df.loc[case, rp, k, g]["pMinUpTime"] - 1)) if counter - b > 0]])
+                data_bar_min_downtime_bottom[counter] = 1 - sum([data_bar_shutdown[a] for a in [counter - b for b in range(0, int(df.loc[case, rp, k, g]["pMinDownTime"] - 1)) if counter - b > 0]])
+
+            axs2 = axs[i].twinx()
+            axs2.set_title(f"{case}")
+            axs2.set_ylim(0, 3)
+            axs2.bar(index, data_bar_startup.values(), color="green", alpha=0.5, bottom=[list(data_vCommit.values())[-1]] + list(data_vCommit.values())[:-1], width=1, label="Startup")
+            axs2.bar(index, data_bar_shutdown.values(), color="red", alpha=0.5, bottom=data_vCommit.values(), width=1, label="Shutd.")
+            axs2.plot(index, data_vCommit.values(), color="gray", alpha=0.5, label="Commit", linewidth=1.5)
+            axs2.set_ylabel("Startup / Shutdown", color="black")
+
+            axs2.bar(index, data_bar_min_uptime_height.values(), color="green", alpha=0.2, width=1)
+            axs2.bar(index, bottom=data_bar_min_downtime_bottom.values(), height=[1 - x for x in data_bar_min_downtime_bottom.values()], color="red", alpha=0.2, width=1)
+
+            axs2.hlines(y=1, xmin=0, xmax=len(data_bar_shutdown.values()), color="gray", linestyle=(0, (1, 1)), alpha=0.5)
+            axs2.set_yticks([0, 1], ["0", "1"])
+            axs2.legend(loc='lower right', fontsize='x-small')
+
+            # Plot demand on second y-axis, add PNS and EPS
+            axs[i].set_ylim(-1, 1)
+            axs[i].plot(index, data_demand.values(), color="blue", alpha=0.3, label="Demand")
+            axs[i].plot(index, data_vGenP.values(), color="black", alpha=0.3, label="Prod.")
+
+            axs[i].bar(index, data_vPNS.values(), color="orange", alpha=0.3, label="PNS", bottom=data_vGenP.values())
+            axs[i].bar(index, data_vEPS.values(), color="purple", alpha=0.3, label="EPS", bottom=data_demand.values())
+            axs[i].legend(loc='upper right', fontsize='x-small')
+
+            axs[i].hlines(y=0, xmin=0, xmax=len(data_bar_shutdown.values()), color="gray", linestyle=(0, (1, 1)), alpha=0.5)
+            axs[i].set_ylabel("Generation / Demand", color="black")
+            axs[i].set_yticks([0, 0.5, 1], ["0.0", "0.5", "1.0"])
+
+            # Set ticks and vertical lines
+            index_labels = []
+            index_positions = []
+            axvline_thick_positions = []
+            axvline_thin_positions = []
+            for x in index:
+                if x == index[0]:
+                    index_labels.append(x + start_hour - 1)
+                    index_positions.append(x)
+                    if (x + start_hour - 2) % 24 == 0:
+                        axvline_thick_positions.append(x)
+                    else:
+                        axvline_thin_positions.append(x)
+                elif x == index[-1]:
+                    index_labels.append(x + start_hour - 1)
+                    index_positions.append(x)
+                    if (x + start_hour - 2) % 24 == 0:
+                        axvline_thick_positions.append(x)
+                    else:
+                        axvline_thin_positions.append(x)
+                elif (x + start_hour - 2) % 24 == 0:
+                    axvline_thick_positions.append(x)
+                    if abs(x - index[0]) > 2 and abs(x - index[-1]) > 2:
+                        index_labels.append(x + start_hour - 1)
+                        index_positions.append(x)
+
+            axs[i].set_xticks(index_positions)
+            axs[i].set_xticklabels(index_labels)
+            for x in axvline_thick_positions:
+                axs[i].axvline(x=x, color="gray", linestyle="--", alpha=0.5)
+            for x in axvline_thin_positions:
+                axs[i].axvline(x=x, color="gray", linestyle="-", alpha=0.2)
+
+    plt.tight_layout()
+
+    # Save plot using a naming scheme matching the sqlite files
+    base = os.path.splitext(sqlite_files[0])[0]  # e.g. "MK-datadata_markov-NoEnf"
+    label_suffix = f"-{case_labels[0].strip().replace('.', '').replace(' ', '')}"
+    plot_prefix = base[:-len(label_suffix)] if base.endswith(label_suffix) else base
+    plot_file = f"{plot_prefix}-unit_commitment.png"
+    plt.savefig(plot_file)
+    printer.information(f"Saved unit commitment plot to '{plot_file}'")
+
+    plt.show()
+
+
+def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
+                         calculate_regret: bool = False, relax_percentage: float = 0, skip_truth: bool = False,
+                         enable_strict_markov: bool = False, save_mps: bool = False, invest_regret: bool = False) -> typing.Tuple[typing.List[str], typing.List[str]]:
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
-    unit_commitment_result_files = []
 
     # Load case study from Excels
     printer.information(f"Loading case study from '{case_study_path}'")
@@ -116,9 +268,9 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
 
     start_time = time.time()
     printer.information(f"Building the LEGO models for adjustments")  # Note this is actually faster (1.5-2x) than copying already built models to re-use them
-    lego_models = {"NoEnf.": LEGO(cs_notEnforced), "Cyclic": LEGO(cs_cyclic), "Markli": LEGO(cs_markov_light)}
-    if not markov_light_only:
-        lego_models["Markov"] = LEGO(cs_markov)
+    lego_models = {"NoEnf.": LEGO(cs_notEnforced), "Cyclic": LEGO(cs_cyclic), "Markov": LEGO(cs_markov)}
+    if enable_strict_markov:
+        lego_models["Markov-Strict"] = LEGO(cs_markov_strict)
     if not skip_truth:
         lego_models["Truth "] = LEGO(cs_truth)
     for name, lego in lego_models.items():
@@ -171,29 +323,23 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file_templ
                 if thermalGeneratorRelaxed.get(g, False) and not (lego.model.pMinDownTime[g] == 1 and lego.model.pMinUpTime[g] == 1):  # If the generator is relaxed and not both MinDownTime and MinUpTime are 1
                     for rp in lego.model.rp:
                         for k in lego.model.k:
-                            if lego.model.k.ord(k) > max(lego.model.pMinDownTime[g], lego.model.pMinUpTime[g]):
-                                break  # No need to continue, since constraints are only required for the first max(MinUpTime, MinDownTime) timesteps
-                            for i in lego.model.pushMarkovCounter:
-                                lego.model.ePushMarkov[rp, k, g, i].deactivate()
+    sqlite_files, sqlite_labels = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret)
 
-    unit_commitment_result_file = unit_commitment_result_file_template.replace(".xlsx", f"-relaxed{count_relaxed}.xlsx")
-    execute_case_study(lego_models, f"{os.path.basename(os.path.normpath(case_study_path))}-relaxed{count_relaxed}", unit_commitment_result_file, no_sqlite, calculate_regret, write_unit_commitment_result_file, skip_truth, invest_regret)
-    unit_commitment_result_files.append(unit_commitment_result_file)
-
-    return unit_commitment_result_files
+    return sqlite_files, sqlite_labels
 
 
-def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit_commitment_result_file: str, no_sqlite: bool, calculate_regret: bool, write_unit_commitment_result_file: bool, skip_truth: bool, invest_regret: bool = False):
+def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_sqlite: bool, calculate_regret: bool, skip_truth: bool, invest_regret: bool = False) -> typing.Tuple[typing.List[str], typing.List[str]]:
     ########################################################################################################################
     # Evaluation
     ########################################################################################################################
     results = []
+    sqlite_files = []
+    sqlite_labels = []
     truth_objective = None
 
     if not skip_truth:
         truth_lego = lego_models["Truth "]
 
-    df = pd.DataFrame()
     for edgeHandlingType, lego in lego_models.items():
         printer.information(f"\n\n{'=' * 60}\n{edgeHandlingType}\n{'=' * 60}")
         model = lego.model
@@ -211,7 +357,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
         if edgeHandlingType == "Truth " and result.solver.termination_condition == pyo.TerminationCondition.optimal:
             truth_objective = objective_value
 
-        file_prefix = f"{case_name}-{edgeHandlingType.replace('.', '')}"
+        file_prefix = f"MK-{case_name}-{edgeHandlingType.strip().replace('.', '').replace(' ', '')}"
         write_results(lego.model, file_prefix, no_sqlite)
 
         match result.solver.termination_condition:
@@ -232,10 +378,11 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
                 if v[i].domain == pyo.Binary:
                     counter_binaries += 1
 
-        if result.solver.termination_condition == pyo.TerminationCondition.optimal and write_unit_commitment_result_file:
-            for x in collect_unit_commitment_data(edgeHandlingType, model):
-                df = pd.concat([df, x], axis=1)
+        if not no_sqlite:
+            sqlite_files.append(f"{file_prefix}.sqlite")
+            sqlite_labels.append(edgeHandlingType)
 
+        if result.solver.termination_condition == pyo.TerminationCondition.optimal:
             if calculate_regret and edgeHandlingType != "Truth " and not skip_truth:
                 regret_lego = truth_lego.copy()
 
@@ -251,8 +398,6 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
                 match regret_result.solver.termination_condition:
                     case pyo.TerminationCondition.optimal:
                         printer.success("Optimal solution found")
-                        for x in collect_unit_commitment_data(f"{edgeHandlingType}-regret", regret_lego.model, is_regret=True):
-                            df = pd.concat([df, x], axis=1)
                     case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
                         printer.error(f"Model is {regret_result.solver.termination_condition}, logging infeasible constraints:")
                         log_infeasible_constraints(regret_lego.model)
@@ -346,8 +491,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, unit
     for i in range(len(table[0])):
         printer.information(" | ".join(f"{table[j][i]:{">" if i != 0 else ""}{max(len(table[j][i2]) for i2 in range(len(table[j])))}}" for j in range(len(table))))
 
-    if write_unit_commitment_result_file:
-        df.T.to_excel(unit_commitment_result_file)
+    return sqlite_files, sqlite_labels
 
 
 def copy_files_non_recursive(src_folder: str, dst_folder: str):
@@ -361,11 +505,11 @@ def copy_files_non_recursive(src_folder: str, dst_folder: str):
             shutil.copy2(s, d)
 
 
-def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlite: bool = False, no_regret_plot: bool = False, calculate_regret: bool = False, dont_write_unit_commitment_result_file: bool = False,
+def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlite: bool = False, calculate_regret: bool = False,
          relax_percentage: float = 0.0, skip_truth: bool = False,
          clusters: int = 1, cluster_stepsize: int = 1, cluster_steps: int = 0,
          shorten_until_k: int | None = None, shift: int = 0, stretch_demand: float = 1,
-         reuse_inputfiles: bool = False, markov_light_only: bool = False, save_mps: bool = False, invest_regret: bool = False):
+         reuse_inputfiles: bool = False, enable_strict_markov: bool = False, save_mps: bool = False, invest_regret: bool = False):
     ew = ExcelWriter()
 
     for folder in caseStudyFolder.split(","):
@@ -460,22 +604,17 @@ def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlit
                         ew.write_caseStudy(cs_clustered, cluster_folder)
 
                     printer.set_logfile(f"markov-{folder_name}-{cluster}clusters.log")
-                    unit_commitment_result_file_template = f"unitCommitmentResult-{folder_name}-{cluster}clusters.xlsx"
                 else:
                     printer.set_logfile(f"markov-{folder_name}.log")
-                    unit_commitment_result_file_template = f"unitCommitmentResult-{folder_name}.xlsx"
 
                 printer.information(f"Loading case study from '{cluster_folder}'")
                 printer.information(f"Logfile: '{printer.get_logfile()}'")
 
-                printer.information(f"Unit commitment result file template: '{unit_commitment_result_file_template}'")
-                unit_commitment_result_files = execute_case_studies(cluster_folder, unit_commitment_result_file_template, no_sqlite, calculate_regret, not dont_write_unit_commitment_result_file, relax_percentage, skip_truth, markov_light_only, save_mps, invest_regret)
+                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, save_mps, invest_regret)
 
-                if plot:
-                    printer.information(f"Plotting unit commitment(s): {unit_commitment_result_files}")
-                    for unit_commitment_result_file in unit_commitment_result_files:
-                        printer.information(f"Plotting '{unit_commitment_result_file}'")
-                        plot_unit_commitment(unit_commitment_result_file, cluster_folder, 6 * 24, 1, not no_regret_plot)
+                if plot and sqlite_files:
+                    printer.information(f"Plotting unit commitment from sqlite files: {sqlite_files}")
+                    plot_unit_commitment(sqlite_files, case_labels, cluster_folder, 6 * 24, 1)
         except Exception as e:
             printer.error(f"Exception while executing case study '{folder}': {e}")
             if debug:
@@ -493,9 +632,7 @@ if __name__ == "__main__":
     parser.add_argument("--plot", action="store_true", help="Plot unit commitment results")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode where exceptions are passed on")
     parser.add_argument("--no-sqlite", action="store_true", help="Do not save results to SQLite database")
-    parser.add_argument("--no-regret-plot", action="store_true", help="Do not plot regret results")
     parser.add_argument("--calculate-regret", action="store_true", help="Calculate regret by re-solving the truth model with fixed unit commitment from the other models (can take a while)")
-    parser.add_argument("--dont-write-unit-commitment-result-file", action="store_true", help="Do not write unit commitment result file (can take a while)")
     parser.add_argument("--relax-percentage", type=float, default=0, help="Percentage of thermal-generators to be relaxed (default: 0 = no relaxation, all binary)")
     parser.add_argument("--skip-truth", action="store_true", help="Skip solving the truth model")
     parser.add_argument("--clusters", type=int, default=1, help="Number of clusters (default: 1, i.e., no clustering)")
