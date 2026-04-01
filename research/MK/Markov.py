@@ -8,23 +8,19 @@ import logging
 import math
 import os
 import shutil
-import sqlite3
 import time
 import typing
-from collections import defaultdict
 
-import matplotlib.pyplot as plt
-import pandas as pd
 import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
-from InOutModule import ExcelReader, SQLiteWriter, Utilities
+from InOutModule import SQLiteWriter, Utilities
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.ExcelWriter import ExcelWriter
 from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO
-from LEGO.LEGOUtilities import add_UnitCommitmentSlack_And_FixVariables, getUnitCommitmentSlackCost, markov_summand, markov_sum
+from LEGO.LEGOUtilities import add_UnitCommitmentSlack_And_FixVariables, markov_summand, markov_sum
 
 ########################################################################################################################
 # Setup
@@ -37,186 +33,17 @@ pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
 
-def write_results(model, file_prefix: str, no_sqlite: bool):
+def write_results(model, file_prefix: str, no_sqlite: bool, solver_results=None, work_units=None, **run_parameters):
     if not no_sqlite:
         sqlite_timer = time.time()
         sqlite_file = f"{file_prefix}.sqlite"
         printer.information(f"Writing model to SQLite database: {sqlite_file}")
         SQLiteWriter.model_to_sqlite(model, sqlite_file)
+        if solver_results is not None:
+            SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_file, solver_results, work_units=work_units)
+        if run_parameters:
+            SQLiteWriter.add_run_parameters_to_sqlite(sqlite_file, **run_parameters)
         printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
-
-
-def _load_unit_commitment_from_sqlite(sqlite_file: str, case_label: str) -> pd.DataFrame:
-    """Load unit commitment data from a sqlite file and return a DataFrame with case/rp/k/g index."""
-    cnx = sqlite3.connect(sqlite_file)
-    # Rename 'thermalGenerators' -> 'g' to normalize index names across tables
-    g_rename = {"thermalGenerators": "g"}
-    vCommit = pd.read_sql("SELECT * FROM vCommit", cnx).rename(columns={"values": "vCommit", **g_rename})
-    vStartup = pd.read_sql("SELECT * FROM vStartup", cnx).rename(columns={"values": "vStartup", **g_rename})
-    vShutdown = pd.read_sql("SELECT * FROM vShutdown", cnx).rename(columns={"values": "vShutdown", **g_rename})
-    vGenP = pd.read_sql("SELECT * FROM vGenP", cnx).rename(columns={"values": "vGenP"})
-    vPNS = pd.read_sql("SELECT * FROM vPNS", cnx).rename(columns={"values": "vPNS"})
-    vEPS = pd.read_sql("SELECT * FROM vEPS", cnx).rename(columns={"values": "vEPS"})
-    pDemandP = pd.read_sql("SELECT * FROM pDemandP", cnx).rename(columns={"values": "pDemandP"})
-    pMinUpTime = pd.read_sql("SELECT * FROM pMinUpTime", cnx).rename(columns={"values": "pMinUpTime", **g_rename})
-    pMinDownTime = pd.read_sql("SELECT * FROM pMinDownTime", cnx).rename(columns={"values": "pMinDownTime", **g_rename})
-    cnx.close()
-
-    idx = ["rp", "k", "g"]
-    # Only keep thermal generators (vCommit index) — vGenP includes all generators
-    df = vCommit.set_index(idx)
-    df = df.join(vStartup.set_index(idx)["vStartup"])
-    df = df.join(vShutdown.set_index(idx)["vShutdown"])
-    df = df.join(vGenP.set_index(idx)["vGenP"])
-
-    # Aggregate demand, PNS, EPS across nodes (i) per rp/k
-    pDemandP_agg = pDemandP.groupby(["rp", "k"])["pDemandP"].sum()
-    vPNS_agg = vPNS.groupby(["rp", "k"])["vPNS"].sum()
-    vEPS_agg = vEPS.groupby(["rp", "k"])["vEPS"].sum()
-    df = df.join(pDemandP_agg, on=["rp", "k"])
-    df = df.join(vPNS_agg, on=["rp", "k"])
-    df = df.join(vEPS_agg, on=["rp", "k"])
-
-    # Join generator-level parameters
-    df = df.join(pMinUpTime.set_index("g"), on="g")
-    df = df.join(pMinDownTime.set_index("g"), on="g")
-
-    df["case"] = case_label
-    df = df.reset_index().set_index(["case", "rp", "k", "g"])
-    return df
-
-
-def plot_unit_commitment(sqlite_files: typing.List[str], case_labels: typing.List[str], case_study_folder: str, number_of_hours: int = 24 * 7, start_hour: int = 1):
-    """
-    Plot the unit commitment from sqlite result files.
-    :param sqlite_files: List of paths to SQLite result files
-    :param case_labels: List of case labels corresponding to each sqlite file
-    :param case_study_folder: Path to folder containing Power_Hindex file
-    :param number_of_hours: Number of hours to plot (default: 24 * 7 = 168)
-    :param start_hour: Start hour for the plot (default: 1)
-    """
-    plt.rcParams['figure.dpi'] = 300
-
-    frames = [_load_unit_commitment_from_sqlite(f, label) for f, label in zip(sqlite_files, case_labels)]
-    df = pd.concat(frames)
-
-    # Get original mapping from Power_Hindex
-    hindex = ExcelReader.get_Power_Hindex(case_study_folder + "Power_Hindex.xlsx")
-    hindex = hindex.reset_index()
-    hindex["p_int"] = hindex["p"].str.extract(r'(\d+)').astype(int)
-    hindex["rp_int"] = hindex["rp"].str.extract(r'(\d+)').astype(int)
-    hindex["k_int"] = hindex["k"].str.extract(r'(\d+)').astype(int)
-
-    # Filter the dataframe to only include the relevant hours
-    hindex = hindex.loc[(hindex["p_int"] >= start_hour) & (hindex["p_int"] <= start_hour + number_of_hours - 1)]
-
-    index = [i + 1 for i in range(len(hindex))]
-    nr_cases = len(df.index.get_level_values("case").unique())
-
-    fig, axs = plt.subplots(nr_cases, len(df.index.get_level_values("g").unique()), figsize=(6 * len(df.index.get_level_values("g").unique()), 2 * nr_cases))
-
-    for i, case in enumerate(df.index.get_level_values("case").unique()):
-        for j, g in enumerate(df.index.get_level_values("g").unique()):
-
-            data_vGenP = {}
-            data_bar_startup = {}
-            data_bar_shutdown = {}
-            data_bar_min_uptime_height = {}
-            data_bar_min_downtime_bottom = {}
-            data_demand = {}
-            data_vPNS = {}
-            data_vEPS = {}
-            data_vCommit = {}
-
-            for counter, (_, row) in enumerate(hindex.iterrows()):
-                counter += 1
-                rp = row["rp"] if case != "Truth " else "rp01"
-                k = row["k"] if case != "Truth " else row["p"].replace("h", "k")
-                data_vGenP[counter] = df.loc[case, rp, k, g]["vGenP"]
-                data_vCommit[counter] = df.loc[case, rp, k, g]["vCommit"]
-                data_bar_startup[counter] = df.loc[case, rp, k, g]["vStartup"]
-                data_bar_shutdown[counter] = df.loc[case, rp, k, g]["vShutdown"]
-                data_demand[counter] = df.loc[case, rp, k, g]["pDemandP"]
-                data_vPNS[counter] = df.loc[case, rp, k, g]["vPNS"]
-                data_vEPS[counter] = df.loc[case, rp, k, g]["vEPS"]
-
-            for counter, (_, row) in enumerate(hindex.iterrows()):
-                counter += 1
-                data_bar_min_uptime_height[counter] = sum([data_bar_startup[a] for a in [counter - b for b in range(0, int(df.loc[case, rp, k, g]["pMinUpTime"] - 1)) if counter - b > 0]])
-                data_bar_min_downtime_bottom[counter] = 1 - sum([data_bar_shutdown[a] for a in [counter - b for b in range(0, int(df.loc[case, rp, k, g]["pMinDownTime"] - 1)) if counter - b > 0]])
-
-            axs2 = axs[i].twinx()
-            axs2.set_title(f"{case}")
-            axs2.set_ylim(0, 3)
-            axs2.bar(index, data_bar_startup.values(), color="green", alpha=0.5, bottom=[list(data_vCommit.values())[-1]] + list(data_vCommit.values())[:-1], width=1, label="Startup")
-            axs2.bar(index, data_bar_shutdown.values(), color="red", alpha=0.5, bottom=data_vCommit.values(), width=1, label="Shutd.")
-            axs2.plot(index, data_vCommit.values(), color="gray", alpha=0.5, label="Commit", linewidth=1.5)
-            axs2.set_ylabel("Startup / Shutdown", color="black")
-
-            axs2.bar(index, data_bar_min_uptime_height.values(), color="green", alpha=0.2, width=1)
-            axs2.bar(index, bottom=data_bar_min_downtime_bottom.values(), height=[1 - x for x in data_bar_min_downtime_bottom.values()], color="red", alpha=0.2, width=1)
-
-            axs2.hlines(y=1, xmin=0, xmax=len(data_bar_shutdown.values()), color="gray", linestyle=(0, (1, 1)), alpha=0.5)
-            axs2.set_yticks([0, 1], ["0", "1"])
-            axs2.legend(loc='lower right', fontsize='x-small')
-
-            # Plot demand on second y-axis, add PNS and EPS
-            axs[i].set_ylim(-1, 1)
-            axs[i].plot(index, data_demand.values(), color="blue", alpha=0.3, label="Demand")
-            axs[i].plot(index, data_vGenP.values(), color="black", alpha=0.3, label="Prod.")
-
-            axs[i].bar(index, data_vPNS.values(), color="orange", alpha=0.3, label="PNS", bottom=data_vGenP.values())
-            axs[i].bar(index, data_vEPS.values(), color="purple", alpha=0.3, label="EPS", bottom=data_demand.values())
-            axs[i].legend(loc='upper right', fontsize='x-small')
-
-            axs[i].hlines(y=0, xmin=0, xmax=len(data_bar_shutdown.values()), color="gray", linestyle=(0, (1, 1)), alpha=0.5)
-            axs[i].set_ylabel("Generation / Demand", color="black")
-            axs[i].set_yticks([0, 0.5, 1], ["0.0", "0.5", "1.0"])
-
-            # Set ticks and vertical lines
-            index_labels = []
-            index_positions = []
-            axvline_thick_positions = []
-            axvline_thin_positions = []
-            for x in index:
-                if x == index[0]:
-                    index_labels.append(x + start_hour - 1)
-                    index_positions.append(x)
-                    if (x + start_hour - 2) % 24 == 0:
-                        axvline_thick_positions.append(x)
-                    else:
-                        axvline_thin_positions.append(x)
-                elif x == index[-1]:
-                    index_labels.append(x + start_hour - 1)
-                    index_positions.append(x)
-                    if (x + start_hour - 2) % 24 == 0:
-                        axvline_thick_positions.append(x)
-                    else:
-                        axvline_thin_positions.append(x)
-                elif (x + start_hour - 2) % 24 == 0:
-                    axvline_thick_positions.append(x)
-                    if abs(x - index[0]) > 2 and abs(x - index[-1]) > 2:
-                        index_labels.append(x + start_hour - 1)
-                        index_positions.append(x)
-
-            axs[i].set_xticks(index_positions)
-            axs[i].set_xticklabels(index_labels)
-            for x in axvline_thick_positions:
-                axs[i].axvline(x=x, color="gray", linestyle="--", alpha=0.5)
-            for x in axvline_thin_positions:
-                axs[i].axvline(x=x, color="gray", linestyle="-", alpha=0.2)
-
-    plt.tight_layout()
-
-    # Save plot using a naming scheme matching the sqlite files
-    base = os.path.splitext(sqlite_files[0])[0]  # e.g. "MK-datadata_markov-NoEnf"
-    label_suffix = f"-{case_labels[0].strip().replace('.', '').replace(' ', '')}"
-    plot_prefix = base[:-len(label_suffix)] if base.endswith(label_suffix) else base
-    plot_file = f"{plot_prefix}-unit_commitment.png"
-    plt.savefig(plot_file)
-    printer.information(f"Saved unit commitment plot to '{plot_file}'")
-
-    plt.show()
 
 
 def _add_push_markov_constraints(lego: LEGO, thermalGeneratorRelaxed: dict):
@@ -276,7 +103,10 @@ def _add_push_markov_constraints(lego: LEGO, thermalGeneratorRelaxed: dict):
 def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          calculate_regret: bool = False, relax_percentage: float = 0, skip_truth: bool = False,
                          enable_strict_markov: bool = False, invest_regret: bool = False,
-                         no_investment: bool = False) -> typing.Tuple[typing.List[str], typing.List[str]]:
+                         no_investment: bool = False,
+                         limitK: str | None = None, clusters: int = 1,
+                         shift: int = 0, stretch_demand: float = 1.0,
+                         no_overwrite: bool = False) -> typing.Tuple[typing.List[str], typing.List[str]]:
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
@@ -323,11 +153,14 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
 
     start_time = time.time()
     printer.information(f"Building the LEGO models for adjustments")  # Note this is actually faster (1.5-2x) than copying already built models to re-use them
-    lego_models = {"NoEnf.": LEGO(cs_notEnforced), "Cyclic": LEGO(cs_cyclic), "Markov": LEGO(cs_markov)}
-    if enable_strict_markov:
-        lego_models["Markov-Strict"] = LEGO(cs_markov_strict)
+    lego_models = {}
     if not skip_truth:
         lego_models["Truth "] = LEGO(cs_truth)
+    lego_models["NoEnf."] = LEGO(cs_notEnforced)
+    lego_models["Cyclic"] = LEGO(cs_cyclic)
+    lego_models["Markov"] = LEGO(cs_markov)
+    if enable_strict_markov:
+        lego_models["Markov-Strict"] = LEGO(cs_markov_strict)
     for name, lego in lego_models.items():
         _, build_time = lego.build_model()
         printer.information(f"Building model for case study '{name}' took {build_time:.2f} seconds")
@@ -379,19 +212,26 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         identifier_parts.append(f"relaxed{count_relaxed}")
     identifier = "-".join(identifier_parts)
 
-    sqlite_files, sqlite_labels = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret)
+    run_params = dict(
+        case_study_directory=case_study_path,
+        limit_k=limitK,
+        clusters=clusters if clusters > 1 else None,
+        shift=shift if shift != 0 else None,
+        stretch_demand=stretch_demand if stretch_demand != 1.0 else None,
+        relax_count=count_relaxed if count_relaxed > 0 else None,
+        no_investment=no_investment if no_investment else None,
+    )
+    sqlite_files, sqlite_labels = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite)
 
     return sqlite_files, sqlite_labels
 
 
-def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_sqlite: bool, calculate_regret: bool, skip_truth: bool, invest_regret: bool = False) -> typing.Tuple[typing.List[str], typing.List[str]]:
+def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_sqlite: bool, calculate_regret: bool, skip_truth: bool, invest_regret: bool = False, run_params: dict = None, no_overwrite: bool = False) -> typing.Tuple[typing.List[str], typing.List[str]]:
     ########################################################################################################################
     # Evaluation
     ########################################################################################################################
-    results = []
     sqlite_files = []
     sqlite_labels = []
-    truth_objective = None
 
     if not skip_truth:
         truth_lego = lego_models["Truth "]
@@ -399,6 +239,15 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
     for edgeHandlingType, lego in lego_models.items():
         printer.information(f"\n\n{'=' * 60}\n{edgeHandlingType}\n{'=' * 60}")
         model = lego.model
+
+        file_prefix = f"MK-{case_name}-{edgeHandlingType.strip().replace('.', '').replace(' ', '')}"
+
+        if no_overwrite and os.path.exists(f"{file_prefix}.sqlite"):
+            printer.information(f"  File '{file_prefix}.sqlite' already exists, skipping (--no-overwrite)")
+            if not no_sqlite:
+                sqlite_files.append(f"{file_prefix}.sqlite")
+                sqlite_labels.append(edgeHandlingType)
+            continue
 
         # Solve model
         optimizer = pyo.SolverFactory('gurobi_persistent')
@@ -410,11 +259,8 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
         work_time = optimizer._solver_model.Work
         printer.information(f"Solving model took {timing_solving:.2f} seconds ({work_time:.2f} work units)")
 
-        if edgeHandlingType == "Truth " and result.solver.termination_condition == pyo.TerminationCondition.optimal:
-            truth_objective = objective_value
-
-        file_prefix = f"MK-{case_name}-{edgeHandlingType.strip().replace('.', '').replace(' ', '')}"
-        write_results(lego.model, file_prefix, no_sqlite)
+        edge_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', '')}
+        write_results(lego.model, file_prefix, no_sqlite, solver_results=result, work_units=work_time, **edge_params)
 
         match result.solver.termination_condition:
             case pyo.TerminationCondition.optimal:
@@ -424,15 +270,6 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                 log_infeasible_constraints(model)
             case _:
                 printer.warning("Solver terminated with condition:", result.solver.termination_condition)
-
-        # Count binary variables within all variables
-        variables = list(model.component_objects(pyo.Var))
-        counter_binaries = 0
-        for v in variables:
-            indices = [i for i in v]
-            for i in indices:
-                if v[i].domain == pyo.Binary:
-                    counter_binaries += 1
 
         if not no_sqlite:
             sqlite_files.append(f"{file_prefix}.sqlite")
@@ -449,7 +286,8 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                 regret_result, regret_timing_solving, regret_objective_value = regret_lego.solve_model(already_solved_ok=True)
                 printer.information(f"Solving regret model took {regret_timing_solving:.2f} seconds")
 
-                write_results(regret_lego.model, f"{file_prefix}-regret", no_sqlite)
+                regret_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', ''), "run_type": "regret"}
+                write_results(regret_lego.model, f"{file_prefix}-regret", no_sqlite, solver_results=regret_result, work_units=regret_lego.work_units, **regret_params)
 
                 match regret_result.solver.termination_condition:
                     case pyo.TerminationCondition.optimal:
@@ -461,7 +299,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                         printer.warning("Solver terminated with condition:", regret_result.solver.termination_condition)
 
             if invest_regret and edgeHandlingType != "Truth " and not skip_truth:
-                printer.information(f"Calculating invest-regret for '{edgeHandlingType}': fixing vGenInvest into truth model")
+                printer.information(f"Calculating invest-regret for '{edgeHandlingType}': fixing vGenInvest in truth model")
                 invest_regret_lego = truth_lego.copy()
 
                 # Fix vGenInvest to the values from the edge-handling model
@@ -474,7 +312,8 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                 invest_regret_result, invest_regret_timing, invest_regret_objective = invest_regret_lego.solve_model(already_solved_ok=True)
                 printer.information(f"Solving invest-regret model took {invest_regret_timing:.2f} seconds")
 
-                write_results(invest_regret_lego.model, f"{file_prefix}-invest-regret", no_sqlite)
+                invest_regret_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', ''), "run_type": "invest-regret"}
+                write_results(invest_regret_lego.model, f"{file_prefix}-invest-regret", no_sqlite, solver_results=invest_regret_result, work_units=invest_regret_lego.work_units, **invest_regret_params)
 
                 match invest_regret_result.solver.termination_condition:
                     case pyo.TerminationCondition.optimal:
@@ -484,75 +323,6 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                         log_infeasible_constraints(invest_regret_lego.model)
                     case _:
                         printer.warning("Invest-regret solver terminated with condition:", invest_regret_result.solver.termination_condition)
-
-        entry = {
-            "Case": f"{case_name}-{edgeHandlingType}",
-            "Objective": objective_value if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1,
-            "Objective Regret": -1 if not calculate_regret else (regret_objective_value - getUnitCommitmentSlackCost(regret_lego, lego.cs.dPower_ThermalGen, lego.cs.dPower_Parameters["pENSCost"]) if regret_result.solver.termination_condition == pyo.TerminationCondition.optimal and edgeHandlingType != "Truth " else -1),
-            "Correction Cost": -1 if not calculate_regret else (getUnitCommitmentSlackCost(regret_lego, lego.cs.dPower_ThermalGen, lego.cs.dPower_Parameters["pENSCost"]) if edgeHandlingType != "Truth " else -1),
-            "Solution": result.solver.termination_condition,
-            # "Build Time": timing_building,
-            "Solve Time": timing_solving,
-            "Work Time": work_time,
-            "# Variables Overall": model.nvariables(),
-            "# Binary Variables": counter_binaries,
-            "# Constraints": model.nconstraints(),
-            "PNS regr.": -1 if not calculate_regret else (sum(regret_lego.model.vPNS[rp, k, i].value if regret_lego.model.vPNS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if edgeHandlingType != "Truth " else -1),
-            "EPS regr.": -1 if not calculate_regret else (sum(regret_lego.model.vEPS[rp, k, i].value if regret_lego.model.vEPS[rp, k, i].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for i in regret_lego.model.i) if edgeHandlingType != "Truth " else -1),
-            "Commit Correction +": -1 if not calculate_regret else (sum(regret_lego.model.vCommitCorrectHigher[rp, k, t].value if regret_lego.model.vCommitCorrectHigher[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if edgeHandlingType != "Truth " else -1),
-            "Commit Correction -": -1 if not calculate_regret else (sum(regret_lego.model.vCommitCorrectLower[rp, k, t].value if regret_lego.model.vCommitCorrectLower[rp, k, t].value is not None else 0 for rp in regret_lego.model.rp for k in regret_lego.model.k for t in regret_lego.model.thermalGenerators) if edgeHandlingType != "Truth " else -1),
-            "vGenP": sum(model.vGenP[rp, k, g].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vGenP[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.g),
-            "vCommit": sum(model.vCommit[rp, k, g].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vCommit[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.thermalGenerators),
-            "vStartup": sum(model.vStartup[rp, k, g].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vStartup[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.thermalGenerators),
-            "vShutdown": sum(model.vShutdown[rp, k, g].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vShutdown[rp, k, g].value is not None else 0 for rp in model.rp for k in model.k for g in model.thermalGenerators),
-            "vPNS": sum(model.vPNS[rp, k, i].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vPNS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
-            "vEPS": sum(model.vEPS[rp, k, i].value * model.pWeight_rp[rp] * model.pWeight_k[k] if model.vEPS[rp, k, i].value is not None else 0 for rp in model.rp for k in model.k for i in model.i),
-            "vGenInvest": sum(model.vGenInvest[g].value if model.vGenInvest[g].value is not None else 0 for g in model.g),
-            "Invest Regret Obj.": -1 if not invest_regret or edgeHandlingType == "Truth " else (invest_regret_objective if invest_regret_result.solver.termination_condition == pyo.TerminationCondition.optimal else -1),
-            "Invest Regret": -1 if not invest_regret or edgeHandlingType == "Truth " else ((invest_regret_objective - truth_objective) if truth_objective is not None and invest_regret_result.solver.termination_condition == pyo.TerminationCondition.optimal else -1),
-            "model": model
-        }
-        ddict = defaultdict(int)
-        for g, tec in model.gtec:
-            ddict[f"vGenInvest[{tec}]"] += model.vGenInvest[g].value if model.vGenInvest[g].value is not None else 0
-        for k, v in ddict.items():
-            entry[k] = v
-        results.append(entry)
-
-    # Sort results: Truth first, then NoEnf., Cyclic, Markov, Markov-Strict
-    sort_order = {"Truth ": 0, "NoEnf.": 1, "Cyclic": 2, "Markov": 3, "Markov-Strict": 4}
-    results.sort(key=lambda r: sort_order.get(r["Case"].split("-")[-1], 99))
-
-    # Compute relative change columns (relative to Truth model)
-    truth_entry = next((r for r in results if r["Case"].endswith("Truth ")), None)
-    for result in results:
-        for key in ["Objective", "Solve Time", "vStartup", "vShutdown"]:
-            if truth_entry is not None and truth_entry[key] not in (-1, 0) and result[key] != -1:
-                result[f"{key} %"] = (result[key] - truth_entry[key]) / abs(truth_entry[key]) * 100
-            else:
-                result[f"{key} %"] = None
-
-    values = ["Case", "Objective", "Objective %", "Solve Time", "Solve Time %", "vGenP", "vCommit", "vStartup", "vStartup %", "vShutdown", "vShutdown %", "vPNS", "vEPS", "Objective Regret", "Invest Regret"]
-    table = []
-    for v in values:
-        column = [v]
-        for result in results:
-            value = result[v]
-            if value is None:
-                value = ""
-            elif v.endswith(" %"):
-                value = f"{value:+.0f}%"
-            elif isinstance(value, float):
-                value = f"{value:.2f}"
-            elif isinstance(value, int):
-                value = f"{value:d}"
-            else:
-                value = f"{value}"
-            column.append(value)
-        table.append(column)
-
-    for i in range(len(table[0])):
-        printer.information(" | ".join(f"{table[j][i]:{">" if i != 0 else ""}{max(len(table[j][i2]) for i2 in range(len(table[j])))}}" for j in range(len(table))))
 
     return sqlite_files, sqlite_labels
 
@@ -568,12 +338,12 @@ def copy_files_non_recursive(src_folder: str, dst_folder: str):
             shutil.copy2(s, d)
 
 
-def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlite: bool = False, calculate_regret: bool = False,
+def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, calculate_regret: bool = False,
          relax_percentage: float = 0.0, skip_truth: bool = False,
          clusters: int = 1, cluster_stepsize: int = 1, cluster_steps: int = 0,
          limitK: str | None = None, shift: int = 0, stretch_demand: float = 1,
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, invest_regret: bool = False,
-         no_investment: bool = False):
+         no_investment: bool = False, no_overwrite: bool = False):
     ew = ExcelWriter()
 
     for folder in caseStudyFolder.split(","):
@@ -674,11 +444,7 @@ def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlit
                 printer.information(f"Loading case study from '{cluster_folder}'")
                 printer.information(f"Logfile: '{printer.get_logfile()}'")
 
-                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment)
-
-                if plot and sqlite_files:
-                    printer.information(f"Plotting unit commitment from sqlite files: {sqlite_files}")
-                    plot_unit_commitment(sqlite_files, case_labels, cluster_folder, 6 * 24, 1)
+                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, no_overwrite=no_overwrite)
         except Exception as e:
             printer.error(f"Exception while executing case study '{folder}': {e}")
             if debug:
@@ -693,7 +459,6 @@ def main(caseStudyFolder: str, plot: bool = False, debug: bool = False, no_sqlit
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compare edge-handling for given case-study", formatter_class=RichHelpFormatter)
     parser.add_argument("caseStudyFolder", type=str, help="Path to folder containing data for LEGO model. Can be a comma-separated list of multiple folders (executed after each other)")
-    parser.add_argument("--plot", action="store_true", help="Plot unit commitment results")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode where exceptions are passed on")
     parser.add_argument("--no-sqlite", action="store_true", help="Do not save results to SQLite database")
     parser.add_argument("--calculate-regret", action="store_true", help="Calculate regret by re-solving the truth model with fixed unit commitment from the other models (can take a while)")
@@ -709,6 +474,7 @@ if __name__ == "__main__":
     parser.add_argument("--enable-strict-markov", action="store_true", help="Also execute the strict Markov variant (with push constraints active)")
     parser.add_argument("--invest-regret", action="store_true", help="Calculate invest-regret: fix vGenInvest from each edge-handling model into the truth model and compare objectives")
     parser.add_argument("--no-investment", action="store_true", help="Fix vGenInvest to 1 for all generators (skip investment decisions)")
+    parser.add_argument("--no-overwrite", action="store_true", help="Skip cases where the output .sqlite file already exists")
     args = parser.parse_args()
 
     kwargs = vars(args)
