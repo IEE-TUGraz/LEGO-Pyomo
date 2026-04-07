@@ -444,12 +444,8 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                         cs_clustered = Utilities.apply_kmedoids_aggregation(cs, cluster)
                         ew.write_caseStudy(cs_clustered, cluster_folder)
 
-                    printer.set_logfile(f"MK-data{cluster_folder.rstrip('/').replace('/', '_').replace(' ', '')}-{cluster}clusters.log")
-                else:
-                    printer.set_logfile(f"MK-data{cluster_folder.rstrip('/').replace('/', '_').replace(' ', '')}.log")
 
                 printer.information(f"Loading case study from '{cluster_folder}'")
-                printer.information(f"Logfile: '{printer.get_logfile()}'")
 
                 sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, no_overwrite=no_overwrite)
         except Exception as e:
