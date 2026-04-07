@@ -103,7 +103,7 @@ def _add_push_markov_constraints(lego: LEGO, thermalGeneratorRelaxed: dict):
 def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          calculate_regret: bool = False, relax_percentage: float = 0, skip_truth: bool = False,
                          enable_strict_markov: bool = False, invest_regret: bool = False,
-                         no_investment: bool = False,
+                         no_investment: bool = False, rmip: bool = False,
                          limitK: str | None = None, clusters: int = 1,
                          shift: int = 0, stretch_demand: float = 1.0,
                          no_overwrite: bool = False) -> typing.Tuple[typing.List[str], typing.List[str]]:
@@ -116,6 +116,10 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
     start_time = time.time()
     cs = CaseStudy(case_study_path, clip_method="none", clip_value=0)
     printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
+
+    if rmip:
+        printer.information("Setting up case study as rMIP (relaxing all integer variables)")
+        cs.dGlobal_Parameters["pEnableRMIP"] = True
 
     # Create varied case studies
     start_time = time.time()
@@ -210,6 +214,8 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
     identifier_parts = [f"data{case_study_path.rstrip('/').replace('/', '_').replace(' ', '')}"]
     if count_relaxed > 0:
         identifier_parts.append(f"relaxed{count_relaxed}")
+    if rmip:
+        identifier_parts.append("rMIP")
     identifier = "-".join(identifier_parts)
 
     run_params = dict(
@@ -220,6 +226,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         stretch_demand=stretch_demand if stretch_demand != 1.0 else None,
         relax_count=count_relaxed if count_relaxed > 0 else None,
         no_investment=no_investment if no_investment else None,
+        rmip=rmip if rmip else None,
     )
     sqlite_files, sqlite_labels = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite)
 
@@ -343,7 +350,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
          clusters: int = 1, cluster_stepsize: int = 1, cluster_steps: int = 0,
          limitK: str | None = None, shift: int = 0, stretch_demand: float = 1,
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, invest_regret: bool = False,
-         no_investment: bool = False, no_overwrite: bool = False):
+         no_investment: bool = False, no_overwrite: bool = False, rmip: bool = False):
     ew = ExcelWriter()
 
     for folder in caseStudyFolder.split(","):
@@ -444,7 +451,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                 printer.information(f"Loading case study from '{cluster_folder}'")
                 printer.information(f"Logfile: '{printer.get_logfile()}'")
 
-                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, no_overwrite=no_overwrite)
+                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, no_overwrite=no_overwrite)
         except Exception as e:
             printer.error(f"Exception while executing case study '{folder}': {e}")
             if debug:
@@ -475,6 +482,7 @@ if __name__ == "__main__":
     parser.add_argument("--invest-regret", action="store_true", help="Calculate invest-regret: fix vGenInvest from each edge-handling model into the truth model and compare objectives")
     parser.add_argument("--no-investment", action="store_true", help="Fix vGenInvest to 1 for all generators (skip investment decisions)")
     parser.add_argument("--no-overwrite", action="store_true", help="Skip cases where the output .sqlite file already exists")
+    parser.add_argument("--rmip", action="store_true", help="Relax all integer variables (rMIP) before solving")
     args = parser.parse_args()
 
     kwargs = vars(args)
