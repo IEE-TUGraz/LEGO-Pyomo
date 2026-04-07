@@ -282,8 +282,8 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
             sqlite_files.append(f"{file_prefix}.sqlite")
             sqlite_labels.append(edgeHandlingType)
 
-        if result.solver.termination_condition == pyo.TerminationCondition.optimal:
-            if calculate_regret and edgeHandlingType != "Truth " and not skip_truth:
+        if calculate_regret and edgeHandlingType != "Truth ":
+            try:
                 regret_lego = truth_lego.copy()
 
                 add_UnitCommitmentSlack_And_FixVariables(regret_lego, model, lego.cs.dPower_Hindex, lego.cs.dPower_ThermalGen, lego.cs.dPower_Parameters["pENSCost"])
@@ -304,8 +304,11 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                         log_infeasible_constraints(regret_lego.model)
                     case _:
                         printer.warning("Solver terminated with condition:", regret_result.solver.termination_condition)
+            except Exception as e:
+                printer.error(f"Regret calculation failed for '{edgeHandlingType}': {e}")
 
-            if invest_regret and edgeHandlingType != "Truth " and not skip_truth:
+        if invest_regret and edgeHandlingType != "Truth ":
+            try:
                 printer.information(f"Calculating invest-regret for '{edgeHandlingType}': fixing vGenInvest in truth model")
                 invest_regret_lego = truth_lego.copy()
 
@@ -330,6 +333,8 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                         log_infeasible_constraints(invest_regret_lego.model)
                     case _:
                         printer.warning("Invest-regret solver terminated with condition:", invest_regret_result.solver.termination_condition)
+            except Exception as e:
+                printer.error(f"Invest-regret calculation failed for '{edgeHandlingType}': {e}")
 
     return sqlite_files, sqlite_labels
 
@@ -443,7 +448,6 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                         cs = CaseStudy(cluster_folder, do_not_scale_units=True)
                         cs_clustered = Utilities.apply_kmedoids_aggregation(cs, cluster)
                         ew.write_caseStudy(cs_clustered, cluster_folder)
-
 
                 printer.information(f"Loading case study from '{cluster_folder}'")
 
