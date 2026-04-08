@@ -165,8 +165,9 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             if model.movingWindowP.ord(p) == 1:
                 return model.vStInterRes[p, storage_unit] == model.pIniReserve[storage_unit] * (model.pExisUnits[storage_unit] + model.vGenInvest[storage_unit])
             else:
-                relevant_hindeces = model.hindex[model.p.ord(p) - model.pMovWindow:model.p.ord(p)]
-                hindex_count = relevant_hindeces.to_frame(index=False).groupby(['rp', 'k']).size()
+                hindex_list = list(model.hindex)
+                relevant_hindeces = hindex_list[model.p.ord(p) - model.pMovWindow:model.p.ord(p)]
+                hindex_count = pd.DataFrame(relevant_hindeces, columns=['p', 'rp', 'k']).groupby(['rp', 'k']).size()
 
                 return (model.vStInterRes[model.movingWindowP.prev(p), storage_unit]
                         ==

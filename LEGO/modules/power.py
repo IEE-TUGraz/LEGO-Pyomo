@@ -37,7 +37,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.p = pyo.Set(doc='Periods', initialize=cs.dPower_Hindex.index.get_level_values('p').unique().tolist())
     model.rp = pyo.Set(doc='Representative periods', initialize=cs.dPower_Demand.index.get_level_values('rp').unique().tolist())
     model.k = pyo.Set(doc='Timestep within representative period', initialize=cs.dPower_Demand.index.get_level_values('k').unique().tolist())
-    model.hindex = cs.dPower_Hindex.index
+    model.hindex = pyo.Set(dimen=3, doc='Hindex mapping (p, rp, k)', initialize=cs.dPower_Hindex.index.tolist())
 
     if cs.dPower_Parameters["pEnableSOCP"]:
         # Helper function for creating reverse and bidirectional sets

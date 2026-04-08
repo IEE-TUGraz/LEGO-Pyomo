@@ -261,7 +261,7 @@ def _print_table(columns, group_entries):
         ))
 
 
-def plot_unit_commitment(sqlite_files, case_labels, case_study_folder, number_of_hours=24 * 7, start_hour=1, no_show=False):
+def plot_unit_commitment(sqlite_files, case_labels, case_study_folder=None, number_of_hours=24 * 7, start_hour=1, no_show=False):
     """Plot unit commitment from sqlite result files."""
     import matplotlib.pyplot as plt
 
@@ -290,9 +290,35 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder, number_of
     else:
         generators = list(all_generators)
 
-    # Get original mapping from Power_Hindex
-    hindex = ExcelReader.get_Power_Hindex(case_study_folder + "Power_Hindex.xlsx")
-    hindex = hindex.reset_index()
+    # Load hindex mapping from a non-Truth sqlite file (Truth has a different time structure)
+    # Fall back to Excel if not available
+    hindex = None
+    hindex_source = next((f for f, l in zip(sqlite_files, case_labels) if l.strip() not in ("Truth", "Truth ")), sqlite_files[0])
+    try:
+        cnx = sqlite3.connect(hindex_source)
+        hindex = pd.read_sql("SELECT * FROM hindex", cnx)
+        cnx.close()
+        if hindex.empty:
+            hindex = None
+        else:
+            # Drop the sqlite index column if present
+            if 'index' in hindex.columns:
+                hindex = hindex.drop(columns=['index'])
+            # hindex columns from pyo.Set(dimen=3) are 0, 1, 2 -> rename to p, rp, k
+            if set(hindex.columns) != {'p', 'rp', 'k'}:
+                hindex = hindex.rename(columns={hindex.columns[0]: 'p', hindex.columns[1]: 'rp', hindex.columns[2]: 'k'})
+    except Exception:
+        pass
+
+    if hindex is None:
+        if case_study_folder is None:
+            printer.error("No hindex table found in sqlite files and no case-study-folder provided in .sqlite or with --case-study-folder for fallback")
+            return
+        printer.warning("No hindex table in sqlite, falling back to Excel file")
+        cs_folder = case_study_folder if case_study_folder.endswith("/") else case_study_folder + "/"
+        hindex = ExcelReader.get_Power_Hindex(cs_folder + "Power_Hindex.xlsx")
+        hindex = hindex.reset_index()
+
     hindex["p_int"] = hindex["p"].str.extract(r'(\d+)').astype(int)
     hindex["rp_int"] = hindex["rp"].str.extract(r'(\d+)').astype(int)
     hindex["k_int"] = hindex["k"].str.extract(r'(\d+)').astype(int)
@@ -549,19 +575,13 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
 
         # Plot if requested
         if plot:
-            cs_folder = case_study_folder or case_dir
-            if cs_folder:
-                if not cs_folder.endswith("/"):
-                    cs_folder += "/"
-                sorted_entries = sorted(group_entries, key=lambda e: EDGE_HANDLING_SORT.get(e.get('edge_handling', ''), 99))
-                sqlite_files = [e['file'] for e in sorted_entries]
-                case_labels = [e.get('edge_handling', '') for e in sorted_entries]
-                try:
-                    plot_unit_commitment(sqlite_files, case_labels, cs_folder, number_of_hours, start_hour, no_show)
-                except Exception as e:
-                    printer.error(f"Failed to plot: {e}")
-            else:
-                printer.warning("Cannot plot: no case_study_directory found in run parameters (use --case-study-folder)")
+            sorted_entries = sorted(group_entries, key=lambda e: EDGE_HANDLING_SORT.get(e.get('edge_handling', ''), 99))
+            sqlite_files = [e['file'] for e in sorted_entries]
+            case_labels = [e.get('edge_handling', '') for e in sorted_entries]
+            try:
+                plot_unit_commitment(sqlite_files, case_labels, case_study_folder or case_dir, number_of_hours, start_hour, no_show)
+            except Exception as e:
+                printer.error(f"Failed to plot: {e}")
 
 
 if __name__ == "__main__":
@@ -571,7 +591,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("folder", nargs="?", default=".", help="Folder containing MK-*.sqlite files (default: current directory)")
     parser.add_argument("--plot", action="store_true", help="Plot unit commitment results")
-    parser.add_argument("--case-study-folder", type=str, default=None, help="Path to case study folder (for plotting, if not stored in run_parameters)")
+    parser.add_argument("--case-study-folder", type=str, default=None, help="Path to case study folder (fallback for plotting if neither hindex nor case study folder are present in .sqlite)")
     parser.add_argument("--number-of-hours", type=int, default=6 * 24, help="Number of hours to plot (default: 144)")
     parser.add_argument("--start-hour", type=int, default=1, help="Start hour for plot (default: 1)")
     parser.add_argument("--no-show", action="store_true", help="Don't show the plot after creation (only save it)")
