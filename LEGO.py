@@ -11,7 +11,6 @@ from InOutModule.printer import Printer
 from pyomo.core import NameLabeler
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
-
 from LEGO.LEGO import LEGO, ModelType
 
 printer = Printer.getInstance()

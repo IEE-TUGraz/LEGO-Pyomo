@@ -11,7 +11,7 @@ from pyomo.core import TransformationFactory
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO.LEGOUtilities import reset_execution_safety_dict
-from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits, thermalGen, vres
+from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits, thermalGen, vres, heat
 
 printer = Printer.getInstance()
 
@@ -276,6 +276,9 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     if cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
         model.first_stage_varlist += softLineLoadLimits.add_element_definitions_and_bounds(model, cs)
 
+    if cs.dGlobal_Parameters["pEnableHeat"]:
+        model.first_stage_varlist += heat.add_element_definitions_and_bounds(model, cs)
+
     # Helper Sets for zone of interest
     model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=cs.dPower_BusInfo.loc[cs.dPower_BusInfo["zoi"] == 1].index.tolist(), within=model.i)
 
@@ -295,6 +298,9 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
         model.first_stage_objective += importExport.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
         model.first_stage_objective += softLineLoadLimits.add_constraints(model, cs)
+
+    if cs.dGlobal_Parameters["pEnableHeat"]:
+        model.first_stage_objective += heat.add_constraints(model, cs)
 
     if cs.dGlobal_Parameters["pEnableRMIP"]:
         TransformationFactory('core.relax_integer_vars').apply_to(model)  # Relaxes all integer variables to continuous variables
