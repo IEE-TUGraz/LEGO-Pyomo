@@ -103,7 +103,7 @@ def _add_push_markov_constraints(lego: LEGO, thermalGeneratorRelaxed: dict):
 def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          calculate_regret: bool = False, relax_percentage: float = 0, skip_truth: bool = False,
                          enable_strict_markov: bool = False, invest_regret: bool = False,
-                         no_investment: bool = False, rmip: bool = False,
+                         no_investment: bool = False, rmip: bool = False, no_crossover: bool = False,
                          limitK: str | None = None, clusters: int = 1,
                          shift: int = 0, stretch_demand: float = 1.0,
                          no_overwrite: bool = False) -> typing.Tuple[typing.List[str], typing.List[str]]:
@@ -120,6 +120,10 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
     if rmip:
         printer.information("Setting up case study as rMIP (relaxing all integer variables)")
         cs.dGlobal_Parameters["pEnableRMIP"] = True
+
+    if no_crossover:
+        printer.information("Disabling crossover for all solves")
+        cs.dGlobal_Parameters["pDisableCrossover"] = True
 
     # Create varied case studies
     start_time = time.time()
@@ -216,6 +220,8 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         identifier_parts.append(f"relaxed{count_relaxed}")
     if rmip:
         identifier_parts.append("rMIP")
+    if no_crossover:
+        identifier_parts.append("noCrossover")
     identifier = "-".join(identifier_parts)
 
     run_params = dict(
@@ -227,6 +233,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         relax_count=count_relaxed if count_relaxed > 0 else None,
         no_investment=no_investment if no_investment else None,
         rmip=rmip if rmip else None,
+        no_crossover=no_crossover if no_crossover else None,
     )
     sqlite_files, sqlite_labels = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite)
 
@@ -259,6 +266,8 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
         # Solve model
         optimizer = pyo.SolverFactory('gurobi_persistent')
         optimizer.set_instance(model)
+        if getattr(model, 'pDisableCrossover', False):
+            optimizer.options['Crossover'] = 0
         start_time = time.time()
         result = optimizer.solve(tee=True)
         objective_value = pyo.value(model.objective) if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1
@@ -355,7 +364,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
          clusters: int = 1, cluster_stepsize: int = 1, cluster_steps: int = 0,
          limitK: str | None = None, shift: int = 0, stretch_demand: float = 1,
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, invest_regret: bool = False,
-         no_investment: bool = False, no_overwrite: bool = False, rmip: bool = False):
+         no_investment: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False):
     ew = ExcelWriter()
 
     for folder in caseStudyFolder.split(","):
@@ -451,7 +460,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
 
                 printer.information(f"Loading case study from '{cluster_folder}'")
 
-                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, no_overwrite=no_overwrite)
+                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, no_crossover, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, no_overwrite=no_overwrite)
         except Exception as e:
             printer.error(f"Exception while executing case study '{folder}': {e}")
             if debug:
@@ -483,6 +492,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-investment", action="store_true", help="Fix vGenInvest to 1 for all generators (skip investment decisions)")
     parser.add_argument("--no-overwrite", action="store_true", help="Skip cases where the output .sqlite file already exists")
     parser.add_argument("--rmip", action="store_true", help="Relax all integer variables (rMIP) before solving")
+    parser.add_argument("--no-crossover", action="store_true", help="Disable Gurobi crossover for all solves (faster LP solving, but solution may not be a vertex)")
     args = parser.parse_args()
 
     kwargs = vars(args)

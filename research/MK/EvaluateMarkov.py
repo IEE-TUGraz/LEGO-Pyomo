@@ -71,6 +71,7 @@ def load_file_metadata(sqlite_file):
         'relax_count': None,
         'no_investment': None,
         'rmip': None,
+        'no_crossover': None,
         'edge_handling': None,
         'run_type': None,
         'work_units': None,
@@ -100,7 +101,7 @@ def load_file_metadata(sqlite_file):
                 for key in ['stretch_demand']:
                     if key in row and row[key] not in (None, 'None'):
                         meta[key] = float(row[key])
-                for key in ['no_investment', 'rmip']:
+                for key in ['no_investment', 'rmip', 'no_crossover']:
                     if key in row and row[key] not in (None, 'None'):
                         val = row[key]
                         meta[key] = val if isinstance(val, bool) else str(val).lower() == 'true'
@@ -488,11 +489,12 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             entry.get('relax_count'),
             entry.get('no_investment'),
             entry.get('rmip'),
+            entry.get('no_crossover'),
         )
         groups[key].append(entry)
 
     for group_key, group_entries in groups.items():
-        case_dir, limit_k, clusters, shift, stretch_demand, relax_count, no_investment, rmip = group_key
+        case_dir, limit_k, clusters, shift, stretch_demand, relax_count, no_investment, rmip, no_crossover = group_key
 
         # Print group header
         parts = []
@@ -512,6 +514,8 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             parts.append("no-investment")
         if rmip:
             parts.append("rMIP")
+        if no_crossover:
+            parts.append("no-crossover")
 
         printer.information(f"\n{'=' * 80}")
         printer.information(f"Group: {', '.join(parts) if parts else '(default)'}")

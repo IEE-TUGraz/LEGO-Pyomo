@@ -96,6 +96,8 @@ class LEGO:
                 if solver_name.lower() in ['gurobi', 'gurobi_persistent']:
                     optimizer = pyo.SolverFactory('gurobi_persistent')
                     optimizer.set_instance(self.model)
+                    if getattr(self.model, 'pDisableCrossover', False):
+                        optimizer.options['Crossover'] = 0
                     results = optimizer.solve(tee=True, load_solutions=True)
                     objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
                     # Extract work units from Gurobi model
@@ -298,6 +300,9 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
 
     if cs.dGlobal_Parameters["pEnableRMIP"]:
         TransformationFactory('core.relax_integer_vars').apply_to(model)  # Relaxes all integer variables to continuous variables
+
+    if cs.dGlobal_Parameters.get("pDisableCrossover", False):
+        model.pDisableCrossover = True
 
     return model
 
