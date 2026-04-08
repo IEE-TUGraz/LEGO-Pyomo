@@ -261,7 +261,7 @@ def _print_table(columns, group_entries):
         ))
 
 
-def plot_unit_commitment(sqlite_files, case_labels, case_study_folder, number_of_hours=24 * 7, start_hour=1):
+def plot_unit_commitment(sqlite_files, case_labels, case_study_folder, number_of_hours=24 * 7, start_hour=1, no_show=False):
     """Plot unit commitment from sqlite result files."""
     import matplotlib.pyplot as plt
 
@@ -401,7 +401,8 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder, number_of
     plt.savefig(plot_file)
     printer.information(f"Saved unit commitment plot to '{plot_file}'")
 
-    plt.show()
+    if not no_show:
+        plt.show()
 
 
 def _load_unit_commitment_from_sqlite(sqlite_file, case_label):
@@ -440,7 +441,7 @@ def _load_unit_commitment_from_sqlite(sqlite_file, case_label):
     return df
 
 
-def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24, start_hour=1):
+def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24, start_hour=1, no_show=False):
     # Find all MK-*.sqlite files (excluding regret and invest-regret)
     all_sqlite = sorted(f for f in glob.glob(os.path.join(folder, "*.sqlite"))
                         if os.path.basename(f).startswith("MK-"))
@@ -533,7 +534,7 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
                 sqlite_files = [e['file'] for e in sorted_entries]
                 case_labels = [e.get('edge_handling', '') for e in sorted_entries]
                 try:
-                    plot_unit_commitment(sqlite_files, case_labels, cs_folder, number_of_hours, start_hour)
+                    plot_unit_commitment(sqlite_files, case_labels, cs_folder, number_of_hours, start_hour, no_show)
                 except Exception as e:
                     printer.error(f"Failed to plot: {e}")
             else:
@@ -550,6 +551,7 @@ if __name__ == "__main__":
     parser.add_argument("--case-study-folder", type=str, default=None, help="Path to case study folder (for plotting, if not stored in run_parameters)")
     parser.add_argument("--number-of-hours", type=int, default=6 * 24, help="Number of hours to plot (default: 144)")
     parser.add_argument("--start-hour", type=int, default=1, help="Start hour for plot (default: 1)")
+    parser.add_argument("--no-show", action="store_true", help="Don't show the plot after creation (only save it)")
     args = parser.parse_args()
 
-    main(args.folder, args.plot, args.case_study_folder, args.number_of_hours, args.start_hour)
+    main(args.folder, args.plot, args.case_study_folder, args.number_of_hours, args.start_hour, args.no_show)
