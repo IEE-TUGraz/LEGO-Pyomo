@@ -270,6 +270,26 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder, number_of
     frames = [_load_unit_commitment_from_sqlite(f, label) for f, label in zip(sqlite_files, case_labels)]
     df = pd.concat(frames)
 
+    # Load vGenInvest from each file and find generators where at least one model invested
+    invested_generators = set()
+    for sqlite_file in sqlite_files:
+        try:
+            cnx = sqlite3.connect(sqlite_file)
+            df_inv = pd.read_sql("SELECT * FROM vGenInvest", cnx)
+            cnx.close()
+            for _, row in df_inv.iterrows():
+                if row['values'] > 0:
+                    invested_generators.add(row[df_inv.columns[0]])
+        except Exception:
+            pass
+
+    # Filter to invested generators only (if we found investment data)
+    all_generators = df.index.get_level_values("g").unique()
+    if invested_generators:
+        generators = [g for g in all_generators if g in invested_generators]
+    else:
+        generators = list(all_generators)
+
     # Get original mapping from Power_Hindex
     hindex = ExcelReader.get_Power_Hindex(case_study_folder + "Power_Hindex.xlsx")
     hindex = hindex.reset_index()
@@ -281,7 +301,7 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder, number_of
 
     index = [i + 1 for i in range(len(hindex))]
     nr_cases = len(df.index.get_level_values("case").unique())
-    nr_generators = len(df.index.get_level_values("g").unique())
+    nr_generators = len(generators)
 
     fig, axs = plt.subplots(nr_cases, nr_generators,
                             figsize=(6 * nr_generators, 2 * nr_cases),
@@ -289,7 +309,7 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder, number_of
 
     for i, case in enumerate(df.index.get_level_values("case").unique()):
         is_truth = case.strip() in ("Truth", "Truth ")
-        for j, g in enumerate(df.index.get_level_values("g").unique()):
+        for j, g in enumerate(generators):
 
             data_vGenP = {}
             data_bar_startup = {}
@@ -325,7 +345,10 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder, number_of
                      [counter - b for b in range(0, int(df.loc[case, rp, k, g]["pMinDownTime"] - 1)) if counter - b > 0]])
 
             axs2 = axs[i, j].twinx()
-            axs2.set_title(f"{case}")
+            if i == 0:
+                axs2.set_title(f"{g}\n{case}")
+            else:
+                axs2.set_title(f"{case}")
             axs2.set_ylim(0, 3)
             axs2.bar(index, data_bar_startup.values(), color="green", alpha=0.5,
                      bottom=[list(data_vCommit.values())[-1]] + list(data_vCommit.values())[:-1], width=1,
