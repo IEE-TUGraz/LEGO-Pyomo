@@ -8,8 +8,11 @@ import logging
 import math
 import os
 import shutil
+import sqlite3
 import time
 import typing
+
+import pandas as pd
 
 import pyomo.environ as pyo
 from pyomo.util.infeasible import log_infeasible_constraints
@@ -263,99 +266,125 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
 
         file_prefix = f"MK-{case_name}-{edgeHandlingType.strip().replace('.', '').replace(' ', '')}"
 
+        # Part 1: Solve the main model (or skip if no-overwrite and result exists)
+        case_skipped = False
         if no_overwrite and os.path.exists(f"{file_prefix}.sqlite"):
             printer.information(f"  File '{file_prefix}.sqlite' already exists, skipping (--no-overwrite)")
-            if not no_sqlite:
-                sqlite_files.append(f"{file_prefix}.sqlite")
-                sqlite_labels.append(edgeHandlingType)
-            continue
+            case_skipped = True
+        else:
+            # Solve model
+            optimizer = pyo.SolverFactory('gurobi_persistent')
+            optimizer.set_instance(model)
+            if getattr(model, 'pDisableCrossover', False):
+                printer.information("Deactivating crossover")
+                optimizer.options['Crossover'] = 0
+            if getattr(model, 'pForceBarrier', False):
+                printer.information("Forcing barrier method")
+                optimizer.options['Method'] = 2
+                optimizer.options['NodeMethod'] = 2
+            start_time = time.time()
+            result = optimizer.solve(tee=True)
+            objective_value = pyo.value(model.objective) if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+            timing_solving = time.time() - start_time
+            work_time = optimizer._solver_model.Work
+            printer.information(f"Solving model took {timing_solving:.2f} seconds ({work_time:.2f} work units)")
 
-        # Solve model
-        optimizer = pyo.SolverFactory('gurobi_persistent')
-        optimizer.set_instance(model)
-        if getattr(model, 'pDisableCrossover', False):
-            printer.information("Deactivating crossover")
-            optimizer.options['Crossover'] = 0
-        if getattr(model, 'pForceBarrier', False):
-            printer.information("Forcing barrier method")
-            optimizer.options['Method'] = 2
-            optimizer.options['NodeMethod'] = 2
-        start_time = time.time()
-        result = optimizer.solve(tee=True)
-        objective_value = pyo.value(model.objective) if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1
-        timing_solving = time.time() - start_time
-        work_time = optimizer._solver_model.Work
-        printer.information(f"Solving model took {timing_solving:.2f} seconds ({work_time:.2f} work units)")
+            edge_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', '')}
+            write_results(lego.model, file_prefix, no_sqlite, solver_results=result, work_units=work_time, **edge_params)
 
-        edge_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', '')}
-        write_results(lego.model, file_prefix, no_sqlite, solver_results=result, work_units=work_time, **edge_params)
-
-        match result.solver.termination_condition:
-            case pyo.TerminationCondition.optimal:
-                printer.success("Optimal solution found")
-            case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
-                printer.error(f"Model is {result.solver.termination_condition}, logging infeasible constraints:")
-                log_infeasible_constraints(model)
-            case _:
-                printer.warning("Solver terminated with condition:", result.solver.termination_condition)
+            match result.solver.termination_condition:
+                case pyo.TerminationCondition.optimal:
+                    printer.success("Optimal solution found")
+                case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
+                    printer.error(f"Model is {result.solver.termination_condition}, logging infeasible constraints:")
+                    log_infeasible_constraints(model)
+                case _:
+                    printer.warning("Solver terminated with condition:", result.solver.termination_condition)
 
         if not no_sqlite:
             sqlite_files.append(f"{file_prefix}.sqlite")
             sqlite_labels.append(edgeHandlingType)
 
-        if calculate_regret and edgeHandlingType != "Truth ":
-            try:
-                regret_lego = truth_lego.copy()
+        if calculate_regret and edgeHandlingType != "Truth " and not skip_truth:
+            if no_overwrite and os.path.exists(f"{file_prefix}-regret.sqlite"):
+                printer.information(f"  File '{file_prefix}-regret.sqlite' already exists, skipping regret (--no-overwrite)")
+            else:
+                try:
+                    regret_lego = truth_lego.copy()
 
-                add_UnitCommitmentSlack_And_FixVariables(regret_lego, model, lego.cs.dPower_Hindex, lego.cs.dPower_ThermalGen, lego.cs.dPower_Parameters["pENSCost"])
+                    # Load vCommit values from sqlite if case was skipped
+                    if case_skipped:
+                        printer.information(f"Loading vCommit from '{file_prefix}.sqlite'")
+                        cnx = sqlite3.connect(f"{file_prefix}.sqlite")
+                        df_commit = pd.read_sql("SELECT * FROM vCommit", cnx)
+                        cnx.close()
+                        for _, row in df_commit.iterrows():
+                            model.vCommit[row.iloc[0], row.iloc[1], row.iloc[2]].value = row['values']
+                            model.vCommit[row.iloc[0], row.iloc[1], row.iloc[2]].stale = False
 
-                # Re-solve the model
-                printer.information("Re-solving model with fixed variables for regret calculation")
-                regret_result, regret_timing_solving, regret_objective_value = regret_lego.solve_model(already_solved_ok=True)
-                printer.information(f"Solving regret model took {regret_timing_solving:.2f} seconds")
+                    add_UnitCommitmentSlack_And_FixVariables(regret_lego, model, lego.cs.dPower_Hindex, lego.cs.dPower_ThermalGen, lego.cs.dPower_Parameters["pENSCost"])
 
-                regret_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', ''), "run_type": "regret"}
-                write_results(regret_lego.model, f"{file_prefix}-regret", no_sqlite, solver_results=regret_result, work_units=regret_lego.work_units, **regret_params)
+                    # Re-solve the model
+                    printer.information("Re-solving model with fixed variables for regret calculation")
+                    regret_result, regret_timing_solving, regret_objective_value = regret_lego.solve_model(already_solved_ok=True)
+                    printer.information(f"Solving regret model took {regret_timing_solving:.2f} seconds")
 
-                match regret_result.solver.termination_condition:
-                    case pyo.TerminationCondition.optimal:
-                        printer.success("Optimal solution found")
-                    case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
-                        printer.error(f"Model is {regret_result.solver.termination_condition}, logging infeasible constraints:")
-                        log_infeasible_constraints(regret_lego.model)
-                    case _:
-                        printer.warning("Solver terminated with condition:", regret_result.solver.termination_condition)
-            except Exception as e:
-                printer.error(f"Regret calculation failed for '{edgeHandlingType}': {e}")
+                    regret_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', ''), "run_type": "regret"}
+                    write_results(regret_lego.model, f"{file_prefix}-regret", no_sqlite, solver_results=regret_result, work_units=regret_lego.work_units, **regret_params)
 
+                    match regret_result.solver.termination_condition:
+                        case pyo.TerminationCondition.optimal:
+                            printer.success("Optimal solution found")
+                        case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
+                            printer.error(f"Model is {regret_result.solver.termination_condition}, logging infeasible constraints:")
+                            log_infeasible_constraints(regret_lego.model)
+                        case _:
+                            printer.warning("Solver terminated with condition:", regret_result.solver.termination_condition)
+                except Exception as e:
+                    printer.error(f"Regret calculation failed for '{edgeHandlingType}': {e}")
+
+        # Part 2: Invest-regret (independent of whether main case was solved or skipped)
         if invest_regret and edgeHandlingType != "Truth ":
-            try:
-                printer.information(f"Calculating invest-regret for '{edgeHandlingType}': fixing vGenInvest in truth model")
-                invest_regret_lego = truth_lego.copy()
+            if no_overwrite and os.path.exists(f"{file_prefix}-invest-regret.sqlite"):
+                printer.information(f"  File '{file_prefix}-invest-regret.sqlite' already exists, skipping invest-regret (--no-overwrite)")
+            else:
+                try:
+                    printer.information(f"Calculating invest-regret for '{edgeHandlingType}': fixing vGenInvest in truth model")
+                    invest_regret_lego = truth_lego.copy()
 
-                # Fix vGenInvest to the values from the edge-handling model
-                for g in invest_regret_lego.model.g:
-                    invest_regret_lego.model.vGenInvest[g].value = model.vGenInvest[g].value
-                    invest_regret_lego.model.vGenInvest[g].fixed = True
+                    # Load vGenInvest values: from solved model if available, otherwise from existing sqlite
+                    if case_skipped:
+                        printer.information(f"Loading vGenInvest from '{file_prefix}.sqlite'")
+                        cnx = sqlite3.connect(f"{file_prefix}.sqlite")
+                        df_inv = pd.read_sql("SELECT * FROM vGenInvest", cnx)
+                        cnx.close()
+                        gen_invest_values = dict(zip(df_inv.iloc[:, 0], df_inv['values']))
+                        for g in invest_regret_lego.model.g:
+                            invest_regret_lego.model.vGenInvest[g].value = gen_invest_values.get(g, 1)
+                            invest_regret_lego.model.vGenInvest[g].fixed = True
+                    else:
+                        for g in invest_regret_lego.model.g:
+                            invest_regret_lego.model.vGenInvest[g].value = model.vGenInvest[g].value
+                            invest_regret_lego.model.vGenInvest[g].fixed = True
 
-                # Re-solve the truth model with fixed investments
-                printer.information("Re-solving truth model with fixed vGenInvest for invest-regret calculation")
-                invest_regret_result, invest_regret_timing, invest_regret_objective = invest_regret_lego.solve_model(already_solved_ok=True)
-                printer.information(f"Solving invest-regret model took {invest_regret_timing:.2f} seconds")
+                    # Re-solve the truth model with fixed investments
+                    printer.information("Re-solving truth model with fixed vGenInvest for invest-regret calculation")
+                    invest_regret_result, invest_regret_timing, invest_regret_objective = invest_regret_lego.solve_model(already_solved_ok=True)
+                    printer.information(f"Solving invest-regret model took {invest_regret_timing:.2f} seconds")
 
-                invest_regret_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', ''), "run_type": "invest-regret"}
-                write_results(invest_regret_lego.model, f"{file_prefix}-invest-regret", no_sqlite, solver_results=invest_regret_result, work_units=invest_regret_lego.work_units, **invest_regret_params)
+                    invest_regret_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', ''), "run_type": "invest-regret"}
+                    write_results(invest_regret_lego.model, f"{file_prefix}-invest-regret", no_sqlite, solver_results=invest_regret_result, work_units=invest_regret_lego.work_units, **invest_regret_params)
 
-                match invest_regret_result.solver.termination_condition:
-                    case pyo.TerminationCondition.optimal:
-                        printer.success(f"Optimal invest-regret solution: {invest_regret_objective:.4f}")
-                    case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
-                        printer.error(f"Invest-regret model is {invest_regret_result.solver.termination_condition}, logging infeasible constraints:")
-                        log_infeasible_constraints(invest_regret_lego.model)
-                    case _:
-                        printer.warning("Invest-regret solver terminated with condition:", invest_regret_result.solver.termination_condition)
-            except Exception as e:
-                printer.error(f"Invest-regret calculation failed for '{edgeHandlingType}': {e}")
+                    match invest_regret_result.solver.termination_condition:
+                        case pyo.TerminationCondition.optimal:
+                            printer.success(f"Optimal invest-regret solution: {invest_regret_objective:.4f}")
+                        case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
+                            printer.error(f"Invest-regret model is {invest_regret_result.solver.termination_condition}, logging infeasible constraints:")
+                            log_infeasible_constraints(invest_regret_lego.model)
+                        case _:
+                            printer.warning("Invest-regret solver terminated with condition:", invest_regret_result.solver.termination_condition)
+                except Exception as e:
+                    printer.error(f"Invest-regret calculation failed for '{edgeHandlingType}': {e}")
 
     return sqlite_files, sqlite_labels
 
