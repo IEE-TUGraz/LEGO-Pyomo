@@ -105,7 +105,12 @@ def load_file_metadata(sqlite_file):
                 for key in ['no_investment', 'rmip', 'no_crossover', 'force_barrier']:
                     if key in row and row[key] not in (None, 'None'):
                         val = row[key]
-                        meta[key] = val if isinstance(val, bool) else str(val).lower() == 'true'
+                        if isinstance(val, bool):
+                            meta[key] = val
+                        elif isinstance(val, (int, float)):
+                            meta[key] = val != 0
+                        else:
+                            meta[key] = str(val).lower() == 'true'
         except Exception:
             pass
 
@@ -208,6 +213,7 @@ def print_comparison_table(group_entries):
     truth_entry = next((e for e in group_entries if e['edge_handling'] == 'Truth'), None)
 
     # Compute relative change columns
+    truth_obj = truth_entry.get('Objective') if truth_entry else None
     for entry in group_entries:
         for key in ["Objective", "vStartup", "vShutdown"]:
             val = entry.get(key)
@@ -216,9 +222,24 @@ def print_comparison_table(group_entries):
             else:
                 entry[f"{key} %"] = None
 
+        # Regret/invest-regret: show difference vs truth objective
+        for key in ["Regret Obj.", "Invest-Regret Obj."]:
+            val = entry.get(key)
+            if val is not None and truth_obj not in (-1, 0, None):
+                entry[f"{key} %"] = (val - truth_obj) / abs(truth_obj) * 100
+            else:
+                entry[f"{key} %"] = None
+
     columns = ["Case", "Objective", "Objective %",
                "Work Units", "vGenP", "vCommit", "vStartup", "vStartup %",
                "vShutdown", "vShutdown %", "vPNS", "vEPS"]
+
+    has_regret = any(e.get("Regret Obj.") is not None for e in group_entries)
+    has_invest_regret = any(e.get("Invest-Regret Obj.") is not None for e in group_entries)
+    if has_regret:
+        columns.extend(["Regret Obj.", "Regret Obj. %"])
+    if has_invest_regret:
+        columns.extend(["Invest-Regret Obj.", "Invest-Regret Obj. %"])
 
     _print_table(columns, group_entries)
 
@@ -504,11 +525,20 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
 
     # Load metadata and results for each file
     entries = []
+    regret_files = {}  # Map base sqlite file -> regret objective
+    invest_regret_files = {}  # Map base sqlite file -> invest-regret objective
     for sqlite_file in all_sqlite:
         basename = os.path.basename(sqlite_file)
 
-        # Skip regret/invest-regret files for the main table
-        if basename.endswith("-regret.sqlite") or basename.endswith("-invest-regret.sqlite"):
+        if basename.endswith("-invest-regret.sqlite"):
+            base_file = sqlite_file.replace("-invest-regret.sqlite", ".sqlite")
+            results = load_results_from_sqlite(sqlite_file)
+            invest_regret_files[base_file] = results.get('Objective')
+            continue
+        if basename.endswith("-regret.sqlite"):
+            base_file = sqlite_file.replace("-regret.sqlite", ".sqlite")
+            results = load_results_from_sqlite(sqlite_file)
+            regret_files[base_file] = results.get('Objective')
             continue
 
         meta = load_file_metadata(sqlite_file)
@@ -523,6 +553,11 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             'Work Units': meta.get('work_units'),
         }
         entries.append(entry)
+
+    # Attach regret/invest-regret objectives to their base entries
+    for entry in entries:
+        entry['Regret Obj.'] = regret_files.get(entry['file'])
+        entry['Invest-Regret Obj.'] = invest_regret_files.get(entry['file'])
 
     if not entries:
         printer.warning("No (non-regret) MK result files found")
@@ -541,11 +576,12 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             entry.get('no_investment'),
             entry.get('rmip'),
             entry.get('no_crossover'),
+            entry.get('force_barrier'),
         )
         groups[key].append(entry)
 
     for group_key, group_entries in groups.items():
-        case_dir, limit_k, clusters, shift, stretch_demand, relax_count, no_investment, rmip, no_crossover = group_key
+        case_dir, limit_k, clusters, shift, stretch_demand, relax_count, no_investment, rmip, no_crossover, force_barrier = group_key
 
         # Print group header
         parts = []
@@ -567,6 +603,8 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             parts.append("rMIP")
         if no_crossover:
             parts.append("no-crossover")
+        if force_barrier:
+            parts.append("force-barrier")
 
         printer.information(f"\n{'=' * 80}")
         printer.information(f"Group: {', '.join(parts) if parts else '(default)'}")
