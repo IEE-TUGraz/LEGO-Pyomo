@@ -84,7 +84,7 @@ class LEGO:
         elif self.cs.dGlobal_Parameters["pSolver"] != solver_name:
             printer.warning(f"Solver name {solver_name} does not match the one used in the case study ({self.cs.dGlobal_Parameters['pSolver']}) - using {solver_name}")
 
-        # Add suffixes to request dual values from solver
+        # Add suffixes to request dual values from solver (will be populated for LPs, skipped for MIPs)
         if not hasattr(self.model, 'dual'):
             self.model.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
 
@@ -98,7 +98,18 @@ class LEGO:
                     optimizer.set_instance(self.model)
                     if getattr(self.model, 'pDisableCrossover', False):
                         optimizer.options['Crossover'] = 0
-                    results = optimizer.solve(tee=True, load_solutions=True)
+                    if getattr(self.model, 'pForceBarrier', False):
+                        optimizer.options['Method'] = 2
+                        optimizer.options['NodeMethod'] = 2
+                    try:
+                        results = optimizer.solve(tee=True)
+                    except Exception as e:
+                        if "duals" in str(e).lower():
+                            # MIP solutions don't have duals — remove suffix and retry
+                            self.model.del_component(self.model.dual)
+                            results = optimizer.solve(tee=True)
+                        else:
+                            raise
                     objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
                     # Extract work units from Gurobi model
                     try:
@@ -108,7 +119,15 @@ class LEGO:
                         self.work_units = None
                 else:
                     optimizer = pyo.SolverFactory(solver_name)
-                    results = optimizer.solve(self.model, tee=True, load_solutions=True)
+                    try:
+                        results = optimizer.solve(self.model, tee=True)
+                    except Exception as e:
+                        if "duals" in str(e).lower():
+                            # MIP solutions don't have duals — remove suffix and retry
+                            self.model.del_component(self.model.dual)
+                            results = optimizer.solve(self.model, tee=True)
+                        else:
+                            raise
                     objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
             case ModelType.EXTENSIVE_FORM:
                 if solver_name != self.solver_name:
@@ -303,6 +322,9 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
 
     if cs.dGlobal_Parameters.get("pDisableCrossover", False):
         model.pDisableCrossover = True
+
+    if cs.dGlobal_Parameters.get("pForceBarrier", False):
+        model.pForceBarrier = True
 
     return model
 

@@ -72,6 +72,7 @@ def load_file_metadata(sqlite_file):
         'no_investment': None,
         'rmip': None,
         'no_crossover': None,
+        'force_barrier': None,
         'edge_handling': None,
         'run_type': None,
         'work_units': None,
@@ -101,7 +102,7 @@ def load_file_metadata(sqlite_file):
                 for key in ['stretch_demand']:
                     if key in row and row[key] not in (None, 'None'):
                         meta[key] = float(row[key])
-                for key in ['no_investment', 'rmip', 'no_crossover']:
+                for key in ['no_investment', 'rmip', 'no_crossover', 'force_barrier']:
                     if key in row and row[key] not in (None, 'None'):
                         val = row[key]
                         meta[key] = val if isinstance(val, bool) else str(val).lower() == 'true'

@@ -104,6 +104,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          calculate_regret: bool = False, relax_percentage: float = 0, skip_truth: bool = False,
                          enable_strict_markov: bool = False, invest_regret: bool = False,
                          no_investment: bool = False, rmip: bool = False, no_crossover: bool = False,
+                         force_barrier: bool = False,
                          limitK: str | None = None, clusters: int = 1,
                          shift: int = 0, stretch_demand: float = 1.0,
                          no_overwrite: bool = False) -> typing.Tuple[typing.List[str], typing.List[str]]:
@@ -112,7 +113,6 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
     ########################################################################################################################
 
     # Load case study from Excels
-    printer.information(f"Loading case study from '{case_study_path}'")
     start_time = time.time()
     cs = CaseStudy(case_study_path, clip_method="none", clip_value=0)
     printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
@@ -124,6 +124,10 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
     if no_crossover:
         printer.information("Disabling crossover for all solves")
         cs.dGlobal_Parameters["pDisableCrossover"] = True
+
+    if force_barrier:
+        printer.information("Forcing barrier method for all solves")
+        cs.dGlobal_Parameters["pForceBarrier"] = True
 
     # Create varied case studies
     start_time = time.time()
@@ -222,6 +226,8 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         identifier_parts.append("rMIP")
     if no_crossover:
         identifier_parts.append("noCrossover")
+    if force_barrier:
+        identifier_parts.append("forceBarrier")
     identifier = "-".join(identifier_parts)
 
     run_params = dict(
@@ -234,6 +240,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         no_investment=no_investment if no_investment else None,
         rmip=rmip if rmip else None,
         no_crossover=no_crossover if no_crossover else None,
+        force_barrier=force_barrier if force_barrier else None,
     )
     sqlite_files, sqlite_labels = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite)
 
@@ -267,7 +274,12 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
         optimizer = pyo.SolverFactory('gurobi_persistent')
         optimizer.set_instance(model)
         if getattr(model, 'pDisableCrossover', False):
+            printer.information("Deactivating crossover")
             optimizer.options['Crossover'] = 0
+        if getattr(model, 'pForceBarrier', False):
+            printer.information("Forcing barrier method")
+            optimizer.options['Method'] = 2
+            optimizer.options['NodeMethod'] = 2
         start_time = time.time()
         result = optimizer.solve(tee=True)
         objective_value = pyo.value(model.objective) if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1
@@ -364,8 +376,11 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
          clusters: int = 1, cluster_stepsize: int = 1, cluster_steps: int = 0,
          limitK: str | None = None, shift: int = 0, stretch_demand: float = 1,
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, invest_regret: bool = False,
-         no_investment: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False):
+         no_investment: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False, force_barrier: bool = False):
     ew = ExcelWriter()
+
+    if no_crossover != force_barrier:
+        raise ValueError("Either both or none of no_crossover and force_barrier must be true")
 
     for folder in caseStudyFolder.split(","):
         try:
@@ -460,7 +475,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
 
                 printer.information(f"Loading case study from '{cluster_folder}'")
 
-                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, no_crossover, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, no_overwrite=no_overwrite)
+                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, no_crossover, force_barrier, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, no_overwrite=no_overwrite)
         except Exception as e:
             printer.error(f"Exception while executing case study '{folder}': {e}")
             if debug:
@@ -493,6 +508,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-overwrite", action="store_true", help="Skip cases where the output .sqlite file already exists")
     parser.add_argument("--rmip", action="store_true", help="Relax all integer variables (rMIP) before solving")
     parser.add_argument("--no-crossover", action="store_true", help="Disable Gurobi crossover for all solves (faster LP solving, but solution may not be a vertex)")
+    parser.add_argument("--force-barrier", action="store_true", help="Force Gurobi to use barrier method")
     args = parser.parse_args()
 
     kwargs = vars(args)
