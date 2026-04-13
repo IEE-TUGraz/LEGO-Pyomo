@@ -305,6 +305,7 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     if cs.dGlobal_Parameters["pEnableRMIP"]:
         TransformationFactory('core.relax_integer_vars').apply_to(model)  # Relaxes all integer variables to continuous variables
 
+    return model
 
 
 def addToSet(model: pyo.ConcreteModel, set_name: str, values: iter) -> None:
