@@ -11,7 +11,7 @@ from pyomo.core import TransformationFactory
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO.LEGOUtilities import reset_execution_safety_dict, set_range_non_cyclic
-from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits, thermalGen, vres
+from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits, thermalGen, vres, selfSufficiency
 
 printer = Printer.getInstance()
 
@@ -276,6 +276,9 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     if cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
         model.first_stage_varlist += softLineLoadLimits.add_element_definitions_and_bounds(model, cs)
 
+    #if cs.dGlobal_Parameters["pEnableSelfSufficiency"]:
+    #    model.first_stage_varlist += selfSufficiency.add_element_definitions_and_bounds(model, cs)
+
     # Helper Sets for zone of interest
     model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=cs.dPower_BusInfo.loc[cs.dPower_BusInfo["zoi"] == 1].index.tolist(), within=model.i)
 
@@ -288,6 +291,9 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     if cs.dPower_Parameters["pEnableStorage"]:
         model.first_stage_objective += storage.add_constraints(model, cs)
 
+    #if cs.dGlobal_Parameters["pEnableSelfSufficiency"]:
+    #    model.first_stage_objective += selfSufficiency.add_constraints(model, cs)
+
     if cs.dPower_Parameters["p2ndResUp"] > 0.0 or cs.dPower_Parameters["p2ndResDW"] > 0.0:
         model.first_stage_objective += secondReserve.add_constraints(model, cs)
 
@@ -299,32 +305,6 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     if cs.dGlobal_Parameters["pEnableRMIP"]:
         TransformationFactory('core.relax_integer_vars').apply_to(model)  # Relaxes all integer variables to continuous variables
 
-    def eSelfSufficiency(m, rp, k, i, tbo, pvset, storage_set, thermal_set):
-        if int(k[1:]) + tbo < len(model.k):
-            set_t = set_range_non_cyclic(m.k, m.k.ord(k) + 1, m.k.ord(k) + 1 + tbo)
-            return sum(m.pDemandP[rp, k, i] for k in set_t) <= (
-                    sum((m.pCapacityFactors[rp, k, pv] * m.vGenP[rp, k, pv]) for pv in pvset for k in set_t) +
-                    sum(m.vStIntraRes[rp, k, storage] for storage in storage_set) +
-                    sum((m.pMaxProd[thermal] * m.vGenInvest[thermal] * tbo) for thermal in thermal_set) +
-                    sum(m.vPNS[rp, k, i] for k in set_t)
-            )
-        else:
-            return pyo.Constraint.Skip
-
-    Tbo = cs.dGlobal_Parameters["pTBlackOut"]
-    pvset = [pv for pv, tec in model.gtec if tec == "Solar"]
-    thermal_set = [thermal for thermal, tec in model.gtec if tec == "FuelOilGas"]
-    storage_set = [storage for storage, tec in model.gtec if tec == "BESS"]
-    model.eSelfSufficiency = pyo.ConstraintList(doc='Self sufficiency constraint')
-    for tbo in range(1, Tbo + 1):
-        for rp in model.rp:
-            for k in model.k:
-                for i in model.i:
-                    model.eSelfSufficiency.add(eSelfSufficiency(model, rp, k, i, tbo, pvset, storage_set, thermal_set))
-
-    model.eSelfSufficiency.pprint()
-
-    return model
 
 
 def addToSet(model: pyo.ConcreteModel, set_name: str, values: iter) -> None:
