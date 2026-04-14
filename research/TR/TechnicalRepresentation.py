@@ -548,7 +548,7 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
 
         # --- Export ---
         SQLiteWriter.model_to_sqlite(model, sqlite_filename)
-        SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_filename, results, work_units=lego.work_units)
+        SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_filename, lego)
         SQLiteWriter.add_run_parameters_to_sqlite(
             sqlite_filename,
             case_study_directory=case_study_directory,

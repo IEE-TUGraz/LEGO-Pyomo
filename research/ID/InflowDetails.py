@@ -261,7 +261,7 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
 
         # --- Export ---
         SQLiteWriter.model_to_sqlite(model, sqlite_filename)
-        SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_filename, results, work_units=lego.work_units)
+        SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_filename, lego)
         SQLiteWriter.add_run_parameters_to_sqlite(
             sqlite_filename,
             **build_run_parameters(
@@ -314,7 +314,7 @@ def main(caseStudyDirectory, numberOfRPs, lengthOfRPs, scaleDemand, scaleInflows
 
         # --- Export regret ---
         SQLiteWriter.model_to_sqlite(lego_regret_model, regret_sqlite_filename)
-        SQLiteWriter.add_solver_statistics_to_sqlite(regret_sqlite_filename, results_regret, work_units=lego_regret.work_units)
+        SQLiteWriter.add_solver_statistics_to_sqlite(regret_sqlite_filename, lego_regret)
         SQLiteWriter.add_run_parameters_to_sqlite(
             regret_sqlite_filename,
             **build_run_parameters(

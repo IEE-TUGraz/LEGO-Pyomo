@@ -36,14 +36,14 @@ pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
 
-def write_results(model, file_prefix: str, no_sqlite: bool, solver_results=None, work_units=None, **run_parameters):
+def write_results(lego, file_prefix: str, no_sqlite: bool, **run_parameters):
     if not no_sqlite:
         sqlite_timer = time.time()
         sqlite_file = f"{file_prefix}.sqlite"
         printer.information(f"Writing model to SQLite database: {sqlite_file}")
-        SQLiteWriter.model_to_sqlite(model, sqlite_file)
-        if solver_results is not None:
-            SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_file, solver_results, work_units=work_units)
+        SQLiteWriter.model_to_sqlite(lego.model, sqlite_file)
+        if lego.results is not None:
+            SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_file, lego)
         if run_parameters:
             SQLiteWriter.add_run_parameters_to_sqlite(sqlite_file, **run_parameters)
         printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
@@ -297,11 +297,19 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
             result = optimizer.solve(tee=True)
             objective_value = pyo.value(model.objective) if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1
             timing_solving = time.time() - start_time
-            work_time = optimizer._solver_model.Work
-            printer.information(f"Solving model took {timing_solving:.2f} seconds ({work_time:.2f} work units)")
+            lego.results = result
+            lego.work_units = optimizer._solver_model.Work
+            printer.information(f"Solving model took {timing_solving:.2f} seconds ({lego.work_units:.2f} work units)")
+            try:
+                lego.mip_gap = optimizer._solver_model.MIPGap if optimizer._solver_model.IsMIP else None
+                if not optimizer._solver_model.IsMIP:
+                    printer.information("Model is an LP — no MIP gap stored in .sqlite")
+            except Exception as e:
+                printer.warning(f"Could not extract MIP gap from Gurobi: {e}")
+                lego.mip_gap = None
 
             edge_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', '')}
-            write_results(lego.model, file_prefix, no_sqlite, solver_results=result, work_units=work_time, **edge_params)
+            write_results(lego, file_prefix, no_sqlite, **edge_params)
 
             match result.solver.termination_condition:
                 case pyo.TerminationCondition.optimal:
@@ -341,7 +349,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                     printer.information(f"Solving regret model took {regret_timing_solving:.2f} seconds")
 
                     regret_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', ''), "run_type": "regret"}
-                    write_results(regret_lego.model, f"{file_prefix}-regret", no_sqlite, solver_results=regret_result, work_units=regret_lego.work_units, **regret_params)
+                    write_results(regret_lego, f"{file_prefix}-regret", no_sqlite, **regret_params)
 
                     match regret_result.solver.termination_condition:
                         case pyo.TerminationCondition.optimal:
@@ -384,7 +392,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                     printer.information(f"Solving invest-regret model took {invest_regret_timing:.2f} seconds")
 
                     invest_regret_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', ''), "run_type": "invest-regret"}
-                    write_results(invest_regret_lego.model, f"{file_prefix}-invest-regret", no_sqlite, solver_results=invest_regret_result, work_units=invest_regret_lego.work_units, **invest_regret_params)
+                    write_results(invest_regret_lego, f"{file_prefix}-invest-regret", no_sqlite, **invest_regret_params)
 
                     match invest_regret_result.solver.termination_condition:
                         case pyo.TerminationCondition.optimal:

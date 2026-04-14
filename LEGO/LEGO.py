@@ -28,7 +28,9 @@ class ModelType(enum.Enum):
 
 class LEGO:
     def __init__(self, cs: CaseStudy = None, model: pyo.Model = None, results=None):
-        self.cs: CaseStudy = cs
+        self.mip_gap = None
+        self.work_units = None
+        self.cs: typing.Optional[CaseStudy] = cs
         self.model: typing.Optional[pyo.Model] = model
         self.results: typing.Optional[pyomo.opt.results.results_.SolverResults] = results
         self.timings = {"model_building": -1.0, "model_solving": -1.0}
@@ -90,6 +92,7 @@ class LEGO:
 
         start_time = time.time()
         self.work_units = None  # Initialize work_units
+        self.mip_gap = None  # Initialize mip_gap
         match model_type:
             case ModelType.DETERMINISTIC:
                 # Use persistent solver for Gurobi to access work units
@@ -113,12 +116,19 @@ class LEGO:
                         else:
                             raise
                     objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
-                    # Extract work units from Gurobi model
+                    # Extract work units and MIP gap from Gurobi model
                     try:
                         self.work_units = optimizer._solver_model.Work
                     except Exception as e:
                         printer.warning(f"Could not extract work units from Gurobi: {e}")
                         self.work_units = None
+                    try:
+                        if optimizer._solver_model.IsMIP:
+                            self.mip_gap = optimizer._solver_model.MIPGap
+                        else:
+                            printer.information("Model is an LP — no MIP gap stored in .sqlite")
+                    except Exception as e:
+                        printer.warning(f"Could not extract MIP gap from Gurobi: {e}")
                 else:
                     optimizer = pyo.SolverFactory(solver_name)
                     try:
