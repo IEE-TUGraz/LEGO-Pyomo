@@ -34,3 +34,59 @@ paper [[1]](https://doi.org/10.1016/j.softx.2022.101141) if you do.
       ```bash
       python LEGO.py data/example
       ```
+
+## Usage
+
+### Running a model
+```bash
+python LEGO.py data/example
+```
+
+### Running parallel jobs
+```bash
+python InOutModule/Caller.py jobs.txt
+python InOutModule/Caller.py jobs.txt --spawn 4   # 4 parallel workers
+```
+
+### Testing
+```bash
+pytest                                                            # all tests
+pytest tests/test_examples.py                                     # specific file
+pytest tests/test_examples.py::test_comparisonAgainstMPS          # specific test
+```
+
+## Architecture
+
+LEGO uses a modular architecture where constraint modules are conditionally loaded based on case study parameters:
+
+- **`LEGO/`**: Core optimization model. `LEGO.py` builds and solves Pyomo models; `modules/` contains constraint definitions for thermal generators, renewables, storage, reserves, import/export, and soft line limits.
+- **`InOutModule/`** (git submodule): Data I/O. `CaseStudy.py` loads all Excel input files and provides data manipulation methods; `SQLiteWriter.py` exports results to SQLite.
+- **`research/`**: Standalone experiment scripts. Each subfolder has its own README with usage details.
+
+## Data Structure
+
+Case studies are defined by Excel files in a data directory (e.g. `data/example/`):
+
+| File                                           | Contents                                               |
+|------------------------------------------------|--------------------------------------------------------|
+| `Global_Parameters.xlsx`                       | Solver, RMIP mode, global settings                     |
+| `Global_Scenarios.xlsx`                        | Stochastic scenario definitions and weights            |
+| `Power_Parameters.xlsx`                        | Enable/disable modules (thermal gen, VRES, storage, …) |
+| `Power_BusInfo.xlsx`                           | Bus/node definitions, ZOI flag, zone column            |
+| `Power_Network.xlsx`                           | Transmission lines, technical representation per line  |
+| `Power_ThermalGen.xlsx`                        | Thermal generator characteristics                      |
+| `Power_VRES.xlsx`                              | Renewable generator definitions                        |
+| `Power_Storage.xlsx`                           | Storage unit specifications                            |
+| `Power_Demand.xlsx`                            | Time-indexed demand profiles                           |
+| `Power_Inflows.xlsx`                           | Hydro inflow time series                               |
+| `Power_VRESProfiles.xlsx`                      | VRES capacity factor profiles                          |
+| `Power_WeightsRP.xlsx` / `Power_WeightsK.xlsx` | Time period weights                                    |
+| `Power_Hindex.xlsx`                            | Mapping between periods and representative periods     |
+
+## Research Experiments
+
+Standalone experiment scripts live in `research/`. Each subfolder has a README with usage details:
+
+- [`research/TR/`](research/TR/README.md) — Network technical representation (DC-OPF vs. Transport Problem vs. Single Node)
+- [`research/MK/`](research/MK/README.md) — Markov chain edge-handling for representative periods
+- [`research/ID/`](research/ID/README.md) — Impact of inflow data aggregation on optimization results

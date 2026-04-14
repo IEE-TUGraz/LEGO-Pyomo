@@ -28,5 +28,8 @@ model.xlsx
 # Output files from scripts in research/
 MK-*.png
 
+# AI-Assistan related files
+.claude/settings.local.json
+
 # Operating system files
 .DS_Store
