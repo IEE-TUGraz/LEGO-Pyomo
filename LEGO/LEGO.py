@@ -101,6 +101,8 @@ class LEGO:
                     if getattr(self.model, 'pForceBarrier', False):
                         optimizer.options['Method'] = 2
                         optimizer.options['NodeMethod'] = 2
+                    if getattr(self.model, 'pMIPGap', None) is not None:
+                        optimizer.options['MIPGap'] = self.model.pMIPGap
                     try:
                         results = optimizer.solve(tee=True)
                     except Exception as e:
@@ -325,6 +327,9 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
 
     if cs.dGlobal_Parameters.get("pForceBarrier", False):
         model.pForceBarrier = True
+
+    if cs.dGlobal_Parameters.get("pMIPGap") is not None:
+        model.pMIPGap = cs.dGlobal_Parameters["pMIPGap"]
 
     return model
 
