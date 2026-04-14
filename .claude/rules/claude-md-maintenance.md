@@ -17,17 +17,19 @@ After making any code changes, update the relevant documentation files.
 
 **Index of documentation files:**
 
-| File                     | Audience | Contents                                                                   |
-|--------------------------|----------|----------------------------------------------------------------------------|
-| Root `CLAUDE.md`         | Claude   | Non-obvious architecture behaviors, model building flow, development rules |
-| Root `README.md`         | Humans   | Setup, usage, data structure, architecture overview                        |
-| `LEGO/CLAUDE.md`         | Claude   | LEGO class API, utilities, standalone functions                            |
-| `LEGO/modules/CLAUDE.md` | Claude   | Module interface, execution order, variable/constraint descriptions        |
-| `LEGO/helpers/CLAUDE.md` | Claude   | Model comparison and MPS validation utilities                              |
-| `research/CLAUDE.md`     | Claude   | Overview and index of research sub-projects                                |
-| `research/TR/README.md`  | Humans   | TR usage, key concepts, CLI parameters                                     |
-| `research/TR/CLAUDE.md`  | Claude   | Non-obvious TR patterns                                                    |
-| `research/MK/README.md`  | Humans   | MK usage, key concepts, CLI parameters                                     |
-| `research/MK/CLAUDE.md`  | Claude   | Non-obvious MK patterns                                                    |
-| `research/ID/README.md`  | Humans   | ID usage, key concepts, CLI parameters                                     |
-| `research/ID/CLAUDE.md`  | Claude   | Non-obvious ID patterns                                                    |
+| File                        | Audience | Contents                                                                   |
+|-----------------------------|----------|----------------------------------------------------------------------------|
+| Root `CLAUDE.md`            | Claude   | Non-obvious architecture behaviors, model building flow, development rules |
+| Root `README.md`            | Humans   | Setup, usage, data structure, architecture overview                        |
+| `InOutModule/CLAUDE.md`     | Claude   | CaseStudy read order, ExcelReader/Writer patterns, SQLiteWriter, Caller    |
+| `InOutModule/README.md`     | Humans   | CaseStudy API, SQLiteWriter usage, Caller, Excel file format               |
+| `LEGO/CLAUDE.md`            | Claude   | LEGO class API, utilities, standalone functions                            |
+| `LEGO/modules/CLAUDE.md`    | Claude   | Module interface, execution order, variable/constraint descriptions        |
+| `LEGO/helpers/CLAUDE.md`    | Claude   | Model comparison and MPS validation utilities                              |
+| `research/CLAUDE.md`        | Claude   | Overview and index of research sub-projects                                |
+| `research/TR/README.md`     | Humans   | TR usage, key concepts, CLI parameters                                     |
+| `research/TR/CLAUDE.md`     | Claude   | Non-obvious TR patterns                                                    |
+| `research/MK/README.md`     | Humans   | MK usage, key concepts, CLI parameters                                     |
+| `research/MK/CLAUDE.md`     | Claude   | Non-obvious MK patterns                                                    |
+| `research/ID/README.md`     | Humans   | ID usage, key concepts, CLI parameters                                     |
+| `research/ID/CLAUDE.md`     | Claude   | Non-obvious ID patterns                                                    |

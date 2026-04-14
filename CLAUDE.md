@@ -23,6 +23,10 @@ See `README.md` for project overview, setup, usage, and data structure.
 
 Each `research/` subfolder has a `README.md` (usage/parameters for humans) and a `CLAUDE.md` (non-obvious patterns). See `research/CLAUDE.md` for an index.
 
+### InOutModule
+
+Non-obvious I/O patterns (CaseStudy read order, ExcelReader version checks, SQLiteWriter behavior, Caller barriers) are documented in `InOutModule/CLAUDE.md`. Human-facing usage is in `InOutModule/README.md`.
+
 ## Development Notes
 
 - Modules use `@LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds` to prevent duplicate execution; all modules must return `(first_stage_vars, second_stage_vars)` — validated by the decorator
