@@ -73,6 +73,7 @@ def load_file_metadata(sqlite_file):
         'rmip': None,
         'no_crossover': None,
         'force_barrier': None,
+        'mip_gap': None,
         'edge_handling': None,
         'run_type': None,
         'work_units': None,
@@ -99,7 +100,7 @@ def load_file_metadata(sqlite_file):
                 for key in ['clusters', 'relax_count', 'shift']:
                     if key in row and row[key] not in (None, 'None'):
                         meta[key] = int(float(row[key]))
-                for key in ['stretch_demand']:
+                for key in ['stretch_demand', 'mip_gap']:
                     if key in row and row[key] not in (None, 'None'):
                         meta[key] = float(row[key])
                 for key in ['no_investment', 'rmip', 'no_crossover', 'force_barrier']:
@@ -563,7 +564,7 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
         printer.warning("No (non-regret) MK result files found")
         return
 
-    # Group by run parameters (case_study_directory, limit_k, clusters, shift, stretch_demand, relax_count, no_investment)
+    # Group by run parameters (case_study_directory, limit_k, clusters, shift, stretch_demand, relax_count, no_investment, mip_gap)
     groups = defaultdict(list)
     for entry in entries:
         key = (
@@ -577,11 +578,12 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             entry.get('rmip'),
             entry.get('no_crossover'),
             entry.get('force_barrier'),
+            entry.get('mip_gap'),
         )
         groups[key].append(entry)
 
     for group_key, group_entries in groups.items():
-        case_dir, limit_k, clusters, shift, stretch_demand, relax_count, no_investment, rmip, no_crossover, force_barrier = group_key
+        case_dir, limit_k, clusters, shift, stretch_demand, relax_count, no_investment, rmip, no_crossover, force_barrier, mip_gap = group_key
 
         # Print group header
         parts = []
@@ -605,6 +607,8 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             parts.append("no-crossover")
         if force_barrier:
             parts.append("force-barrier")
+        if mip_gap is not None:
+            parts.append(f"mip-gap={mip_gap}")
 
         printer.information(f"\n{'=' * 80}")
         printer.information(f"Group: {', '.join(parts) if parts else '(default)'}")
