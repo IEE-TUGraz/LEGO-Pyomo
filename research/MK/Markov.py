@@ -110,7 +110,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          force_barrier: bool = False, mip_gap: float | None = None,
                          limitK: str | None = None, clusters: int = 1,
                          shift: int = 0, stretch_demand: float = 1.0,
-                         no_overwrite: bool = False) -> typing.Tuple[typing.List[str], typing.List[str]]:
+                         no_overwrite: bool = False, network: str | None = None) -> typing.Tuple[typing.List[str], typing.List[str]]:
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
@@ -135,6 +135,10 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
     if mip_gap is not None:
         printer.information(f"Setting MIP gap to {mip_gap}")
         cs.dGlobal_Parameters["pMIPGap"] = mip_gap
+
+    if network is not None:
+        printer.information(f"Setting all lines to network representation '{network}'")
+        cs.dPower_Network["pTecRepr"] = network
 
     # Create varied case studies
     start_time = time.time()
@@ -237,6 +241,8 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         identifier_parts.append("forceBarrier")
     if mip_gap is not None:
         identifier_parts.append(f"mipGap{mip_gap:g}")
+    if network is not None:
+        identifier_parts.append(f"network{network}")
     identifier = "-".join(identifier_parts)
 
     run_params = dict(
@@ -251,6 +257,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         no_crossover=no_crossover if no_crossover else None,
         force_barrier=force_barrier if force_barrier else None,
         mip_gap=mip_gap,
+        network=network,
     )
     sqlite_files, sqlite_labels = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite)
 
@@ -425,7 +432,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
          limitK: str | None = None, shift: int = 0, stretch_demand: float = 1,
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, invest_regret: bool = False,
          no_investment: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False,
-         force_barrier: bool = False, mip_gap: float | None = None):
+         force_barrier: bool = False, mip_gap: float | None = None, network: str | None = None):
     ew = ExcelWriter()
 
     if no_crossover != force_barrier:
@@ -524,7 +531,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
 
                 printer.information(f"Loading case study from '{cluster_folder}'")
 
-                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, no_crossover, force_barrier, mip_gap, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, no_overwrite=no_overwrite)
+                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, no_crossover, force_barrier, mip_gap, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, no_overwrite=no_overwrite, network=network)
         except Exception as e:
             printer.error(f"Exception while executing case study '{folder}': {e}")
             if debug:
@@ -559,6 +566,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-crossover", action="store_true", help="Disable Gurobi crossover for all solves (faster LP solving, but solution may not be a vertex)")
     parser.add_argument("--force-barrier", action="store_true", help="Force Gurobi to use barrier method")
     parser.add_argument("--mip-gap", type=float, default=None, help="Set the MIP gap tolerance for the solver (e.g., 0.01 for 1%%; default: solver default)")
+    parser.add_argument("--network", type=str, default=None, choices=["DC-OPF", "TP", "SN"], help="Override network representation for all lines uniformly: DC-OPF, TP, or SN (default: no change, use values from data)")
     args = parser.parse_args()
 
     kwargs = vars(args)

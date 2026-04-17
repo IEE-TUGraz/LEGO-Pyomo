@@ -67,10 +67,11 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 | `--no-crossover` | off | Disable Gurobi crossover (must be paired with `--force-barrier`) |
 | `--force-barrier` | off | Force Gurobi barrier method (must be paired with `--no-crossover`) |
 | `--mip-gap` | solver default | MIP gap tolerance, e.g. `0.01` for 1% |
+| `--network` | no change | Override `pTecRepr` for all lines uniformly: `DC-OPF`, `TP`, or `SN` (omit to use values from data) |
 | `--no-sqlite` | off | Do not save results to SQLite |
 | `--reuse-inputfiles` | off | Reuse already-prepared input folders (e.g. after limitK) |
 
-**Output naming**: `MK-{identifier}-{edgeHandling}.sqlite`. Regret files append `-regret` or `-invest-regret`. Non-default parameters are encoded in the identifier (e.g. `relaxed3`, `rMIP`, `mipGap0.01`).
+**Output naming**: `MK-{identifier}-{edgeHandling}.sqlite`. Regret files append `-regret` or `-invest-regret`. Non-default parameters are encoded in the identifier (e.g. `relaxed3`, `rMIP`, `mipGap0.01`, `networkTP`).
 
 ### `EvaluateMarkov.py` — Result evaluation
 
