@@ -140,7 +140,7 @@ def _load_results_from_conn(conn):
     results = {}
 
     try:
-        val = conn.execute('SELECT values FROM objective LIMIT 1').fetchone()
+        val = conn.execute('SELECT "values" FROM objective LIMIT 1').fetchone()
         results['Objective'] = float(val[0]) if val else -1
     except Exception:
         results['Objective'] = -1
@@ -162,7 +162,7 @@ def _load_results_from_conn(conn):
         try:
             if has_weights:
                 val = conn.execute(
-                    f'SELECT SUM(v.values * wrp.w * wk.w) '
+                    f'SELECT SUM(v."values" * wrp.w * wk.w) '
                     f'FROM "{var_name}" v '
                     f'JOIN _wrp wrp ON CAST(v.rp AS TEXT) = wrp.rp '
                     f'JOIN _wk wk ON CAST(v.k AS TEXT) = wk.k'
