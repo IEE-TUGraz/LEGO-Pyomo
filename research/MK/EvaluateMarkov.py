@@ -9,6 +9,7 @@ import os
 import re
 import sqlite3
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 
@@ -201,6 +202,25 @@ def load_results_from_sqlite(sqlite_file):
         except Exception:
             pass
 
+        # vGenInvest * pMaxProd (invested capacity) total and by technology
+        try:
+            df_inv = pd.read_sql_query('SELECT * FROM vGenInvest', conn)
+            df_gtec = pd.read_sql_query('SELECT * FROM gtec', conn)
+            df_pmax = pd.read_sql_query('SELECT * FROM pMaxProd', conn)
+            if 'index' in df_gtec.columns:
+                df_gtec = df_gtec.drop(columns=['index'])
+            df_gtec.columns = ['g', 'tec']
+            g_col = df_inv.columns[0]
+            df_pmax = df_pmax.rename(columns={df_pmax.columns[0]: g_col, 'values': 'pmax'})
+            df_merged = df_inv.merge(df_pmax[[g_col, 'pmax']], on=g_col, how='left')
+            df_merged['cap'] = df_merged['values'] * df_merged['pmax'].fillna(0)
+            results['vCapInvest'] = df_merged['cap'].sum()
+            df_merged = df_merged.merge(df_gtec, on='g', how='left')
+            for tec, group in df_merged.groupby('tec'):
+                results[f'vCapInvest[{tec}]'] = group['cap'].sum()
+        except Exception:
+            pass
+
         conn.close()
     except Exception as e:
         printer.error(f"Failed to load results from '{sqlite_file}': {e}")
@@ -248,17 +268,40 @@ def print_comparison_table(group_entries):
 
     _print_table(columns, group_entries)
 
-    # Print investment table if any entry has vGenInvest data
-    invest_columns = ["Case", "vGenInvest"]
-    tec_columns = sorted(set(
-        k for e in group_entries for k in e if k.startswith("vGenInvest[")
-    ))
-    invest_columns.extend(tec_columns)
+    # Compute investment/capacity % vs Truth
+    tec_columns = sorted(set(k for e in group_entries for k in e if k.startswith("vGenInvest[")))
+    cap_tec_columns = sorted(set(k for e in group_entries for k in e if k.startswith("vCapInvest[")))
+    invest_pct_keys = ["vGenInvest"] + tec_columns
+    cap_pct_keys = ["vCapInvest"] + cap_tec_columns
+    for entry in group_entries:
+        for key in invest_pct_keys + cap_pct_keys:
+            truth_val = truth_entry.get(key) if truth_entry else None
+            val = entry.get(key)
+            if truth_val not in (None, 0) and val is not None:
+                entry[f"{key} %"] = (val - truth_val) / abs(truth_val) * 100
+            else:
+                entry[f"{key} %"] = None
 
+    # Print investment table (vGenInvest) with % columns
     has_invest = any(e.get("vGenInvest") not in (None, "") for e in group_entries)
     if has_invest:
+        invest_columns = ["Case", "vGenInvest", "vGenInvest %"]
+        for tec in tec_columns:
+            invest_columns.append(tec)
+            invest_columns.append(f"{tec} %")
         printer.information("")
         _print_table(invest_columns, group_entries)
+
+    # Print capacity investment table (vGenInvest * pMaxProd) with % columns
+    has_cap = any(e.get("vCapInvest") not in (None, "") for e in group_entries)
+    if has_cap:
+        cap_columns = ["Case", "vCapInvest", "vCapInvest %"]
+        for tec in cap_tec_columns:
+            cap_columns.append(tec)
+            cap_columns.append(f"{tec} %")
+        printer.information("")
+        printer.information("  (vGenInvest * pMaxProd — invested capacity)")
+        _print_table(cap_columns, group_entries)
 
 
 def _print_table(columns, group_entries):
@@ -528,36 +571,42 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
 
     printer.information(f"Found {len(all_sqlite)} MK sqlite file(s) in '{folder}'")
 
-    # Load metadata and results for each file
-    entries = []
-    regret_files = {}  # Map base sqlite file -> regret objective
-    invest_regret_files = {}  # Map base sqlite file -> invest-regret objective
-    for sqlite_file in all_sqlite:
+    # Load metadata and results for each file (parallelized over I/O)
+    def _load_file(sqlite_file):
         basename = os.path.basename(sqlite_file)
-
         if basename.endswith("-invest-regret.sqlite"):
-            base_file = sqlite_file.replace("-invest-regret.sqlite", ".sqlite")
-            results = load_results_from_sqlite(sqlite_file)
-            invest_regret_files[base_file] = results.get('Objective')
-            continue
+            return ('invest_regret', sqlite_file, None, load_results_from_sqlite(sqlite_file))
         if basename.endswith("-regret.sqlite"):
-            base_file = sqlite_file.replace("-regret.sqlite", ".sqlite")
-            results = load_results_from_sqlite(sqlite_file)
-            regret_files[base_file] = results.get('Objective')
-            continue
-
+            return ('regret', sqlite_file, None, load_results_from_sqlite(sqlite_file))
         meta = load_file_metadata(sqlite_file)
         results = load_results_from_sqlite(sqlite_file)
+        return ('main', sqlite_file, meta, results)
 
-        entry = {
-            'file': sqlite_file,
-            'basename': basename,
-            **meta,
-            **results,
-            'Case': meta.get('edge_handling') or basename,
-            'Work Units': meta.get('work_units'),
-        }
-        entries.append(entry)
+    entries = []
+    regret_files = {}
+    invest_regret_files = {}
+    max_workers = min(len(all_sqlite), (os.cpu_count() or 4) * 2)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_load_file, f): f for f in all_sqlite}
+        for future in as_completed(futures):
+            kind, sqlite_file, meta, results = future.result()
+            if kind == 'invest_regret':
+                base_file = sqlite_file.replace("-invest-regret.sqlite", ".sqlite")
+                invest_regret_files[base_file] = results.get('Objective')
+            elif kind == 'regret':
+                base_file = sqlite_file.replace("-regret.sqlite", ".sqlite")
+                regret_files[base_file] = results.get('Objective')
+            else:
+                basename = os.path.basename(sqlite_file)
+                entry = {
+                    'file': sqlite_file,
+                    'basename': basename,
+                    **meta,
+                    **results,
+                    'Case': meta.get('edge_handling') or basename,
+                    'Work Units': meta.get('work_units'),
+                }
+                entries.append(entry)
 
     # Attach regret/invest-regret objectives to their base entries
     for entry in entries:
