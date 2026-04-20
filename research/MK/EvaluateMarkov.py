@@ -607,7 +607,7 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
     entries = []
     regret_files = {}
     invest_regret_files = {}
-    max_workers = min(len(all_sqlite), os.cpu_count() or 4)
+    max_workers = min(min(len(all_sqlite), os.cpu_count() or 4), 60)
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_load_file, f): f for f in all_sqlite}
         for future in as_completed(futures):
