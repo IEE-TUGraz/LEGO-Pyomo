@@ -9,7 +9,7 @@ import os
 import re
 import sqlite3
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import pandas as pd
 
@@ -61,8 +61,8 @@ def _parse_metadata_from_filename(basename):
     return meta
 
 
-def load_file_metadata(sqlite_file):
-    """Load run parameters and solver statistics from a MK sqlite file."""
+def _load_metadata_from_conn(conn, basename):
+    """Load run parameters and solver statistics from an open SQLite connection."""
     meta = {
         'case_study_directory': None,
         'limit_k': None,
@@ -81,151 +81,183 @@ def load_file_metadata(sqlite_file):
         'work_units': None,
         'solver_time': None,
     }
-
     has_run_parameters = False
-
     try:
-        conn = sqlite3.connect(sqlite_file)
-
-        # --- run_parameters ---
-        try:
-            df = pd.read_sql_query('SELECT * FROM run_parameters', conn)
-            if len(df) > 0:
-                has_run_parameters = True
-                row = df.iloc[0]
-                for key in ['case_study_directory', 'edge_handling', 'run_type']:
-                    if key in row and row[key] not in (None, 'None'):
-                        meta[key] = str(row[key])
-                for key in ['limit_k']:
-                    if key in row and row[key] not in (None, 'None'):
-                        meta[key] = str(row[key])
-                for key in ['clusters', 'relax_count', 'shift']:
-                    if key in row and row[key] not in (None, 'None'):
-                        meta[key] = int(float(row[key]))
-                for key in ['stretch_demand', 'mip_gap']:
-                    if key in row and row[key] not in (None, 'None'):
-                        meta[key] = float(row[key])
-                for key in ['network']:
-                    if key in row and row[key] not in (None, 'None'):
-                        meta[key] = str(row[key])
-                for key in ['no_investment', 'rmip', 'no_crossover', 'force_barrier']:
-                    if key in row and row[key] not in (None, 'None'):
-                        val = row[key]
-                        if isinstance(val, bool):
-                            meta[key] = val
-                        elif isinstance(val, (int, float)):
-                            meta[key] = val != 0
-                        else:
-                            meta[key] = str(val).lower() == 'true'
-        except Exception:
-            pass
-
-        # --- solver_statistics ---
-        try:
-            df_stats = pd.read_sql_query('SELECT * FROM solver_statistics', conn)
-            if len(df_stats) > 0:
-                row = df_stats.iloc[0]
-                if 'work_units' in row and row['work_units'] is not None:
-                    meta['work_units'] = float(row['work_units'])
-                if 'solver_time' in row and row['solver_time'] is not None:
-                    meta['solver_time'] = float(row['solver_time'])
-        except Exception:
-            pass
-
-        conn.close()
+        df = pd.read_sql_query('SELECT * FROM run_parameters', conn)
+        if len(df) > 0:
+            has_run_parameters = True
+            row = df.iloc[0]
+            for key in ['case_study_directory', 'edge_handling', 'run_type']:
+                if key in row and row[key] not in (None, 'None'):
+                    meta[key] = str(row[key])
+            for key in ['limit_k']:
+                if key in row and row[key] not in (None, 'None'):
+                    meta[key] = str(row[key])
+            for key in ['clusters', 'relax_count', 'shift']:
+                if key in row and row[key] not in (None, 'None'):
+                    meta[key] = int(float(row[key]))
+            for key in ['stretch_demand', 'mip_gap']:
+                if key in row and row[key] not in (None, 'None'):
+                    meta[key] = float(row[key])
+            for key in ['network']:
+                if key in row and row[key] not in (None, 'None'):
+                    meta[key] = str(row[key])
+            for key in ['no_investment', 'rmip', 'no_crossover', 'force_barrier']:
+                if key in row and row[key] not in (None, 'None'):
+                    val = row[key]
+                    if isinstance(val, bool):
+                        meta[key] = val
+                    elif isinstance(val, (int, float)):
+                        meta[key] = val != 0
+                    else:
+                        meta[key] = str(val).lower() == 'true'
     except Exception:
         pass
-
-    # Fallback: parse metadata from filename if run_parameters table is missing
+    try:
+        df_stats = pd.read_sql_query('SELECT * FROM solver_statistics', conn)
+        if len(df_stats) > 0:
+            row = df_stats.iloc[0]
+            if 'work_units' in row and row['work_units'] is not None:
+                meta['work_units'] = float(row['work_units'])
+            if 'solver_time' in row and row['solver_time'] is not None:
+                meta['solver_time'] = float(row['solver_time'])
+    except Exception:
+        pass
     if not has_run_parameters:
-        basename = os.path.basename(sqlite_file)
         parsed = _parse_metadata_from_filename(basename)
         for key, val in parsed.items():
             if meta[key] is None:
                 meta[key] = val
-
     return meta
+
+
+def _load_results_from_conn(conn):
+    """Load objective and weighted variable sums from an open SQLite connection.
+
+    Weighted sums for large time-indexed tables are computed via SQL JOINs against
+    temporary weight tables, avoiding full table transfers into Python.
+    """
+    results = {}
+
+    try:
+        val = conn.execute('SELECT values FROM objective LIMIT 1').fetchone()
+        results['Objective'] = float(val[0]) if val else -1
+    except Exception:
+        results['Objective'] = -1
+
+    # Build temporary weight tables so large variable tables can be aggregated in SQL
+    has_weights = False
+    try:
+        wrp_rows = conn.execute('SELECT * FROM pWeight_rp').fetchall()
+        wk_rows = conn.execute('SELECT * FROM pWeight_k').fetchall()
+        conn.execute("CREATE TEMP TABLE IF NOT EXISTS _wrp (rp TEXT PRIMARY KEY, w REAL)")
+        conn.execute("CREATE TEMP TABLE IF NOT EXISTS _wk (k TEXT PRIMARY KEY, w REAL)")
+        conn.executemany("INSERT OR IGNORE INTO _wrp VALUES (?,?)", [(str(r[0]), float(r[1])) for r in wrp_rows])
+        conn.executemany("INSERT OR IGNORE INTO _wk VALUES (?,?)", [(str(r[0]), float(r[1])) for r in wk_rows])
+        has_weights = True
+    except Exception:
+        pass
+
+    for var_name in ['vGenP', 'vCommit', 'vStartup', 'vShutdown', 'vPNS', 'vEPS']:
+        try:
+            if has_weights:
+                val = conn.execute(
+                    f'SELECT SUM(v.values * wrp.w * wk.w) '
+                    f'FROM "{var_name}" v '
+                    f'JOIN _wrp wrp ON CAST(v.rp AS TEXT) = wrp.rp '
+                    f'JOIN _wk wk ON CAST(v.k AS TEXT) = wk.k'
+                ).fetchone()[0]
+                results[var_name] = float(val) if val is not None else 0
+            else:
+                results[var_name] = 0
+        except Exception:
+            results[var_name] = 0
+
+    try:
+        df_inv = pd.read_sql_query('SELECT * FROM vGenInvest', conn)
+        results['vGenInvest'] = df_inv['values'].sum()
+    except Exception:
+        results['vGenInvest'] = 0
+
+    try:
+        df_inv = pd.read_sql_query('SELECT * FROM vGenInvest', conn)
+        df_gtec = pd.read_sql_query('SELECT * FROM gtec', conn)
+        if 'index' in df_gtec.columns:
+            df_gtec = df_gtec.drop(columns=['index'])
+        df_gtec.columns = ['g', 'tec']
+        df_merged = df_inv.merge(df_gtec, left_on=df_inv.columns[0], right_on='g', how='left')
+        for tec, group in df_merged.groupby('tec'):
+            results[f'vGenInvest[{tec}]'] = group['values'].sum()
+    except Exception:
+        pass
+
+    try:
+        df_inv = pd.read_sql_query('SELECT * FROM vGenInvest', conn)
+        df_gtec = pd.read_sql_query('SELECT * FROM gtec', conn)
+        df_pmax = pd.read_sql_query('SELECT * FROM pMaxProd', conn)
+        if 'index' in df_gtec.columns:
+            df_gtec = df_gtec.drop(columns=['index'])
+        df_gtec.columns = ['g', 'tec']
+        g_col = df_inv.columns[0]
+        df_pmax = df_pmax.rename(columns={df_pmax.columns[0]: g_col, 'values': 'pmax'})
+        df_merged = df_inv.merge(df_pmax[[g_col, 'pmax']], on=g_col, how='left')
+        df_merged['cap'] = df_merged['values'] * df_merged['pmax'].fillna(0)
+        results['vCapInvest'] = df_merged['cap'].sum()
+        df_merged = df_merged.merge(df_gtec, on='g', how='left')
+        for tec, group in df_merged.groupby('tec'):
+            results[f'vCapInvest[{tec}]'] = group['cap'].sum()
+    except Exception:
+        pass
+
+    return results
+
+
+def _load_file(sqlite_file):
+    """Load metadata and results from a MK sqlite file using a single connection.
+
+    Module-level so it can be pickled for ProcessPoolExecutor.
+    """
+    basename = os.path.basename(sqlite_file)
+    try:
+        conn = sqlite3.connect(sqlite_file)
+        if basename.endswith("-invest-regret.sqlite"):
+            results = _load_results_from_conn(conn)
+            conn.close()
+            return ('invest_regret', sqlite_file, None, results)
+        if basename.endswith("-regret.sqlite"):
+            results = _load_results_from_conn(conn)
+            conn.close()
+            return ('regret', sqlite_file, None, results)
+        meta = _load_metadata_from_conn(conn, basename)
+        results = _load_results_from_conn(conn)
+        conn.close()
+    except Exception:
+        meta = {}
+        results = {}
+    return ('main', sqlite_file, meta, results)
+
+
+def load_file_metadata(sqlite_file):
+    """Load run parameters and solver statistics from a MK sqlite file."""
+    try:
+        conn = sqlite3.connect(sqlite_file)
+        meta = _load_metadata_from_conn(conn, os.path.basename(sqlite_file))
+        conn.close()
+        return meta
+    except Exception:
+        return {}
 
 
 def load_results_from_sqlite(sqlite_file):
     """Load objective and weighted variable sums from a MK sqlite file."""
-    results = {}
     try:
         conn = sqlite3.connect(sqlite_file)
-
-        # Objective
-        try:
-            df_obj = pd.read_sql_query('SELECT * FROM objective', conn)
-            results['Objective'] = float(df_obj.iloc[0]['values'])
-        except Exception:
-            results['Objective'] = -1
-
-        # Weights
-        try:
-            df_wrp = pd.read_sql_query('SELECT * FROM pWeight_rp', conn)
-            wrp = dict(zip(df_wrp.iloc[:, 0], df_wrp['values']))
-        except Exception:
-            wrp = {}
-        try:
-            df_wk = pd.read_sql_query('SELECT * FROM pWeight_k', conn)
-            wk = dict(zip(df_wk.iloc[:, 0], df_wk['values']))
-        except Exception:
-            wk = {}
-
-        # Weighted sums for indexed variables
-        for var_name in ['vGenP', 'vCommit', 'vStartup', 'vShutdown', 'vPNS', 'vEPS']:
-            try:
-                df_var = pd.read_sql_query(f'SELECT * FROM {var_name}', conn)
-                df_var['weight'] = df_var['rp'].map(wrp) * df_var['k'].map(wk)
-                results[var_name] = (df_var['values'] * df_var['weight']).sum()
-            except Exception:
-                results[var_name] = 0
-
-        # vGenInvest (not time-indexed)
-        try:
-            df_inv = pd.read_sql_query('SELECT * FROM vGenInvest', conn)
-            results['vGenInvest'] = df_inv['values'].sum()
-        except Exception:
-            results['vGenInvest'] = 0
-
-        # vGenInvest by technology
-        try:
-            df_inv = pd.read_sql_query('SELECT * FROM vGenInvest', conn)
-            df_gtec = pd.read_sql_query('SELECT * FROM gtec', conn)
-            # gtec has columns: index, 0, 1 (generator, technology)
-            if 'index' in df_gtec.columns:
-                df_gtec = df_gtec.drop(columns=['index'])
-            df_gtec.columns = ['g', 'tec']
-            df_merged = df_inv.merge(df_gtec, left_on=df_inv.columns[0], right_on='g', how='left')
-            for tec, group in df_merged.groupby('tec'):
-                results[f'vGenInvest[{tec}]'] = group['values'].sum()
-        except Exception:
-            pass
-
-        # vGenInvest * pMaxProd (invested capacity) total and by technology
-        try:
-            df_inv = pd.read_sql_query('SELECT * FROM vGenInvest', conn)
-            df_gtec = pd.read_sql_query('SELECT * FROM gtec', conn)
-            df_pmax = pd.read_sql_query('SELECT * FROM pMaxProd', conn)
-            if 'index' in df_gtec.columns:
-                df_gtec = df_gtec.drop(columns=['index'])
-            df_gtec.columns = ['g', 'tec']
-            g_col = df_inv.columns[0]
-            df_pmax = df_pmax.rename(columns={df_pmax.columns[0]: g_col, 'values': 'pmax'})
-            df_merged = df_inv.merge(df_pmax[[g_col, 'pmax']], on=g_col, how='left')
-            df_merged['cap'] = df_merged['values'] * df_merged['pmax'].fillna(0)
-            results['vCapInvest'] = df_merged['cap'].sum()
-            df_merged = df_merged.merge(df_gtec, on='g', how='left')
-            for tec, group in df_merged.groupby('tec'):
-                results[f'vCapInvest[{tec}]'] = group['cap'].sum()
-        except Exception:
-            pass
-
+        results = _load_results_from_conn(conn)
         conn.close()
+        return results
     except Exception as e:
         printer.error(f"Failed to load results from '{sqlite_file}': {e}")
-
-    return results
+        return {}
 
 
 def print_comparison_table(group_entries):
@@ -571,22 +603,12 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
 
     printer.information(f"Found {len(all_sqlite)} MK sqlite file(s) in '{folder}'")
 
-    # Load metadata and results for each file (parallelized over I/O)
-    def _load_file(sqlite_file):
-        basename = os.path.basename(sqlite_file)
-        if basename.endswith("-invest-regret.sqlite"):
-            return ('invest_regret', sqlite_file, None, load_results_from_sqlite(sqlite_file))
-        if basename.endswith("-regret.sqlite"):
-            return ('regret', sqlite_file, None, load_results_from_sqlite(sqlite_file))
-        meta = load_file_metadata(sqlite_file)
-        results = load_results_from_sqlite(sqlite_file)
-        return ('main', sqlite_file, meta, results)
-
+    # Load metadata and results for each file (parallelized across processes)
     entries = []
     regret_files = {}
     invest_regret_files = {}
-    max_workers = min(len(all_sqlite), (os.cpu_count() or 4) * 2)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    max_workers = min(len(all_sqlite), os.cpu_count() or 4)
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_load_file, f): f for f in all_sqlite}
         for future in as_completed(futures):
             kind, sqlite_file, meta, results = future.result()
