@@ -54,10 +54,6 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     #model.eSelfSufficiency.pprint()
 
 
-
-
-    #model.eSelfSufficiency = pyo.Constraint
-
     first_stage_objective = 0
     second_stage_objective = 0
 

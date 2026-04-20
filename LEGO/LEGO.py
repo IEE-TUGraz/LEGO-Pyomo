@@ -276,6 +276,9 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     if cs.dPower_Parameters["pEnableSoftLineLoadLimits"]:
         model.first_stage_varlist += softLineLoadLimits.add_element_definitions_and_bounds(model, cs)
 
+    if cs.dGlobal_Parameters["pEnableSelfSufficiency"]:
+        model.first_stage_varlist += selfSufficiency.add_element_definitions_and_bounds(model, cs)
+        
     if cs.dGlobal_Parameters["pEnableHeat"]:
         model.first_stage_varlist += heat.add_element_definitions_and_bounds(model, cs)
 
@@ -291,8 +294,8 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     if cs.dPower_Parameters["pEnableStorage"]:
         model.first_stage_objective += storage.add_constraints(model, cs)
 
-    #if cs.dGlobal_Parameters["pEnableSelfSufficiency"]:
-    #    model.first_stage_objective += selfSufficiency.add_constraints(model, cs)
+    if cs.dGlobal_Parameters["pEnableSelfSufficiency"]:
+        model.first_stage_objective += selfSufficiency.add_constraints(model, cs)
 
     if cs.dPower_Parameters["p2ndResUp"] > 0.0 or cs.dPower_Parameters["p2ndResDW"] > 0.0:
         model.first_stage_objective += secondReserve.add_constraints(model, cs)
