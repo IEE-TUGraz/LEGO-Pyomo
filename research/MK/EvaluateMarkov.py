@@ -317,30 +317,45 @@ def print_comparison_table(group_entries):
     # Print investment table (vGenInvest) with % columns
     has_invest = any(e.get("vGenInvest") not in (None, "") for e in group_entries)
     if has_invest:
+        invest_display = {"vGenInvest": "Total", "vGenInvest %": "[%]"}
         invest_columns = ["Case", "vGenInvest", "vGenInvest %"]
         for tec in tec_columns:
+            tec_name = tec[len("vGenInvest["):-1]
+            invest_display[tec] = tec_name
+            invest_display[f"{tec} %"] = "[%]"
             invest_columns.append(tec)
             invest_columns.append(f"{tec} %")
         printer.information("")
-        _print_table(invest_columns, group_entries)
+        printer.information("  vGenInvest")
+        _print_table(invest_columns, group_entries, invest_display)
 
     # Print capacity investment table (vGenInvest * pMaxProd) with % columns
     has_cap = any(e.get("vCapInvest") not in (None, "") for e in group_entries)
     if has_cap:
+        cap_display = {"vCapInvest": "Total", "vCapInvest %": "[%]"}
         cap_columns = ["Case", "vCapInvest", "vCapInvest %"]
         for tec in cap_tec_columns:
+            tec_name = tec[len("vCapInvest["):-1]
+            cap_display[tec] = tec_name
+            cap_display[f"{tec} %"] = "[%]"
             cap_columns.append(tec)
             cap_columns.append(f"{tec} %")
         printer.information("")
-        printer.information("  (vGenInvest * pMaxProd — invested capacity)")
-        _print_table(cap_columns, group_entries)
+        printer.information("  vCapInvest  (vGenInvest * pMaxProd — invested capacity)")
+        _print_table(cap_columns, group_entries, cap_display)
 
 
-def _print_table(columns, group_entries):
+def _print_table(columns, group_entries, display_names=None):
     """Print a formatted table with given columns and entries."""
     table = []
     for col in columns:
-        column_data = [col]
+        if display_names and col in display_names:
+            header = display_names[col]
+        elif col.endswith(" %"):
+            header = "[%]"
+        else:
+            header = col
+        column_data = [header]
         for entry in group_entries:
             value = entry.get(col, "")
             if value is None:
