@@ -68,7 +68,23 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vHeatStorageLevel = pyo.Var(model.rp, model.k, model.hn, model.dt, model.htec, within=pyo.NonNegativeReals, doc='Heat Storage Level in *Wh_therm')
     model.vHeatStorageCharge = pyo.Var(model.rp, model.k, model.hn, model.dt, model.htec, within=pyo.NonNegativeReals, doc='Heat Storage Charging in *W_therm')
     model.vHeatStorageDischarge = pyo.Var(model.rp, model.k, model.hn, model.dt, model.htec, within=pyo.NonNegativeReals, doc='Heat Storage Discharging in *W_therm')
-    second_stage_variables += [model.vHeatStorageLevel, model.vHeatStorageCharge, model.vHeatStorageDischarge]
+
+    ## added for building temp modelung:
+    # Parameter
+    model.Building_ThermalMass = pyo.Param(model.hn, initialize=1.6, doc='Thermal Mass of Building in MWh/K')  # for now in MWh/K, check if sccalors changed!
+    model.Building_MinTemp = pyo.Param(model.hn, initialize=273.15+18, doc='Minimum Building Temperature in K')
+    model.Building_MaxTemp = pyo.Param(model.hn, initialize=273.15+24, doc='Maximum Building Temperature in K')
+    model.Building_InitTemp = pyo.Param(model.hn, initialize=273.15+21, doc='Initial Building Temperature in K')
+    model.UnderTempPenaltyCost = pyo.Param(initialize=0.1, doc='Penalty cost for under temperature in k€/K')# check units
+    model.OverTempPenaltyCost = pyo.Param(initialize=0.05, doc='Penalty cost for over temperature in k€/K')# check units
+    model.PenaltyFreeTemperatureDeviation = pyo.Param(initialize=0.5, doc='Temperature deviation in K for which no penalty is applied')
+
+    # Variables
+    model.vBuildingTemp = pyo.Var(model.rp, model.k, model.hn, model.dt, model.htec, within=pyo.NonNegativeReals, doc='Building Temperature in K')
+    model.vPenalizeOverTemp = pyo.Var(model.rp, model.k, model.hn, model.dt, model.htec, within=pyo.NonNegativeReals, doc='Over Temperature Deviation to be Penalized in K')
+    model.vPenalizeUnderTemp = pyo.Var(model.rp, model.k, model.hn, model.dt, model.htec, within=pyo.NonNegativeReals, doc='Under Temperature Deviation to be Penalized in K')
+
+    second_stage_variables += [model.vHeatStorageLevel, model.vHeatStorageCharge, model.vHeatStorageDischarge, model.vBuildingTemp, model.vPenalizeOverTemp, model.vPenalizeUnderTemp]
 
     return first_stage_variables, second_stage_variables
 
@@ -119,16 +135,41 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         )
     model.HeatStorageBalanceConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=heat_storage_balance_rule)
 
-    # max storage level value
-    def max_storage_level_rule(m, rp, k, hn, dt, htec):
-        return m.vHeatStorageLevel[rp, k, hn, dt, htec] <= m.pHeatStorageCapacity[hn, dt, htec]
 
-    model.MaxHeatStorageLevelConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=max_storage_level_rule)
+    # storage level to temperature relation
+    def storage_level_temperature_rule(m, rp, k, hn, dt, htec):
+        return m.vBuildingTemp[rp, k, hn, dt, htec] == (m.vHeatStorageLevel[rp, k, hn, dt, htec] / m.Building_ThermalMass[hn])
+    model.StorageLevelTemperatureConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=storage_level_temperature_rule)
+
+    # temperature limits
+    def min_temp_limit_rule(m, rp, k, hn, dt, htec):
+        return m.vBuildingTemp[rp, k, hn, dt, htec] >= m.Building_MinTemp[hn]
+    model.MinTempLimitConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=min_temp_limit_rule)
+
+    def max_temp_limit_rule(m, rp, k, hn, dt, htec):
+        return m.vBuildingTemp[rp, k, hn, dt, htec] <= m.Building_MaxTemp[hn]
+    model.MaxTempLimitConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=max_temp_limit_rule)
+
+    # chalc the penalization of over and under temperature
+    def over_temp_penalty_rule(m, rp, k, hn, dt, htec):
+        return m.vPenalizeOverTemp[rp, k, hn, dt, htec] >= m.vBuildingTemp[rp, k, hn, dt, htec] - m.Building_MaxTemp[hn] - m.PenaltyFreeTemperatureDeviation
+    model.OverTempPenaltyConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=over_temp_penalty_rule)
+
+    def under_temp_penalty_rule(m, rp, k, hn, dt, htec):
+        return m.vPenalizeUnderTemp[rp, k, hn, dt, htec] >= m.Building_MinTemp[hn] - m.vBuildingTemp[rp, k, hn, dt, htec] - m.PenaltyFreeTemperatureDeviation
+    model.UnderTempPenaltyConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=under_temp_penalty_rule)
+
+
+
+
+    # max storage level value
+    #def max_storage_level_rule(m, rp, k, hn, dt, htec):
+    #    return m.vHeatStorageLevel[rp, k, hn, dt, htec] <= m.pHeatStorageCapacity[hn, dt, htec]
+    #model.MaxHeatStorageLevelConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=max_storage_level_rule)
 
     # power demand per power node
     def power2heat_demand_rule(m, rp, k, i):
         return m.vPower2HeatDemand[rp, k, i] == sum(m.vPower2Heat[rp, k, hn, dt, htec] for (hn, dt, htec) in m.hn_dt_htec if (i, hn) in m.i_hn)
-
     model.Power2HeatDemandConstr = pyo.Constraint(model.rp, model.k, model.i, rule=power2heat_demand_rule)
 
     # add power2heat demand to the overall power balance
@@ -143,6 +184,8 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                                  sum(model.pWeight_k[k] *  # Weight of time steps
                                      sum(+ model.vExcessHeatServed[rp, k, hn, dt, htec] * model.pENSCost  # Excess Heat Serves
                                          + model.vHeatNotServed[rp, k, hn, dt, htec] * model.pENSCost  # Not Served Heat cost
+                                         + model.vPenalizeOverTemp[rp, k, hn, dt, htec] * model.OverTempPenaltyCost  # Over temperature penalty
+                                            + model.vPenalizeUnderTemp[rp, k, hn, dt, htec] * model.UnderTempPenaltyCost  # Under temperature penalty
                                          for (hn, dt, htec) in model.hn_dt_htec)
                                      for k in model.k)
                                  for rp in model.rp)
