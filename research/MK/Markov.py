@@ -110,7 +110,8 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          force_barrier: bool = False, mip_gap: float | None = None,
                          limitK: str | None = None, clusters: int = 1,
                          shift: int = 0, stretch_demand: float = 1.0,
-                         no_overwrite: bool = False, network: str | None = None) -> typing.Tuple[typing.List[str], typing.List[str]]:
+                         no_overwrite: bool = False, network: str | None = None,
+                         commit_consumption: float = 1.0, startup_consumption: float = 1.0) -> typing.Tuple[typing.List[str], typing.List[str]]:
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
@@ -139,6 +140,14 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
     if network is not None:
         printer.information(f"Setting all lines to network representation '{network}'")
         cs.dPower_Network["pTecRepr"] = network
+
+    if commit_consumption != 1.0:
+        printer.information(f"Scaling CommitConsumption by {commit_consumption}")
+        cs.dPower_ThermalGen['pInterVarCostEUR'] *= commit_consumption
+
+    if startup_consumption != 1.0:
+        printer.information(f"Scaling StartupConsumption by {startup_consumption}")
+        cs.dPower_ThermalGen['pStartupCostEUR'] *= startup_consumption
 
     # Create varied case studies
     start_time = time.time()
@@ -243,6 +252,10 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         identifier_parts.append(f"mipGap{mip_gap:g}")
     if network is not None:
         identifier_parts.append(f"network{network}")
+    if commit_consumption != 1.0:
+        identifier_parts.append(f"commitConsumption{commit_consumption:g}")
+    if startup_consumption != 1.0:
+        identifier_parts.append(f"startupConsumption{startup_consumption:g}")
     identifier = "-".join(identifier_parts)
 
     run_params = dict(
@@ -258,6 +271,8 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         force_barrier=force_barrier if force_barrier else None,
         mip_gap=mip_gap,
         network=network,
+        commit_consumption=commit_consumption if commit_consumption != 1.0 else None,
+        startup_consumption=startup_consumption if startup_consumption != 1.0 else None,
     )
     sqlite_files, sqlite_labels = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite)
 
@@ -432,7 +447,8 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
          limitK: str | None = None, shift: int = 0, stretch_demand: float = 1,
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, invest_regret: bool = False,
          no_investment: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False,
-         force_barrier: bool = False, mip_gap: float | None = None, network: str | None = None):
+         force_barrier: bool = False, mip_gap: float | None = None, network: str | None = None,
+         commit_consumption: float = 1.0, startup_consumption: float = 1.0):
     ew = ExcelWriter()
 
     if no_crossover != force_barrier:
@@ -531,7 +547,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
 
                 printer.information(f"Loading case study from '{cluster_folder}'")
 
-                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, no_crossover, force_barrier, mip_gap, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, no_overwrite=no_overwrite, network=network)
+                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, no_crossover, force_barrier, mip_gap, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, no_overwrite=no_overwrite, network=network, commit_consumption=commit_consumption, startup_consumption=startup_consumption)
         except Exception as e:
             printer.error(f"Exception while executing case study '{folder}': {e}")
             if debug:
@@ -567,6 +583,8 @@ if __name__ == "__main__":
     parser.add_argument("--force-barrier", action="store_true", help="Force Gurobi to use barrier method")
     parser.add_argument("--mip-gap", type=float, default=None, help="Set the MIP gap tolerance for the solver (e.g., 0.01 for 1%%; default: solver default)")
     parser.add_argument("--network", type=str, default=None, choices=["DC-OPF", "TP", "SN"], help="Override network representation for all lines uniformly: DC-OPF, TP, or SN (default: no change, use values from data)")
+    parser.add_argument("--commit-consumption", type=float, default=1.0, help="Multiplier for the CommitConsumption column of Power_ThermalGen (default: 1.0, no change)")
+    parser.add_argument("--startup-consumption", type=float, default=1.0, help="Multiplier for the StartupConsumption column of Power_ThermalGen (default: 1.0, no change)")
     args = parser.parse_args()
 
     kwargs = vars(args)
