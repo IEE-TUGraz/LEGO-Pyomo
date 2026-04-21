@@ -19,6 +19,13 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     # Sets
 
+    #parameter
+    model.T_outage = pyo.Param(initialize=cs.dGlobal_Parameters['pTOutage'], doc="Duration of power outage in hours")
+
+    # variables
+
+
+
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
@@ -28,7 +35,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
-    def eSelfSufficiency(m, rp, k, i, tbo, pvset, storage_set, thermal_set):
+    def ePowerSelfSufficiency(m, rp, k, i, tbo, pvset, storage_set, thermal_set):
         if int(k[1:]) + tbo < len(model.k):
             set_t = set_range_non_cyclic(m.k, m.k.ord(k) + 1, m.k.ord(k) + 1 + tbo)
             return sum(m.pDemandP[rp, k, i] for k in set_t) <= (
@@ -40,18 +47,22 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         else:
             return pyo.Constraint.Skip
 
-    Tbo = cs.dGlobal_Parameters["pTBlackOut"]
+
     pvset = [pv for pv, tec in model.gtec if tec == "Solar"]
     thermal_set = [thermal for thermal, tec in model.gtec if tec == "FuelOilGas"]
     storage_set = [storage for storage, tec in model.gtec if tec == "BESS"]
-    model.eSelfSufficiency = pyo.ConstraintList(doc='Self sufficiency constraint')
-    for tbo in range(1, Tbo + 1):
+
+    model.ePowerSelfSufficiency = pyo.ConstraintList(doc='Self sufficiency constraint')
+
+    for tbo in range(1, model.T_outage + 1):
         for rp in model.rp:
             for k in model.k:
                 for i in model.i:
-                    model.eSelfSufficiency.add(eSelfSufficiency(model, rp, k, i, tbo, pvset, storage_set, thermal_set))
+                    model.ePowerSelfSufficiency.add(ePowerSelfSufficiency(model, rp, k, i, tbo, pvset, storage_set, thermal_set))
 
     #model.eSelfSufficiency.pprint()
+
+
 
 
     first_stage_objective = 0
