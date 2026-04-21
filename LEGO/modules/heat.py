@@ -74,7 +74,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.Building_ThermalMass = pyo.Param(model.hn, initialize=1.6, doc='Thermal Mass of Building in MWh/K')  # for now in MWh/K, check if sccalors changed!
     model.Building_MinTemp = pyo.Param(model.hn, initialize=273.15+18, doc='Minimum Building Temperature in K')
     model.Building_MaxTemp = pyo.Param(model.hn, initialize=273.15+24, doc='Maximum Building Temperature in K')
-    model.Building_InitTemp = pyo.Param(model.hn, initialize=273.15+21, doc='Initial Building Temperature in K')
+    model.Building_SetTemp = pyo.Param(model.hn, initialize=273.15+21, doc='Initial Building Temperature in K')
     model.UnderTempPenaltyCost = pyo.Param(initialize=0.1, doc='Penalty cost for under temperature in k€/K')# check units
     model.OverTempPenaltyCost = pyo.Param(initialize=0.05, doc='Penalty cost for over temperature in k€/K')# check units
     model.PenaltyFreeTemperatureDeviation = pyo.Param(initialize=0.5, doc='Temperature deviation in K for which no penalty is applied')
@@ -152,11 +152,11 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     # chalc the penalization of over and under temperature
     def over_temp_penalty_rule(m, rp, k, hn, dt, htec):
-        return m.vPenalizeOverTemp[rp, k, hn, dt, htec] >= m.vBuildingTemp[rp, k, hn, dt, htec] - m.Building_MaxTemp[hn] - m.PenaltyFreeTemperatureDeviation
+        return m.vPenalizeOverTemp[rp, k, hn, dt, htec] >= m.vBuildingTemp[rp, k, hn, dt, htec] - m.Building_SetTemp[hn] - m.PenaltyFreeTemperatureDeviation
     model.OverTempPenaltyConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=over_temp_penalty_rule)
 
     def under_temp_penalty_rule(m, rp, k, hn, dt, htec):
-        return m.vPenalizeUnderTemp[rp, k, hn, dt, htec] >= m.Building_MinTemp[hn] - m.vBuildingTemp[rp, k, hn, dt, htec] - m.PenaltyFreeTemperatureDeviation
+        return m.vPenalizeUnderTemp[rp, k, hn, dt, htec] >= m.Building_SetTemp[hn] - m.vBuildingTemp[rp, k, hn, dt, htec] - m.PenaltyFreeTemperatureDeviation
     model.UnderTempPenaltyConstr = pyo.Constraint(model.rp, model.k, model.hn_dt_htec, rule=under_temp_penalty_rule)
 
 
