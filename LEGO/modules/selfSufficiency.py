@@ -29,6 +29,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     # a set over the grid outage time steps
     model.tau = pyo.Set(initialize=range(1, cs.dGlobal_Parameters['pTOutage'] + 1), doc="Time steps during power outage", ordered=True)
 
+
+
     # variables
     # Variable: explicit triple temporal index (k, tau, k_prime)
     valid_triples = [
@@ -51,7 +53,10 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         doc="P2H allocation — only defined for valid (k, tau, t') triples"
     )
 
-    second_stage_variables += [model.vOutage_P2H]
+    model.availabeBESS = pyo.Var(model.rp, model.k, model.tau, bounds=(0, None), doc="Available BESS capacity during outage window")
+
+
+    second_stage_variables += [model.vOutage_P2H, model.availabeBESS]
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
 
@@ -135,6 +140,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     thermal_set = [thermal for thermal, tec in model.gtec if tec == "FuelOilGas"]  # TODO: swap to backup generator
     storage_set = [storage for storage, tec in model.gtec if tec == "BESS"]
 
+
     def ePowerSelfSufficiency(m, rp, k, i, tau):
         k_ord = m.k.ord(k)
         if k_ord + tau > len(m.k):
@@ -152,8 +158,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         rhs = (
                 sum(m.pCapacityFactors[rp, kp, pv] * m.vGenP[rp, kp, pv]
                     for kp in set_t for pv in pvset)
-                + sum(m.vStIntraRes[rp, kp, storage]
-                      for kp in set_t for storage in storage_set)
+                + m.availabeBESS[rp,k,tau]
                 + sum(m.pMaxProd[thermal] * m.vGenInvest[thermal] * tau
                       for thermal in thermal_set)
         )
@@ -165,7 +170,22 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         rule=ePowerSelfSufficiency,
         doc="Power self-sufficiency: local supply covers demand + P2H load over any outage window"
     )
-    #model.eSelfSufficiency.pprint()
+
+    def eOutageBESSAvailablity_investment(m, rp, k, tau):
+        return m.availabeBESS[rp,k,tau] <= sum(m.vGenInvest[storage] * m.pMaxProd[storage] for storage in storage_set) * (tau)
+
+
+    model.eOutageBESSAvailablity_investment = pyo.Constraint(model.rp, model.k, model.tau, rule=eOutageBESSAvailablity_investment, doc="Available BESS during outage limited by investment decisions")
+
+    def eOutageBESSAvailability_level(m, rp, k, tau):
+        k_ord = m.k.ord(k)
+        if k_ord + tau > len(m.k):
+            return pyo.Constraint.Skip
+
+        set_t = set_range_non_cyclic(m.k, k_ord + 1, k_ord + tau)
+
+        return m.availabeBESS[rp, k, tau] <= sum(m.vStIntraRes[rp, kp, storage] for kp in set_t for storage in storage_set)
+    model.eOutageBESSAvailability_level = pyo.Constraint(model.rp, model.k, model.tau, rule=eOutageBESSAvailability_level, doc="Available BESS during outage limited by storage levels")
 
 
 
