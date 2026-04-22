@@ -3,6 +3,7 @@ import logging
 import os
 import time
 
+import pandas as pd
 import pyomo.environ as pyo
 from InOutModule import SQLiteWriter
 from InOutModule.ExcelWriter import ExcelWriter
@@ -32,7 +33,15 @@ def main(case_study_directory, model_type):
     # Load case study
     printer.information(f"Loading case study from '{case_study_directory}'")
     start_time = time.time()
-    cs = CaseStudy(case_study_directory)
+
+    myCustomParameters = {
+    "pEnableHeat": 1,
+    "pMaxCapacity": 100,
+    "pEfficiency": 0.9,
+    }
+
+    cs = CaseStudy(case_study_directory, dCustom_Parameters=myCustomParameters)
+
     lego = LEGO(cs)
     printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
 

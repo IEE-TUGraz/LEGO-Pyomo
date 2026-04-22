@@ -64,8 +64,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     first_stage_variables += [model.DieselStorageTankInvest]
     second_stage_variables += [model.vOutage_P2H, model.availabeBESS, model.availableBackupGen]
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
-    print(first_stage_variables)
-    print((second_stage_variables))
     return first_stage_variables, second_stage_variables
 
 
