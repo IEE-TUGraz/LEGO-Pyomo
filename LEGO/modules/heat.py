@@ -71,13 +71,13 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     ## added for building temp modelung:
     # Parameter
-    model.Building_ThermalMass = pyo.Param(model.hn, initialize=1.6, doc='Thermal Mass of Building in MWh/K')  # for now in MWh/K, check if sccalors changed!
-    model.Building_MinTemp = pyo.Param(model.hn, initialize=273.15+18, doc='Minimum Building Temperature in K')
-    model.Building_MaxTemp = pyo.Param(model.hn, initialize=273.15+24, doc='Maximum Building Temperature in K')
-    model.Building_SetTemp = pyo.Param(model.hn, initialize=273.15+21, doc='Initial Building Temperature in K')
-    model.UnderTempPenaltyCost = pyo.Param(initialize=0.1, doc='Penalty cost for under temperature in k€/K')# check units
-    model.OverTempPenaltyCost = pyo.Param(initialize=0.05, doc='Penalty cost for over temperature in k€/K')# check units
-    model.PenaltyFreeTemperatureDeviation = pyo.Param(initialize=0.5, doc='Temperature deviation in K for which no penalty is applied')
+    model.Building_ThermalMass = pyo.Param(model.hn, initialize=cs.dCustom_Parameters['Building_ThermalMass'], doc='Thermal Mass of Building in MWh/K')  # for now in MWh/K, check if sccalors changed!
+    model.Building_MinTemp = pyo.Param(model.hn, initialize=cs.dCustom_Parameters['Building_MinTemp'], doc='Minimum Building Temperature in K')
+    model.Building_MaxTemp = pyo.Param(model.hn, initialize=cs.dCustom_Parameters['Building_MaxTemp'], doc='Maximum Building Temperature in K')
+    model.Building_SetTemp = pyo.Param(model.hn, initialize=cs.dCustom_Parameters['Building_SetTemp'], doc='Initial Building Temperature in K')
+    model.UnderTempPenaltyCost = pyo.Param(initialize=cs.dCustom_Parameters['UnderTempPenaltyCost'], doc='Penalty cost for under temperature in k€/K')# check units
+    model.OverTempPenaltyCost = pyo.Param(initialize=cs.dCustom_Parameters['OverTempPenaltyCost'], doc='Penalty cost for over temperature in k€/K')# check units
+    model.PenaltyFreeTemperatureDeviation = pyo.Param(initialize=cs.dCustom_Parameters['PenaltyFreeTemperatureDeviation'], doc='Temperature deviation in K for which no penalty is applied')
 
     # Variables
     model.vBuildingTemp = pyo.Var(model.rp, model.k, model.hn, model.dt, model.htec, within=pyo.NonNegativeReals, doc='Building Temperature in K')

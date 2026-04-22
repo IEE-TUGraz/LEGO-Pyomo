@@ -22,10 +22,10 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     #parameter
     model.T_outage = pyo.Param(initialize=cs.dGlobal_Parameters['pTOutage'], doc="Duration of power outage in hours")
 
-    model.Building_MaxTempOutage = pyo.Param(initialize=273.15+24, doc="Maximum allowed temperature during power outage in K")
-    model.Building_MinTempOutage = pyo.Param(initialize=273.15+21, doc="Minimum allowed temperature during power outage in K")
+    model.Building_MaxTempOutage = pyo.Param(initialize=cs.dCustom_Parameters['Building_MaxTempOutage'], doc="Maximum allowed temperature during power outage in K")
+    model.Building_MinTempOutage = pyo.Param(initialize=cs.dCustom_Parameters['Building_MinTempOutage'], doc="Minimum allowed temperature during power outage in K")
 
-    model.DiselStorageTankCost = pyo.Param(initialize=200, doc="Cost per unit of fuel storage capacity for backup generator in €/MWh")
+    model.DiselStorageTankCost = pyo.Param(initialize=cs.dCustom_Parameters['DiselStorageTankCost'], doc="Cost per unit of fuel storage capacity for backup generator in €/MWh")
 
     # Sets
     # a set over the grid outage time steps

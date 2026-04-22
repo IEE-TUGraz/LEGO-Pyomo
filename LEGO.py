@@ -34,10 +34,28 @@ def main(case_study_directory, model_type):
     printer.information(f"Loading case study from '{case_study_directory}'")
     start_time = time.time()
 
+    def K(celsius):
+        return 273.15 + celsius
+
     myCustomParameters = {
-    "pEnableHeat": 1,
-    "pMaxCapacity": 100,
-    "pEfficiency": 0.9,
+        "Building_ThermalMass": 1.6,  # kWh/K (example order of magnitude)
+
+        # --- normal operation temperatures (K) ---
+        "Building_MinTemp": K(20),  # 20 °C
+        "Building_MaxTemp": K(24),  # 24 °C
+        "Building_SetTemp": K(21),  # 21 °C
+
+        # --- comfort penalties ---
+        "UnderTempPenaltyCost": 1000,  # €/K deviation (high to enforce comfort)
+        "OverTempPenaltyCost": 500,  # €/K deviation
+        "PenaltyFreeTemperatureDeviation": 0.5,  # ±0.5 K deadband
+
+        # --- outage conditions (K) ---
+        "Building_MaxTempOutage": K(30),  # upper safety limit
+        "Building_MinTempOutage": K(10),  # lower safety limit
+
+        # --- costs ---
+        "DiselStorageTankCost": 200,  # k€/MWh(includinc conversion allready)
     }
 
     cs = CaseStudy(case_study_directory, dCustom_Parameters=myCustomParameters)
@@ -82,6 +100,9 @@ def main(case_study_directory, model_type):
     SQLiteWriter.model_to_sqlite(model, "model.sqlite")
     ExcelWriter.model_to_excel(model, "model.xlsx")
     model.write("model.mps", io_options={'labeler': NameLabeler()})
+
+    with open("model_structure.txt", "w") as f:
+        model.pprint(ostream=f)
 
 
 if __name__ == "__main__":
