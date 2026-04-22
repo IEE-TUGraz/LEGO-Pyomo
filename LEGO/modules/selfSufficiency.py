@@ -25,9 +25,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.Building_MaxTempOutage = pyo.Param(initialize=273.15+24, doc="Maximum allowed temperature during power outage in K")
     model.Building_MinTempOutage = pyo.Param(initialize=273.15+21, doc="Minimum allowed temperature during power outage in K")
 
+    model.DiselStorageTankCost = pyo.Param(initialize=200, doc="Cost per unit of fuel storage capacity for backup generator in €/MWh")
+
     # Sets
     # a set over the grid outage time steps
     model.tau = pyo.Set(initialize=range(1, cs.dGlobal_Parameters['pTOutage'] + 1), doc="Time steps during power outage", ordered=True)
+    model.tanks = pyo.Set(initialize='Tank1')
 
 
 
@@ -54,10 +57,15 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     )
 
     model.availabeBESS = pyo.Var(model.rp, model.k, model.tau, bounds=(0, None), doc="Available BESS capacity during outage window")
+    model.availableBackupGen = pyo.Var(model.rp, model.k, model.tau, bounds=(0, None), doc="Available backup generator capacity during outage window")
 
+    model.DieselStorageTankInvest = pyo.Var(model.tanks, bounds=(0, None), doc="Investment in fuel storage capacity for backup generator in MWh")
 
-    second_stage_variables += [model.vOutage_P2H, model.availabeBESS]
+    first_stage_variables += [model.DieselStorageTankInvest]
+    second_stage_variables += [model.vOutage_P2H, model.availabeBESS, model.availableBackupGen]
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
+    print(first_stage_variables)
+    print((second_stage_variables))
     return first_stage_variables, second_stage_variables
 
 
@@ -189,8 +197,16 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
 
 
+    def eBackupGen_investment(m, rp, k, tau):
+        return m.availableBackupGen[rp, k, tau] <= sum(m.vGenInvest[thermal] * m.pMaxProd[thermal] for thermal in thermal_set) * (tau)
+    model.eBackupGen_investment = pyo.Constraint(model.rp, model.k, model.tau, rule=eBackupGen_investment, doc="Available backup generator capacity during outage limited by investment decisions")
 
-    first_stage_objective = 0
+    def eBackupGen_fuel_storage(m, rp, k, tau):
+        return m.availableBackupGen[rp, k, tau] <= sum((m.DieselStorageTankInvest[tank] for tank in m.tanks))
+    model.eBackupGen_fuel_storage = pyo.Constraint(model.rp, model.k, model.tau, rule=eBackupGen_fuel_storage, doc="Available backup generator capacity during outage limited by fuel storage capacity")
+
+
+    first_stage_objective = sum(model.DieselStorageTankInvest[tank] * model.DiselStorageTankCost for tank in model.tanks)
     second_stage_objective = 0
 
     # Adjust objective and return first_stage_objective expression
