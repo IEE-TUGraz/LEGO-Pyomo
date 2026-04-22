@@ -30,7 +30,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     # Sets
     # a set over the grid outage time steps
     model.tau = pyo.Set(initialize=range(1, cs.dGlobal_Parameters['pTOutage'] + 1), doc="Time steps during power outage", ordered=True)
-    model.tanks = pyo.Set(initialize='Tank1')
+    model.tanks = pyo.Set(initialize=["T1"])
 
 
 
@@ -167,8 +167,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                 sum(m.pCapacityFactors[rp, kp, pv] * m.vGenP[rp, kp, pv]
                     for kp in set_t for pv in pvset)
                 + m.availabeBESS[rp,k,tau]
-                + sum(m.pMaxProd[thermal] * m.vGenInvest[thermal] * tau
-                      for thermal in thermal_set)
+                + m.availableBackupGen[rp,k,tau]
         )
 
         return lhs <= rhs
