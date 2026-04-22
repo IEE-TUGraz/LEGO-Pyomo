@@ -82,6 +82,8 @@ def _load_metadata_from_conn(conn, basename):
         'run_type': None,
         'work_units': None,
         'solver_time': None,
+        'solver_status': None,
+        'termination_condition': None,
     }
     has_run_parameters = False
     try:
@@ -126,6 +128,10 @@ def _load_metadata_from_conn(conn, basename):
                 meta['work_units'] = float(row['work_units'])
             if 'solver_time' in row and row['solver_time'] is not None:
                 meta['solver_time'] = float(row['solver_time'])
+            if 'solver_status' in row and row['solver_status'] is not None:
+                meta['solver_status'] = str(row['solver_status'])
+            if 'termination_condition' in row and row['termination_condition'] is not None:
+                meta['termination_condition'] = str(row['termination_condition'])
     except Exception:
         pass
     if not has_run_parameters:
@@ -293,7 +299,8 @@ def print_comparison_table(group_entries):
                 entry[f"{key} %"] = None
 
     columns = ["Case", "Objective", "Objective %",
-               "Work Units", "vGenP", "vCommit", "vStartup", "vStartup %",
+               "Work Units", "Status", "Term. Cond.",
+               "vGenP", "vCommit", "vStartup", "vStartup %",
                "vShutdown", "vShutdown %", "vPNS", "vEPS"]
 
     has_regret = any(e.get("Regret Obj.") is not None for e in group_entries)
@@ -647,6 +654,8 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
                     **results,
                     'Case': meta.get('edge_handling') or basename,
                     'Work Units': meta.get('work_units'),
+                    'Status': meta.get('solver_status'),
+                    'Term. Cond.': meta.get('termination_condition'),
                 }
                 entries.append(entry)
 

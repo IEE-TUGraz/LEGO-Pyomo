@@ -108,6 +108,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          enable_strict_markov: bool = False, invest_regret: bool = False,
                          no_investment: bool = False, rmip: bool = False, no_crossover: bool = False,
                          force_barrier: bool = False, mip_gap: float | None = None,
+                         work_limit: float | None = None,
                          limitK: str | None = None, clusters: int = 1,
                          shift: int = 0, stretch_demand: float = 1.0,
                          no_overwrite: bool = False, network: str | None = None,
@@ -136,6 +137,10 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
     if mip_gap is not None:
         printer.information(f"Setting MIP gap to {mip_gap}")
         cs.dGlobal_Parameters["pMIPGap"] = mip_gap
+
+    if work_limit is not None:
+        printer.information(f"Setting work limit to {work_limit}")
+        cs.dGlobal_Parameters["pWorkLimit"] = work_limit
 
     if network is not None:
         printer.information(f"Setting all lines to network representation '{network}'")
@@ -250,6 +255,8 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         identifier_parts.append("forceBarrier")
     if mip_gap is not None:
         identifier_parts.append(f"mipGap{mip_gap:g}")
+    if work_limit is not None:
+        identifier_parts.append(f"workLimit{work_limit:g}")
     if network is not None:
         identifier_parts.append(f"network{network}")
     if commit_consumption != 1.0:
@@ -270,6 +277,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         no_crossover=no_crossover if no_crossover else None,
         force_barrier=force_barrier if force_barrier else None,
         mip_gap=mip_gap,
+        work_limit=work_limit,
         network=network,
         commit_consumption=commit_consumption if commit_consumption != 1.0 else None,
         startup_consumption=startup_consumption if startup_consumption != 1.0 else None,
@@ -315,6 +323,10 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
             if mip_gap_value is not None:
                 printer.information(f"Setting MIP gap to {mip_gap_value}")
                 optimizer.options['MIPGap'] = mip_gap_value
+            work_limit_value = getattr(model, 'pWorkLimit', None)
+            if work_limit_value is not None:
+                printer.information(f"Setting work limit to {work_limit_value}")
+                optimizer.options['WorkLimit'] = work_limit_value
             start_time = time.time()
             result = optimizer.solve(tee=True)
             objective_value = pyo.value(model.objective) if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1
@@ -447,8 +459,8 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
          limitK: str | None = None, shift: int = 0, stretch_demand: float = 1,
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, invest_regret: bool = False,
          no_investment: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False,
-         force_barrier: bool = False, mip_gap: float | None = None, network: str | None = None,
-         commit_consumption: float = 1.0, startup_consumption: float = 1.0):
+         force_barrier: bool = False, mip_gap: float | None = None, work_limit: float | None = None,
+         network: str | None = None, commit_consumption: float = 1.0, startup_consumption: float = 1.0):
     ew = ExcelWriter()
 
     if no_crossover != force_barrier:
@@ -547,7 +559,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
 
                 printer.information(f"Loading case study from '{cluster_folder}'")
 
-                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, no_crossover, force_barrier, mip_gap, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, no_overwrite=no_overwrite, network=network, commit_consumption=commit_consumption, startup_consumption=startup_consumption)
+                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, no_crossover, force_barrier, mip_gap, work_limit, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, no_overwrite=no_overwrite, network=network, commit_consumption=commit_consumption, startup_consumption=startup_consumption)
         except Exception as e:
             printer.error(f"Exception while executing case study '{folder}': {e}")
             if debug:
@@ -582,6 +594,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-crossover", action="store_true", help="Disable Gurobi crossover for all solves (faster LP solving, but solution may not be a vertex)")
     parser.add_argument("--force-barrier", action="store_true", help="Force Gurobi to use barrier method")
     parser.add_argument("--mip-gap", type=float, default=None, help="Set the MIP gap tolerance for the solver (e.g., 0.01 for 1%%; default: solver default)")
+    parser.add_argument("--work-limit", type=float, default=None, help="Set the Gurobi WorkLimit (in work units) to stop after a given amount of work regardless of solution quality (default: no limit)")
     parser.add_argument("--network", type=str, default=None, choices=["DC-OPF", "TP", "SN"], help="Override network representation for all lines uniformly: DC-OPF, TP, or SN (default: no change, use values from data)")
     parser.add_argument("--commit-consumption", type=float, default=1.0, help="Multiplier for the CommitConsumption column of Power_ThermalGen (default: 1.0, no change)")
     parser.add_argument("--startup-consumption", type=float, default=1.0, help="Multiplier for the StartupConsumption column of Power_ThermalGen (default: 1.0, no change)")
