@@ -53,12 +53,16 @@ def main(case_study_directory, model_type):
         # --- outage conditions (K) ---
         "Building_MaxTempOutage": K(30),  # upper safety limit
         "Building_MinTempOutage": K(10),  # lower safety limit
+        "T_grid_outage": 0,  # hours of grid outage
 
         # --- costs ---
         "DiselStorageTankCost": 200,  # k€/MWh(includinc conversion allready)
     }
 
     cs = CaseStudy(case_study_directory, dCustom_Parameters=myCustomParameters)
+
+    # change the value of T_bo in dGlobalParameter
+    cs.dGlobal_Parameters['pTOutage'] = cs.dCustom_Parameters['T_grid_outage']
 
     lego = LEGO(cs)
     printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
