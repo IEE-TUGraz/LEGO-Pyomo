@@ -84,6 +84,7 @@ def _load_metadata_from_conn(conn, basename):
         'solver_time': None,
         'solver_status': None,
         'termination_condition': None,
+        'achieved_mip_gap': None,
     }
     has_run_parameters = False
     try:
@@ -132,6 +133,10 @@ def _load_metadata_from_conn(conn, basename):
                 meta['solver_status'] = str(row['solver_status'])
             if 'termination_condition' in row and row['termination_condition'] is not None:
                 meta['termination_condition'] = str(row['termination_condition'])
+            lb = row.get('lower_bound')
+            ub = row.get('upper_bound')
+            if lb is not None and ub is not None and ub != 0:
+                meta['achieved_mip_gap'] = abs(float(ub) - float(lb)) / abs(float(ub))
     except Exception:
         pass
     if not has_run_parameters:
@@ -299,7 +304,7 @@ def print_comparison_table(group_entries):
                 entry[f"{key} %"] = None
 
     columns = ["Case", "Objective", "Objective %",
-               "Work Units", "Status", "Term. Cond.",
+               "Work Units", "Status", "Term. Cond.", "MIP-Gap",
                "vGenP", "vCommit", "vStartup", "vStartup %",
                "vShutdown", "vShutdown %", "vPNS", "vEPS"]
 
@@ -360,6 +365,7 @@ def print_comparison_table(group_entries):
 def _print_table(columns, group_entries, display_names=None):
     """Print a formatted table with given columns and entries."""
     table = []
+    highlights = []  # parallel to table: True = print cell in red
     for col in columns:
         if display_names and col in display_names:
             header = display_names[col]
@@ -368,12 +374,15 @@ def _print_table(columns, group_entries, display_names=None):
         else:
             header = col
         column_data = [header]
+        highlight_data = [False]
         for entry in group_entries:
             value = entry.get(col, "")
             if value is None:
                 value = ""
             elif col.endswith(" %"):
                 value = f"{value:+.0f}%"
+            elif col == "MIP-Gap":
+                value = f"{value * 100:.4f}%"
             elif isinstance(value, float):
                 value = f"{value:.2f}"
             elif isinstance(value, int):
@@ -381,13 +390,40 @@ def _print_table(columns, group_entries, display_names=None):
             else:
                 value = f"{value}"
             column_data.append(value)
+
+            red = False
+            if col in ("Status", "Term. Cond."):
+                status = entry.get('solver_status')
+                if status is not None and status != 'ok':
+                    red = True
+            elif col == "MIP-Gap":
+                gap = entry.get('achieved_mip_gap')
+                if gap is not None:
+                    run_gap = entry.get('mip_gap')
+                    threshold = run_gap if run_gap is not None else 0.0001
+                    if gap > threshold:
+                        red = True
+            highlight_data.append(red)
+
         table.append(column_data)
+        highlights.append(highlight_data)
+
+    col_widths = [max(len(table[j][i]) for i in range(len(table[j]))) for j in range(len(table))]
 
     for i in range(len(table[0])):
-        printer.information(" | ".join(
-            f"{table[j][i]:{'>' if i != 0 else ''}{max(len(table[j][i2]) for i2 in range(len(table[j])))}}"
-            for j in range(len(table))
-        ))
+        parts = []
+        has_red = False
+        for j in range(len(table)):
+            cell = f"{table[j][i]:{'>' if i != 0 else ''}{col_widths[j]}}"
+            if highlights[j][i]:
+                cell = f"[red]{cell}[/red]"
+                has_red = True
+            parts.append(cell)
+        line = " | ".join(parts)
+        if has_red:
+            printer.console.print(line)
+        else:
+            printer.information(line)
 
 
 def plot_unit_commitment(sqlite_files, case_labels, case_study_folder=None, number_of_hours=24 * 7, start_hour=1, no_show=False):
@@ -656,6 +692,7 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
                     'Work Units': meta.get('work_units'),
                     'Status': meta.get('solver_status'),
                     'Term. Cond.': meta.get('termination_condition'),
+                    'MIP-Gap': meta.get('achieved_mip_gap'),
                 }
                 entries.append(entry)
 
