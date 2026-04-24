@@ -15,6 +15,7 @@ import typing
 import pandas as pd
 
 import pyomo.environ as pyo
+from pyomo.opt import SolutionStatus, SolverStatus
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
@@ -328,8 +329,15 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                 printer.information(f"Setting work limit to {work_limit_value}")
                 optimizer.options['WorkLimit'] = work_limit_value
             start_time = time.time()
-            result = optimizer.solve(tee=True)
-            objective_value = pyo.value(model.objective) if result.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+            result = optimizer.solve(tee=True, load_solutions=False)
+            has_solution = optimizer._solver_model.SolCount > 0
+            if has_solution:
+                if result.solver.status == SolverStatus.error:
+                    result.solver.status = SolverStatus.warning
+                    if len(result.solution) > 0:
+                        result.solution[0].status = SolutionStatus.feasible
+                model.solutions.load_from(result)
+            objective_value = pyo.value(model.objective) if has_solution else -1
             timing_solving = time.time() - start_time
             lego.results = result
             lego.work_units = optimizer._solver_model.Work
@@ -343,7 +351,8 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                 lego.mip_gap = None
 
             edge_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', '')}
-            write_results(lego, file_prefix, no_sqlite, **edge_params)
+            if has_solution:
+                write_results(lego, file_prefix, no_sqlite, **edge_params)
 
             match result.solver.termination_condition:
                 case pyo.TerminationCondition.optimal:
