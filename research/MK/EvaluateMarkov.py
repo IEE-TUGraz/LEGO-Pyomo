@@ -282,24 +282,27 @@ def print_comparison_table(group_entries):
     # Sort by edge handling type
     group_entries.sort(key=lambda e: EDGE_HANDLING_SORT.get(e['edge_handling'] or '', 99))
 
-    # Find truth entry for relative calculations
+    # Find truth entry for relative calculations; fall back to Markov if absent
     truth_entry = next((e for e in group_entries if e['edge_handling'] == 'Truth'), None)
+    markov_entry = next((e for e in group_entries if e['edge_handling'] == 'Markov'), None)
+    ref_entry = truth_entry if truth_entry is not None else markov_entry
+    using_markov_ref = truth_entry is None and markov_entry is not None
 
     # Compute relative change columns
-    truth_obj = truth_entry.get('Objective') if truth_entry else None
+    ref_obj = ref_entry.get('Objective') if ref_entry else None
     for entry in group_entries:
         for key in ["Objective", "vStartup", "vShutdown"]:
             val = entry.get(key)
-            if truth_entry is not None and truth_entry.get(key) not in (-1, 0, None) and val not in (-1, None):
-                entry[f"{key} %"] = (val - truth_entry[key]) / abs(truth_entry[key]) * 100
+            if ref_entry is not None and ref_entry.get(key) not in (-1, 0, None) and val not in (-1, None):
+                entry[f"{key} %"] = (val - ref_entry[key]) / abs(ref_entry[key]) * 100
             else:
                 entry[f"{key} %"] = None
 
-        # Regret/invest-regret: show difference vs truth objective
+        # Regret/invest-regret: show difference vs reference objective
         for key in ["Regret Obj.", "Invest-Regret Obj."]:
             val = entry.get(key)
-            if val is not None and truth_obj not in (-1, 0, None):
-                entry[f"{key} %"] = (val - truth_obj) / abs(truth_obj) * 100
+            if val is not None and ref_obj not in (-1, 0, None):
+                entry[f"{key} %"] = (val - ref_obj) / abs(ref_obj) * 100
             else:
                 entry[f"{key} %"] = None
 
@@ -315,19 +318,21 @@ def print_comparison_table(group_entries):
     if has_invest_regret:
         columns.extend(["Invest-Regret Obj.", "Invest-Regret Obj. %"])
 
-    _print_table(columns, group_entries)
+    _print_table(columns, group_entries, highlight_pct_yellow=using_markov_ref)
+    if using_markov_ref:
+        printer.console.print("[yellow]  Differences compared to Markov result[/yellow]")
 
-    # Compute investment/capacity % vs Truth
+    # Compute investment/capacity % vs reference
     tec_columns = sorted(set(k for e in group_entries for k in e if k.startswith("vGenInvest[")))
     cap_tec_columns = sorted(set(k for e in group_entries for k in e if k.startswith("vCapInvest[")))
     invest_pct_keys = ["vGenInvest"] + tec_columns
     cap_pct_keys = ["vCapInvest"] + cap_tec_columns
     for entry in group_entries:
         for key in invest_pct_keys + cap_pct_keys:
-            truth_val = truth_entry.get(key) if truth_entry else None
+            ref_val = ref_entry.get(key) if ref_entry else None
             val = entry.get(key)
-            if truth_val not in (None, 0) and val is not None:
-                entry[f"{key} %"] = (val - truth_val) / abs(truth_val) * 100
+            if ref_val not in (None, 0) and val is not None:
+                entry[f"{key} %"] = (val - ref_val) / abs(ref_val) * 100
             else:
                 entry[f"{key} %"] = None
 
@@ -344,7 +349,9 @@ def print_comparison_table(group_entries):
             invest_columns.append(f"{tec} %")
         printer.information("")
         printer.information("  vGenInvest")
-        _print_table(invest_columns, group_entries, invest_display)
+        _print_table(invest_columns, group_entries, invest_display, highlight_pct_yellow=using_markov_ref)
+        if using_markov_ref:
+            printer.console.print("[yellow]  Differences compared to Markov result[/yellow]")
 
     # Print capacity investment table (vGenInvest * pMaxProd) with % columns
     has_cap = any(e.get("vCapInvest") not in (None, "") for e in group_entries)
@@ -359,13 +366,15 @@ def print_comparison_table(group_entries):
             cap_columns.append(f"{tec} %")
         printer.information("")
         printer.information("  vCapInvest  (vGenInvest * pMaxProd — invested capacity)")
-        _print_table(cap_columns, group_entries, cap_display)
+        _print_table(cap_columns, group_entries, cap_display, highlight_pct_yellow=using_markov_ref)
+        if using_markov_ref:
+            printer.console.print("[yellow]  Differences compared to Markov result[/yellow]")
 
 
-def _print_table(columns, group_entries, display_names=None):
+def _print_table(columns, group_entries, display_names=None, highlight_pct_yellow=False):
     """Print a formatted table with given columns and entries."""
     table = []
-    highlights = []  # parallel to table: True = print cell in red
+    highlights = []  # parallel to table: None, 'red', or 'yellow'
     for col in columns:
         if display_names and col in display_names:
             header = display_names[col]
@@ -374,7 +383,7 @@ def _print_table(columns, group_entries, display_names=None):
         else:
             header = col
         column_data = [header]
-        highlight_data = [False]
+        highlight_data = [None]
         for entry in group_entries:
             value = entry.get(col, "")
             if value is None:
@@ -391,19 +400,21 @@ def _print_table(columns, group_entries, display_names=None):
                 value = f"{value}"
             column_data.append(value)
 
-            red = False
+            color = None
             if col in ("Status", "Term. Cond."):
                 status = entry.get('solver_status')
                 if status is not None and status != 'ok':
-                    red = True
+                    color = 'red'
             elif col == "MIP-Gap":
                 gap = entry.get('achieved_mip_gap')
                 if gap is not None:
                     run_gap = entry.get('mip_gap')
                     threshold = run_gap if run_gap is not None else 0.0001
                     if gap > threshold:
-                        red = True
-            highlight_data.append(red)
+                        color = 'red'
+            elif col.endswith(" %") and highlight_pct_yellow:
+                color = 'yellow'
+            highlight_data.append(color)
 
         table.append(column_data)
         highlights.append(highlight_data)
@@ -412,15 +423,16 @@ def _print_table(columns, group_entries, display_names=None):
 
     for i in range(len(table[0])):
         parts = []
-        has_red = False
+        needs_console = False
         for j in range(len(table)):
             cell = f"{table[j][i]:{'>' if i != 0 else ''}{col_widths[j]}}"
-            if highlights[j][i]:
-                cell = f"[red]{cell}[/red]"
-                has_red = True
+            color = highlights[j][i]
+            if color:
+                cell = f"[{color}]{cell}[/{color}]"
+                needs_console = True
             parts.append(cell)
         line = " | ".join(parts)
-        if has_red:
+        if needs_console:
             printer.console.print(line)
         else:
             printer.information(line)
