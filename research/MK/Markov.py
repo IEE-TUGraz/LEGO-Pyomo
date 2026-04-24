@@ -134,6 +134,17 @@ _SIBLING_COMPARE_KEYS = [
 ]
 
 
+def _params_equal(a, b) -> bool:
+    """Compare two run parameter values, tolerating int/float storage differences (e.g. 7 vs 7.0)."""
+    sa, sb = str(a), str(b)
+    if sa == sb:
+        return True
+    try:
+        return float(sa) == float(sb)
+    except (ValueError, TypeError):
+        return False
+
+
 def _find_sibling_runs(file_prefix: str, current_edge_params: dict) -> list[dict]:
     """Find existing SQLite files matching all run parameters except work_limit."""
     dir_path = os.path.dirname(os.path.abspath(file_prefix)) or '.'
@@ -151,7 +162,7 @@ def _find_sibling_runs(file_prefix: str, current_edge_params: dict) -> list[dict
             continue
         params = info['params']
         match = all(
-            str(current_edge_params.get(key)) == str(params.get(key, 'None'))
+            _params_equal(current_edge_params.get(key), params.get(key, 'None'))
             for key in _SIBLING_COMPARE_KEYS
         )
         if not match:
