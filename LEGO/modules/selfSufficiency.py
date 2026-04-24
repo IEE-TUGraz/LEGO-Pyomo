@@ -77,7 +77,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
         set_t = set_range_non_cyclic(m.k, k_ord + 1, k_ord + tau)
 
-        lhs = sum(m.pDemandP[rp, kp, i] for kp in set_t)
+        lhs_demand = sum(m.pHeatDemandPerTechnology[rp, kp, hn, dt, htec] for kp in set_t for hn in m.hn for dt in m.dt for htec in m.htec)
 
         # hn, dt, htec already bound from constraint index — no inner loop
         rhs_p2h = sum(
@@ -86,7 +86,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         )
         rhs_buffer = m.vHeatStorageLevel[rp, k, hn, dt, htec] - (m.Building_ThermalMass[hn] * m.Building_MinTempOutage)
 
-        return lhs <= rhs_p2h + rhs_buffer
+        return lhs_demand <= rhs_p2h + rhs_buffer
 
     def eHeatSelfSufficiency_UB(m, rp, k, i, tau, hn, dt, htec):
         k_ord = m.k.ord(k)
@@ -100,7 +100,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             m.vOutage_P2H[rp, i, k, tau, kp] * m.pP2HConversionEfficiency[rp, kp, hn, dt, htec]
             for kp in set_t
         )
-        lhs_demand = sum(m.pDemandP[rp, kp, i] for kp in set_t)
+        lhs_demand = sum(m.pHeatDemandPerTechnology[rp, kp, hn, dt, htec] for kp in set_t for hn in m.hn for dt in m.dt for htec in m.htec)
 
         # RHS: storage level + max thermal headroom
         rhs_buffer = m.vHeatStorageLevel[rp, k, hn, dt, htec] + (m.Building_ThermalMass[hn] * m.Building_MaxTempOutage)
@@ -189,7 +189,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
         set_t = set_range_non_cyclic(m.k, k_ord + 1, k_ord + tau)
 
-        return m.availabeBESS[rp, k, tau] <= sum(m.vStIntraRes[rp, kp, storage] for kp in set_t for storage in storage_set)
+        return m.availabeBESS[rp, k, tau] <= sum(m.vStIntraRes[rp, k, storage] for storage in storage_set)
     model.eOutageBESSAvailability_level = pyo.Constraint(model.rp, model.k, model.tau, rule=eOutageBESSAvailability_level, doc="Available BESS during outage limited by storage levels")
 
 
