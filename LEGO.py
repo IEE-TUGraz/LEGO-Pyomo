@@ -2,6 +2,8 @@ import argparse
 import logging
 import os
 import time
+from pathlib import Path
+import shutil
 
 import pandas as pd
 import pyomo.environ as pyo
@@ -28,8 +30,13 @@ def directory_path(string):
     else:
         raise argparse.ArgumentTypeError(f"Directory path not valid: '{string}'")
 
+def ensure_dir(path):
+    """Create directory if it doesn't exist, return Path object."""
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
-def main(case_study_directory, model_type):
+def main(case_study_directory, model_type, scenario_params, output_dir):
     # Load case study
     printer.information(f"Loading case study from '{case_study_directory}'")
     start_time = time.time()
@@ -38,11 +45,11 @@ def main(case_study_directory, model_type):
         return 273.15 + celsius
 
     myCustomParameters = {
-        "Building_ThermalMass": 1.6,  # kWh/K (example order of magnitude)
+        "Building_ThermalMass": 1.6,  # MWh/K (example order of magnitude)
 
         # --- normal operation temperatures (K) ---
         "Building_MinTemp": K(20),  # 20 °C
-        "Building_MaxTemp": K(24),  # 24 °C
+        "Building_MaxTemp": K(22),  # 24 °C
         "Building_SetTemp": K(21),  # 21 °C
 
         # --- comfort penalties ---
@@ -51,9 +58,9 @@ def main(case_study_directory, model_type):
         "PenaltyFreeTemperatureDeviation": 0.5,  # ±0.5 K deadband
 
         # --- outage conditions (K) ---
-        "Building_MaxTempOutage": K(30),  # upper safety limit
-        "Building_MinTempOutage": K(10),  # lower safety limit
-        "T_grid_outage": 0,  # hours of grid outage
+        "Building_MaxTempOutage": K(scenario_params['Building_MaxTempOutage']),  # upper safety limit
+        "Building_MinTempOutage": K(scenario_params['Building_MinTempOutage']),  # lower safety limit
+        "T_grid_outage": scenario_params['T_outage'],  # hours of grid outage
 
         # --- costs ---
         "DiselStorageTankCost": 200,  # k€/MWh(includinc conversion allready)
@@ -101,18 +108,77 @@ def main(case_study_directory, model_type):
         case _:
             printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
 
-    SQLiteWriter.model_to_sqlite(model, "model.sqlite")
-    ExcelWriter.model_to_excel(model, "model.xlsx")
-    model.write("model.mps", io_options={'labeler': NameLabeler()})
+    SQLiteWriter.model_to_sqlite(model, str(output_dir / "model.sqlite"))
+    #ExcelWriter.model_to_excel(model, str(output_dir / "model.xlsx"))
+    #model.write(str(output_dir / "model.mps"), io_options={'labeler': NameLabeler()})
+
+    #with open(output_dir / "model_structure.txt", "w") as f:
+    #    model.pprint(ostream=f)
+
+    printer.success(f"Scenario results written to '{output_dir}'")
 
     with open("model_structure.txt", "w") as f:
         model.pprint(ostream=f)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Starts LEGO for given case study", formatter_class=RichHelpFormatter)
-    parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to folder containing data for LEGO model")
-    parser.add_argument("modelType", default=ModelType.DETERMINISTIC, type=lambda s: ModelType[s], choices=list(ModelType), nargs="?", help="ModelType of first model")
+    parser = argparse.ArgumentParser(
+        description="Runs LEGO for every scenario in an Excel sheet",
+        formatter_class=RichHelpFormatter,
+    )
+    parser.add_argument("caseStudyDirectory", type=directory_path,
+                        help="Path to folder containing data for LEGO model")
+    parser.add_argument("scenarioFile", type=str,
+                        help="Path to Scenario_Input.xlsx")
+    parser.add_argument("modelType", default=ModelType.DETERMINISTIC,
+                        type=lambda s: ModelType[s], choices=list(ModelType),
+                        nargs="?", help="ModelType of the model")
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory, args.modelType)
+    # Hardcoded scenario file path (raw string → backslashes are safe)
+    scenario_file = Path(r"C:\Users\Simon Malacek\Nextcloud\A_PhD-IEE\2026-04_ResearchStay_SelfSufficiency\data\first_run\Scenario_Input.xlsx")
+
+    if not scenario_file.is_file():
+        raise FileNotFoundError(f"Scenario file not found: {scenario_file}")
+
+    # Output root = "results" folder next to the scenario file
+    output_root = ensure_dir(scenario_file.parent / "results")
+    printer.information(f"Results will be written to '{output_root}'")
+
+    # Load scenarios
+    printer.information(f"Loading scenarios from '{scenario_file}'")
+    df_scenarios = pd.read_excel(scenario_file, skiprows=[1])
+    printer.information(f"Found {len(df_scenarios)} scenario(s)")
+
+
+    # Run each scenario
+    for idx, row in df_scenarios.iterrows():
+        scenario_name = (
+            str(row["ScenarioName"])
+            if "ScenarioName" in df_scenarios.columns
+            else f"scenario_{idx:03d}"
+        )
+        printer.information(f"\n===== Running scenario {idx + 1}/{len(df_scenarios)}: {scenario_name} =====")
+
+        # Build param dict from the row, skip the name column and any NaNs
+        scenario_params = {
+            col: row[col]
+            for col in df_scenarios.columns
+            if col != "ScenarioName" and pd.notna(row[col])
+        }
+
+        scenario_output_dir = output_root / scenario_name
+
+        try:
+            main(
+                case_study_directory=args.caseStudyDirectory,
+                model_type=args.modelType,
+                scenario_params=scenario_params,
+                output_dir=scenario_output_dir,
+            )
+        except Exception as e:
+            printer.error(f"Scenario '{scenario_name}' failed: {e}")
+            # Continue with the next scenario instead of aborting the whole batch
+            continue
+
+    printer.success(f"\nAll scenarios finished. Results in '{output_root}'")
