@@ -15,8 +15,9 @@ import typing
 
 import pandas as pd
 
+import gurobipy
 import pyomo.environ as pyo
-from pyomo.opt import SolutionStatus, SolverStatus
+from pyomo.opt import SolutionStatus, SolverResults, SolverStatus
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
@@ -44,8 +45,7 @@ def write_results(lego, file_prefix: str, no_sqlite: bool, **run_parameters):
         sqlite_file = f"{file_prefix}.sqlite"
         printer.information(f"Writing model to SQLite database: {sqlite_file}")
         SQLiteWriter.model_to_sqlite(lego.model, sqlite_file)
-        if lego.results is not None:
-            SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_file, lego)
+        SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_file, lego)
         if run_parameters:
             SQLiteWriter.add_run_parameters_to_sqlite(sqlite_file, **run_parameters)
         printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
@@ -152,8 +152,8 @@ def _find_sibling_runs(file_prefix: str, current_edge_params: dict) -> list[dict
     candidates = [
         f for f in glob.glob(os.path.join(dir_path, 'MK-*.sqlite'))
         if not f.endswith('-regret.sqlite')
-        and not f.endswith('-invest-regret.sqlite')
-        and os.path.abspath(f) != exact_file
+           and not f.endswith('-invest-regret.sqlite')
+           and os.path.abspath(f) != exact_file
     ]
     siblings = []
     for candidate in candidates:
@@ -458,17 +458,41 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                 printer.information(f"Setting work limit to {work_limit_value}")
                 optimizer.options['WorkLimit'] = work_limit_value
             start_time = time.time()
-            result = optimizer.solve(tee=True, load_solutions=False)
+            solve_exception = None
+            try:
+                result = optimizer.solve(tee=True, load_solutions=False)
+            except Exception as e:
+                solve_exception = e
+                result = None
+                printer.warning(f"Solver raised exception: {e}")
             has_solution = optimizer._solver_model.SolCount > 0
             if has_solution:
-                if result.solver.status == SolverStatus.error:
-                    result.solver.status = SolverStatus.warning
-                    if len(result.solution) > 0:
-                        result.solution[0].status = SolutionStatus.feasible
-                model.solutions.load_from(result)
+                if result is not None:
+                    if result.solver.status == SolverStatus.error:
+                        result.solver.status = SolverStatus.warning
+                        if optimizer._solver_model.Status == gurobipy.GRB.WORK_LIMIT:
+                            result.solver.termination_condition = "WorkLimit reached"
+                        if len(result.solution) > 0:
+                            result.solution[0].status = SolutionStatus.feasible
+                    model.solutions.load_from(result)
+                else:
+                    # solve() threw (e.g. OOM) but solutions were found — load directly from Gurobi
+                    try:
+                        optimizer.load_vars()
+                        printer.information("Loaded partial solution after solver exception")
+                    except Exception as load_e:
+                        printer.warning(f"Could not load solution after solver exception: {load_e}")
+                        has_solution = False
             objective_value = pyo.value(model.objective) if has_solution else -1
             timing_solving = time.time() - start_time
-            lego.results = result
+            if result is not None:
+                lego.results = result
+            elif solve_exception is not None:
+                exc_result = SolverResults()
+                exc_result.solver.status = SolverStatus.error
+                if isinstance(solve_exception, gurobipy.GurobiError) and solve_exception.errno == gurobipy.GRB.Error.OUT_OF_MEMORY:
+                    exc_result.solver.termination_condition = "Out of Memory"
+                lego.results = exc_result
             lego.work_units = optimizer._solver_model.Work
             printer.information(f"Solving model took {timing_solving:.2f} seconds ({lego.work_units:.2f} work units)")
             try:
@@ -483,14 +507,17 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
             if has_solution:
                 write_results(lego, file_prefix, no_sqlite, **edge_params)
 
-            match result.solver.termination_condition:
-                case pyo.TerminationCondition.optimal:
-                    printer.success("Optimal solution found")
-                case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
-                    printer.error(f"Model is {result.solver.termination_condition}, logging infeasible constraints:")
-                    log_infeasible_constraints(model)
-                case _:
-                    printer.warning("Solver terminated with condition:", result.solver.termination_condition)
+            if result is not None:
+                match result.solver.termination_condition:
+                    case pyo.TerminationCondition.optimal:
+                        printer.success("Optimal solution found")
+                    case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
+                        printer.error(f"Model is {result.solver.termination_condition}, logging infeasible constraints:")
+                        log_infeasible_constraints(model)
+                    case _:
+                        printer.warning("Solver terminated with condition:", result.solver.termination_condition)
+            elif solve_exception is not None:
+                printer.error(f"Solver terminated with exception: {solve_exception}")
 
         if not no_sqlite:
             sqlite_files.append(f"{file_prefix}.sqlite")

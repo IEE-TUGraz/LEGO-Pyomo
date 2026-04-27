@@ -9,6 +9,10 @@ See [`README.md`](README.md) for usage, key concepts, and CLI parameter referenc
 
 **`--no-crossover` and `--force-barrier` are coupled**: `main()` raises if exactly one is set. This is intentional — disabling crossover without barrier produces an interior-point solution that is not a vertex; the barrier flag is the companion that makes this meaningful.
 
+**OOM recovery**: If `optimizer.solve()` throws, the solve block catches the exception, checks `SolCount`, and calls `optimizer.load_vars()` to recover any solution found before the crash. The solution is then saved normally. A synthetic `SolverResults` is assigned to `lego.results` with `status=error`; `termination_condition` is set to `"Out of Memory"` only if the exception is a `gurobipy.GurobiError` with `errno == GRB.Error.OUT_OF_MEMORY` — left unset for other exception types. `add_solver_statistics_to_sqlite` is always called (not guarded by `lego.results is not None`), so `work_units` and `mip_gap` are stored in all cases; `solver_time` will be absent for the synthetic result.
+
+**WorkLimit termination condition**: When `result.solver.status == SolverStatus.error` and a solution exists (work-limit hit), `termination_condition` is patched to `"WorkLimit reached"` only if `optimizer._solver_model.Status == gurobipy.GRB.WORK_LIMIT` — confirmed from Gurobi, not inferred from whether `--work-limit` was passed.
+
 **`edge_handling` value in run_parameters**: The stored string is the model dict key after `.strip().replace('.', '').replace(' ', '')` — e.g. `"NoEnf"`, `"Cyclic"`, `"Markov"`, `"MarkovStrict"`. Use this normalized form when filtering or grouping SQLite results.
 
 **Evaluation grouping**: `EvaluateMarkov.py` groups results by `(case_study_directory, limit_k, clusters, shift, stretch_demand, relax_count, no_investment, rmip, no_crossover, force_barrier, mip_gap, network)`. A new run parameter that should split comparison groups must be added to this grouping — and to `load_file_metadata` so it is read from SQLite. When implementing a new run parameter, proactively ask the user whether and how it should be added to `EvaluateMarkov.py` before closing the task.
