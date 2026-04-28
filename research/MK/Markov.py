@@ -129,7 +129,7 @@ def _read_sqlite_run_info(sqlite_file: str) -> dict | None:
 
 _SIBLING_COMPARE_KEYS = [
     'case_study_directory', 'limit_k', 'clusters', 'shift', 'stretch_demand',
-    'relax_count', 'no_investment', 'rmip', 'no_crossover', 'force_barrier',
+    'merge_generators', 'relax_count', 'no_investment', 'rmip', 'no_crossover', 'force_barrier',
     'mip_gap', 'network', 'commit_consumption', 'startup_consumption', 'edge_handling',
 ]
 
@@ -228,17 +228,22 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          force_barrier: bool = False, mip_gap: float | None = None,
                          work_limit: float | None = None,
                          limitK: str | None = None, clusters: int = 1,
-                         shift: int = 0, stretch_demand: float = 1.0,
+                         shift: int = 0, stretch_demand: float = 1.0, merge_generators: bool = False,
                          no_overwrite: bool = False, network: str | None = None,
-                         commit_consumption: float = 1.0, startup_consumption: float = 1.0) -> typing.Tuple[typing.List[str], typing.List[str]]:
+                         commit_consumption: float = 1.0, startup_consumption: float = 1.0,
+                         cs: CaseStudy | None = None,
+                         tee: bool = True) -> typing.Tuple[typing.List[str], typing.List[str], typing.Dict[str, LEGO]]:
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
 
-    # Load case study from Excels
-    start_time = time.time()
-    cs = CaseStudy(case_study_path, clip_method="none", clip_value=0)
-    printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
+    if cs is None:
+        # Load case study from Excels
+        start_time = time.time()
+        cs = CaseStudy(case_study_path, clip_method="none", clip_value=0)
+        printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
+    else:
+        printer.information(f"Using provided CaseStudy object (skipping Excel load)")
 
     if rmip:
         printer.information("Setting up case study as rMIP (relaxing all integer variables)")
@@ -381,6 +386,8 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         identifier_parts.append(f"commitConsumption{commit_consumption:g}")
     if startup_consumption != 1.0:
         identifier_parts.append(f"startupConsumption{startup_consumption:g}")
+    if merge_generators:
+        identifier_parts.append("mergeGenerators")
     identifier = "-".join(identifier_parts)
 
     run_params = dict(
@@ -389,6 +396,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         clusters=clusters if clusters > 1 else None,
         shift=shift if shift != 0 else None,
         stretch_demand=stretch_demand if stretch_demand != 1.0 else None,
+        merge_generators=merge_generators if merge_generators else None,
         relax_count=count_relaxed if count_relaxed > 0 else None,
         no_investment=no_investment if no_investment else None,
         rmip=rmip if rmip else None,
@@ -400,12 +408,12 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         commit_consumption=commit_consumption if commit_consumption != 1.0 else None,
         startup_consumption=startup_consumption if startup_consumption != 1.0 else None,
     )
-    sqlite_files, sqlite_labels = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite)
+    sqlite_files, sqlite_labels, lego_models = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite, tee=tee)
 
-    return sqlite_files, sqlite_labels
+    return sqlite_files, sqlite_labels, lego_models
 
 
-def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_sqlite: bool, calculate_regret: bool, skip_truth: bool, invest_regret: bool = False, run_params: dict = None, no_overwrite: bool = False) -> typing.Tuple[typing.List[str], typing.List[str]]:
+def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_sqlite: bool, calculate_regret: bool, skip_truth: bool, invest_regret: bool = False, run_params: dict = None, no_overwrite: bool = False, tee: bool = True) -> typing.Tuple[typing.List[str], typing.List[str], typing.Dict[str, LEGO]]:
     ########################################################################################################################
     # Evaluation
     ########################################################################################################################
@@ -460,7 +468,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
             start_time = time.time()
             solve_exception = None
             try:
-                result = optimizer.solve(tee=True, load_solutions=False)
+                result = optimizer.solve(tee=tee, load_solutions=False)
             except Exception as e:
                 solve_exception = e
                 result = None
@@ -608,7 +616,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                 except Exception as e:
                     printer.error(f"Invest-regret calculation failed for '{edgeHandlingType}': {e}")
 
-    return sqlite_files, sqlite_labels
+    return sqlite_files, sqlite_labels, lego_models
 
 
 def copy_files_non_recursive(src_folder: str, dst_folder: str):
@@ -625,7 +633,7 @@ def copy_files_non_recursive(src_folder: str, dst_folder: str):
 def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, calculate_regret: bool = False,
          relax_percentage: float = 0.0, skip_truth: bool = False,
          clusters: int = 1, cluster_stepsize: int = 1, cluster_steps: int = 0,
-         limitK: str | None = None, shift: int = 0, stretch_demand: float = 1,
+         limitK: str | None = None, shift: int = 0, stretch_demand: float = 1, merge_generators: bool = False,
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, invest_regret: bool = False,
          no_investment: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False,
          force_barrier: bool = False, mip_gap: float | None = None, work_limit: float | None = None,
@@ -712,6 +720,25 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                     ew.write_caseStudy(cs, folder)
                     printer.information(f"Wrote demand-stretched case study to '{folder}'")
 
+            if merge_generators:
+                printer.information(f"Merging generators of same technology at same bus")
+                new_folder = folder + f"mergeGenerators/"
+                if reuse_inputfiles and os.path.exists(new_folder):
+                    printer.information(f"Reusing already generator-merged case study in '{new_folder}'")
+                    folder = new_folder
+                else:
+                    copy_files_non_recursive(folder, new_folder)
+                    folder = new_folder
+                    printer.information(f"Copied original case study to '{folder}'")
+
+                    cs = CaseStudy(folder, do_not_scale_units=True)
+                    printer.information(f"Case study loaded, now merging generators")
+                    cs = cs.merge_generators()
+                    if not os.path.exists(folder):
+                        os.makedirs(folder)
+                    ew.write_caseStudy(cs, folder)
+                    printer.information(f"Wrote generator-merged case study to '{folder}'")
+
             clusters = list(range(clusters, clusters + cluster_steps * cluster_stepsize + 1, cluster_stepsize))
             for cluster in clusters:
                 cluster_folder = folder
@@ -728,7 +755,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
 
                 printer.information(f"Loading case study from '{cluster_folder}'")
 
-                sqlite_files, case_labels = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, no_crossover, force_barrier, mip_gap, work_limit, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, no_overwrite=no_overwrite, network=network, commit_consumption=commit_consumption, startup_consumption=startup_consumption)
+                sqlite_files, case_labels, _ = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, no_crossover, force_barrier, mip_gap, work_limit, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, merge_generators=merge_generators, no_overwrite=no_overwrite, network=network, commit_consumption=commit_consumption, startup_consumption=startup_consumption)
         except Exception as e:
             printer.error(f"Exception while executing case study '{folder}': {e}")
             if debug:
@@ -754,6 +781,7 @@ if __name__ == "__main__":
     parser.add_argument("--limitK", type=str, help="Limit the ks, format: 'k0025-k0048'", nargs="?", default=None)
     parser.add_argument("--shift", type=int, default=0, help="Shift the time series by N hours (for testing purposes), e.g., 15 to shift by 15 hours")
     parser.add_argument("--stretch-demand", type=float, default=1.0, help="Stretch the demand by a factor (for testing purposes), e.g., 1.1 to increase max of demand by 5% and decrease min by 5%")
+    parser.add_argument("--merge-generators", action="store_true", help="Merge generators of the same technology at the same bus into one representative generator before clustering and solving")
     parser.add_argument("--reuse-inputfiles", action="store_true", help="Reuse input files (e.g., after shortening) instead of copying them to a new folder")
     parser.add_argument("--enable-strict-markov", action="store_true", help="Also execute the strict Markov variant (with push constraints active)")
     parser.add_argument("--invest-regret", action="store_true", help="Calculate invest-regret: fix vGenInvest from each edge-handling model into the truth model and compare objectives")

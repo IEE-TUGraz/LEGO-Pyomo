@@ -78,6 +78,7 @@ def _load_metadata_from_conn(conn, basename):
         'network': None,
         'commit_consumption': None,
         'startup_consumption': None,
+        'merge_generators': None,
         'edge_handling': None,
         'run_type': None,
         'work_units': None,
@@ -110,7 +111,7 @@ def _load_metadata_from_conn(conn, basename):
             for key in ['commit_consumption', 'startup_consumption']:
                 if key in row and row[key] not in (None, 'None'):
                     meta[key] = float(row[key])
-            for key in ['no_investment', 'rmip', 'no_crossover', 'force_barrier']:
+            for key in ['no_investment', 'rmip', 'no_crossover', 'force_barrier', 'merge_generators']:
                 if key in row and row[key] not in (None, 'None'):
                     val = row[key]
                     if isinstance(val, bool):
@@ -717,7 +718,7 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
         printer.warning("No (non-regret) MK result files found")
         return
 
-    # Group by run parameters (case_study_directory, limit_k, clusters, shift, stretch_demand, relax_count, no_investment, mip_gap)
+    # Group by run parameters (case_study_directory, limit_k, clusters, shift, stretch_demand, merge_generators, relax_count, no_investment, mip_gap)
     groups = defaultdict(list)
     for entry in entries:
         key = (
@@ -726,6 +727,7 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             entry.get('clusters'),
             entry.get('shift'),
             entry.get('stretch_demand'),
+            entry.get('merge_generators'),
             entry.get('relax_count'),
             entry.get('no_investment'),
             entry.get('rmip'),
@@ -739,7 +741,7 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
         groups[key].append(entry)
 
     for group_key, group_entries in groups.items():
-        case_dir, limit_k, clusters, shift, stretch_demand, relax_count, no_investment, rmip, no_crossover, force_barrier, mip_gap, network, commit_consumption, startup_consumption = group_key
+        case_dir, limit_k, clusters, shift, stretch_demand, merge_generators, relax_count, no_investment, rmip, no_crossover, force_barrier, mip_gap, network, commit_consumption, startup_consumption = group_key
 
         # Print group header
         parts = []
@@ -753,6 +755,8 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             parts.append(f"shift={shift}")
         if stretch_demand and stretch_demand != 1.0:
             parts.append(f"stretch_demand={stretch_demand}")
+        if merge_generators:
+            parts.append("merge-generators")
         if relax_count and relax_count > 0:
             parts.append(f"relaxed={relax_count}")
         if no_investment:
