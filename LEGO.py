@@ -128,15 +128,13 @@ if __name__ == "__main__":
     )
     parser.add_argument("caseStudyDirectory", type=directory_path,
                         help="Path to folder containing data for LEGO model")
-    parser.add_argument("scenarioFile", type=str,
-                        help="Path to Scenario_Input.xlsx")
     parser.add_argument("modelType", default=ModelType.DETERMINISTIC,
                         type=lambda s: ModelType[s], choices=list(ModelType),
                         nargs="?", help="ModelType of the model")
     args = parser.parse_args()
 
     # Hardcoded scenario file path (raw string → backslashes are safe)
-    scenario_file = Path(r"C:\Users\Simon Malacek\Nextcloud\A_PhD-IEE\2026-04_ResearchStay_SelfSufficiency\data\first_run\Scenario_Input.xlsx")
+    scenario_file = Path(r"C:\Users\Simon Malacek\Nextcloud\A_PhD-IEE\2026-04_ResearchStay_SelfSufficiency\data\base_case\Scenario_Input.xlsx")
 
     if not scenario_file.is_file():
         raise FileNotFoundError(f"Scenario file not found: {scenario_file}")
