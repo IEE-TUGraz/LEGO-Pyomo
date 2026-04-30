@@ -78,6 +78,7 @@ def _load_metadata_from_conn(conn, basename):
         'network': None,
         'commit_consumption': None,
         'startup_consumption': None,
+        'filter_zone': None,
         'merge_generators': None,
         'edge_handling': None,
         'run_type': None,
@@ -105,7 +106,7 @@ def _load_metadata_from_conn(conn, basename):
             for key in ['stretch_demand', 'mip_gap']:
                 if key in row and row[key] not in (None, 'None'):
                     meta[key] = float(row[key])
-            for key in ['network']:
+            for key in ['network', 'filter_zone']:
                 if key in row and row[key] not in (None, 'None'):
                     meta[key] = str(row[key])
             for key in ['commit_consumption', 'startup_consumption']:
@@ -448,16 +449,21 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder=None, numb
     frames = [_load_unit_commitment_from_sqlite(f, label) for f, label in zip(sqlite_files, case_labels)]
     df = pd.concat(frames)
 
-    # Load vGenInvest from each file and find generators where at least one model invested
+    # Load vGenInvest from each file: track which generators were invested in at least one
+    # model, and also record the per-(case, generator) investment value for background shading.
     invested_generators = set()
-    for sqlite_file in sqlite_files:
+    per_case_investment: dict[tuple[str, str], float] = {}
+    for sqlite_file, label in zip(sqlite_files, case_labels):
         try:
             cnx = sqlite3.connect(sqlite_file)
             df_inv = pd.read_sql("SELECT * FROM vGenInvest", cnx)
             cnx.close()
             for _, row in df_inv.iterrows():
-                if row['values'] > 0:
-                    invested_generators.add(row[df_inv.columns[0]])
+                g_name = row[df_inv.columns[0]]
+                val = float(row['values'])
+                per_case_investment[(label, g_name)] = val
+                if val > 0:
+                    invested_generators.add(g_name)
         except Exception:
             pass
 
@@ -554,6 +560,15 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder=None, numb
             else:
                 axs2.set_title(f"{case}")
             axs2.set_ylim(0, 3)
+
+            # Grey hatched background when this strategy did not invest in this generator
+            inv_val = per_case_investment.get((case, g))
+            if inv_val is not None and inv_val <= 0:
+                x_fill = [min(index) - 0.5, max(index) + 0.5]
+                hatch_kw = dict(color='grey', alpha=0.12, hatch='///', edgecolor='#999999', linewidth=0, zorder=0)
+                axs[i, j].fill_between(x_fill, -1, 1, **hatch_kw)
+                axs2.fill_between(x_fill, 0, 3, **hatch_kw)
+
             axs2.bar(index, data_bar_startup.values(), color="green", alpha=0.5,
                      bottom=[list(data_vCommit.values())[-1]] + list(data_vCommit.values())[:-1], width=1,
                      label="Startup")
@@ -718,11 +733,12 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
         printer.warning("No (non-regret) MK result files found")
         return
 
-    # Group by run parameters (case_study_directory, limit_k, clusters, shift, stretch_demand, merge_generators, relax_count, no_investment, mip_gap)
+    # Group by run parameters (case_study_directory, filter_zone, limit_k, clusters, shift, stretch_demand, merge_generators, relax_count, no_investment, mip_gap)
     groups = defaultdict(list)
     for entry in entries:
         key = (
             entry.get('case_study_directory'),
+            entry.get('filter_zone'),
             entry.get('limit_k'),
             entry.get('clusters'),
             entry.get('shift'),
@@ -741,12 +757,14 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
         groups[key].append(entry)
 
     for group_key, group_entries in groups.items():
-        case_dir, limit_k, clusters, shift, stretch_demand, merge_generators, relax_count, no_investment, rmip, no_crossover, force_barrier, mip_gap, network, commit_consumption, startup_consumption = group_key
+        case_dir, filter_zone, limit_k, clusters, shift, stretch_demand, merge_generators, relax_count, no_investment, rmip, no_crossover, force_barrier, mip_gap, network, commit_consumption, startup_consumption = group_key
 
         # Print group header
         parts = []
         if case_dir:
             parts.append(f"data={case_dir}")
+        if filter_zone:
+            parts.append(f"zone={filter_zone}")
         if limit_k:
             parts.append(f"limitK={limit_k}")
         if clusters and clusters > 1:

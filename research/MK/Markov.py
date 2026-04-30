@@ -227,7 +227,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          no_investment: bool = False, rmip: bool = False, no_crossover: bool = False,
                          force_barrier: bool = False, mip_gap: float | None = None,
                          work_limit: float | None = None,
-                         limitK: str | None = None, clusters: int = 1,
+                         filter_zone: str | None = None, limitK: str | None = None, clusters: int = 1,
                          shift: int = 0, stretch_demand: float = 1.0, merge_generators: bool = False,
                          no_overwrite: bool = False, network: str | None = None,
                          commit_consumption: float = 1.0, startup_consumption: float = 1.0,
@@ -386,12 +386,15 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         identifier_parts.append(f"commitConsumption{commit_consumption:g}")
     if startup_consumption != 1.0:
         identifier_parts.append(f"startupConsumption{startup_consumption:g}")
+    if filter_zone is not None:
+        identifier_parts.append(f"filterZone{filter_zone}")
     if merge_generators:
         identifier_parts.append("mergeGenerators")
     identifier = "-".join(identifier_parts)
 
     run_params = dict(
         case_study_directory=case_study_path,
+        filter_zone=filter_zone,
         limit_k=limitK,
         clusters=clusters if clusters > 1 else None,
         shift=shift if shift != 0 else None,
@@ -633,7 +636,8 @@ def copy_files_non_recursive(src_folder: str, dst_folder: str):
 def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, calculate_regret: bool = False,
          relax_percentage: float = 0.0, skip_truth: bool = False,
          clusters: int = 1, cluster_stepsize: int = 1, cluster_steps: int = 0,
-         limitK: str | None = None, shift: int = 0, stretch_demand: float = 1, merge_generators: bool = False,
+         filter_zone: str | None = None, limitK: str | None = None,
+         shift: int = 0, stretch_demand: float = 1, merge_generators: bool = False,
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, invest_regret: bool = False,
          no_investment: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False,
          force_barrier: bool = False, mip_gap: float | None = None, work_limit: float | None = None,
@@ -647,6 +651,25 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
         try:
             if not folder.endswith("/"):
                 folder += "/"
+
+            if filter_zone is not None:
+                printer.information(f"Filtering case study to zone '{filter_zone}'")
+                new_folder = folder + f"filterZone{filter_zone}/"
+                if reuse_inputfiles and os.path.exists(new_folder):
+                    printer.information(f"Reusing already zone-filtered case study in '{new_folder}'")
+                    folder = new_folder
+                else:
+                    copy_files_non_recursive(folder, new_folder)
+                    folder = new_folder
+                    printer.information(f"Copied original case study to '{folder}'")
+
+                    cs = CaseStudy(folder, do_not_scale_units=True)
+                    printer.information(f"Case study loaded, now filtering to zone '{filter_zone}'")
+                    cs = cs.filter_zone(filter_zone)
+                    if not os.path.exists(folder):
+                        os.makedirs(folder)
+                    ew.write_caseStudy(cs, folder)
+                    printer.information(f"Saved zone-filtered case study to '{folder}'")
 
             if limitK is not None:
                 printer.information(f"Limiting K values to '{limitK}'")
@@ -755,7 +778,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
 
                 printer.information(f"Loading case study from '{cluster_folder}'")
 
-                sqlite_files, case_labels, _ = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, no_crossover, force_barrier, mip_gap, work_limit, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, merge_generators=merge_generators, no_overwrite=no_overwrite, network=network, commit_consumption=commit_consumption, startup_consumption=startup_consumption)
+                sqlite_files, case_labels, _ = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret, no_investment, rmip, no_crossover, force_barrier, mip_gap, work_limit, filter_zone=filter_zone, limitK=limitK, clusters=cluster, shift=shift, stretch_demand=stretch_demand, merge_generators=merge_generators, no_overwrite=no_overwrite, network=network, commit_consumption=commit_consumption, startup_consumption=startup_consumption)
         except Exception as e:
             printer.error(f"Exception while executing case study '{folder}': {e}")
             if debug:
@@ -778,6 +801,7 @@ if __name__ == "__main__":
     parser.add_argument("--clusters", type=int, default=1, help="Number of clusters (default: 1, i.e., no clustering)")
     parser.add_argument("--cluster-stepsize", type=int, default=1, help="If in-/decreasing number of clusters should be used (default: 1, leave cluster-steps default to not use in-/decreasing number of clusters)")
     parser.add_argument("--cluster-steps", type=int, default=0, help="Number of steps for in-/decreasing number of clusters (default: 0, i.e., leave clusters as given)")
+    parser.add_argument("--filter-zone", type=str, default=None, help="Filter the case study to only include buses in the given zone (exact match of the 'z' column in Power_BusInfo), e.g. 'R1'")
     parser.add_argument("--limitK", type=str, help="Limit the ks, format: 'k0025-k0048'", nargs="?", default=None)
     parser.add_argument("--shift", type=int, default=0, help="Shift the time series by N hours (for testing purposes), e.g., 15 to shift by 15 hours")
     parser.add_argument("--stretch-demand", type=float, default=1.0, help="Stretch the demand by a factor (for testing purposes), e.g., 1.1 to increase max of demand by 5% and decrease min by 5%")

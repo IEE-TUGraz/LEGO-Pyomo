@@ -7,6 +7,8 @@ See [`README.md`](README.md) for usage, key concepts, and CLI parameter referenc
 
 **Solver options flow**: A CLI arg (e.g. `--mip-gap`) sets a key in `cs.dGlobal_Parameters` (e.g. `"pMIPGap"`) inside `execute_case_studies()`. `LEGO._build_model()` reads this and stores it as a plain attribute on the Pyomo model (e.g. `model.pMIPGap`). Both `LEGO.solve_model()` and the direct `execute_case_study()` solve path then read this attribute and apply it to `optimizer.options`. Both code paths must be kept in sync when adding new solver options.
 
+**`--filter-zone` preprocessing order**: Applied first, before `limitK`, in `main()`. It calls `CaseStudy.filter_zone()` (unscaled) and writes the result to a `filterZone{zone}/` subfolder. Exact match on the `z` column of Power_BusInfo — merged-bus zone strings like `"R1_R2"` are not matched by `"R1"` alone. The zone is stored in `run_params` (key `filter_zone`) and included in the sibling-compare key list.
+
 **`--merge-generators` preprocessing order**: Applied after `stretch_demand` and before `clusters` in `main()`. It calls `CaseStudy.merge_generators()` (unscaled) and writes the result to a `mergeGenerators/` subfolder. The subfolder is then used as the base for subsequent clustering. The flag is stored in `run_params` (key `merge_generators`) and included in the sibling-compare key list, so smart-skip treats runs with and without merging as distinct.
 
 **`--no-crossover` and `--force-barrier` are coupled**: `main()` raises if exactly one is set. This is intentional — disabling crossover without barrier produces an interior-point solution that is not a vertex; the barrier flag is the companion that makes this meaningful.
