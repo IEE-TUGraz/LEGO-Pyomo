@@ -773,7 +773,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                         copy_files_non_recursive(folder, cluster_folder)  # Copy original data to new folder
 
                         cs = CaseStudy(cluster_folder, do_not_scale_units=True)
-                        cs_clustered = Utilities.apply_kmedoids_aggregation(cs, cluster)
+                        cs_clustered = Utilities.apply_kmedoids_aggregation(cs, cluster, verbose=True)
                         ew.write_caseStudy(cs_clustered, cluster_folder)
 
                 printer.information(f"Loading case study from '{cluster_folder}'")
