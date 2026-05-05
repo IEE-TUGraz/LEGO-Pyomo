@@ -9,6 +9,10 @@ See [`README.md`](README.md) for usage, key concepts, and CLI parameter referenc
 
 **`--filter-zone` preprocessing order**: Applied first, before `limitK`, in `main()`. It calls `CaseStudy.filter_zone()` (unscaled) and writes the result to a `filterZone{zone}/` subfolder. Exact match on the `z` column of Power_BusInfo — merged-bus zone strings like `"R1_R2"` are not matched by `"R1"` alone. The zone is stored in `run_params` (key `filter_zone`) and included in the sibling-compare key list.
 
+**`--scale-vres`**: Applied in `execute_case_studies()` after loading the CaseStudy (no subfolder). Multiplies `dPower_VRES['MaxProd']` by the factor, covering PV, Wind, and RoR. Stored in `run_params` as `scale_vres` (only if != 1.0) and included in the sibling-compare key list.
+
+**`--thermal-invest-only`**: Applied in `execute_case_studies()` after loading the CaseStudy (no subfolder). Sets `ExisUnits=1` and `EnableInvest=0` on `dPower_VRES` and `dPower_Storage`, leaving only `dPower_ThermalGen` investable. Stored in `run_params` as `thermal_invest_only` and included in the sibling-compare key list.
+
 **`--merge-generators` preprocessing order**: Applied after `stretch_demand` and before `clusters` in `main()`. It calls `CaseStudy.merge_generators()` (unscaled) and writes the result to a `mergeGenerators/` subfolder. The subfolder is then used as the base for subsequent clustering. The flag is stored in `run_params` (key `merge_generators`) and included in the sibling-compare key list, so smart-skip treats runs with and without merging as distinct.
 
 **`--no-crossover` and `--force-barrier` are coupled**: `main()` raises if exactly one is set. This is intentional — disabling crossover without barrier produces an interior-point solution that is not a vertex; the barrier flag is the companion that makes this meaningful.

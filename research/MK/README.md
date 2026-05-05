@@ -60,6 +60,9 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 | `--limitK`               | —              | Restrict timesteps, e.g. `k0001-k0168`                                                              |
 | `--shift`                | 0              | Shift time series by N hours                                                                        |
 | `--stretch-demand`       | 1.0            | Stretch demand around its mean by a factor                                                          |
+| `--scale-vres`           | 1.0            | Multiply `MaxProd` of all VRES generators (PV, Wind, RoR) by this factor                           |
+| `--thermal-invest-only`  | off            | Set `ExisUnits=1` for all VRES and Storage generators — only thermal generators remain investable   |
+| `--merge-generators`     | off            | Merge generators of same technology at same bus before clustering                                   |
 | `--enable-strict-markov` | off            | Also run the Markov-Strict variant (push constraints active)                                        |
 | `--invest-regret`        | off            | Fix vGenInvest from each model into truth and compare objectives                                    |
 | `--no-investment`        | off            | Fix all vGenInvest to 1 (skip investment decisions)                                                 |
