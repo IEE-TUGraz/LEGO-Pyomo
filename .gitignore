@@ -20,6 +20,7 @@ LEGO*.log*
 *.lxi
 *.gsp
 *.gdx
+*.mps
 
 # Standard output files for LEGO.py
 *.sqlite
