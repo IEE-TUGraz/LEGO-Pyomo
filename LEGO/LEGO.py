@@ -112,7 +112,7 @@ class LEGO:
                 if solver_name != self.solver_name:
                     raise RuntimeError(f"Optimizer name {solver_name} does not match the one used to build the model ({self.solver_name}), please use the same optimizer name when solving using the 'ExtensiveForm' model type")
                 start_time = time.time()
-                results = self._extensive_form.solve_extensive_form()
+                results = self._extensive_form.solve_extensive_form(tee=True)
                 stop_time = time.time()
                 objective_value = self._extensive_form.get_objective_value() if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
 

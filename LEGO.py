@@ -134,7 +134,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Hardcoded scenario file path (raw string → backslashes are safe)
-    scenario_file = Path(r"C:\Users\Simon Malacek\Nextcloud\A_PhD-IEE\2026-04_ResearchStay_SelfSufficiency\data\base_case\Scenario_Input.xlsx")
+    scenario_file = Path(r"C:\Users\Simon Malacek\Nextcloud\A_PhD-IEE\2026-04_ResearchStay_SelfSufficiency\data\benders_test\Scenario_Input.xlsx")
 
     if not scenario_file.is_file():
         raise FileNotFoundError(f"Scenario file not found: {scenario_file}")
