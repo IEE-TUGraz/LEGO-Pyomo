@@ -224,6 +224,33 @@ class LEGO:
         except Exception as e:
             printer.warning(f"Could not check slack variables automatically: {e}")
 
+        try:
+            for g in self.model.storageUnits:
+                first_charge = None
+                first_discharge = None
+                first_rp = None
+                first_k = None
+                charge_discharge_count = 0
+
+                for rp in self.model.rp:
+                    for k in self.model.k:
+                        charge = pyo.value(self.model.vConsump[rp, k, g])
+                        discharge = pyo.value(self.model.vGenP[rp, k, g])
+
+                        if charge > eps and discharge > eps:
+                            charge_discharge_count += 1
+                            if first_charge is None:
+                                first_charge = charge
+                                first_discharge = discharge
+                                first_rp = rp
+                                first_k = k
+
+                if charge_discharge_count:
+                    printer.warning(f"Storage unit {g} charges ({first_charge}) and discharges ({first_discharge}) simultaneously in {charge_discharge_count} timesteps, for example in rp={first_rp}, k={first_k}")
+
+        except Exception as e:
+            printer.warning(f"Could not check storage charge/discharge automatically: {e}")
+
         return results, self.timings["model_solving"], objective_value
 
     def get_number_of_variables(self, dont_multiply_by_indices=False) -> int:
