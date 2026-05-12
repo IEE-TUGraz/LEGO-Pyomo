@@ -71,7 +71,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     # Variables
     if model.pEnableChDisPower:
-        model.bChargeDisCharge = pyo.Var(model.storageUnits, model.rp, model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
+        model.bChargeDisCharge = pyo.Var(model.rp, model.k, model.storageUnits, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
         second_stage_variables += [model.bChargeDisCharge]
 
     model.vConsump = pyo.Var(model.rp, model.k, model.storageUnits, doc='Charging of storage unit g [power]', bounds=lambda model, rp, k, g: (0, model.pMaxCons[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g]))))
@@ -124,12 +124,12 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                 - ((m.pStorageInflows[rp, k, s] - m.vStorageSpillage[rp, k, s]) if s in m.hydroStorageUnits else 0))
 
     if model.pEnableChDisPower:
-        @model.Constraint(model.interStorageUnits, ['charge', 'discharge'], doc='Enforce exclusive charge or discharge for storage units')
-        def eExclusiveChargeDischarge(m, s, direction):
+        @model.Constraint(model.rp, model.k, model.storageUnits, ['charge', 'discharge'], doc='Enforce exclusive charge or discharge for storage units')
+        def eExclusiveChargeDischarge(m, rp, k, s, direction):
             if direction == 'charge':
-                return m.vConsump[m.rp, m.k, s] <= m.bChargeDisCharge[m.rp, m.k, s] * m.pMaxCons[s] * (m.pExisUnits[s] + m.vGenInvest[s])
+                return m.vConsump[rp, k, s] <= m.bChargeDisCharge[rp, k, s] * m.pMaxCons[s] * (m.pExisUnits[s] + m.pMaxInvest[s])
             elif direction == 'discharge':
-                return m.vGenP[m.rp, m.k, s] <= (1 - m.bChargeDisCharge[m.rp, m.k, s]) * m.pMaxProd[s] * (m.pExisUnits[s] + m.vGenInvest[s])
+                return m.vGenP[rp, k, s] <= (1 - m.bChargeDisCharge[rp, k, s]) * m.pMaxProd[s] * (m.pExisUnits[s] + m.pMaxInvest[s])
             else:
                 raise ValueError(f"Unknown direction: '{direction}'")
 
