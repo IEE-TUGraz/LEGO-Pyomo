@@ -117,8 +117,8 @@ def main(case_study_directory, model_type, scenario_params, output_dir):
 
     printer.success(f"Scenario results written to '{output_dir}'")
 
-    with open("model_structure.txt", "w") as f:
-        model.pprint(ostream=f)
+    #with open("model_structure.txt", "w") as f:
+    #    model.pprint(ostream=f)
 
 
 if __name__ == "__main__":
