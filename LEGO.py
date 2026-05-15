@@ -68,6 +68,9 @@ def main(case_study_directory, model_type, scenario_params, output_dir):
 
     cs = CaseStudy(case_study_directory, dCustom_Parameters=myCustomParameters)
 
+    # filter only a small time slice
+    #cs.filter_timesteps('k0001','k0012',inplace=True)
+
     # change the value of T_bo in dGlobalParameter
     cs.dGlobal_Parameters['pTOutage'] = cs.dCustom_Parameters['T_grid_outage']
 
