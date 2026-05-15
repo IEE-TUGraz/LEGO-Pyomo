@@ -79,9 +79,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.availableBackupGen = pyo.Var(model.rp, model.k, model.tau, bounds=(0, None), doc="Available backup generator capacity during outage window")
 
     # Tank investment variable: only meaningful when an outage is modelled
-    if T_outage_value > 0:
-        model.DieselStorageTankInvest = pyo.Var(model.tanks, bounds=(0, None), doc="Investment in fuel storage capacity for backup generator in MWh")
-        first_stage_variables += [model.DieselStorageTankInvest]
+
+    model.DieselStorageTankInvest = pyo.Var(model.tanks, bounds=(0, None), doc="Investment in fuel storage capacity for backup generator in MWh")
+    first_stage_variables += [model.DieselStorageTankInvest]
 
     second_stage_variables += [model.vOutage_P2H, model.availabeBESS, model.availableBackupGen]
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
@@ -188,9 +188,9 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                 + sum(m.vOutage_P2H[rp, node_subset, k, tau, kp] for kp in set_t)  # additional P2H demand
         )
 
-        # RHS: solar generation + BESS discharge + thermal backup capacity
+        # RHS: potential solar generation + BESS discharge + thermal backup capacity
         rhs = (
-                sum(m.pCapacityFactors[rp, kp, pv] * m.vGenP[rp, kp, pv]
+                sum(m.pCapacityFactors[rp, kp, pv] * m.vGenInvest[pv] * m.pMaxProd[pv]
                     for kp in set_t for pv in pvset)
                 + m.availabeBESS[rp, k, tau]
                 + m.availableBackupGen[rp, k, tau]
