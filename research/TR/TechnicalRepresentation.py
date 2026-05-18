@@ -345,7 +345,7 @@ def load_vGenInvest_from_sqlite(sqlite_file):
 
 
 def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand, scale_pmax, all_zones,
-         no_overwrite, prevent_cross_zone_merging, utilization, model_size_only):
+         no_overwrite, prevent_cross_zone_merging, utilization):
     caseStudyName = case_study_directory.replace("/", "_").replace("\\", "_")
 
     printer.information(f"Loading case study from '{case_study_directory}'")
@@ -528,37 +528,6 @@ def main(case_study_directory, zoi, limit_k, dc_buffer, tp_buffer, scale_demand,
             for g in model.vGenInvest:
                 model.vGenInvest[g].fix(source_vGenInvest[current_zoi].get(g, 0))
 
-        # --- Log model size ---
-        n_vars = sum(1 for _ in model.component_data_objects(pyo.Var, active=True))
-        n_cons = sum(1 for _ in model.component_data_objects(pyo.Constraint, active=True))
-        row = {
-            'identifier': identifier,
-            'case_study_directory': case_study_directory,
-            'limit_k': limit_k,
-            'scale_demand': scale_demand,
-            'scale_pmax': scale_pmax,
-            'zoi': None if utilization is not None else current_zoi,
-            'dc_buffer': None if utilization is not None else dc_buffer,
-            'tp_buffer': None if utilization is not None else tp_buffer,
-            'util_source_csv': Path(util_csv).name if utilization is not None else None,
-            'util_dc_threshold': dc_th if utilization is not None else None,
-            'util_tp_threshold': tp_th if utilization is not None else None,
-            'n_variables': n_vars,
-            'n_constraints': n_cons,
-        }
-        modelsize_file = "TechnicalRepresentation-Modelsize.csv"
-        write_header = not os.path.exists(modelsize_file)
-        with open(modelsize_file, 'a', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=list(row.keys()), delimiter='\t')
-            if write_header:
-                writer.writeheader()
-            writer.writerow(row)
-        printer.information(f"  Model size logged to '{modelsize_file}'")
-
-        if model_size_only:
-            printer.information(f"  Build succeeded, model size logged, skipping solve (--modelSizeOnly)")
-            continue
-
         # --- Solve ---
         printer.information(f"  Solving...")
         results, timing, objective_value = lego.solve_model()
@@ -609,7 +578,6 @@ if __name__ == "__main__":
     parser.add_argument("--preventCrossZoneMerging", action="store_true", help="Prevent SN connections between different zones by upgrading them to TP. This keeps zones electrically separated even in the SN representation, preventing them from being merged into one bus. This is especially relevant when using a ZOI that does not encompass all buses of a zone, or when using multiple zones.")
     parser.add_argument("--utilization", nargs=3, metavar=("CSV_FILE", "DC_THRESHOLD", "TP_THRESHOLD"),
                         help="Assign line representations based on utilization from CSV. Lines >= DC_THRESHOLD get DC-OPF, >= TP_THRESHOLD get TP, else SN. Mutually exclusive with --zoi and --all.")
-    parser.add_argument("--modelSizeOnly", action="store_true", help="Only build the model and report model size, do not solve it.")
     args = parser.parse_args()
 
     if args.utilization:
@@ -627,4 +595,4 @@ if __name__ == "__main__":
 
     main(case_study_directory=args.caseStudyDirectory, zoi=args.zoi, limit_k=args.limitK, dc_buffer=args.dcBuffer, tp_buffer=args.tpBuffer,
          scale_demand=args.scaleDemand, scale_pmax=args.scalePMax, all_zones=args.all, no_overwrite=args.noOverwrite, prevent_cross_zone_merging=args.preventCrossZoneMerging,
-         utilization=args.utilization, model_size_only=args.modelSizeOnly)
+         utilization=args.utilization)

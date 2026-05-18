@@ -1,0 +1,15 @@
+python research/TR/TechnicalRepresentation.py data/NREL-118 --scaleDemand 0.6 --scalePMax 0.5 --zoi DC
+python research/TR/TechnicalRepresentation.py data/NREL-118 --scaleDemand 0.6 --scalePMax 0.5 --zoi TP
+python research/TR/TechnicalRepresentation.py data/NREL-118 --scaleDemand 0.6 --scalePMax 0.5 --zoi SN
+---
+python research/TR/EvaluateLines.py TR-datadata_NREL-118-demand0.6-pmax0.5-zoiDC.sqlite
+---
+python research/TR/TechnicalRepresentation.py data/NREL-118 --scaleDemand 0.6 --scalePMax 0.5 --noOverwrite --dcBuffer 0 --tpBuffer 1 --all
+python research/TR/TechnicalRepresentation.py data/NREL-118 --scaleDemand 0.6 --scalePMax 0.5 --noOverwrite --dcBuffer 3 --tpBuffer 1 --all
+python research/TR/TechnicalRepresentation.py data/NREL-118 --scaleDemand 0.6 --scalePMax 0.5 --noOverwrite --dcBuffer 4 --tpBuffer 2 --all
+python research/TR/TechnicalRepresentation.py data/NREL-118 --scaleDemand 0.6 --scalePMax 0.5 --noOverwrite --utilization TR-EvaluateLines-datadata_NREL-118-demand0.6-pmax0.5-zoiDC.csv 0.2  0.1
+python research/TR/TechnicalRepresentation.py data/NREL-118 --scaleDemand 0.6 --scalePMax 0.5 --noOverwrite --utilization TR-EvaluateLines-datadata_NREL-118-demand0.6-pmax0.5-zoiDC.csv 0.1  0.05
+python research/TR/TechnicalRepresentation.py data/NREL-118 --scaleDemand 0.6 --scalePMax 0.5 --noOverwrite --utilization TR-EvaluateLines-datadata_NREL-118-demand0.6-pmax0.5-zoiDC.csv 0.05  0.03
+---
+python research/TR/EvaluateZOIObjective.py
+python research/TR/EvaluateLineRepresentation.py
