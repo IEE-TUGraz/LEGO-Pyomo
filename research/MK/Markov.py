@@ -513,7 +513,6 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                     except Exception as load_e:
                         printer.warning(f"Could not load solution after solver exception: {load_e}")
                         has_solution = False
-            objective_value = pyo.value(model.objective) if has_solution else -1
             timing_solving = time.time() - start_time
             if result is not None:
                 lego.results = result

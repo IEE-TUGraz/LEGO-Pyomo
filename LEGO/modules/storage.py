@@ -20,7 +20,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     storageUnits = cs.dPower_Storage.index.tolist()
     model.storageUnits = pyo.Set(doc='Storage units', initialize=storageUnits)
     LEGO.addToSet(model, "g", storageUnits)
-    model.gi_storage = pyo.Set(doc="Storage unit g connected to node i", initialize=cs.dPower_Storage.reset_index().set_index(['g', 'i']).index, within=model.storageUnits * model.i)
+    model.gi_storage = pyo.Set(doc="Storage unit g connected to node i", initialize=cs.dPower_Storage['i'].astype(str).items(), within=model.storageUnits * model.i)
     LEGO.addToSet(model, "gi", cs.dPower_Storage.reset_index().set_index(['g', 'i']).index)  # Note: Add gi after g since it depends on g
     model.longDurationEnergyStorageUnits = pyo.Set(doc='Long-duration storage units (subset of storage units)', initialize=cs.dPower_Storage[cs.dPower_Storage['IsLDES'] == 1].index.tolist(), within=model.storageUnits)
     LEGO.addToSet(model, "tec", cs.dPower_Storage['tec'].unique().tolist())

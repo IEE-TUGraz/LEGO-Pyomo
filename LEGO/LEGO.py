@@ -27,7 +27,7 @@ class ModelType(enum.Enum):
 
 
 class LEGO:
-    def __init__(self, cs: CaseStudy = None, model: pyo.Model = None, results=None):
+    def __init__(self, cs: typing.Optional[CaseStudy] = None, model: typing.Optional[pyo.Model] = None, results=None):
         self.mip_gap = None
         self.work_units = None
         self.cs: typing.Optional[CaseStudy] = cs
@@ -46,6 +46,9 @@ class LEGO:
             case ModelType.DETERMINISTIC:
                 if solver_name is not None:
                     printer.warning(f"Solver name {solver_name} provided for 'build_model', but not used when building deterministic model type. Make sure to provide it when solving the model instead.")
+                if len(self.cs.dGlobal_Scenarios) != 1:
+                    raise RuntimeError("Deterministic model type can only be built for a single scenario - check Global_Scenarios.xlsx")
+                self.cs.filter_scenario(self.cs.dGlobal_Scenarios.index[0], inplace=True)  # Filter case study to only include the single scenario
                 model = _build_model(self.cs)
                 self.model = model
             case ModelType.EXTENSIVE_FORM:
@@ -361,6 +364,7 @@ def addToSet(model: pyo.ConcreteModel, set_name: str, values: iter) -> None:
         raise RuntimeError(f"Set {set_name} does not exist in model, please add it first")
     else:
         for i in values:
+            i = tuple(str(x) for x in i) if isinstance(i, tuple) else str(i)  # Handle integer-indices (e.g., when a bus is called 101, it is converted to "101")
             model.component(set_name).add(i)
 
 

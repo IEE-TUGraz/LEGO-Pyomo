@@ -1,3 +1,4 @@
+import math
 import typing
 
 import numpy as np
@@ -181,7 +182,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         completed_buses.add(index)
 
         # Set slack node
-        if cs.dPower_Parameters["is"] == None:
+        if cs.dPower_Parameters["is"] is None or math.isnan(cs.dPower_Parameters["is"]):
             printer.information(f"Determining slack node based on highest demand in this island...")
             slack_node = cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
         else:
