@@ -290,6 +290,11 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         cs.dPower_Storage['ExisUnits'] = 1
         cs.dPower_Storage['EnableInvest'] = 0
 
+    if any(cs.dPower_ThermalGen["MinUpTime"] > len(cs.dPower_WeightsK.index)) or any(cs.dPower_ThermalGen["MinDownTime"] > len(cs.dPower_WeightsK.index)):
+        printer.warning(f"Some thermal generators have MinUpTime or MinDownTime greater than the number of K-values ({len(cs.dPower_WeightsK.index)}) - capping it to that number")
+        cs.dPower_ThermalGen["MinUpTime"] = cs.dPower_ThermalGen["MinUpTime"].clip(upper=len(cs.dPower_WeightsK.index))
+        cs.dPower_ThermalGen["MinDownTime"] = cs.dPower_ThermalGen["MinDownTime"].clip(upper=len(cs.dPower_WeightsK.index))
+
     # Create varied case studies
     start_time = time.time()
     printer.information(f"Creating varied case studies")

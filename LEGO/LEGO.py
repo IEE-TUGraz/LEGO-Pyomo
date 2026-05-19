@@ -48,7 +48,6 @@ class LEGO:
                     printer.warning(f"Solver name {solver_name} provided for 'build_model', but not used when building deterministic model type. Make sure to provide it when solving the model instead.")
                 if len(self.cs.dGlobal_Scenarios) != 1:
                     raise RuntimeError("Deterministic model type can only be built for a single scenario - check Global_Scenarios.xlsx")
-                self.cs.filter_scenario(self.cs.dGlobal_Scenarios.index[0], inplace=True)  # Filter case study to only include the single scenario
                 model = _build_model(self.cs)
                 self.model = model
             case ModelType.EXTENSIVE_FORM:
