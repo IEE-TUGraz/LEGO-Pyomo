@@ -132,6 +132,7 @@ _SIBLING_COMPARE_KEYS = [
     'scale_vres', 'thermal_invest_only', 'merge_generators',
     'relax_count', 'no_investment', 'rmip', 'no_crossover', 'force_barrier',
     'mip_gap', 'network', 'commit_consumption', 'startup_consumption', 'edge_handling',
+    'shift_tm',
 ]
 
 
@@ -233,6 +234,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          thermal_invest_only: bool = False, merge_generators: bool = False,
                          no_overwrite: bool = False, network: str | None = None,
                          commit_consumption: float = 1.0, startup_consumption: float = 1.0,
+                         shift_tm: int | None = None,
                          cs: CaseStudy | None = None,
                          tee: bool = True) -> typing.Tuple[typing.List[str], typing.List[str], typing.Dict[str, LEGO]]:
     ########################################################################################################################
@@ -247,41 +249,52 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
     else:
         printer.information(f"Using provided CaseStudy object (skipping Excel load)")
 
+    # Build identifier parts for sqlite filenames (similar to TR/ID naming convention)
+    identifier_parts = [f"data{case_study_path.rstrip('/').replace('/', '_').replace(' ', '')}"]
     if rmip:
         printer.information("Setting up case study as rMIP (relaxing all integer variables)")
         cs.dGlobal_Parameters["pEnableRMIP"] = True
+        identifier_parts.append("rMIP")
 
     if no_crossover:
         printer.information("Disabling crossover for all solves")
         cs.dGlobal_Parameters["pDisableCrossover"] = True
+        identifier_parts.append("noCrossover")
 
     if force_barrier:
         printer.information("Forcing barrier method for all solves")
         cs.dGlobal_Parameters["pForceBarrier"] = True
+        identifier_parts.append("forceBarrier")
 
     if mip_gap is not None:
         printer.information(f"Setting MIP gap to {mip_gap}")
         cs.dGlobal_Parameters["pMIPGap"] = mip_gap
+        identifier_parts.append(f"mipGap{mip_gap:g}")
 
     if work_limit is not None:
         printer.information(f"Setting work limit to {work_limit}")
         cs.dGlobal_Parameters["pWorkLimit"] = work_limit
+        identifier_parts.append(f"workLimit{work_limit:g}")
 
     if network is not None:
         printer.information(f"Setting all lines to network representation '{network}'")
         cs.dPower_Network["pTecRepr"] = network
+        identifier_parts.append(f"network{network}")
 
     if commit_consumption != 1.0:
         printer.information(f"Scaling CommitConsumption by {commit_consumption}")
         cs.dPower_ThermalGen['pInterVarCostEUR'] *= commit_consumption
+        identifier_parts.append(f"commitConsumption{commit_consumption:g}")
 
     if startup_consumption != 1.0:
         printer.information(f"Scaling StartupConsumption by {startup_consumption}")
         cs.dPower_ThermalGen['pStartupCostEUR'] *= startup_consumption
+        identifier_parts.append(f"startupConsumption{startup_consumption:g}")
 
     if scale_vres != 1.0:
         printer.information(f"Scaling VRES MaxProd by {scale_vres}")
         cs.dPower_VRES['MaxProd'] *= scale_vres
+        identifier_parts.append(f"scaleVRES{scale_vres:g}")
 
     if thermal_invest_only:
         printer.information("Setting ExisUnits=1 for all non-thermal generators (thermalInvestOnly)")
@@ -289,6 +302,19 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         cs.dPower_VRES['EnableInvest'] = 0
         cs.dPower_Storage['ExisUnits'] = 1
         cs.dPower_Storage['EnableInvest'] = 0
+        identifier_parts.append("thermalInvestOnly")
+
+    if relax_percentage > 0:
+        identifier_parts.append(f"relaxed{math.ceil(len(cs.dPower_ThermalGen.index) * relax_percentage)}")
+
+    if shift_tm is not None:
+        printer.information(f"Shifting transition matrix by {shift_tm} positions")
+        cs.shift_transition_matrix(shift_tm, inplace=True)
+        identifier_parts.append(f"shiftTM{shift_tm}")
+
+    identifier = "-".join(identifier_parts)
+
+    Utilities.plot_transition_matrix(cs.rpTransitionMatrixAbsolute, title=f"Not shifted from original" if shift_tm is None else f"Shifted by shift_tm={shift_tm}", output=f"MK-{identifier}.png")
 
     if any(cs.dPower_ThermalGen["MinUpTime"] > len(cs.dPower_WeightsK.index)) or any(cs.dPower_ThermalGen["MinDownTime"] > len(cs.dPower_WeightsK.index)):
         printer.warning(f"Some thermal generators have MinUpTime or MinDownTime greater than the number of K-values ({len(cs.dPower_WeightsK.index)}) - capping it to that number")
@@ -384,36 +410,6 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                 lego.model.vGenInvest[g].fixed = True
         printer.information(f"Fixed vGenInvest to 1 for all generators in all models (--no-investment)")
 
-    # Build identifier parts for sqlite filenames (similar to TR/ID naming convention)
-    identifier_parts = [f"data{case_study_path.rstrip('/').replace('/', '_').replace(' ', '')}"]
-    if count_relaxed > 0:
-        identifier_parts.append(f"relaxed{count_relaxed}")
-    if rmip:
-        identifier_parts.append("rMIP")
-    if no_crossover:
-        identifier_parts.append("noCrossover")
-    if force_barrier:
-        identifier_parts.append("forceBarrier")
-    if mip_gap is not None:
-        identifier_parts.append(f"mipGap{mip_gap:g}")
-    if work_limit is not None:
-        identifier_parts.append(f"workLimit{work_limit:g}")
-    if network is not None:
-        identifier_parts.append(f"network{network}")
-    if commit_consumption != 1.0:
-        identifier_parts.append(f"commitConsumption{commit_consumption:g}")
-    if startup_consumption != 1.0:
-        identifier_parts.append(f"startupConsumption{startup_consumption:g}")
-    if filter_zone is not None:
-        identifier_parts.append(f"filterZone{filter_zone}")
-    if scale_vres != 1.0:
-        identifier_parts.append(f"scaleVRES{scale_vres:g}")
-    if thermal_invest_only:
-        identifier_parts.append("thermalInvestOnly")
-    if merge_generators:
-        identifier_parts.append("mergeGenerators")
-    identifier = "-".join(identifier_parts)
-
     run_params = dict(
         case_study_directory=case_study_path,
         filter_zone=filter_zone,
@@ -434,6 +430,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         network=network,
         commit_consumption=commit_consumption if commit_consumption != 1.0 else None,
         startup_consumption=startup_consumption if startup_consumption != 1.0 else None,
+        shift_tm=shift_tm,
     )
     sqlite_files, sqlite_labels, lego_models = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite, tee=tee)
 
@@ -665,7 +662,8 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, invest_regret: bool = False,
          no_investment: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False,
          force_barrier: bool = False, mip_gap: float | None = None, work_limit: float | None = None,
-         network: str | None = None, commit_consumption: float = 1.0, startup_consumption: float = 1.0):
+         network: str | None = None, commit_consumption: float = 1.0, startup_consumption: float = 1.0,
+         shift_tm: int | None = None):
     ew = ExcelWriter()
 
     if no_crossover != force_barrier:
@@ -806,7 +804,8 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                                                                     no_investment, rmip, no_crossover, force_barrier, mip_gap, work_limit, filter_zone=filter_zone, limitK=limitK,
                                                                     clusters=cluster, shift=shift, stretch_demand=stretch_demand, scale_vres=scale_vres, thermal_invest_only=thermal_invest_only,
                                                                     merge_generators=merge_generators, no_overwrite=no_overwrite, network=network,
-                                                                    commit_consumption=commit_consumption, startup_consumption=startup_consumption)
+                                                                    commit_consumption=commit_consumption, startup_consumption=startup_consumption,
+                                                                    shift_tm=shift_tm)
         except Exception as e:
             printer.error(f"Exception while executing case study '{locals().get('cluster_folder', folder)}': {e}")  # locals-hack to always get correct folder-name
             if debug:
@@ -849,6 +848,7 @@ if __name__ == "__main__":
     parser.add_argument("--network", type=str, default=None, choices=["DC-OPF", "TP", "SN"], help="Override network representation for all lines uniformly: DC-OPF, TP, or SN (default: no change, use values from data)")
     parser.add_argument("--commit-consumption", type=float, default=1.0, help="Multiplier for the CommitConsumption column of Power_ThermalGen (default: 1.0, no change)")
     parser.add_argument("--startup-consumption", type=float, default=1.0, help="Multiplier for the StartupConsumption column of Power_ThermalGen (default: 1.0, no change)")
+    parser.add_argument("--shift-tm", type=int, default=None, help="Shift the transition matrix by <N> positions to the right")
     args = parser.parse_args()
 
     kwargs = vars(args)
