@@ -1,7 +1,6 @@
 import pandas as pd
 import pytest
 
-import SQLiteWriter
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO
@@ -221,12 +220,10 @@ def test_simultaneous_charge_discharge_warning(tmp_path, pEnableChDisPower, expe
 
     storage = "TestStorage"
     cs = create_case_study(storage, pEnableChDisPower)
+
     lego = LEGO(cs)
-    model, _ = lego.build_model()
-
+    lego.build_model()
     lego.solve_model()
-
-    SQLiteWriter.model_to_sqlite(model, str(tmp_path / "test_warning.sqlite"))
 
     with open(log_path) as log_file:
         log_content = log_file.read()
