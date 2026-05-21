@@ -246,7 +246,7 @@ class LEGO:
                                 first_k = k
 
                 if charge_discharge_count:
-                    printer.warning(f"Storage unit {g} charges ({first_charge}) and discharges ({first_discharge}) simultaneously in {charge_discharge_count} timesteps, for example in rp={first_rp}, k={first_k}")
+                    printer.warning(f"Storage unit {g} charges and discharges simultaneously in {charge_discharge_count} timesteps, for example in rp={first_rp}, k={first_k}: charge={first_charge}, discharge={first_discharge}")
 
         except Exception as e:
             printer.warning(f"Could not check storage charge/discharge automatically: {e}")

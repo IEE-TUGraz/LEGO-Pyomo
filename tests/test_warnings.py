@@ -138,6 +138,6 @@ def test_simultaneous_charge_discharge_warning(tmp_path, pEnableChDisPower, expe
     with open(log_path) as log_file:
         log_content = log_file.read()
 
-    warning_displayed = f"Warning: Storage unit {storage} charges" in log_content and "and discharges" in log_content and "simultaneously" in log_content
+    warning_displayed = f"Warning: Storage unit {storage} charges and discharges simultaneously in" in log_content
 
     assert warning_displayed == expected_warning_displayed
