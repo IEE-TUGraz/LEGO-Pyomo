@@ -73,7 +73,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vConsump = pyo.Var(model.rp, model.k, model.storageUnits, doc='Charging of storage unit g', bounds=lambda model, rp, k, g: (0, model.pMaxCons[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g]))))
     second_stage_variables += [model.vConsump]
 
-    model.vStIntraRes = pyo.Var(model.rp, model.k, model.intraStorageUnits, doc='Intra-reserve of storage unit g', bounds=lambda m, rp, k, g: (m.pMinReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g])), m.pMaxReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g]))))
+    model.vStIntraRes = pyo.Var(model.rp, model.k, model.intraStorageUnits, doc='Intra-reserve of storage unit g' )
     second_stage_variables += [model.vStIntraRes]
 
     model.vStInterRes = pyo.Var(model.movingWindowP, model.interStorageUnits, doc='Inter-reserve of storage unit g', bounds=lambda m, p, g: (m.pMinReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g])), m.pMaxReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g]))))
@@ -153,6 +153,8 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     model.eStMinIntraRes_expr = pyo.Expression(model.rp, model.k, model.intraStorageUnits, doc='Min intra-reserve expression for storage units', rule=lambda model, rp, k, s: model.vStIntraRes[rp, k, s] - model.pMinReserve[s] * (model.pExisUnits[s] + model.vGenInvest[s]))
     model.eStMinIntraRes = pyo.Constraint(model.rp, model.k, model.intraStorageUnits, doc='Min intra-reserve constraint for storage units', rule=lambda model, rp, k, s: model.eStMinIntraRes_expr[rp, k, s] >= 0)
 
+
+
     #if len(model.rp) == 1:
 
         # If there is only one rp and k is the last period of the representative period, limit the final storage level to initial storage level
@@ -187,6 +189,9 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         for k in model.k:
             for g, i in model.gi_storage:
                 model.eDC_BalanceP_expr[rp, k, i] -= model.vConsump[rp, k, g]
+
+
+
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = 0.0
