@@ -218,7 +218,7 @@ def test_network_duplicate_lines_different_c(tmp_path, network_entries, expected
     with open(log_path) as log_file:
         log_content = log_file.read()
 
-    warning_displayed = "Parallel network lines found in (at least) scenario " in log_content
+    warning_displayed = "Warning: Parallel network lines found in (at least) scenario " in log_content
 
     assert warning_displayed == expected_warning_displayed
 
@@ -242,7 +242,6 @@ def test_network_duplicate_lines_same_c(tmp_path, network_entries, expected_erro
         create_case_study(storage, False, network_entries)
     except ValueError as error:
         error_message = str(error)
-        printer.error(error_message)
 
     error_displayed = ("Duplicate network line found in (at least) scenario " in error_message and
                        "If the lines should be parallel, assign different 'c' for each parallel line." in error_message)
