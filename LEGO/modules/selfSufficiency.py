@@ -170,7 +170,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     # Technology subsets — defined once, outside the constraint
     pvset = [pv for pv, tec in model.gtec if tec == "Solar"]
-    thermal_set = [thermal for thermal, tec in model.gtec if tec == "FuelOilGas"]  # TODO: swap to backup generator
+    thermal_set = [thermal for thermal, tec in model.gtec if tec == "BackupGenerator"]  # TODO: swap to backup generator
     storage_set = [storage for storage, tec in model.gtec if tec == "BESS"]
 
     def ePowerSelfSufficiency(m, rp, k, node_subset, tau):
@@ -218,7 +218,10 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             return pyo.Constraint.Skip
 
         # Storage level at end of hour k = level "just before" the outage begins.
-        return m.availabeBESS[rp, k, tau] <= sum(m.vStIntraRes[rp, k, storage] for storage in storage_set)
+        #return m.availabeBESS[rp, k, tau] <= sum(m.vStIntraRes[rp, k, storage] * cs.dPower_Storage.loc[storage, 'DisEffic'] for storage in storage_set)
+
+        return m.availabeBESS[rp, k, tau] <= sum(m.vStIntraRes[rp, k, storage] * (1 - cs.dPower_Storage.loc[storage, 'SelfDischarge']) ** (tau - 1) * cs.dPower_Storage.loc[storage, 'DisEffic'] for storage in storage_set)
+
 
     model.eOutageBESSAvailability_level = pyo.Constraint(
         model.rp, model.k, model.tau,
