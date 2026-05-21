@@ -1,13 +1,11 @@
 import argparse
+import json
 import logging
 import os
 import time
 from pathlib import Path
-import shutil
 
-import pandas as pd
 import pyomo.environ as pyo
-from pulp import utilities
 
 from InOutModule import SQLiteWriter
 from InOutModule.ExcelWriter import ExcelWriter
@@ -32,11 +30,13 @@ def directory_path(string):
     else:
         raise argparse.ArgumentTypeError(f"Directory path not valid: '{string}'")
 
+
 def ensure_dir(path):
     """Create directory if it doesn't exist, return Path object."""
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
 
 def main(case_study_directory, model_type, scenario_params, output_dir):
     # Load case study
@@ -65,7 +65,7 @@ def main(case_study_directory, model_type, scenario_params, output_dir):
         "T_grid_outage": scenario_params['T_outage'],  # hours of grid outage
 
         # --- Storage min level ---
-        "MinSorLevel": 0.15, # 15 % min SOC
+        "MinSorLevel": 0.15,  # 15 % min SOC
 
         # --- costs ---
         "DiselStorageTankCost": 0.200,  # k€/MWh = €/kWh (includinc conversion allready)
@@ -74,7 +74,7 @@ def main(case_study_directory, model_type, scenario_params, output_dir):
     cs = CaseStudy(case_study_directory, dCustom_Parameters=myCustomParameters)
 
     # filter only a small time slice
-    #cs.filter_timesteps('k0001','k0012',inplace=True)
+    # cs.filter_timesteps('k0001','k0012',inplace=True)
 
     # change the value of T_bo in dGlobalParameter
     cs.dGlobal_Parameters['pTOutage'] = cs.dCustom_Parameters['T_grid_outage']
@@ -117,21 +117,27 @@ def main(case_study_directory, model_type, scenario_params, output_dir):
             printer.warning(f"Solver terminated with condition: {results.solver.termination_condition}")
 
     SQLiteWriter.model_to_sqlite(model, str(output_dir / "model.sqlite"))
-    #ExcelWriter.model_to_excel(model, str(output_dir / "model.xlsx"))
-    #model.write(str(output_dir / "model.mps"), io_options={'labeler': NameLabeler()})
+    # ExcelWriter.model_to_excel(model, str(output_dir / "model.xlsx"))
+    # model.write(str(output_dir / "model.mps"), io_options={'labeler': NameLabeler()})
 
-    #with open(output_dir / "model_structure.txt", "w") as f:
-    #    model.pprint(ostream=f)
+    # with open(output_dir / "model_structure.txt", "w") as f:
+    #     model.pprint(ostream=f)
 
     printer.success(f"Scenario results written to '{output_dir}'")
 
-    #with open("model_structure.txt", "w") as f:
-    #    model.pprint(ostream=f)
+
+def load_scenario_params(params_path):
+    """Load the per-scenario parameter dict from a JSON file."""
+    params_path = Path(params_path)
+    if not params_path.is_file():
+        raise FileNotFoundError(f"Params file not found: {params_path}")
+    with open(params_path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Runs LEGO for every scenario in an Excel sheet",
+        description="Runs LEGO for a single scenario (parameters supplied via a JSON file)",
         formatter_class=RichHelpFormatter,
     )
     parser.add_argument("caseStudyDirectory", type=directory_path,
@@ -139,52 +145,24 @@ if __name__ == "__main__":
     parser.add_argument("modelType", default=ModelType.DETERMINISTIC,
                         type=lambda s: ModelType[s], choices=list(ModelType),
                         nargs="?", help="ModelType of the model")
+    parser.add_argument("--params", required=True,
+                        help="Path to the JSON file with this scenario's parameters")
+    parser.add_argument("--output-dir", required=True,
+                        help="Directory where this scenario's results are written")
+    parser.add_argument("--scenario-name", default=None,
+                        help="Optional scenario name (for nicer logging)")
     args = parser.parse_args()
 
-    # Hardcoded scenario file path (raw string → backslashes are safe)
-    scenario_file = Path(r"C:\Users\Simon Malacek\Nextcloud\A_PhD-IEE\2026-04_ResearchStay_SelfSufficiency\data\benders_test\Scenario_Input.xlsx")
+    scenario_params = load_scenario_params(args.params)
+    output_dir = ensure_dir(args.output_dir)
 
-    if not scenario_file.is_file():
-        raise FileNotFoundError(f"Scenario file not found: {scenario_file}")
+    name = args.scenario_name or output_dir.name
+    printer.information(f"===== Running scenario: {name} =====")
+    printer.information(f"Parameters: {scenario_params}")
 
-    # Output root = "results" folder next to the scenario file
-    output_root = ensure_dir(scenario_file.parent / "results")
-    printer.information(f"Results will be written to '{output_root}'")
-
-    # Load scenarios
-    printer.information(f"Loading scenarios from '{scenario_file}'")
-    df_scenarios = pd.read_excel(scenario_file, skiprows=[1])
-    printer.information(f"Found {len(df_scenarios)} scenario(s)")
-
-
-    # Run each scenario
-    for idx, row in df_scenarios.iterrows():
-        scenario_name = (
-            str(row["ScenarioName"])
-            if "ScenarioName" in df_scenarios.columns
-            else f"scenario_{idx:03d}"
-        )
-        printer.information(f"\n===== Running scenario {idx + 1}/{len(df_scenarios)}: {scenario_name} =====")
-
-        # Build param dict from the row, skip the name column and any NaNs
-        scenario_params = {
-            col: row[col]
-            for col in df_scenarios.columns
-            if col != "ScenarioName" and pd.notna(row[col])
-        }
-
-        scenario_output_dir = output_root / scenario_name
-
-        try:
-            main(
-                case_study_directory=args.caseStudyDirectory,
-                model_type=args.modelType,
-                scenario_params=scenario_params,
-                output_dir=scenario_output_dir,
-            )
-        except Exception as e:
-            printer.error(f"Scenario '{scenario_name}' failed: {e}")
-            # Continue with the next scenario instead of aborting the whole batch
-            continue
-
-    printer.success(f"\nAll scenarios finished. Results in '{output_root}'")
+    main(
+        case_study_directory=args.caseStudyDirectory,
+        model_type=args.modelType,
+        scenario_params=scenario_params,
+        output_dir=output_dir,
+    )
