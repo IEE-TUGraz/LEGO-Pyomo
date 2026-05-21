@@ -96,17 +96,49 @@ class LEGO:
                 if solver_name.lower() in ['gurobi', 'gurobi_persistent']:
                     optimizer = pyo.SolverFactory('gurobi_persistent')
                     optimizer.set_instance(self.model)
-                    results = optimizer.solve(tee=True, load_solutions=True)
+                    if getattr(self.model, 'pDisableCrossover', False):
+                        optimizer.options['Crossover'] = 0
+                    if getattr(self.model, 'pForceBarrier', False):
+                        optimizer.options['Method'] = 2
+                        optimizer.options['NodeMethod'] = 2
+                    if getattr(self.model, 'pMIPGap', None) is not None:
+                        optimizer.options['MIPGap'] = self.model.pMIPGap
+                    if getattr(self.model, 'pWorkLimit', None) is not None:
+                        optimizer.options['WorkLimit'] = self.model.pWorkLimit
+                    try:
+                        results = optimizer.solve(tee=True)
+                    except Exception as e:
+                        if "duals" in str(e).lower():
+                            # MIP solutions don't have duals — remove suffix and retry
+                            self.model.del_component(self.model.dual)
+                            results = optimizer.solve(tee=True)
+                        else:
+                            raise
                     objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
-                    # Extract work units from Gurobi model
+                    # Extract work units and MIP gap from Gurobi model
                     try:
                         self.work_units = optimizer._solver_model.Work
                     except Exception as e:
                         printer.warning(f"Could not extract work units from Gurobi: {e}")
                         self.work_units = None
+                    try:
+                        if optimizer._solver_model.IsMIP:
+                            self.mip_gap = optimizer._solver_model.MIPGap
+                        else:
+                            printer.information("Model is an LP — no MIP gap stored in .sqlite")
+                    except Exception as e:
+                        printer.warning(f"Could not extract MIP gap from Gurobi: {e}")
                 else:
                     optimizer = pyo.SolverFactory(solver_name)
-                    results = optimizer.solve(self.model, tee=True, load_solutions=True)
+                    try:
+                        results = optimizer.solve(self.model, tee=True)
+                    except Exception as e:
+                        if "duals" in str(e).lower():
+                            # MIP solutions don't have duals — remove suffix and retry
+                            self.model.del_component(self.model.dual)
+                            results = optimizer.solve(self.model, tee=True)
+                        else:
+                            raise
                     objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
             case ModelType.EXTENSIVE_FORM:
                 if solver_name != self.solver_name:

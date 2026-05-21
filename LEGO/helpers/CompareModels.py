@@ -136,7 +136,7 @@ def build_and_solve_model(model_type: ModelTypeForComparison, data_path: str | p
                     gams_console_log_path = "gams_console.log"
                 printer.warning(f"Using default GAMS console log path: {gams_console_log_path}")
             if gams_executable_path is None:
-                gams_executable_path = "C:/GAMS/50/gams.exe"
+                gams_executable_path = "C:/GAMS/53/gams.exe"
                 printer.warning(f"Using default GAMS executable path: {gams_executable_path}")
             if lego_gams_path is None:
                 lego_gams_path = "../LEGO-GAMS/LEGO.gms"
