@@ -7,6 +7,8 @@ import shutil
 
 import pandas as pd
 import pyomo.environ as pyo
+from pulp import utilities
+
 from InOutModule import SQLiteWriter
 from InOutModule.ExcelWriter import ExcelWriter
 from InOutModule.CaseStudy import CaseStudy
@@ -45,25 +47,28 @@ def main(case_study_directory, model_type, scenario_params, output_dir):
         return 273.15 + celsius
 
     myCustomParameters = {
-        "Building_ThermalMass": 1.6,  # MWh/K (example order of magnitude)
+        "Building_ThermalMass": 3.5,  # MWh/K (example order of magnitude)
 
         # --- normal operation temperatures (K) ---
         "Building_MinTemp": K(20),  # 20 °C
-        "Building_MaxTemp": K(22),  # 24 °C
+        "Building_MaxTemp": K(23),  # 24 °C
         "Building_SetTemp": K(21),  # 21 °C
 
         # --- comfort penalties ---
-        "UnderTempPenaltyCost": 1000,  # €/K deviation (high to enforce comfort)
-        "OverTempPenaltyCost": 500,  # €/K deviation
-        "PenaltyFreeTemperatureDeviation": 0.5,  # ±0.5 K deadband
+        "UnderTempPenaltyCost": 0.175,  # k€/K deviation (high to enforce comfort); €/kWh outage * thermal mass for estimation
+        "OverTempPenaltyCost": 0.010,  # k€/K deviation
+        "PenaltyFreeTemperatureDeviation": 0.8,  # ±0.5 K deadband
 
         # --- outage conditions (K) ---
         "Building_MaxTempOutage": K(scenario_params['Building_MaxTempOutage']),  # upper safety limit
         "Building_MinTempOutage": K(scenario_params['Building_MinTempOutage']),  # lower safety limit
         "T_grid_outage": scenario_params['T_outage'],  # hours of grid outage
 
+        # --- Storage min level ---
+        "MinSorLevel": 0.15, # 15 % min SOC
+
         # --- costs ---
-        "DiselStorageTankCost": 200,  # k€/MWh(includinc conversion allready)
+        "DiselStorageTankCost": 0.200,  # k€/MWh = €/kWh (includinc conversion allready)
     }
 
     cs = CaseStudy(case_study_directory, dCustom_Parameters=myCustomParameters)
