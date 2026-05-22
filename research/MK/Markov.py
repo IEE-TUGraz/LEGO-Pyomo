@@ -132,7 +132,7 @@ _SIBLING_COMPARE_KEYS = [
     'scale_vres', 'scale_invest_cost', 'thermal_invest_only', 'merge_generators',
     'relax_count', 'no_investment', 'rmip', 'no_crossover', 'force_barrier',
     'mip_gap', 'network', 'commit_consumption', 'startup_consumption', 'edge_handling',
-    'shift_tm',
+    'shift_tm', 'perturb_tm',
 ]
 
 
@@ -236,6 +236,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          no_overwrite: bool = False, network: str | None = None,
                          commit_consumption: float = 1.0, startup_consumption: float = 1.0,
                          shift_tm: int | None = None,
+                         perturb_tm: float | None = None,
                          cs: CaseStudy | None = None,
                          tee: bool = True) -> typing.Tuple[typing.List[str], typing.List[str], typing.Dict[str, LEGO]]:
     ########################################################################################################################
@@ -320,9 +321,19 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         cs.shift_transition_matrix(shift_tm, inplace=True)
         identifier_parts.append(f"shiftTM{shift_tm}")
 
+    if perturb_tm is not None:
+        printer.information(f"Perturbing transition matrix with randomness={perturb_tm}")
+        cs.perturb_transition_matrix(perturb_tm, inplace=True)
+        identifier_parts.append(f"perturbTM{perturb_tm}")
+
     identifier = "-".join(identifier_parts)
 
-    Utilities.plot_transition_matrix(cs.rpTransitionMatrixAbsolute, title=f"Not shifted from original" if shift_tm is None else f"Shifted by shift_tm={shift_tm}", output=f"MK-{identifier}.png")
+    tm_title_parts = []
+    if shift_tm is not None:
+        tm_title_parts.append(f"shiftTM={shift_tm}")
+    if perturb_tm is not None:
+        tm_title_parts.append(f"perturbTM={perturb_tm}")
+    Utilities.plot_transition_matrix(cs.rpTransitionMatrixAbsolute, title=", ".join(tm_title_parts), output=f"MK-{identifier}.png")
 
     if any(cs.dPower_ThermalGen["MinUpTime"] > len(cs.dPower_WeightsK.index)) or any(cs.dPower_ThermalGen["MinDownTime"] > len(cs.dPower_WeightsK.index)):
         printer.warning(f"Some thermal generators have MinUpTime or MinDownTime greater than the number of K-values ({len(cs.dPower_WeightsK.index)}) - capping it to that number")
@@ -440,6 +451,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         commit_consumption=commit_consumption if commit_consumption != 1.0 else None,
         startup_consumption=startup_consumption if startup_consumption != 1.0 else None,
         shift_tm=shift_tm,
+        perturb_tm=perturb_tm,
     )
     sqlite_files, sqlite_labels, lego_models = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite, tee=tee)
 
@@ -673,7 +685,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
          no_investment: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False,
          force_barrier: bool = False, mip_gap: float | None = None, work_limit: float | None = None,
          network: str | None = None, commit_consumption: float = 1.0, startup_consumption: float = 1.0,
-         shift_tm: int | None = None):
+         shift_tm: int | None = None, perturb_tm: float | None = None):
     ew = ExcelWriter()
 
     if no_crossover != force_barrier:
@@ -815,7 +827,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                                                                     clusters=cluster, shift=shift, stretch_demand=stretch_demand, scale_vres=scale_vres, scale_invest_cost=scale_invest_cost, thermal_invest_only=thermal_invest_only,
                                                                     merge_generators=merge_generators, no_overwrite=no_overwrite, network=network,
                                                                     commit_consumption=commit_consumption, startup_consumption=startup_consumption,
-                                                                    shift_tm=shift_tm)
+                                                                    shift_tm=shift_tm, perturb_tm=perturb_tm)
         except Exception as e:
             printer.error(f"Exception while executing case study '{locals().get('cluster_folder', folder)}': {e}")  # locals-hack to always get correct folder-name
             if debug:
@@ -860,6 +872,7 @@ if __name__ == "__main__":
     parser.add_argument("--commit-consumption", type=float, default=1.0, help="Multiplier for the CommitConsumption column of Power_ThermalGen (default: 1.0, no change)")
     parser.add_argument("--startup-consumption", type=float, default=1.0, help="Multiplier for the StartupConsumption column of Power_ThermalGen (default: 1.0, no change)")
     parser.add_argument("--shift-tm", type=int, default=None, help="Shift the transition matrix by <N> positions to the right")
+    parser.add_argument("--perturb-tm", type=float, default=None, help="Perturb the transition matrix with randomness in [0.0, 1.0]: new_prob = (1-r)*orig + r*random")
     args = parser.parse_args()
 
     kwargs = vars(args)

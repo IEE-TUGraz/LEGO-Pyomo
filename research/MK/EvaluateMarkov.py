@@ -84,6 +84,7 @@ def _load_metadata_from_conn(conn, basename):
         'filter_zone': None,
         'merge_generators': None,
         'shift_tm': None,
+        'perturb_tm': None,
         'edge_handling': None,
         'run_type': None,
         'work_units': None,
@@ -107,7 +108,7 @@ def _load_metadata_from_conn(conn, basename):
             for key in ['clusters', 'relax_count', 'shift']:
                 if key in row and row[key] not in (None, 'None'):
                     meta[key] = int(float(row[key]))
-            for key in ['stretch_demand', 'scale_vres', 'scale_invest_cost', 'mip_gap']:
+            for key in ['stretch_demand', 'scale_vres', 'scale_invest_cost', 'mip_gap', 'perturb_tm']:
                 if key in row and row[key] not in (None, 'None'):
                     meta[key] = float(row[key])
             for key in ['network', 'filter_zone', 'shift_tm']:
@@ -792,6 +793,7 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             entry.get('thermal_invest_only'),
             entry.get('merge_generators'),
             entry.get('shift_tm'),
+            entry.get('perturb_tm'),
             entry.get('relax_count'),
             entry.get('no_investment'),
             entry.get('rmip'),
@@ -805,7 +807,7 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
         groups[key].append(entry)
 
     for group_key, group_entries in groups.items():
-        case_dir, filter_zone, limit_k, clusters, shift, stretch_demand, scale_vres, scale_invest_cost, thermal_invest_only, merge_generators, shift_tm, relax_count, no_investment, rmip, no_crossover, force_barrier, mip_gap, network, commit_consumption, startup_consumption = group_key
+        case_dir, filter_zone, limit_k, clusters, shift, stretch_demand, scale_vres, scale_invest_cost, thermal_invest_only, merge_generators, shift_tm, perturb_tm, relax_count, no_investment, rmip, no_crossover, force_barrier, mip_gap, network, commit_consumption, startup_consumption = group_key
 
         # Print group header
         parts = []
@@ -849,6 +851,8 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             parts.append(f"startup_consumption={startup_consumption:g}")
         if shift_tm is not None:
             parts.append(f"shift_tm={shift_tm}")
+        if perturb_tm is not None:
+            parts.append(f"perturb_tm={perturb_tm:g}")
 
         printer.information(f"\n{'=' * 80}")
         printer.information(f"Group: {', '.join(parts) if parts else '(default)'}")

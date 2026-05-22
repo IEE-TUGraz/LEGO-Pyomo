@@ -81,12 +81,13 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 | `--commit-consumption`   | 1.0            | Multiplier for `CommitConsumption` in `Power_ThermalGen`                                                    |
 | `--startup-consumption`  | 1.0            | Multiplier for `StartupConsumption` in `Power_ThermalGen`                                                   |
 | `--shift-tm`             | —              | Cyclically shift each row of the transition matrix right by N positions, then normalize and resample Hindex |
+| `--perturb-tm`           | —              | Perturb each row of the transition matrix: `new_prob = (1-r)*orig + r*random`, with `r` in [0.0, 1.0]      |
 | `--no-sqlite`            | off            | Do not save results to SQLite                                                                               |
 | `--reuse-inputfiles`     | off            | Reuse already-prepared input folders (e.g. after limitK)                                                    |
 
 **Output naming**: `MK-{identifier}-{edgeHandling}.sqlite`. Regret files append `-regret` or `-invest-regret`.
 Non-default parameters are encoded in the identifier (e.g. `filterZoneR1`, `relaxed3`, `rMIP`, `mipGap0.01`,
-`networkTP`, `commitConsumption0.5`, `startupConsumption2`, `shiftTM2`, `scaleVRES0.8`, `scaleInvestCost0.5`).
+`networkTP`, `commitConsumption0.5`, `startupConsumption2`, `shiftTM2`, `perturbTM0.5`, `scaleVRES0.8`, `scaleInvestCost0.5`).
 
 ### `EvaluateMarkov.py` — Result evaluation
 
