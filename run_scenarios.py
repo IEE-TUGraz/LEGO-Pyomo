@@ -28,7 +28,13 @@ def _json_safe(value):
     return value
 
 
-def build_jobs(scenario_file, case_study_directory, model_type, lego_script, python_exe):
+def _q(s):
+    """Quote a token for a cmd command line (handles spaces in paths)."""
+    s = str(s)
+    return f'"{s}"' if (" " in s or "\t" in s) else s
+
+
+def build_jobs(scenario_file, case_study_directory, model_type, lego_script, python_exe, own_window):
     """Read the scenario Excel, write per-scenario params JSON files, and
     return (output_root, list_of_jobs) where each job is a dict describing
     one scenario invocation."""
@@ -72,7 +78,7 @@ def build_jobs(scenario_file, case_study_directory, model_type, lego_script, pyt
             "--output-dir", str(scenario_output_dir),
             "--scenario-name", scenario_name,
         ]
-        jobs.append({"name": scenario_name, "cmd": cmd, "log": scenario_output_dir / "run.log"})
+        jobs.append({"name": scenario_name, "cmd": cmd, "log": scenario_output_dir / "run.log", "sentinel": scenario_output_dir / ".done", "own_window": own_window})
         printer.information(f"Prepared scenario {idx + 1}/{len(df_scenarios)}: {scenario_name}")
 
     return output_root, jobs
@@ -81,6 +87,37 @@ def build_jobs(scenario_file, case_study_directory, model_type, lego_script, pyt
 def run_job(job):
     """Run a single scenario as a subprocess. Returns (name, returncode, seconds)."""
     start = time.time()
+    if job["own_window"]:
+        # Each scenario gets its own console window you can watch live.
+        # cmd /k keeps the window open after the run, but that means the cmd
+        # process never exits -- so we can't just proc.wait() on it. Instead the
+        # window writes a sentinel file containing LEGO's exit code when done,
+        # and we poll for it. Window stays open; parent still detects completion.
+        sentinel = Path(job["sentinel"])
+        if sentinel.exists():
+            sentinel.unlink()
+
+        # Build: title <name> & <python> LEGO.py ... & echo !ERRORLEVEL! > sentinel
+        # /v:on enables delayed expansion so !ERRORLEVEL! is the scenario's real
+        # exit code (plain %ERRORLEVEL% would expand before the scenario runs).
+        inner = " ".join(_q(c) for c in job["cmd"])
+        full = (
+            f'title LEGO: {job["name"]} & '
+            f'{inner} & '
+            f'echo !ERRORLEVEL! > {_q(str(sentinel))}'
+        )
+        creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+        subprocess.Popen(["cmd", "/v:on", "/k", full], creationflags=creationflags)
+
+        # Wait for the window to report it finished
+        while not sentinel.exists():
+            time.sleep(1)
+        try:
+            rc = int(sentinel.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            rc = -1
+        return job["name"], rc, time.time() - start
+    # Otherwise: capture output to a per-scenario log file (quiet, no windows).
     with open(job["log"], "w", encoding="utf-8") as logf:
         proc = subprocess.run(job["cmd"], stdout=logf, stderr=subprocess.STDOUT)
     return job["name"], proc.returncode, time.time() - start
@@ -106,6 +143,10 @@ if __name__ == "__main__":
     parser.add_argument("--workers", type=int, default=12,
                         help="Maximum number of scenarios to run in parallel (default: 12). "
                              "Automatically capped at the number of scenarios.")
+    parser.add_argument("--windows", action="store_true",
+                        help="Open a separate cmd window per scenario to watch progress "
+                             "live (Windows only). Without this, output goes to "
+                             "results/<scenario>/run.log.")
     args = parser.parse_args()
 
     output_root, jobs = build_jobs(
@@ -114,11 +155,32 @@ if __name__ == "__main__":
         model_type=args.modelType,
         lego_script=args.lego_script,
         python_exe=args.python,
+        own_window=args.windows,
     )
 
     if not jobs:
         printer.warning("No scenarios found, nothing to run.")
         sys.exit(0)
+
+    # Fail early with a clear message if the interpreter or worker script is wrong,
+    # rather than a cryptic "WinError 2" from deep inside subprocess.
+    py = Path(args.python)
+    if not py.is_file():
+        printer.error(
+            f"Python interpreter not found: '{args.python}'\n"
+            f"  Pass --python pointing at the env's python.exe, e.g.\n"
+            f"  C:\\Users\\Server\\anaconda3\\envs\\LEGO-Pyomo_env\\python.exe\n"
+            f"  (find it with: conda activate LEGO-Pyomo_env  &&  where python)"
+        )
+        sys.exit(2)
+    if not Path(args.lego_script).is_file():
+        printer.error(
+            f"LEGO worker script not found: '{args.lego_script}'\n"
+            f"  Run from the folder containing LEGO.py, or pass --lego-script with its full path."
+        )
+        sys.exit(2)
+    printer.information(f"Using interpreter: {py}")
+    printer.information(f"Using worker script: {args.lego_script}")
 
     # Never spawn more workers than there are scenarios
     n_workers = max(1, min(args.workers, len(jobs)))
