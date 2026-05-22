@@ -78,7 +78,7 @@ def build_jobs(scenario_file, case_study_directory, model_type, lego_script, pyt
             "--output-dir", str(scenario_output_dir),
             "--scenario-name", scenario_name,
         ]
-        jobs.append({"name": scenario_name, "cmd": cmd, "log": scenario_output_dir / "run.log", "sentinel": scenario_output_dir / ".done", "own_window": own_window})
+        jobs.append({"name": scenario_name, "cmd": cmd, "log": scenario_output_dir / "run.log", "sentinel": scenario_output_dir / ".done", "bat": scenario_output_dir / "_run_window.bat", "own_window": own_window})
         printer.information(f"Prepared scenario {idx + 1}/{len(df_scenarios)}: {scenario_name}")
 
     return output_root, jobs
@@ -100,14 +100,20 @@ def run_job(job):
         # Build: title <name> & <python> LEGO.py ... & echo !ERRORLEVEL! > sentinel
         # /v:on enables delayed expansion so !ERRORLEVEL! is the scenario's real
         # exit code (plain %ERRORLEVEL% would expand before the scenario runs).
+        # To avoid cmd's fragile nested-quote parsing, we write the commands into
+        # a tiny per-scenario .bat and just run that. No nested quoting for cmd.
         inner = " ".join(_q(c) for c in job["cmd"])
-        full = (
-            f'title LEGO: {job["name"]} & '
-            f'{inner} & '
-            f'echo !ERRORLEVEL! > {_q(str(sentinel))}'
+        bat_path = Path(job["bat"])
+        bat_path.write_text(
+            "@echo off\r\n"
+            "setlocal enabledelayedexpansion\r\n"
+            f"title LEGO: {job['name']}\r\n"
+            f"{inner}\r\n"
+            f"echo !ERRORLEVEL! > {_q(str(sentinel))}\r\n",
+            encoding="utf-8",
         )
         creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-        subprocess.Popen(["cmd", "/v:on", "/k", full], creationflags=creationflags)
+        subprocess.Popen(["cmd", "/k", str(bat_path)], creationflags=creationflags)
 
         # Wait for the window to report it finished
         while not sentinel.exists():

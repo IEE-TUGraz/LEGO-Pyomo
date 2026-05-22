@@ -10,11 +10,11 @@ REM ============================================================
  
 REM --- Python interpreter INSIDE the conda env LEGO-Pyomo_env ---
 REM Find it once with:  conda activate LEGO-Pyomo_env  &&  where python
-set "ENV_PYTHON=C:\Users\Server\anaconda3\envs\LEGO-Pyomo_env\python.exe"
+set "ENV_PYTHON=C:\Users\Simon Malacek\anaconda3\envs\LEGO-Pyomo_env\python.exe"
 
  
-set "CASE_STUDY_DIR=R:\01_Modelle\Simon\Resilience\data\10year"
-set "SCENARIO_FILE=R:\01_Modelle\Simon\Resilience\scenarios\10y_test\Scenario_Input.xlsx"
+set "CASE_STUDY_DIR=C:\Users\Simon Malacek\Code\LEGO-Pyomo\data\fullyear-resilience"
+set "SCENARIO_FILE=C:\Users\Simon Malacek\Nextcloud\A_PhD-IEE\2026-04_ResearchStay_SelfSufficiency\data\benders_test\Scenario_Input.xlsx"
 set "MODEL_TYPE=EXTENSIVE_FORM"
 set "WORKERS=12"
  
