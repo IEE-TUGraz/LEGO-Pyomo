@@ -195,6 +195,36 @@ def _load_results_from_conn(conn):
             results[var_name] = 0
 
     try:
+        val = conn.execute(
+            'SELECT SUM(var_times_coefficient) FROM objective_terms '
+            'WHERE var_name IN ("vGenInvest", "vLineInvest")'
+        ).fetchone()[0]
+        if val is None:
+            raise ValueError
+        results['first_stage_objective'] = float(val)
+    except Exception:
+        # Fallback for old files without var_times_coefficient: compute by hand
+        total = 0.0
+        try:
+            df_inv = pd.read_sql_query('SELECT * FROM vGenInvest', conn)
+            df_cost = pd.read_sql_query('SELECT * FROM pInvestCost', conn)
+            inv_idx = [c for c in df_inv.columns if c not in ('values', 'index')]
+            cost_idx = [c for c in df_cost.columns if c not in ('values', 'index')]
+            merged = df_inv.merge(df_cost, left_on=inv_idx, right_on=cost_idx, suffixes=('', '_cost'))
+            total += (merged['values'] * merged['values_cost']).sum()
+        except Exception:
+            pass
+        try:
+            df_line = pd.read_sql_query('SELECT * FROM vLineInvest', conn)
+            df_cost = pd.read_sql_query('SELECT * FROM pFixedCost', conn)
+            idx_cols = [c for c in df_line.columns if c not in ('values', 'index')]
+            merged = df_line.merge(df_cost, on=idx_cols, suffixes=('', '_cost'))
+            total += (merged['values'] * merged['values_cost']).sum()
+        except Exception:
+            pass
+        results['first_stage_objective'] = total
+
+    try:
         df_inv = pd.read_sql_query('SELECT * FROM vGenInvest', conn)
         results['vGenInvest'] = df_inv['values'].sum()
     except Exception:
@@ -311,7 +341,15 @@ def print_comparison_table(group_entries):
             else:
                 entry[f"{key} %"] = None
 
-    columns = ["Case", "Objective", "Objective %",
+    for entry in group_entries:
+        obj = entry.get('Objective')
+        fso = entry.get('first_stage_objective')
+        if obj not in (-1, 0, None) and fso is not None:
+            entry['1st-Stage [%]'] = fso / abs(obj) * 100
+        else:
+            entry['1st-Stage [%]'] = None
+
+    columns = ["Case", "Objective", "Objective %", "first_stage_objective", "1st-Stage [%]",
                "Work Units", "Status", "Term. Cond.", "MIP-Gap",
                "vGenP", "vCommit", "vStartup", "vStartup %",
                "vShutdown", "vShutdown %", "vPNS", "vEPS"]
@@ -393,6 +431,8 @@ def _print_table(columns, group_entries, display_names=None, highlight_pct_yello
             value = entry.get(col, "")
             if value is None:
                 value = ""
+            elif col == "1st-Stage [%]":
+                value = f"{value:.1f}%"
             elif col.endswith(" %"):
                 value = f"{value:+.0f}%"
             elif col == "MIP-Gap":
