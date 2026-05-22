@@ -70,6 +70,7 @@ def _load_metadata_from_conn(conn, basename):
         'shift': None,
         'stretch_demand': None,
         'scale_vres': None,
+        'scale_invest_cost': None,
         'thermal_invest_only': None,
         'relax_count': None,
         'no_investment': None,
@@ -106,7 +107,7 @@ def _load_metadata_from_conn(conn, basename):
             for key in ['clusters', 'relax_count', 'shift']:
                 if key in row and row[key] not in (None, 'None'):
                     meta[key] = int(float(row[key]))
-            for key in ['stretch_demand', 'scale_vres', 'mip_gap']:
+            for key in ['stretch_demand', 'scale_vres', 'scale_invest_cost', 'mip_gap']:
                 if key in row and row[key] not in (None, 'None'):
                     meta[key] = float(row[key])
             for key in ['network', 'filter_zone', 'shift_tm']:
@@ -787,6 +788,7 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             entry.get('shift'),
             entry.get('stretch_demand'),
             entry.get('scale_vres'),
+            entry.get('scale_invest_cost'),
             entry.get('thermal_invest_only'),
             entry.get('merge_generators'),
             entry.get('shift_tm'),
@@ -803,7 +805,7 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
         groups[key].append(entry)
 
     for group_key, group_entries in groups.items():
-        case_dir, filter_zone, limit_k, clusters, shift, stretch_demand, scale_vres, thermal_invest_only, merge_generators, shift_tm, relax_count, no_investment, rmip, no_crossover, force_barrier, mip_gap, network, commit_consumption, startup_consumption = group_key
+        case_dir, filter_zone, limit_k, clusters, shift, stretch_demand, scale_vres, scale_invest_cost, thermal_invest_only, merge_generators, shift_tm, relax_count, no_investment, rmip, no_crossover, force_barrier, mip_gap, network, commit_consumption, startup_consumption = group_key
 
         # Print group header
         parts = []
@@ -821,6 +823,8 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             parts.append(f"stretch_demand={stretch_demand}")
         if scale_vres and scale_vres != 1.0:
             parts.append(f"scale_vres={scale_vres}")
+        if scale_invest_cost and scale_invest_cost != 1.0:
+            parts.append(f"scale_invest_cost={scale_invest_cost}")
         if thermal_invest_only:
             parts.append("thermal-invest-only")
         if merge_generators:

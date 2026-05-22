@@ -66,6 +66,7 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 | `--shift`                | 0              | Shift time series by N hours                                                                                |
 | `--stretch-demand`       | 1.0            | Stretch demand around its mean by a factor                                                                  |
 | `--scale-vres`           | 1.0            | Multiply `MaxProd` of all VRES generators (PV, Wind, RoR) by this factor                                    |
+| `--scale-invest-cost`    | 1.0            | Multiply `pInvestCost` of all generators (ThermalGen, VRES, Storage) by this factor                         |
 | `--thermal-invest-only`  | off            | Set `ExisUnits=1` for all VRES and Storage generators — only thermal generators remain investable           |
 | `--merge-generators`     | off            | Merge generators of same technology at same bus before clustering                                           |
 | `--enable-strict-markov` | off            | Also run the Markov-Strict variant (push constraints active)                                                |
@@ -85,7 +86,7 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 
 **Output naming**: `MK-{identifier}-{edgeHandling}.sqlite`. Regret files append `-regret` or `-invest-regret`.
 Non-default parameters are encoded in the identifier (e.g. `filterZoneR1`, `relaxed3`, `rMIP`, `mipGap0.01`,
-`networkTP`, `commitConsumption0.5`, `startupConsumption2`, `shiftTM2`).
+`networkTP`, `commitConsumption0.5`, `startupConsumption2`, `shiftTM2`, `scaleVRES0.8`, `scaleInvestCost0.5`).
 
 ### `EvaluateMarkov.py` — Result evaluation
 

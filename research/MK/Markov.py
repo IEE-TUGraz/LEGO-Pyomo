@@ -129,7 +129,7 @@ def _read_sqlite_run_info(sqlite_file: str) -> dict | None:
 
 _SIBLING_COMPARE_KEYS = [
     'case_study_directory', 'limit_k', 'clusters', 'shift', 'stretch_demand',
-    'scale_vres', 'thermal_invest_only', 'merge_generators',
+    'scale_vres', 'scale_invest_cost', 'thermal_invest_only', 'merge_generators',
     'relax_count', 'no_investment', 'rmip', 'no_crossover', 'force_barrier',
     'mip_gap', 'network', 'commit_consumption', 'startup_consumption', 'edge_handling',
     'shift_tm',
@@ -231,6 +231,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          work_limit: float | None = None,
                          filter_zone: str | None = None, limitK: str | None = None, clusters: int = 1,
                          shift: int = 0, stretch_demand: float = 1.0, scale_vres: float = 1.0,
+                         scale_invest_cost: float = 1.0,
                          thermal_invest_only: bool = False, merge_generators: bool = False,
                          no_overwrite: bool = False, network: str | None = None,
                          commit_consumption: float = 1.0, startup_consumption: float = 1.0,
@@ -295,6 +296,13 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         printer.information(f"Scaling VRES MaxProd by {scale_vres}")
         cs.dPower_VRES['MaxProd'] *= scale_vres
         identifier_parts.append(f"scaleVRES{scale_vres:g}")
+
+    if scale_invest_cost != 1.0:
+        printer.information(f"Scaling InvestCostEUR by {scale_invest_cost}")
+        cs.dPower_ThermalGen['InvestCostEUR'] *= scale_invest_cost
+        cs.dPower_VRES['InvestCostEUR'] *= scale_invest_cost
+        cs.dPower_Storage['InvestCostEUR'] *= scale_invest_cost
+        identifier_parts.append(f"scaleInvestCost{scale_invest_cost:g}")
 
     if thermal_invest_only:
         printer.information("Setting ExisUnits=1 for all non-thermal generators (thermalInvestOnly)")
@@ -418,6 +426,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         shift=shift if shift != 0 else None,
         stretch_demand=stretch_demand if stretch_demand != 1.0 else None,
         scale_vres=scale_vres if scale_vres != 1.0 else None,
+        scale_invest_cost=scale_invest_cost if scale_invest_cost != 1.0 else None,
         thermal_invest_only=thermal_invest_only if thermal_invest_only else None,
         merge_generators=merge_generators if merge_generators else None,
         relax_count=count_relaxed if count_relaxed > 0 else None,
@@ -658,6 +667,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
          clusters: int = 1, cluster_stepsize: int = 1, cluster_steps: int = 0,
          filter_zone: str | None = None, limitK: str | None = None,
          shift: int = 0, stretch_demand: float = 1, scale_vres: float = 1.0,
+         scale_invest_cost: float = 1.0,
          thermal_invest_only: bool = False, merge_generators: bool = False,
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, invest_regret: bool = False,
          no_investment: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False,
@@ -802,7 +812,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
 
                 sqlite_files, case_labels, _ = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret,
                                                                     no_investment, rmip, no_crossover, force_barrier, mip_gap, work_limit, filter_zone=filter_zone, limitK=limitK,
-                                                                    clusters=cluster, shift=shift, stretch_demand=stretch_demand, scale_vres=scale_vres, thermal_invest_only=thermal_invest_only,
+                                                                    clusters=cluster, shift=shift, stretch_demand=stretch_demand, scale_vres=scale_vres, scale_invest_cost=scale_invest_cost, thermal_invest_only=thermal_invest_only,
                                                                     merge_generators=merge_generators, no_overwrite=no_overwrite, network=network,
                                                                     commit_consumption=commit_consumption, startup_consumption=startup_consumption,
                                                                     shift_tm=shift_tm)
@@ -833,6 +843,7 @@ if __name__ == "__main__":
     parser.add_argument("--shift", type=int, default=0, help="Shift the time series by N hours (for testing purposes), e.g., 15 to shift by 15 hours")
     parser.add_argument("--stretch-demand", type=float, default=1.0, help="Stretch the demand by a factor (for testing purposes), e.g., 1.1 to increase max of demand by 5% and decrease min by 5%")
     parser.add_argument("--scale-vres", type=float, default=1.0, help="Scale the MaxProd of all VRES generators (PV, Wind, RoR) by this factor (default: 1.0, no change)")
+    parser.add_argument("--scale-invest-cost", type=float, default=1.0, help="Scale the investment cost (pInvestCost) of all generators (ThermalGen, VRES, Storage) by this factor (default: 1.0, no change)")
     parser.add_argument("--thermal-invest-only", action="store_true", help="Set ExisUnits=1 for all non-thermal generators (VRES, Storage) so only thermal generators are investable")
     parser.add_argument("--merge-generators", action="store_true", help="Merge generators of the same technology at the same bus into one representative generator before clustering and solving")
     parser.add_argument("--reuse-inputfiles", action="store_true", help="Reuse input files (e.g., after shortening) instead of copying them to a new folder")
