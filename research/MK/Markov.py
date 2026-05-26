@@ -188,9 +188,15 @@ def _find_sibling_runs(file_prefix: str, current_edge_params: dict) -> list[dict
 _CLEAN_TERMINATION_CONDITIONS = frozenset({'WorkLimit reached', 'optimal'})
 
 
-def _should_skip_smart(current_work_limit: float | None, siblings: list[dict]) -> tuple[bool, str]:
+def _should_skip_smart(current_work_limit: float | None, siblings: list[dict]) -> tuple[bool, str, str | None]:
     """
     Decide whether to skip a solve based on sibling run results (--no-overwrite smart check).
+
+    Returns (skip, reason, sibling_file):
+      - sibling_file is the path to the most relevant sibling SQLite when skip=True:
+          Rule 1 (optimal sibling) → the optimal sibling's file.
+          Rule 2 (WL comparison)   → the best clean sibling's file (may not be optimal).
+        sibling_file is None when skip=False (re-run paths).
 
     Skip when:
       - any sibling solved to optimality, OR
@@ -205,12 +211,12 @@ def _should_skip_smart(current_work_limit: float | None, siblings: list[dict]) -
     "Not ok" = any other termination_condition → re-run regardless of work_limit comparison.
     """
     if not siblings:
-        return False, "no sibling runs found"
+        return False, "no sibling runs found", None
 
-    # Rule 1: any sibling solved optimally → always skip
+    # Rule 1: any sibling solved optimally → always skip; return its file for downstream use
     for s in siblings:
         if s['termination_condition'] == 'optimal':
-            return True, f"previous run (work_limit={s['work_limit']}) solved to optimality"
+            return True, f"previous run (work_limit={s['work_limit']}) solved to optimality", s['file']
 
     # Separate clean siblings (ran budget to completion) from not-ok siblings (killed / error)
     clean_siblings = [s for s in siblings if s['termination_condition'] in _CLEAN_TERMINATION_CONDITIONS]
@@ -218,7 +224,7 @@ def _should_skip_smart(current_work_limit: float | None, siblings: list[dict]) -
     if not clean_siblings:
         # All siblings had non-ok status — budget was not genuinely consumed, re-run in any case
         not_ok_tcs = ', '.join(str(s['termination_condition']) for s in siblings)
-        return False, f"all previous run(s) had non-ok status ({not_ok_tcs}) — re-running"
+        return False, f"all previous run(s) had non-ok status ({not_ok_tcs}) — re-running", None
 
     # Rule 2: compare current work_limit against the best (highest) clean sibling.
     # None (unlimited) is treated as ∞.
@@ -241,12 +247,12 @@ def _should_skip_smart(current_work_limit: float | None, siblings: list[dict]) -
         return True, (
             f"previous run with work_limit={wl_str}{wu_str} did not solve to optimality; "
             f"current work_limit={cur_str} is not strictly higher"
-        )
+        ), best['file']  # WL-comparison skip: pass the best sibling's file for downstream use (e.g. invest-regret)
 
     limit_strs = ', '.join(
         f"work_limit={'none' if s['work_limit'] is None else s['work_limit']}" for s in clean_siblings
     )
-    return False, f"current work_limit={current_work_limit} is strictly higher than all clean run(s) ({limit_strs}) — re-running"
+    return False, f"current work_limit={current_work_limit} is strictly higher than all clean run(s) ({limit_strs}) — re-running", None
 
 
 def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
@@ -502,6 +508,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
 
         # Part 1: Solve the main model (or skip if no-overwrite and result exists)
         case_skipped = False
+        sibling_skip_file = None  # set to the optimal sibling's .sqlite path on a sibling-skip
         if no_overwrite:
             if os.path.exists(f"{file_prefix}.sqlite"):
                 info = _read_sqlite_run_info(f"{file_prefix}.sqlite")
@@ -516,10 +523,11 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                 current_edge_params = {**run_params, "edge_handling": edge_handling_normalized}
                 siblings = _find_sibling_runs(file_prefix, current_edge_params)
                 if siblings:
-                    skip, reason = _should_skip_smart(run_params.get('work_limit'), siblings)
+                    skip, reason, sibling_file = _should_skip_smart(run_params.get('work_limit'), siblings)
                     if skip:
                         printer.information(f"  Skipping (--no-overwrite smart check): {reason}")
                         case_skipped = True
+                        sibling_skip_file = sibling_file  # non-None only when skip is due to optimality
                     else:
                         printer.information(f"  Running despite existing sibling run(s): {reason}")
         if not case_skipped:
@@ -648,19 +656,34 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
 
         # Part 2: Invest-regret (independent of whether main case was solved or skipped)
         if invest_regret and edgeHandlingType != "Truth ":
-            if no_overwrite and os.path.exists(f"{file_prefix}-invest-regret.sqlite"):
-                printer.information(f"  File '{file_prefix}-invest-regret.sqlite' already exists, skipping invest-regret (--no-overwrite)")
+            ir_file = f"{file_prefix}-invest-regret.sqlite"
+            run_invest_regret = True
+            if no_overwrite and os.path.exists(ir_file):
+                ir_info = _read_sqlite_run_info(ir_file)
+                ir_tc = ir_info.get('stats', {}).get('termination_condition') if ir_info else None
+                if ir_tc == 'optimal':
+                    printer.information(f"  File '{ir_file}' already has optimal solution, skipping invest-regret (--no-overwrite)")
+                    run_invest_regret = False
+                else:
+                    printer.information(f"  File '{ir_file}' exists but status is '{ir_tc or 'unknown'}' — re-running invest-regret")
             elif case_skipped and not os.path.exists(f"{file_prefix}.sqlite"):
-                printer.information(f"  Skipping invest-regret: '{file_prefix}.sqlite' does not exist (smart-skipped)")
-            else:
+                if sibling_skip_file is not None:
+                    printer.information(f"  Main solve was sibling-skipped; will use vGenInvest from optimal sibling '{sibling_skip_file}'")
+                else:
+                    printer.information(f"  Skipping invest-regret: no main file and no optimal sibling (WL-comparison skip)")
+                    run_invest_regret = False
+            if run_invest_regret:
                 try:
                     printer.information(f"Calculating invest-regret for '{edgeHandlingType}': fixing vGenInvest in truth model")
                     invest_regret_lego = truth_lego.copy()
 
-                    # Load vGenInvest values: from solved model if available, otherwise from existing sqlite
+                    # Load vGenInvest values: from in-memory model, or from an existing sqlite file.
+                    # When the main solve was skipped, use the exact file if it exists, or the optimal
+                    # sibling's file if the exact file was never created (sibling-skip path).
                     if case_skipped:
-                        printer.information(f"Loading vGenInvest from '{file_prefix}.sqlite'")
-                        cnx = sqlite3.connect(f"{file_prefix}.sqlite")
+                        source_file = f"{file_prefix}.sqlite" if os.path.exists(f"{file_prefix}.sqlite") else sibling_skip_file
+                        printer.information(f"Loading vGenInvest from '{source_file}'")
+                        cnx = sqlite3.connect(source_file)
                         df_inv = pd.read_sql("SELECT * FROM vGenInvest", cnx)
                         cnx.close()
                         gen_invest_values = dict(zip(df_inv.iloc[:, 0], df_inv['values']))

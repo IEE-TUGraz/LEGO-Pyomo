@@ -35,7 +35,7 @@ See [`README.md`](README.md) for usage, key concepts, and CLI parameter referenc
 **SQLite file discovery**: `EvaluateMarkov.py` discovers all `MK-*.sqlite` files excluding those ending in `-regret.sqlite` or `-invest-regret.sqlite`.
 
 **`--no-overwrite` check**: Two-stage logic applied per edge-handling type:
-1. **Exact file exists** (`{file_prefix}.sqlite`): read its `solver_statistics.termination_condition`. If `'optimal'` → skip. If anything else (e.g. `'WorkLimit reached'`, `'infeasible'`, `None`/unreadable) → re-run and overwrite.
+1. **Exact file exists** (`{file_prefix}.sqlite`): read its `solver_statistics.termination_condition`. If `'optimal'` → skip. If anything else (e.g. `'WorkLimit reached'`, `'infeasible'`, `None`/unreadable) → re-run and overwrite. The same status-based check applies to the `-invest-regret.sqlite` file (see Part 2 below).
 2. **Exact file absent**: `_find_sibling_runs()` searches for SQLite files in the same directory sharing all `run_parameters` except `work_limit`. `_should_skip_smart()` then decides:
    - Any sibling solved to optimality → skip.
    - Otherwise, split siblings into *clean* (termination_condition ∈ `{'WorkLimit reached', 'optimal'}` — solver genuinely consumed its budget) and *not-ok* (killed / OOM / error — budget not really consumed).
@@ -43,3 +43,5 @@ See [`README.md`](README.md) for usage, key concepts, and CLI parameter referenc
    - Otherwise, find the best clean sibling (highest `work_limit`; `None` = unlimited = ∞). If current `work_limit` is **not strictly higher** than the best clean sibling's → skip. If strictly higher → re-run.
    - Consequence: unlimited current WL > any finite sibling WL → re-run; finite current WL vs. unlimited clean sibling → skip; equal WLs → skip.
    If the main file is missing due to a smart skip, regret and invest-regret are also skipped for that edge-handling type.
+- **Part 2 — invest-regret no-overwrite**: The `-invest-regret.sqlite` file check mirrors the main-file logic. If it exists and `termination_condition == 'optimal'` → skip. If it exists with any other status → re-run (log the status). `vGenInvest` source priority when `case_skipped=True`: (1) the exact `{file_prefix}.sqlite` if it exists, (2) `sibling_skip_file` for any sibling-skip (both Rule-1 optimal and Rule-2 WL-comparison). Invest-regret is only skipped when `sibling_skip_file is None` (which only occurs when all siblings had non-ok status and the re-run path was taken — i.e. `case_skipped` would be False). `_should_skip_smart` returns a third value `sibling_file` — the best sibling's path — for both skip rules; `None` only on re-run paths.
+
