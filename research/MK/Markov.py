@@ -183,44 +183,70 @@ def _find_sibling_runs(file_prefix: str, current_edge_params: dict) -> list[dict
     return siblings
 
 
+# Termination conditions that mean the solver genuinely consumed its budget
+# (as opposed to being killed, running out of memory, or erroring out).
+_CLEAN_TERMINATION_CONDITIONS = frozenset({'WorkLimit reached', 'optimal'})
+
+
 def _should_skip_smart(current_work_limit: float | None, siblings: list[dict]) -> tuple[bool, str]:
     """
     Decide whether to skip a solve based on sibling run results (--no-overwrite smart check).
 
-    Skip only when:
+    Skip when:
       - any sibling solved to optimality, OR
-      - current has a finite work-limit AND a sibling with a strictly higher finite work-limit
-        did not solve to optimality (higher budget already failed; lower won't do better).
+      - the best "clean" sibling (highest work_limit among those that ran to budget exhaustion)
+        has a work_limit >= current work_limit (no improvement possible with the same or lower budget).
 
-    Run in all other cases, including:
-      - no-limit sibling not optimal (likely aborted externally)
-      - lower-limit sibling not optimal regardless of whether it reached its limit
+    Re-run when:
+      - current work_limit is strictly higher than all clean siblings' work_limits (None = unlimited = ∞), OR
+      - all non-optimal siblings had non-ok status (killed / OOM / error — budget was not genuinely consumed).
+
+    "Clean" = termination_condition in _CLEAN_TERMINATION_CONDITIONS (solver ran its budget normally).
+    "Not ok" = any other termination_condition → re-run regardless of work_limit comparison.
     """
     if not siblings:
         return False, "no sibling runs found"
 
+    # Rule 1: any sibling solved optimally → always skip
     for s in siblings:
         if s['termination_condition'] == 'optimal':
             return True, f"previous run (work_limit={s['work_limit']}) solved to optimality"
 
-    if current_work_limit is not None:
-        higher_finite = [
-            s for s in siblings
-            if s['work_limit'] is not None and s['work_limit'] > current_work_limit
-        ]
-        if higher_finite:
-            best = max(higher_finite, key=lambda s: s['work_limit'])
-            return True, (
-                f"previous run with higher work_limit={best['work_limit']} "
-                f"(used {best['work_units']:.1f} WU) did not solve to optimality"
-                if best['work_units'] is not None
-                else f"previous run with higher work_limit={best['work_limit']} did not solve to optimality"
-            )
+    # Separate clean siblings (ran budget to completion) from not-ok siblings (killed / error)
+    clean_siblings = [s for s in siblings if s['termination_condition'] in _CLEAN_TERMINATION_CONDITIONS]
+
+    if not clean_siblings:
+        # All siblings had non-ok status — budget was not genuinely consumed, re-run in any case
+        not_ok_tcs = ', '.join(str(s['termination_condition']) for s in siblings)
+        return False, f"all previous run(s) had non-ok status ({not_ok_tcs}) — re-running"
+
+    # Rule 2: compare current work_limit against the best (highest) clean sibling.
+    # None (unlimited) is treated as ∞.
+    def _wl_sort_key(s):
+        return float('inf') if s['work_limit'] is None else s['work_limit']
+
+    best = max(clean_siblings, key=_wl_sort_key)
+    best_wl = best['work_limit']
+
+    # Is current strictly higher than best?  unlimited > finite; finite not > unlimited; equal → not higher
+    if current_work_limit is None:
+        current_higher = best_wl is not None  # unlimited > any finite
+    else:
+        current_higher = best_wl is not None and current_work_limit > best_wl
+
+    if not current_higher:
+        wu_str = f" (used {best['work_units']:.1f} WU)" if best['work_units'] is not None else ""
+        wl_str = 'none (unlimited)' if best_wl is None else best_wl
+        cur_str = 'none (unlimited)' if current_work_limit is None else current_work_limit
+        return True, (
+            f"previous run with work_limit={wl_str}{wu_str} did not solve to optimality; "
+            f"current work_limit={cur_str} is not strictly higher"
+        )
 
     limit_strs = ', '.join(
-        f"work_limit={'none' if s['work_limit'] is None else s['work_limit']}" for s in siblings
+        f"work_limit={'none' if s['work_limit'] is None else s['work_limit']}" for s in clean_siblings
     )
-    return False, f"previous run(s) ({limit_strs}) not optimal — re-running"
+    return False, f"current work_limit={current_work_limit} is strictly higher than all clean run(s) ({limit_strs}) — re-running"
 
 
 def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
@@ -478,8 +504,13 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
         case_skipped = False
         if no_overwrite:
             if os.path.exists(f"{file_prefix}.sqlite"):
-                printer.information(f"  File '{file_prefix}.sqlite' already exists, skipping (--no-overwrite)")
-                case_skipped = True
+                info = _read_sqlite_run_info(f"{file_prefix}.sqlite")
+                tc = info.get('stats', {}).get('termination_condition') if info else None
+                if tc == 'optimal':
+                    printer.information(f"  File '{file_prefix}.sqlite' already has optimal solution, skipping (--no-overwrite)")
+                    case_skipped = True
+                else:
+                    printer.information(f"  File '{file_prefix}.sqlite' exists but status is '{tc or 'unknown'}' — re-running")
             elif run_params is not None:
                 edge_handling_normalized = edgeHandlingType.strip().replace('.', '').replace(' ', '')
                 current_edge_params = {**run_params, "edge_handling": edge_handling_normalized}

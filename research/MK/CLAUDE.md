@@ -34,4 +34,12 @@ See [`README.md`](README.md) for usage, key concepts, and CLI parameter referenc
 **Parallel file loading**: `EvaluateMarkov.py` loads all SQLite files concurrently via `ThreadPoolExecutor`. Each thread opens its own connection so thread-safety is not an issue. Entry ordering after load is non-deterministic but is normalised by the per-group sort before printing.
 **SQLite file discovery**: `EvaluateMarkov.py` discovers all `MK-*.sqlite` files excluding those ending in `-regret.sqlite` or `-invest-regret.sqlite`.
 
-**`--no-overwrite` smart sibling check**: When the exact output file does not exist, `_find_sibling_runs()` searches for SQLite files in the same directory that share all `run_parameters` except `work_limit`. `_should_skip_smart()` then decides: skip only if any sibling solved to optimality, or if the current run has a finite work-limit and a sibling with a strictly higher finite work-limit did not solve to optimality. All other cases (no-limit sibling not optimal, lower-limit sibling regardless of whether it reached its limit) → run, treating non-optimal results without a higher budget as likely externally aborted. If the main file is missing due to a smart skip, regret and invest-regret are also skipped for that edge-handling type.
+**`--no-overwrite` check**: Two-stage logic applied per edge-handling type:
+1. **Exact file exists** (`{file_prefix}.sqlite`): read its `solver_statistics.termination_condition`. If `'optimal'` → skip. If anything else (e.g. `'WorkLimit reached'`, `'infeasible'`, `None`/unreadable) → re-run and overwrite.
+2. **Exact file absent**: `_find_sibling_runs()` searches for SQLite files in the same directory sharing all `run_parameters` except `work_limit`. `_should_skip_smart()` then decides:
+   - Any sibling solved to optimality → skip.
+   - Otherwise, split siblings into *clean* (termination_condition ∈ `{'WorkLimit reached', 'optimal'}` — solver genuinely consumed its budget) and *not-ok* (killed / OOM / error — budget not really consumed).
+   - If *all* siblings are not-ok → re-run in any case.
+   - Otherwise, find the best clean sibling (highest `work_limit`; `None` = unlimited = ∞). If current `work_limit` is **not strictly higher** than the best clean sibling's → skip. If strictly higher → re-run.
+   - Consequence: unlimited current WL > any finite sibling WL → re-run; finite current WL vs. unlimited clean sibling → skip; equal WLs → skip.
+   If the main file is missing due to a smart skip, regret and invest-regret are also skipped for that edge-handling type.
