@@ -13,6 +13,7 @@ charge_discharge_warning_combinations = [
 ]
 
 scenario_a = "ScenarioA"
+scenario_b = "ScenarioB"
 
 network_duplicate_lines_different_c = [
     (
@@ -41,7 +42,16 @@ network_duplicate_lines_different_c = [
     (
         [
             ("Node_2", "Node_3", "c1", scenario_a),
-            ("Node_2", "Node_3", "c2", "ScenarioB"),
+            ("Node_3", "Node_2", "c2", scenario_a),
+            ("Node_4", "Node_5", "c3", scenario_b),
+            ("Node_5", "Node_4", "c4", scenario_b),
+        ],
+        True,
+    ),
+    (
+        [
+            ("Node_2", "Node_3", "c1", scenario_a),
+            ("Node_2", "Node_3", "c2", scenario_b),
         ],
         False,
     ),
@@ -74,7 +84,16 @@ network_duplicate_lines_same_c = [
     (
         [
             ("Node_1", "Node_2", "c1", scenario_a),
-            ("Node_1", "Node_2", "c1", "ScenarioB"),
+            ("Node_2", "Node_1", "c1", scenario_a),
+            ("Node_3", "Node_4", "c2", scenario_b),
+            ("Node_4", "Node_3", "c2", scenario_b),
+        ],
+        True,
+    ),
+    (
+        [
+            ("Node_1", "Node_2", "c1", scenario_a),
+            ("Node_1", "Node_2", "c1", scenario_b),
         ],
         False,
     ),
@@ -252,7 +271,7 @@ def test_network_duplicate_lines_different_c(tmp_path, network_entries, expected
     with open(log_path) as log_file:
         log_content = log_file.read()
 
-    warning_displayed = "Warning: Parallel network lines found in (at least) scenario " in log_content
+    warning_displayed = "of parallel network lines found, e.g. in scenario" in log_content
 
     assert warning_displayed == expected_warning_displayed
 
@@ -276,8 +295,9 @@ def test_network_duplicate_lines_same_c(tmp_path, network_entries, expected_erro
         create_case_study(storage, False, network_entries)
     except ValueError as error:
         error_message = str(error)
+        printer.error(error_message)
 
-    error_displayed = ("Duplicate network line found in (at least) scenario " in error_message and
+    error_displayed = ("duplicate network line " in error_message and " found, e.g. in scenario" in error_message and
                        "If the lines should be parallel, assign different 'c' for each parallel line." in error_message)
 
     assert error_displayed == expected_error_displayed
