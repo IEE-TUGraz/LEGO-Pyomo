@@ -490,6 +490,32 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
     return sqlite_files, sqlite_labels, lego_models
 
 
+def _apply_solver_options(lego: LEGO, run_params: dict | None) -> None:
+    """Explicitly re-stamp solver options from run_params onto a copied lego model.
+
+    After truth_lego.copy() (deepcopy of a solved model) the plain model attributes
+    (pWorkLimit, pMIPGap, pDisableCrossover, pForceBarrier) should survive, but
+    re-setting them here makes the enforcement explicit, visible in logs, and robust
+    against any future changes to how LEGO.copy() works.  Mirrors the logging done
+    in the main solve loop inside execute_case_study().
+    """
+    if run_params is None:
+        return
+    model = lego.model
+    wl = run_params.get('work_limit')
+    if wl is not None:
+        model.pWorkLimit = wl
+        printer.information(f"  Work limit: {wl}")
+    mg = run_params.get('mip_gap')
+    if mg is not None:
+        model.pMIPGap = mg
+        printer.information(f"  MIP gap: {mg}")
+    if run_params.get('force_barrier'):
+        model.pForceBarrier = True
+    if run_params.get('no_crossover'):
+        model.pDisableCrossover = True
+
+
 def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_sqlite: bool, calculate_regret: bool, skip_truth: bool, invest_regret: bool = False, run_params: dict = None, no_overwrite: bool = False, tee: bool = True) -> typing.Tuple[typing.List[str], typing.List[str], typing.Dict[str, LEGO]]:
     ########################################################################################################################
     # Evaluation
@@ -622,6 +648,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
             else:
                 try:
                     regret_lego = truth_lego.copy()
+                    _apply_solver_options(regret_lego, run_params)
 
                     # Load vCommit values from sqlite if case was skipped
                     if case_skipped:
@@ -676,6 +703,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                 try:
                     printer.information(f"Calculating invest-regret for '{edgeHandlingType}': fixing vGenInvest in truth model")
                     invest_regret_lego = truth_lego.copy()
+                    _apply_solver_options(invest_regret_lego, run_params)
 
                     # Load vGenInvest values: from in-memory model, or from an existing sqlite file.
                     # When the main solve was skipped, use the exact file if it exists, or the optimal

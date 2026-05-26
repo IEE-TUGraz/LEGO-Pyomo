@@ -142,8 +142,24 @@ def _load_metadata_from_conn(conn, basename):
                 meta['termination_condition'] = str(row['termination_condition'])
             lb = row.get('lower_bound')
             ub = row.get('upper_bound')
-            if lb is not None and ub is not None and ub != 0:
-                meta['achieved_mip_gap'] = abs(float(ub) - float(lb)) / abs(float(ub))
+            try:
+                lb_f = float(lb) if lb is not None else None
+                ub_f = float(ub) if ub is not None else None
+            except (TypeError, ValueError):
+                lb_f = ub_f = None
+            if lb_f is not None and ub_f is not None and ub_f != 0 and not (lb_f != lb_f) and not (ub_f != ub_f):
+                meta['achieved_mip_gap'] = abs(ub_f - lb_f) / abs(ub_f)
+            else:
+                # Fallback: use the mip_gap column written directly by Gurobi (present in OOM runs
+                # where bounds are not populated but optimizer._solver_model.MIPGap is still valid).
+                direct_gap = row.get('mip_gap')
+                if direct_gap is not None:
+                    try:
+                        g = float(direct_gap)
+                        if g == g:  # not NaN
+                            meta['achieved_mip_gap'] = g
+                    except (TypeError, ValueError):
+                        pass
     except Exception:
         pass
     if not has_run_parameters:
