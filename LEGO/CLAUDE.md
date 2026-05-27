@@ -29,6 +29,16 @@ LEGO(cs: CaseStudy = None, model: pyo.Model = None, results=None)
 | `get_number_of_constraints()`           | `int`                              | Count of constraint instances                     |
 | `copy()`                                | `LEGO`                             | Deep copy of instance                             |
 
+#### `solve_model` recovery behavior (Gurobi path)
+
+`solve_model(..., tee=True, raise_on_no_solution=False)` uses `gurobi_persistent` with `load_solutions=False` and owns all solver-failure recovery:
+- **WorkLimit / error-with-solution**: if the solver returns `status=error` but `SolCount > 0` (e.g. work limit hit mid-solve), it promotes the status to `warning`, patches `termination_condition` to `"WorkLimit reached"` (only when Gurobi's `Status == GRB.WORK_LIMIT`), then loads the partial solution.
+- **Exception-with-solution** (e.g. OOM): if `solve()` throws but a solution exists, it recovers via `optimizer.load_vars()`.
+- **No solution**: builds a synthetic `SolverResults` (`status=error`, `termination_condition="Out of Memory"` for a Gurobi OOM `GurobiError`). By default (`raise_on_no_solution=True`) it raises a `RuntimeError`, otherwise it logs via `printer.error` and returns.
+- **Side effects**: sets `self.results`, `self.work_units`, `self.mip_gap` (extracted even after a crash), and `self.has_solution` (gate writes/result handling on this). Options are applied silently (callers/`_apply_solver_options` do the logging).
+
+Non-Gurobi solvers take the `else` branch: solutions load automatically (`load_solutions=True`), `self.has_solution` is derived from the termination condition (`optimal`/`feasible`), and `work_units`/`mip_gap` stay `None`. The solver is chosen from the case study's `pSolver` unless `solver_name` is passed.
+
 ### Model Types (ModelType enum)
 
 - **`DETERMINISTIC`**: Single optimization problem (default, most common)

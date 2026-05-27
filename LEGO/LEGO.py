@@ -4,9 +4,11 @@ import os
 import time
 import typing
 
+import gurobipy
 import pyomo.environ as pyo
 import pyomo.opt.results.results_
 from pyomo.core import TransformationFactory
+from pyomo.opt import SolutionStatus, SolverResults, SolverStatus
 
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
@@ -79,7 +81,7 @@ class LEGO:
 
         return self.model, self.timings["model_building"]
 
-    def solve_model(self, model_type: ModelType = ModelType.DETERMINISTIC, solver_name: str = None, already_solved_ok=False) -> (pyomo.opt.results.results_.SolverResults, float, float):
+    def solve_model(self, model_type: ModelType = ModelType.DETERMINISTIC, solver_name: str = None, already_solved_ok=False, tee: bool = True, raise_on_no_solution: bool = True) -> (pyomo.opt.results.results_.SolverResults, float, float):
         if not already_solved_ok and self.results is not None:
             raise RuntimeError("Model already solved, please set already_solved_ok to True if that's intentional")
 
@@ -95,6 +97,7 @@ class LEGO:
         start_time = time.time()
         self.work_units = None  # Initialize work_units
         self.mip_gap = None  # Initialize mip_gap
+        self.has_solution = None  # Initialize has_solution (set by the Gurobi solve path)
         match model_type:
             case ModelType.DETERMINISTIC:
                 # Use persistent solver for Gurobi to access work units
@@ -110,15 +113,60 @@ class LEGO:
                         optimizer.options['MIPGap'] = self.model.pMIPGap
                     if getattr(self.model, 'pWorkLimit', None) is not None:
                         optimizer.options['WorkLimit'] = self.model.pWorkLimit
+                    solve_exception = None
                     try:
-                        results = optimizer.solve(tee=True)
+                        results = optimizer.solve(tee=tee, load_solutions=False)
                     except Exception as e:
                         if "duals" in str(e).lower():
                             # MIP solutions don't have duals — remove suffix and retry
                             self.model.del_component(self.model.dual)
-                            results = optimizer.solve(tee=True)
+                            try:
+                                results = optimizer.solve(tee=tee, load_solutions=False)
+                            except Exception as retry_e:
+                                solve_exception = retry_e
+                                results = None
+                                printer.warning(f"Solver raised exception: {retry_e}")
                         else:
-                            raise
+                            solve_exception = e
+                            results = None
+                            printer.warning(f"Solver raised exception: {e}")
+                    has_solution = optimizer._solver_model.SolCount > 0
+                    if has_solution:
+                        if results is not None:
+                            # If the solver returned an error but there is a feasible solution (e.g.,
+                            # work limit hit mid-solve), promote to warning so Pyomo can load it.
+                            if results.solver.status == SolverStatus.error:
+                                results.solver.status = SolverStatus.warning
+                                if optimizer._solver_model.Status == gurobipy.GRB.WORK_LIMIT:
+                                    results.solver.termination_condition = "WorkLimit reached"
+                                if len(results.solution) > 0:
+                                    results.solution[0].status = SolutionStatus.feasible
+                                printer.error("Solver returned an error status but a feasible solution was found — loading and using it")
+                            self.model.solutions.load_from(results)
+                        else:
+                            # solve() threw (e.g. out of memory) but a feasible solution exists —
+                            # recover it directly from Gurobi instead of failing.
+                            try:
+                                optimizer.load_vars()
+                                printer.error("Solver raised an exception but a feasible solution was found — loaded partial solution and using it")
+                            except Exception as load_e:
+                                printer.warning(f"Could not load solution after solver exception: {load_e}")
+                                has_solution = False
+                    if results is None:
+                        # No results object (solve threw) — build a synthetic one so downstream code
+                        # always has a consistent SolverResults to read.
+                        results = SolverResults()
+                        results.solver.status = SolverStatus.error
+                        if isinstance(solve_exception, gurobipy.GurobiError) and solve_exception.errno == gurobipy.GRB.Error.OUT_OF_MEMORY:
+                            results.solver.termination_condition = "Out of Memory"
+                    if not has_solution and results.solver.status == SolverStatus.error:
+                        # Solver errored with no feasible solution to fall back on.
+                        if raise_on_no_solution:
+                            raise RuntimeError(
+                                f"Solver returned error status with no feasible solution: {results.solver.termination_condition}"
+                            )
+                        printer.error(f"Solver returned error status with no feasible solution ({results.solver.termination_condition}) — proceeding with empty result")
+                    self.has_solution = has_solution
                     objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
                     # Extract work units and MIP gap from Gurobi model
                     try:
@@ -136,14 +184,21 @@ class LEGO:
                 else:
                     optimizer = pyo.SolverFactory(solver_name)
                     try:
-                        results = optimizer.solve(self.model, tee=True)
+                        results = optimizer.solve(self.model, tee=tee)
                     except Exception as e:
                         if "duals" in str(e).lower():
                             # MIP solutions don't have duals — remove suffix and retry
                             self.model.del_component(self.model.dual)
-                            results = optimizer.solve(self.model, tee=True)
+                            results = optimizer.solve(self.model, tee=tee)
                         else:
                             raise
+                    # Non-persistent solvers load solutions automatically (load_solutions=True); a
+                    # solution is available when the solver reports optimal or feasible. work_units /
+                    # mip_gap stay None (Gurobi-persistent only).
+                    self.has_solution = results.solver.termination_condition in (
+                        pyo.TerminationCondition.optimal,
+                        pyo.TerminationCondition.feasible,
+                    )
                     objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
             case ModelType.EXTENSIVE_FORM:
                 if solver_name != self.solver_name:
