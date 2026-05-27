@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import argparse
 import glob
+import math
 import os
 import re
 import sqlite3
@@ -147,11 +148,11 @@ def _load_metadata_from_conn(conn, basename):
                 ub_f = float(ub) if ub is not None else None
             except (TypeError, ValueError):
                 lb_f = ub_f = None
-            if lb_f is not None and ub_f is not None and ub_f != 0 and not (lb_f != lb_f) and not (ub_f != ub_f):
+            if lb_f is not None and ub_f is not None and math.isfinite(lb_f) and math.isfinite(ub_f) and ub_f != 0:
                 meta['achieved_mip_gap'] = abs(ub_f - lb_f) / abs(ub_f)
             else:
-                # Fallback: use the mip_gap column written directly by Gurobi (present in OOM runs
-                # where bounds are not populated but optimizer._solver_model.MIPGap is still valid).
+                # Fallback: use the mip_gap column which is always written by
+                # add_solver_statistics_to_sqlite() from optimizer._solver_model.MIPGap from Gurobi.
                 direct_gap = row.get('mip_gap')
                 if direct_gap is not None:
                     try:
