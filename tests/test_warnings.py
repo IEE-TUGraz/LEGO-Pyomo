@@ -93,6 +93,22 @@ network_duplicate_lines_same_c = [
     (
         [
             ("Node_1", "Node_2", "c1", scenario_a),
+            ("Node_2", "Node_1", "c1", scenario_a),
+            ("Node_2", "Node_3", "c1", scenario_a),
+            ("Node_2", "Node_3", "c1", scenario_a),
+            ("Node_3", "Node_4", "c2", scenario_b),
+            ("Node_4", "Node_3", "c2", scenario_b),
+            ("Node_4", "Node_5", "c2", scenario_b),
+            ("Node_4", "Node_5", "c2", scenario_b),
+            ("Node_6", "Node_5", "c2", scenario_b),
+            ("Node_6", "Node_5", "c2", scenario_b),
+            ("Node_6", "Node_5", "c2", scenario_b),
+        ],
+        True,
+    ),
+    (
+        [
+            ("Node_1", "Node_2", "c1", scenario_a),
             ("Node_1", "Node_2", "c1", scenario_b),
         ],
         False,
