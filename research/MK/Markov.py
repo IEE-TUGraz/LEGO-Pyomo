@@ -15,9 +15,7 @@ import typing
 
 import pandas as pd
 
-import gurobipy
 import pyomo.environ as pyo
-from pyomo.opt import SolutionStatus, SolverResults, SolverStatus
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
@@ -557,84 +555,39 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                     else:
                         printer.information(f"  Running despite existing sibling run(s): {reason}")
         if not case_skipped:
-            # Solve model
-            optimizer = pyo.SolverFactory('gurobi_persistent')
-            optimizer.set_instance(model)
+            # Solve model. All WorkLimit/OOM/exception recovery, partial-solution loading, and
+            # work_units/mip_gap extraction live in LEGO.solve_model() — it never raises by default
+            # and exposes lego.has_solution for the write gating below.
             if getattr(model, 'pDisableCrossover', False):
                 printer.information("Deactivating crossover")
-                optimizer.options['Crossover'] = 0
             if getattr(model, 'pForceBarrier', False):
                 printer.information("Forcing barrier method")
-                optimizer.options['Method'] = 2
-                optimizer.options['NodeMethod'] = 2
             mip_gap_value = getattr(model, 'pMIPGap', None)
             if mip_gap_value is not None:
                 printer.information(f"Setting MIP gap to {mip_gap_value}")
-                optimizer.options['MIPGap'] = mip_gap_value
             work_limit_value = getattr(model, 'pWorkLimit', None)
             if work_limit_value is not None:
                 printer.information(f"Setting work limit to {work_limit_value}")
-                optimizer.options['WorkLimit'] = work_limit_value
-            start_time = time.time()
-            solve_exception = None
-            try:
-                result = optimizer.solve(tee=tee, load_solutions=False)
-            except Exception as e:
-                solve_exception = e
-                result = None
-                printer.warning(f"Solver raised exception: {e}")
-            has_solution = optimizer._solver_model.SolCount > 0
-            if has_solution:
-                if result is not None:
-                    if result.solver.status == SolverStatus.error:
-                        result.solver.status = SolverStatus.warning
-                        if optimizer._solver_model.Status == gurobipy.GRB.WORK_LIMIT:
-                            result.solver.termination_condition = "WorkLimit reached"
-                        if len(result.solution) > 0:
-                            result.solution[0].status = SolutionStatus.feasible
-                    model.solutions.load_from(result)
-                else:
-                    # solve() threw (e.g. OOM) but solutions were found — load directly from Gurobi
-                    try:
-                        optimizer.load_vars()
-                        printer.information("Loaded partial solution after solver exception")
-                    except Exception as load_e:
-                        printer.warning(f"Could not load solution after solver exception: {load_e}")
-                        has_solution = False
-            timing_solving = time.time() - start_time
-            if result is not None:
-                lego.results = result
-            elif solve_exception is not None:
-                exc_result = SolverResults()
-                exc_result.solver.status = SolverStatus.error
-                if isinstance(solve_exception, gurobipy.GurobiError) and solve_exception.errno == gurobipy.GRB.Error.OUT_OF_MEMORY:
-                    exc_result.solver.termination_condition = "Out of Memory"
-                lego.results = exc_result
-            lego.work_units = optimizer._solver_model.Work
-            printer.information(f"Solving model took {timing_solving:.2f} seconds ({lego.work_units:.2f} work units)")
-            try:
-                lego.mip_gap = optimizer._solver_model.MIPGap if optimizer._solver_model.IsMIP else None
-                if not optimizer._solver_model.IsMIP:
-                    printer.information("Model is an LP — no MIP gap stored in .sqlite")
-            except Exception as e:
-                printer.warning(f"Could not extract MIP gap from Gurobi: {e}")
-                lego.mip_gap = None
+
+            # raise_on_no_solution=False: the batch must survive an OOM/no-solution run (there is no
+            # try/except here) and still write work_units etc. — recovery lives in solve_model.
+            result, timing_solving, _ = lego.solve_model(tee=tee, raise_on_no_solution=False)
+            has_solution = lego.has_solution
+            work_units_str = f"{lego.work_units:.2f} work units" if lego.work_units is not None else "work units unavailable"
+            printer.information(f"Solving model took {timing_solving:.2f} seconds ({work_units_str})")
 
             edge_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', '')}
             if has_solution:
                 write_results(lego, file_prefix, no_sqlite, **edge_params)
 
-            if result is not None:
-                match result.solver.termination_condition:
-                    case pyo.TerminationCondition.optimal:
-                        printer.success("Optimal solution found")
-                    case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
-                        printer.error(f"Model is {result.solver.termination_condition}, logging infeasible constraints:")
-                        log_infeasible_constraints(model)
-                    case _:
-                        printer.warning("Solver terminated with condition:", result.solver.termination_condition)
-            elif solve_exception is not None:
-                printer.error(f"Solver terminated with exception: {solve_exception}")
+            match result.solver.termination_condition:
+                case pyo.TerminationCondition.optimal:
+                    printer.success("Optimal solution found")
+                case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
+                    printer.error(f"Model is {result.solver.termination_condition}, logging infeasible constraints:")
+                    log_infeasible_constraints(model)
+                case _:
+                    printer.warning("Solver terminated with condition:", result.solver.termination_condition)
 
         if not no_sqlite:
             sqlite_files.append(f"{file_prefix}.sqlite")
@@ -668,7 +621,8 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                     printer.information(f"Solving regret model took {regret_timing_solving:.2f} seconds")
 
                     regret_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', ''), "run_type": "regret"}
-                    write_results(regret_lego, f"{file_prefix}-regret", no_sqlite, **regret_params)
+                    if regret_lego.has_solution:
+                        write_results(regret_lego, f"{file_prefix}-regret", no_sqlite, **regret_params)
 
                     match regret_result.solver.termination_condition:
                         case pyo.TerminationCondition.optimal:
@@ -719,6 +673,9 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                             invest_regret_lego.model.vGenInvest[g].value = gen_invest_values.get(g, 1)
                             invest_regret_lego.model.vGenInvest[g].fixed = True
                     else:
+                        # Main solve ran: read vGenInvest straight from the in-memory model. Even on a
+                        # non-optimal solve (e.g. work limit), solve_model loads the partial solution
+                        # into the model, so these values match what was written to the sqlite.
                         for g in invest_regret_lego.model.g:
                             invest_regret_lego.model.vGenInvest[g].value = model.vGenInvest[g].value
                             invest_regret_lego.model.vGenInvest[g].fixed = True
@@ -729,6 +686,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                     printer.information(f"Solving invest-regret model took {invest_regret_timing:.2f} seconds")
 
                     invest_regret_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', ''), "run_type": "invest-regret"}
+                    if invest_regret_lego.has_solution:
                     write_results(invest_regret_lego, f"{file_prefix}-invest-regret", no_sqlite, **invest_regret_params)
 
                     match invest_regret_result.solver.termination_condition:

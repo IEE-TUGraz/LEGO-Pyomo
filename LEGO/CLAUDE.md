@@ -37,7 +37,7 @@ LEGO(cs: CaseStudy = None, model: pyo.Model = None, results=None)
 - **No solution**: builds a synthetic `SolverResults` (`status=error`, `termination_condition="Out of Memory"` for a Gurobi OOM `GurobiError`). By default (`raise_on_no_solution=True`) it raises a `RuntimeError`, otherwise it logs via `printer.error` and returns.
 - **Side effects**: sets `self.results`, `self.work_units`, `self.mip_gap` (extracted even after a crash), and `self.has_solution` (gate writes/result handling on this). Options are applied silently (callers/`_apply_solver_options` do the logging).
 
-Non-Gurobi solvers take the `else` branch: solutions load automatically (`load_solutions=True`), `self.has_solution` is derived from the termination condition (`optimal`/`feasible`), and `work_units`/`mip_gap` stay `None`. The solver is chosen from the case study's `pSolver` unless `solver_name` is passed.
+Non-Gurobi solvers take the `else` branch: solutions load automatically (`load_solutions=True`), `self.has_solution` is derived from the termination condition (`optimal`/`feasible`), and `work_units`/`mip_gap` stay `None`. The solver is chosen from the case study's `pSolver` unless `solver_name` is passed. Solver-option handling differs: `pMIPGap` is applied as `mip_rel_gap` for HiGHS; `pWorkLimit`/`pDisableCrossover`/`pForceBarrier` are Gurobi-only and `pMIPGap` on any other non-Gurobi solver — each is reported via `printer.error` and ignored rather than silently dropped.
 
 ### Model Types (ModelType enum)
 

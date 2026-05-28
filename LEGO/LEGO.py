@@ -183,6 +183,21 @@ class LEGO:
                         printer.warning(f"Could not extract MIP gap from Gurobi: {e}")
                 else:
                     optimizer = pyo.SolverFactory(solver_name)
+                    # Apply solver options. MIPGap has a HiGHS equivalent (mip_rel_gap); the other
+                    # tuning options are Gurobi-specific (or not implemented for this solver yet) and
+                    # are reported as errors and ignored rather than silently dropped.
+                    mip_gap = getattr(self.model, 'pMIPGap', None)
+                    if mip_gap is not None:
+                        if solver_name.lower() == 'highs':
+                            optimizer.options['mip_rel_gap'] = mip_gap
+                        else:
+                            printer.error(f"MIP gap ({mip_gap}) requested but not implemented for solver '{solver_name}' — ignoring")
+                    if getattr(self.model, 'pWorkLimit', None) is not None:
+                        printer.error(f"Work limit requested but has no equivalent for solver '{solver_name}' (Gurobi-only) — ignoring")
+                    if getattr(self.model, 'pDisableCrossover', False):
+                        printer.error(f"Disable-crossover requested but not implemented for solver '{solver_name}' (Gurobi-only) — ignoring")
+                    if getattr(self.model, 'pForceBarrier', False):
+                        printer.error(f"Force-barrier requested but not implemented for solver '{solver_name}' (Gurobi-only) — ignoring")
                     try:
                         results = optimizer.solve(self.model, tee=tee)
                     except Exception as e:
