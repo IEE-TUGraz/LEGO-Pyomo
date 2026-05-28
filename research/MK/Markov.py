@@ -723,7 +723,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
 
                     invest_regret_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', ''), "run_type": "invest-regret"}
                     if invest_regret_lego.has_solution:
-                    write_results(invest_regret_lego, f"{file_prefix}-invest-regret", no_sqlite, **invest_regret_params)
+                        write_results(invest_regret_lego, f"{file_prefix}-invest-regret", no_sqlite, **invest_regret_params)
 
                     match invest_regret_result.solver.termination_condition:
                         case pyo.TerminationCondition.optimal:
