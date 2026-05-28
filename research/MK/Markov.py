@@ -259,6 +259,8 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          no_investment: bool = False, rmip: bool = False, no_crossover: bool = False,
                          force_barrier: bool = False, mip_gap: float | None = None,
                          work_limit: float | None = None,
+                         node_file_start: float | None = None, node_file_dir: str | None = None,
+                         threads: int | None = None,
                          filter_zone: str | None = None, limitK: str | None = None, clusters: int = 1,
                          shift: int = 0, stretch_demand: float = 1.0, scale_vres: float = 1.0,
                          scale_invest_cost: float = 1.0,
@@ -272,6 +274,9 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
     ########################################################################################################################
     # Data input from case study
     ########################################################################################################################
+
+    if node_file_dir is not None and node_file_start is None:
+        raise ValueError("node_file_dir requires node_file_start to be set (Gurobi NodefileStart must be enabled before NodefileDir is meaningful)")
 
     if cs is None:
         # Load case study from Excels
@@ -307,6 +312,22 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         printer.information(f"Setting work limit to {work_limit}")
         cs.dGlobal_Parameters["pWorkLimit"] = work_limit
         identifier_parts.append(f"workLimit{work_limit:g}")
+
+    # Gurobi memory-management knobs: not in identifier or sibling-compare keys
+    # (resource management, does not affect the solution).
+    if node_file_start is not None:
+        printer.information(f"Setting Gurobi NodefileStart to {node_file_start} GB")
+        cs.dGlobal_Parameters["pNodeFileStart"] = node_file_start
+        node_file_dir_base = node_file_dir if node_file_dir is not None else os.path.join(os.getcwd(), "gurobi-nodes")
+        # Always append a per-PID subfolder so parallel spawns never collide on a shared dir,
+        # even if the user passed a path without thinking about parallelism.
+        node_file_dir = os.path.join(node_file_dir_base, str(os.getpid()))
+        printer.information(f"NodeFileDir: '{node_file_dir}' (base '{node_file_dir_base}' + PID subfolder)")
+        cs.dGlobal_Parameters["pNodeFileDir"] = node_file_dir
+
+    if threads is not None:
+        printer.information(f"Setting Gurobi Threads to {threads}")
+        cs.dGlobal_Parameters["pThreads"] = threads
 
     if network is not None:
         printer.information(f"Setting all lines to network representation '{network}'")
@@ -477,6 +498,9 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         force_barrier=force_barrier if force_barrier else None,
         mip_gap=mip_gap,
         work_limit=work_limit,
+        node_file_start=node_file_start,
+        node_file_dir=node_file_dir,
+        threads=threads,
         network=network,
         commit_consumption=commit_consumption if commit_consumption != 1.0 else None,
         startup_consumption=startup_consumption if startup_consumption != 1.0 else None,
@@ -512,6 +536,18 @@ def _apply_solver_options(lego: LEGO, run_params: dict | None) -> None:
         model.pForceBarrier = True
     if run_params.get('no_crossover'):
         model.pDisableCrossover = True
+    nfs = run_params.get('node_file_start')
+    if nfs is not None:
+        model.pNodeFileStart = nfs
+        printer.information(f"  NodefileStart: {nfs} GB")
+    nfd = run_params.get('node_file_dir')
+    if nfd is not None:
+        model.pNodeFileDir = nfd
+        printer.information(f"  NodefileDir: {nfd}")
+    th = run_params.get('threads')
+    if th is not None:
+        model.pThreads = th
+        printer.information(f"  Threads: {th}")
 
 
 def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_sqlite: bool, calculate_regret: bool, skip_truth: bool, invest_regret: bool = False, run_params: dict = None, no_overwrite: bool = False, tee: bool = True) -> typing.Tuple[typing.List[str], typing.List[str], typing.Dict[str, LEGO]]:
@@ -724,12 +760,17 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, invest_regret: bool = False,
          no_investment: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False,
          force_barrier: bool = False, mip_gap: float | None = None, work_limit: float | None = None,
+         node_file_start: float | None = None, node_file_dir: str | None = None,
+         threads: int | None = None,
          network: str | None = None, commit_consumption: float = 1.0, startup_consumption: float = 1.0,
          shift_tm: int | None = None, perturb_tm: float | None = None):
     ew = ExcelWriter()
 
     if no_crossover != force_barrier:
         raise ValueError("Either both or none of no_crossover and force_barrier must be true")
+
+    if node_file_dir is not None and node_file_start is None:
+        raise ValueError("--node-file-dir requires --node-file-start to be set")
 
     for folder in caseStudyFolder.split(","):
         try:
@@ -863,7 +904,9 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                 printer.information(f"Loading case study from '{cluster_folder}'")
 
                 sqlite_files, case_labels, _ = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret,
-                                                                    no_investment, rmip, no_crossover, force_barrier, mip_gap, work_limit, filter_zone=filter_zone, limitK=limitK,
+                                                                    no_investment, rmip, no_crossover, force_barrier, mip_gap, work_limit,
+                                                                    node_file_start=node_file_start, node_file_dir=node_file_dir, threads=threads,
+                                                                    filter_zone=filter_zone, limitK=limitK,
                                                                     clusters=cluster, shift=shift, stretch_demand=stretch_demand, scale_vres=scale_vres, scale_invest_cost=scale_invest_cost, thermal_invest_only=thermal_invest_only,
                                                                     merge_generators=merge_generators, no_overwrite=no_overwrite, network=network,
                                                                     commit_consumption=commit_consumption, startup_consumption=startup_consumption,
@@ -893,7 +936,7 @@ if __name__ == "__main__":
     parser.add_argument("--filter-zone", type=str, default=None, help="Filter the case study to only include buses in the given zone (exact match of the 'z' column in Power_BusInfo), e.g. 'R1'")
     parser.add_argument("--limitK", type=str, help="Limit the ks, format: 'k0025-k0048'", nargs="?", default=None)
     parser.add_argument("--shift", type=int, default=0, help="Shift the time series by N hours (for testing purposes), e.g., 15 to shift by 15 hours")
-    parser.add_argument("--stretch-demand", type=float, default=1.0, help="Stretch the demand by a factor (for testing purposes), e.g., 1.1 to increase max of demand by 5% and decrease min by 5%")
+    parser.add_argument("--stretch-demand", type=float, default=1.0, help="Stretch the demand by a factor (for testing purposes), e.g., 1.1 to increase max of demand by 5%% and decrease min by 5%%")
     parser.add_argument("--scale-vres", type=float, default=1.0, help="Scale the MaxProd of all VRES generators (PV, Wind, RoR) by this factor (default: 1.0, no change)")
     parser.add_argument("--scale-invest-cost", type=float, default=1.0, help="Scale the investment cost (pInvestCost) of all generators (ThermalGen, VRES, Storage) by this factor (default: 1.0, no change)")
     parser.add_argument("--thermal-invest-only", action="store_true", help="Set ExisUnits=1 for all non-thermal generators (VRES, Storage) so only thermal generators are investable")
@@ -908,6 +951,9 @@ if __name__ == "__main__":
     parser.add_argument("--force-barrier", action="store_true", help="Force Gurobi to use barrier method")
     parser.add_argument("--mip-gap", type=float, default=None, help="Set the MIP gap tolerance for the solver (e.g., 0.01 for 1%%; default: solver default)")
     parser.add_argument("--work-limit", type=float, default=None, help="Set the Gurobi WorkLimit (in work units) to stop after a given amount of work regardless of solution quality (default: no limit)")
+    parser.add_argument("--node-file-start", type=float, default=None, help="Gurobi NodefileStart (in GB): when in-memory B&B node storage exceeds this, nodes spill to disk (default: no spilling)")
+    parser.add_argument("--node-file-dir", type=str, default=None, help="Base directory for Gurobi NodefileDir (where spilled nodes are written). Requires --node-file-start. A '<pid>' subfolder is ALWAYS appended (e.g. 'E:/tmp/nodes' becomes 'E:/tmp/nodes/12345/') to guarantee parallel spawns never share a dir. Defaults to ./gurobi-nodes/ in the CWD when --node-file-start is set without this flag. Auto-created if missing")
+    parser.add_argument("--threads", type=int, default=None, help="Gurobi Threads (default: 0 = use all cores). Lower this when running multiple Markov.py processes in parallel to avoid CPU oversubscription and per-thread memory overhead")
     parser.add_argument("--network", type=str, default=None, choices=["DC-OPF", "TP", "SN"], help="Override network representation for all lines uniformly: DC-OPF, TP, or SN (default: no change, use values from data)")
     parser.add_argument("--commit-consumption", type=float, default=1.0, help="Multiplier for the CommitConsumption column of Power_ThermalGen (default: 1.0, no change)")
     parser.add_argument("--startup-consumption", type=float, default=1.0, help="Multiplier for the StartupConsumption column of Power_ThermalGen (default: 1.0, no change)")

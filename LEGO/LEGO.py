@@ -113,6 +113,13 @@ class LEGO:
                         optimizer.options['MIPGap'] = self.model.pMIPGap
                     if getattr(self.model, 'pWorkLimit', None) is not None:
                         optimizer.options['WorkLimit'] = self.model.pWorkLimit
+                    if getattr(self.model, 'pNodeFileStart', None) is not None:
+                        optimizer.options['NodefileStart'] = self.model.pNodeFileStart
+                    if getattr(self.model, 'pNodeFileDir', None) is not None:
+                        os.makedirs(self.model.pNodeFileDir, exist_ok=True)
+                        optimizer.options['NodefileDir'] = self.model.pNodeFileDir
+                    if getattr(self.model, 'pThreads', None) is not None:
+                        optimizer.options['Threads'] = self.model.pThreads
                     solve_exception = None
                     try:
                         results = optimizer.solve(tee=tee, load_solutions=False)
@@ -198,6 +205,12 @@ class LEGO:
                         printer.error(f"Disable-crossover requested but not implemented for solver '{solver_name}' (Gurobi-only) — ignoring")
                     if getattr(self.model, 'pForceBarrier', False):
                         printer.error(f"Force-barrier requested but not implemented for solver '{solver_name}' (Gurobi-only) — ignoring")
+                    if getattr(self.model, 'pNodeFileStart', None) is not None:
+                        printer.error(f"NodeFileStart requested but has no equivalent for solver '{solver_name}' (Gurobi-only) — ignoring")
+                    if getattr(self.model, 'pNodeFileDir', None) is not None:
+                        printer.error(f"NodeFileDir requested but has no equivalent for solver '{solver_name}' (Gurobi-only) — ignoring")
+                    if getattr(self.model, 'pThreads', None) is not None:
+                        printer.error(f"Threads requested but not implemented for solver '{solver_name}' (Gurobi-only) — ignoring")
                     try:
                         results = optimizer.solve(self.model, tee=tee)
                     except Exception as e:
@@ -417,6 +430,15 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
 
     if cs.dGlobal_Parameters.get("pWorkLimit") is not None:
         model.pWorkLimit = cs.dGlobal_Parameters["pWorkLimit"]
+
+    if cs.dGlobal_Parameters.get("pNodeFileStart") is not None:
+        model.pNodeFileStart = cs.dGlobal_Parameters["pNodeFileStart"]
+
+    if cs.dGlobal_Parameters.get("pNodeFileDir") is not None:
+        model.pNodeFileDir = cs.dGlobal_Parameters["pNodeFileDir"]
+
+    if cs.dGlobal_Parameters.get("pThreads") is not None:
+        model.pThreads = cs.dGlobal_Parameters["pThreads"]
 
     return model
 

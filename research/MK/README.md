@@ -77,6 +77,9 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 | `--no-crossover`         | off            | Disable Gurobi crossover (must be paired with `--force-barrier`)                                            |
 | `--force-barrier`        | off            | Force Gurobi barrier method (must be paired with `--no-crossover`)                                          |
 | `--mip-gap`              | solver default | MIP gap tolerance, e.g. `0.01` for 1%                                                                       |
+| `--node-file-start`      | no spilling    | Gurobi NodefileStart (GB): B&B nodes spill to disk when in-memory storage exceeds this — useful when MIP runs OOM |
+| `--node-file-dir`        | `./gurobi-nodes/`  | Base directory for spilled nodes (auto-created). Requires `--node-file-start`. A `<pid>` subfolder is ALWAYS appended (e.g. `E:/tmp/nodes` becomes `E:/tmp/nodes/12345/`) to guarantee parallel spawns never share a dir. Use a fast local SSD, NOT NFS  |
+| `--threads`              | 0 (all cores)  | Gurobi Threads. Lower when running multiple processes in parallel (e.g. via `Caller.py --spawn N`) to avoid oversubscription |
 | `--network`              | no change      | Override `pTecRepr` for all lines uniformly: `DC-OPF`, `TP`, or `SN` (omit to use values from data)         |
 | `--commit-consumption`   | 1.0            | Multiplier for `CommitConsumption` in `Power_ThermalGen`                                                    |
 | `--startup-consumption`  | 1.0            | Multiplier for `StartupConsumption` in `Power_ThermalGen`                                                   |
