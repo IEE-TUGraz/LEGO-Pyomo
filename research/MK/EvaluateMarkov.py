@@ -298,6 +298,14 @@ def _load_file(sqlite_file):
             results = _load_results_from_conn(conn)
             conn.close()
             return ('regret', sqlite_file, None, results)
+        if basename.endswith("-operational.sqlite"):
+            # Operational runs are full solves (vGenInvest fixed to Truth's decision); they
+            # carry their own metadata and results but must be kept out of the regular
+            # comparison tables (same edge_handling would otherwise duplicate/skew rows).
+            meta = _load_metadata_from_conn(conn, basename)
+            results = _load_results_from_conn(conn)
+            conn.close()
+            return ('operational', sqlite_file, meta, results)
         meta = _load_metadata_from_conn(conn, basename)
         results = _load_results_from_conn(conn)
         conn.close()
@@ -305,6 +313,49 @@ def _load_file(sqlite_file):
         meta = {}
         results = {}
     return ('main', sqlite_file, meta, results)
+
+
+def _build_entry(sqlite_file, meta, results):
+    """Assemble a display entry dict from a file's loaded metadata and results."""
+    basename = os.path.basename(sqlite_file)
+    return {
+        'file': sqlite_file,
+        'basename': basename,
+        **meta,
+        **results,
+        'Case': meta.get('edge_handling') or basename,
+        'Work Units': meta.get('work_units'),
+        'Status': meta.get('solver_status'),
+        'Term. Cond.': meta.get('termination_condition'),
+        'MIP-Gap': meta.get('achieved_mip_gap'),
+    }
+
+
+def _group_key(entry):
+    """Run-parameter grouping key shared by the main and operational tables."""
+    return (
+        entry.get('case_study_directory'),
+        entry.get('filter_zone'),
+        entry.get('limit_k'),
+        entry.get('clusters'),
+        entry.get('shift'),
+        entry.get('stretch_demand'),
+        entry.get('scale_vres'),
+        entry.get('scale_invest_cost'),
+        entry.get('thermal_invest_only'),
+        entry.get('merge_generators'),
+        entry.get('shift_tm'),
+        entry.get('perturb_tm'),
+        entry.get('relax_count'),
+        entry.get('no_investment'),
+        entry.get('rmip'),
+        entry.get('no_crossover'),
+        entry.get('force_barrier'),
+        entry.get('mip_gap'),
+        entry.get('network'),
+        entry.get('commit_consumption'),
+        entry.get('startup_consumption'),
+    )
 
 
 def load_file_metadata(sqlite_file):
@@ -758,6 +809,7 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
 
     # Load metadata and results for each file (parallelized across processes)
     entries = []
+    operational_entries = []
     regret_files = {}
     invest_regret_files = {}
     max_workers = min(min(len(all_sqlite), os.cpu_count() or 4), 60)
@@ -771,59 +823,35 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             elif kind == 'regret':
                 base_file = sqlite_file.replace("-regret.sqlite", ".sqlite")
                 regret_files[base_file] = results.get('Objective')
+            elif kind == 'operational':
+                operational_entries.append(_build_entry(sqlite_file, meta, results))
             else:
-                basename = os.path.basename(sqlite_file)
-                entry = {
-                    'file': sqlite_file,
-                    'basename': basename,
-                    **meta,
-                    **results,
-                    'Case': meta.get('edge_handling') or basename,
-                    'Work Units': meta.get('work_units'),
-                    'Status': meta.get('solver_status'),
-                    'Term. Cond.': meta.get('termination_condition'),
-                    'MIP-Gap': meta.get('achieved_mip_gap'),
-                }
-                entries.append(entry)
+                entries.append(_build_entry(sqlite_file, meta, results))
 
     # Attach regret/invest-regret objectives to their base entries
     for entry in entries:
         entry['Regret Obj.'] = regret_files.get(entry['file'])
         entry['Invest-Regret Obj.'] = invest_regret_files.get(entry['file'])
 
-    if not entries:
+    if not entries and not operational_entries:
         printer.warning("No (non-regret) MK result files found")
         return
 
-    # Group by run parameters (case_study_directory, filter_zone, limit_k, clusters, shift, stretch_demand, merge_generators, relax_count, no_investment, mip_gap)
+    # Group by run parameters. Operational runs share the same grouping keys as their
+    # regular counterparts but are printed in a separate table per group.
     groups = defaultdict(list)
     for entry in entries:
-        key = (
-            entry.get('case_study_directory'),
-            entry.get('filter_zone'),
-            entry.get('limit_k'),
-            entry.get('clusters'),
-            entry.get('shift'),
-            entry.get('stretch_demand'),
-            entry.get('scale_vres'),
-            entry.get('scale_invest_cost'),
-            entry.get('thermal_invest_only'),
-            entry.get('merge_generators'),
-            entry.get('shift_tm'),
-            entry.get('perturb_tm'),
-            entry.get('relax_count'),
-            entry.get('no_investment'),
-            entry.get('rmip'),
-            entry.get('no_crossover'),
-            entry.get('force_barrier'),
-            entry.get('mip_gap'),
-            entry.get('network'),
-            entry.get('commit_consumption'),
-            entry.get('startup_consumption'),
-        )
-        groups[key].append(entry)
+        groups[_group_key(entry)].append(entry)
 
-    for group_key, group_entries in groups.items():
+    op_groups = defaultdict(list)
+    for entry in operational_entries:
+        op_groups[_group_key(entry)].append(entry)
+
+    # Iterate the union of group keys (regular first, then any operational-only groups)
+    all_group_keys = list(groups.keys()) + [k for k in op_groups if k not in groups]
+    for group_key in all_group_keys:
+        group_entries = groups.get(group_key, [])
+        op_entries = op_groups.get(group_key, [])
         case_dir, filter_zone, limit_k, clusters, shift, stretch_demand, scale_vres, scale_invest_cost, thermal_invest_only, merge_generators, shift_tm, perturb_tm, relax_count, no_investment, rmip, no_crossover, force_barrier, mip_gap, network, commit_consumption, startup_consumption = group_key
 
         # Print group header
@@ -875,10 +903,17 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
         printer.information(f"Group: {', '.join(parts) if parts else '(default)'}")
         printer.information(f"{'=' * 80}")
 
-        print_comparison_table(group_entries)
+        if group_entries:
+            print_comparison_table(group_entries)
 
-        # Plot if requested
-        if plot:
+        # Separate table for operational runs (vGenInvest fixed to Truth's investment)
+        if op_entries:
+            printer.information("")
+            printer.information("  Operational runs (vGenInvest fixed to Truth's investment)")
+            print_comparison_table(op_entries)
+
+        # Plot if requested (regular runs only)
+        if plot and group_entries:
             sorted_entries = sorted(group_entries, key=lambda e: EDGE_HANDLING_SORT.get(e.get('edge_handling', ''), 99))
             sqlite_files = [e['file'] for e in sorted_entries]
             case_labels = [e.get('edge_handling', '') for e in sorted_entries]

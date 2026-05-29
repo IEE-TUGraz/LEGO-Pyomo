@@ -72,6 +72,7 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 | `--enable-strict-markov` | off            | Also run the Markov-Strict variant (push constraints active)                                                |
 | `--invest-regret`        | off            | Fix vGenInvest from each model into truth and compare objectives                                            |
 | `--no-investment`        | off            | Fix all vGenInvest to 1 (skip investment decisions)                                                         |
+| `--operational`          | off            | Add an operational run per edge-handling model (Truth, NoEnf, Cyclic, Markov, +Markov-Strict if enabled): fixes `vGenInvest` to the Truth investment (1 where Truth invested, 0 otherwise) and re-solves. See "Operational runs" below |
 | `--no-overwrite`         | off            | Skip runs where output `.sqlite` already exists                                                             |
 | `--rmip`                 | off            | Relax all integer variables before solving                                                                  |
 | `--no-crossover`         | off            | Disable Gurobi crossover (must be paired with `--force-barrier`)                                            |
@@ -88,13 +89,26 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 | `--no-sqlite`            | off            | Do not save results to SQLite                                                                               |
 | `--reuse-inputfiles`     | off            | Reuse already-prepared input folders (e.g. after limitK)                                                    |
 
-**Output naming**: `MK-{identifier}-{edgeHandling}.sqlite`. Regret files append `-regret` or `-invest-regret`.
+**Output naming**: `MK-{identifier}-{edgeHandling}.sqlite`. Regret files append `-regret` or `-invest-regret`;
+operational runs (`--operational`) append `-operational`.
 Non-default parameters are encoded in the identifier (e.g. `filterZoneR1`, `relaxed3`, `rMIP`, `mipGap0.01`,
 `networkTP`, `commitConsumption0.5`, `startupConsumption2`, `shiftTM2`, `perturbTM0.5`, `scaleVRES0.8`, `scaleInvestCost0.5`).
 
+**Operational runs** (`--operational`): solves a variant of each edge-handling model with `vGenInvest` fixed to the
+**Truth** investment decision (1 where Truth invested above 0.5, 0 otherwise), isolating the operational cost of each
+edge handling under a common investment. The Truth investment must come from an *optimal* Truth result: the in-memory
+Truth solve (only if it reached optimality), otherwise an optimal Truth `.sqlite` (the exact file, or a sibling differing
+only in `work_limit`; WorkLimit/OOM Truth results are never used). If no optimal Truth result is available anywhere, all
+operational runs are skipped with an error and the run continues. Under `--skip-truth` the Truth model isn't in memory, so
+`Truth-operational` rebuilds the full-hourly Truth model on demand (applying `--relax-percentage` consistently) and
+re-solves it with the fixed investment — so its solve time is comparable to the other operational runs. `--no-overwrite`
+applies to operational files using the same exact-file / smart-sibling logic as the main runs (and the on-demand Truth
+rebuild is lazy, happening only when the run isn't skipped).
+
 ### `EvaluateMarkov.py` — Result evaluation
 
-Reads all `MK-*.sqlite` files in a folder and prints comparison tables.
+Reads all `MK-*.sqlite` files in a folder and prints comparison tables. Operational runs (`-operational.sqlite`,
+from `--operational`) are shown in a separate "Operational runs" table per group, below the main comparison.
 
 ```bash
 python research/MK/EvaluateMarkov.py                             # current directory

@@ -130,7 +130,7 @@ _SIBLING_COMPARE_KEYS = [
     'scale_vres', 'scale_invest_cost', 'thermal_invest_only', 'merge_generators',
     'relax_count', 'no_investment', 'rmip', 'no_crossover', 'force_barrier',
     'mip_gap', 'network', 'commit_consumption', 'startup_consumption', 'edge_handling',
-    'shift_tm', 'perturb_tm',
+    'shift_tm', 'perturb_tm', 'run_type',
 ]
 
 
@@ -265,7 +265,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          shift: int = 0, stretch_demand: float = 1.0, scale_vres: float = 1.0,
                          scale_invest_cost: float = 1.0,
                          thermal_invest_only: bool = False, merge_generators: bool = False,
-                         no_overwrite: bool = False, network: str | None = None,
+                         no_overwrite: bool = False, operational: bool = False, network: str | None = None,
                          commit_consumption: float = 1.0, startup_consumption: float = 1.0,
                          shift_tm: int | None = None,
                          perturb_tm: float | None = None,
@@ -507,7 +507,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         shift_tm=shift_tm,
         perturb_tm=perturb_tm,
     )
-    sqlite_files, sqlite_labels, lego_models = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite, tee=tee)
+    sqlite_files, sqlite_labels, lego_models = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite, operational=operational, cs=cs, thermal_generator_relaxed=thermalGeneratorRelaxed, tee=tee)
 
     return sqlite_files, sqlite_labels, lego_models
 
@@ -550,7 +550,194 @@ def _apply_solver_options(lego: LEGO, run_params: dict | None) -> None:
         printer.information(f"  Threads: {th}")
 
 
-def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_sqlite: bool, calculate_regret: bool, skip_truth: bool, invest_regret: bool = False, run_params: dict = None, no_overwrite: bool = False, tee: bool = True) -> typing.Tuple[typing.List[str], typing.List[str], typing.Dict[str, LEGO]]:
+# Threshold above which a (possibly fractional, e.g. rMIP) vGenInvest counts as "invested".
+_OPERATIONAL_INVEST_THRESHOLD = 0.5
+
+
+def _find_optimal_truth_file(case_name: str, run_params: dict | None) -> str | None:
+    """Return the path to a Truth .sqlite that solved to optimality (status ok).
+
+    Prefers the exact Truth file for this case, then siblings that differ only in
+    work_limit. Only files with termination_condition == 'optimal' qualify (so
+    WorkLimit-reached / OOM Truth results are never used as the investment source).
+    Returns None if no optimal Truth result exists on disk.
+    """
+    truth_prefix = f"MK-{case_name}-Truth"
+    candidates = []
+    exact = f"{truth_prefix}.sqlite"
+    if os.path.exists(exact):
+        candidates.append(exact)
+    truth_edge_params = {**(run_params or {}), "edge_handling": "Truth", "run_type": None}
+    candidates.extend(s['file'] for s in _find_sibling_runs(truth_prefix, truth_edge_params))
+    for f in candidates:
+        info = _read_sqlite_run_info(f)
+        tc = info.get('stats', {}).get('termination_condition') if info else None
+        if tc == 'optimal':
+            return f
+    return None
+
+
+def _get_truth_geninvest(lego_models: typing.Dict[str, LEGO], case_name: str, run_params: dict | None) -> typing.Tuple[dict | None, str | None]:
+    """Resolve the Truth investment decision for the operational runs.
+
+    The investment must come from an *optimal* Truth result (a WorkLimit / OOM Truth
+    solution is never used). Source priority:
+      1. In-memory Truth model, only if it was solved this session to optimality.
+      2. The best optimal Truth .sqlite on disk (exact file, then siblings).
+    Returns (vGenInvest dict {g: value}, human-readable source) or (None, None) when
+    no optimal Truth result is available anywhere.
+    """
+    truth_lego = lego_models.get("Truth ")
+    if truth_lego is not None and getattr(truth_lego, 'has_solution', False):
+        tc = truth_lego.results.solver.termination_condition if getattr(truth_lego, 'results', None) is not None else None
+        if tc == pyo.TerminationCondition.optimal:
+            try:
+                invest = {g: pyo.value(truth_lego.model.vGenInvest[g]) for g in truth_lego.model.vGenInvest}
+                return invest, "in-memory Truth model"
+            except Exception as e:
+                printer.warning(f"Could not read vGenInvest from in-memory Truth model: {e}")
+        else:
+            printer.warning(f"In-memory Truth solve did not reach optimality (termination_condition={tc}) — "
+                            f"not using it as the operational investment source; looking for an optimal Truth .sqlite instead")
+    truth_file = _find_optimal_truth_file(case_name, run_params)
+    if truth_file is not None:
+        try:
+            cnx = sqlite3.connect(truth_file)
+            df_inv = pd.read_sql("SELECT * FROM vGenInvest", cnx)
+            cnx.close()
+            invest = dict(zip(df_inv.iloc[:, 0], df_inv['values']))
+            return invest, f"Truth sqlite '{truth_file}'"
+        except Exception as e:
+            printer.warning(f"Could not read vGenInvest from '{truth_file}': {e}")
+    return None, None
+
+
+def _build_full_hourly_truth_lego(cs: CaseStudy, thermal_generator_relaxed: dict | None) -> LEGO:
+    """Build (but do not solve) the full-hourly Truth model on demand for Truth-operational.
+
+    Used under --skip-truth, where the Truth model was never built but its operational
+    re-solve is still wanted (e.g. to compare Truth's runtime against the other strategies).
+    Mirrors the regular Truth build (cs.to_full_hourly_model) and applies the same unit
+    commitment relaxation as the other models when --relax-percentage was set.
+    """
+    truth_cs = cs.to_full_hourly_model(inplace=False)
+    truth_lego = LEGO(truth_cs)
+    truth_lego.build_model()
+    if thermal_generator_relaxed:
+        for g in truth_lego.model.thermalGenerators:
+            if thermal_generator_relaxed.get(g):
+                for rp in truth_lego.model.rp:
+                    for k in truth_lego.model.k:
+                        truth_lego.model.vCommit[rp, k, g].domain = pyo.PercentFraction
+                        truth_lego.model.vStartup[rp, k, g].domain = pyo.PercentFraction
+                        truth_lego.model.vShutdown[rp, k, g].domain = pyo.PercentFraction
+    return truth_lego
+
+
+def execute_operational_runs(lego_models: typing.Dict[str, LEGO], case_name: str, no_sqlite: bool,
+                             run_params: dict | None, no_overwrite: bool, tee: bool,
+                             sqlite_files: typing.List[str], sqlite_labels: typing.List[str],
+                             cs: CaseStudy | None = None, thermal_generator_relaxed: dict | None = None) -> None:
+    """Solve an operational variant of each built edge-handling model (--operational).
+
+    Each operational run fixes vGenInvest to the *Truth* investment decision (1 where
+    Truth invested, 0 otherwise) and re-solves, isolating the operational problem of the
+    edge handling under a common (Truth) investment. Results are written to
+    'MK-{case_name}-{edge}-operational.sqlite'. If no Truth investment is
+    available at all (no in-memory Truth and no optimal Truth .sqlite), all operational
+    runs are skipped with an error.
+
+    Under --skip-truth the Truth model is absent from lego_models; when `cs` is provided,
+    the full-hourly Truth model is (re)built on demand so Truth-operational is still solved
+    (its runtime is then comparable to the other operational runs).
+    """
+    printer.information(f"\n\n{'#' * 60}\nOperational runs (--operational): vGenInvest fixed to Truth's investment\n{'#' * 60}")
+
+    truth_invest, source = _get_truth_geninvest(lego_models, case_name, run_params)
+    if truth_invest is None:
+        printer.error("--operational: no Truth investment available (neither solved in memory nor an "
+                      "optimal Truth .sqlite found) — skipping all operational runs")
+        return
+    n_invested = sum(1 for v in truth_invest.values() if v > _OPERATIONAL_INVEST_THRESHOLD)
+    printer.information(f"Using Truth investment from {source}: {n_invested} of {len(truth_invest)} generators invested")
+
+    # Edge-handlings to operationalize. A None source model means "build the Truth model on
+    # demand" — the --skip-truth case, where the Truth model was never built but its
+    # operational re-solve is still wanted.
+    edge_items = list(lego_models.items())
+    if "Truth " not in lego_models:
+        if cs is not None:
+            edge_items = [("Truth ", None)] + edge_items
+        else:
+            printer.warning("--operational with no in-memory Truth model and no CaseStudy to rebuild it — "
+                            "skipping Truth-operational (other operational runs still proceed)")
+
+    for edgeHandlingType, lego in edge_items:
+        normalized = edgeHandlingType.strip().replace('.', '').replace(' ', '')
+        op_prefix = f"MK-{case_name}-{normalized}-operational"
+        op_label = f"{normalized}-op"
+
+        # --no-overwrite: skip if the exact operational file is already optimal, or a smart
+        # sibling check (matching run_params + edge_handling + run_type, differing only in
+        # work_limit) says no improvement is possible.
+        case_skipped = False
+        if no_overwrite:
+            if os.path.exists(f"{op_prefix}.sqlite"):
+                info = _read_sqlite_run_info(f"{op_prefix}.sqlite")
+                tc = info.get('stats', {}).get('termination_condition') if info else None
+                if tc == 'optimal':
+                    printer.information(f"  File '{op_prefix}.sqlite' already has optimal solution, skipping (--no-overwrite)")
+                    case_skipped = True
+                else:
+                    printer.information(f"  File '{op_prefix}.sqlite' exists but status is '{tc or 'unknown'}' — re-running")
+            elif run_params is not None:
+                current_edge_params = {**run_params, "edge_handling": normalized, "run_type": "operational"}
+                siblings = _find_sibling_runs(op_prefix, current_edge_params)
+                if siblings:
+                    skip, reason, _ = _should_skip_smart(run_params.get('work_limit'), siblings)
+                    if skip:
+                        printer.information(f"  Skipping (--no-overwrite smart check): {reason}")
+                        case_skipped = True
+                    else:
+                        printer.information(f"  Running despite existing sibling run(s): {reason}")
+
+        if not case_skipped:
+            printer.information(f"\n{'=' * 60}\n{normalized} (operational)\n{'=' * 60}")
+            if lego is None:
+                # Build the full-hourly Truth model on demand (lazily — only when actually
+                # solving, so a --no-overwrite skip above avoids the expensive rebuild).
+                printer.information("Building full-hourly Truth model on demand for Truth-operational (--skip-truth)")
+                op_lego = _build_full_hourly_truth_lego(cs, thermal_generator_relaxed)
+            else:
+                op_lego = lego.copy()
+            _apply_solver_options(op_lego, run_params)
+            for g in op_lego.model.vGenInvest:
+                op_lego.model.vGenInvest[g].value = 1 if truth_invest.get(g, 0) > _OPERATIONAL_INVEST_THRESHOLD else 0
+                op_lego.model.vGenInvest[g].fixed = True
+
+            op_result, op_timing, _ = op_lego.solve_model(tee=tee, already_solved_ok=True, raise_on_no_solution=False)
+            work_units_str = f"{op_lego.work_units:.2f} work units" if op_lego.work_units is not None else "work units unavailable"
+            printer.information(f"Solving operational model took {op_timing:.2f} seconds ({work_units_str})")
+
+            op_params = {**(run_params or {}), "edge_handling": normalized, "run_type": "operational"}
+            if op_lego.has_solution:
+                write_results(op_lego, op_prefix, no_sqlite, **op_params)
+
+            match op_result.solver.termination_condition:
+                case pyo.TerminationCondition.optimal:
+                    printer.success("Optimal solution found")
+                case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
+                    printer.error(f"Model is {op_result.solver.termination_condition}, logging infeasible constraints:")
+                    log_infeasible_constraints(op_lego.model)
+                case _:
+                    printer.warning("Solver terminated with condition:", op_result.solver.termination_condition)
+
+        if not no_sqlite:
+            sqlite_files.append(f"{op_prefix}.sqlite")
+            sqlite_labels.append(op_label)
+
+
+def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_sqlite: bool, calculate_regret: bool, skip_truth: bool, invest_regret: bool = False, run_params: dict = None, no_overwrite: bool = False, operational: bool = False, cs: CaseStudy | None = None, thermal_generator_relaxed: dict | None = None, tee: bool = True) -> typing.Tuple[typing.List[str], typing.List[str], typing.Dict[str, LEGO]]:
     ########################################################################################################################
     # Evaluation
     ########################################################################################################################
@@ -736,6 +923,10 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                 except Exception as e:
                     printer.error(f"Invest-regret calculation failed for '{edgeHandlingType}': {e}")
 
+    if operational:
+        execute_operational_runs(lego_models, case_name, no_sqlite, run_params, no_overwrite, tee, sqlite_files, sqlite_labels,
+                                 cs=cs, thermal_generator_relaxed=thermal_generator_relaxed)
+
     return sqlite_files, sqlite_labels, lego_models
 
 
@@ -758,7 +949,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
          scale_invest_cost: float = 1.0,
          thermal_invest_only: bool = False, merge_generators: bool = False,
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, invest_regret: bool = False,
-         no_investment: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False,
+         no_investment: bool = False, operational: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False,
          force_barrier: bool = False, mip_gap: float | None = None, work_limit: float | None = None,
          node_file_start: float | None = None, node_file_dir: str | None = None,
          threads: int | None = None,
@@ -908,7 +1099,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                                                                     node_file_start=node_file_start, node_file_dir=node_file_dir, threads=threads,
                                                                     filter_zone=filter_zone, limitK=limitK,
                                                                     clusters=cluster, shift=shift, stretch_demand=stretch_demand, scale_vres=scale_vres, scale_invest_cost=scale_invest_cost, thermal_invest_only=thermal_invest_only,
-                                                                    merge_generators=merge_generators, no_overwrite=no_overwrite, network=network,
+                                                                    merge_generators=merge_generators, no_overwrite=no_overwrite, operational=operational, network=network,
                                                                     commit_consumption=commit_consumption, startup_consumption=startup_consumption,
                                                                     shift_tm=shift_tm, perturb_tm=perturb_tm)
         except Exception as e:
@@ -945,6 +1136,7 @@ if __name__ == "__main__":
     parser.add_argument("--enable-strict-markov", action="store_true", help="Also execute the strict Markov variant (with push constraints active)")
     parser.add_argument("--invest-regret", action="store_true", help="Calculate invest-regret: fix vGenInvest from each edge-handling model into the truth model and compare objectives")
     parser.add_argument("--no-investment", action="store_true", help="Fix vGenInvest to 1 for all generators (skip investment decisions)")
+    parser.add_argument("--operational", action="store_true", help="Add an operational run for each edge-handling model (Truth, NoEnf, Cyclic, Markov, and Markov-Strict if enabled) that fixes vGenInvest to the Truth investment decision (1 where Truth invested, 0 otherwise) and re-solves. Truth investment is taken from the in-memory Truth solve, or an optimal Truth .sqlite if Truth was skipped; if neither is available, operational runs are skipped. Output files get a '-operational' suffix")
     parser.add_argument("--no-overwrite", action="store_true", help="Skip cases where the output .sqlite file already exists")
     parser.add_argument("--rmip", action="store_true", help="Relax all integer variables (rMIP) before solving")
     parser.add_argument("--no-crossover", action="store_true", help="Disable Gurobi crossover for all solves (faster LP solving, but solution may not be a vertex)")
