@@ -3,10 +3,17 @@ import pytest
 
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
+from LEGO.LEGO import LEGO
 
 printer = Printer.getInstance()
 
+charge_discharge_warning_combinations = [
+    (True, False),  # constraint enabled, no warning expected
+    (False, True),  # constraint disabled, warning expected
+]
+
 scenario_a = "ScenarioA"
+scenario_b = "ScenarioB"
 
 network_duplicate_lines_different_c = [
     (
@@ -35,7 +42,16 @@ network_duplicate_lines_different_c = [
     (
         [
             ("Node_2", "Node_3", "c1", scenario_a),
-            ("Node_2", "Node_3", "c2", "ScenarioB"),
+            ("Node_3", "Node_2", "c2", scenario_a),
+            ("Node_4", "Node_5", "c3", scenario_b),
+            ("Node_5", "Node_4", "c4", scenario_b),
+        ],
+        True,
+    ),
+    (
+        [
+            ("Node_2", "Node_3", "c1", scenario_a),
+            ("Node_2", "Node_3", "c2", scenario_b),
         ],
         False,
     ),
@@ -68,7 +84,32 @@ network_duplicate_lines_same_c = [
     (
         [
             ("Node_1", "Node_2", "c1", scenario_a),
-            ("Node_1", "Node_2", "c1", "ScenarioB"),
+            ("Node_2", "Node_1", "c1", scenario_a),
+            ("Node_3", "Node_4", "c2", scenario_b),
+            ("Node_4", "Node_3", "c2", scenario_b),
+        ],
+        True,
+    ),
+    (
+        [
+            ("Node_1", "Node_2", "c1", scenario_a),
+            ("Node_2", "Node_1", "c1", scenario_a),
+            ("Node_2", "Node_3", "c1", scenario_a),
+            ("Node_2", "Node_3", "c1", scenario_a),
+            ("Node_3", "Node_4", "c2", scenario_b),
+            ("Node_4", "Node_3", "c2", scenario_b),
+            ("Node_4", "Node_5", "c2", scenario_b),
+            ("Node_4", "Node_5", "c2", scenario_b),
+            ("Node_6", "Node_5", "c2", scenario_b),
+            ("Node_6", "Node_5", "c2", scenario_b),
+            ("Node_6", "Node_5", "c2", scenario_b),
+        ],
+        True,
+    ),
+    (
+        [
+            ("Node_1", "Node_2", "c1", scenario_a),
+            ("Node_1", "Node_2", "c1", scenario_b),
         ],
         False,
     ),
@@ -199,6 +240,34 @@ def create_case_study(storage, pEnableChDisPower, network_entries=None):
     return cs
 
 
+@pytest.mark.parametrize("pEnableChDisPower, expected_warning_displayed", charge_discharge_warning_combinations)
+def test_simultaneous_charge_discharge_warning(tmp_path, pEnableChDisPower, expected_warning_displayed):
+    """
+    Tests if the simultaneous storage charge/discharge warning is printed when expected.
+    :param tmp_path: Temporary path for the test (provided by pytest).
+    :param pEnableChDisPower: Whether to avoid simultaneous charging and discharging.
+    :param expected_warning_displayed: Whether the warning is expected in the log.
+    :return: None
+    """
+    log_path = str(tmp_path / "test_warning.log")
+    printer.set_logfile(log_path)
+    printer.information(f"Logging to {log_path}")
+
+    storage = "TestStorage"
+    cs = create_case_study(storage, pEnableChDisPower)
+
+    lego = LEGO(cs)
+    lego.build_model()
+    lego.solve_model()
+
+    with open(log_path) as log_file:
+        log_content = log_file.read()
+
+    warning_displayed = f"Warning: Storage unit {storage} charges and discharges simultaneously in" in log_content
+
+    assert warning_displayed == expected_warning_displayed
+
+
 @pytest.mark.parametrize("network_entries, expected_warning_displayed", network_duplicate_lines_different_c)
 def test_network_duplicate_lines_different_c(tmp_path, network_entries, expected_warning_displayed):
     """
@@ -218,7 +287,7 @@ def test_network_duplicate_lines_different_c(tmp_path, network_entries, expected
     with open(log_path) as log_file:
         log_content = log_file.read()
 
-    warning_displayed = "Warning: Parallel network lines found in (at least) scenario " in log_content
+    warning_displayed = "of parallel network lines found, e.g., in scenario" in log_content
 
     assert warning_displayed == expected_warning_displayed
 
@@ -242,8 +311,7 @@ def test_network_duplicate_lines_same_c(tmp_path, network_entries, expected_erro
         create_case_study(storage, False, network_entries)
     except ValueError as error:
         error_message = str(error)
-
-    error_displayed = ("Duplicate network line found in (at least) scenario " in error_message and
-                       "If the lines should be parallel, assign different 'c' for each parallel line." in error_message)
+        printer.information(f"The following error was raised in the test: {error_message}")
+    error_displayed = "duplicate network line entries found. If the lines should indeed be parallel, assign a different 'c' for each parallel line. Affected entries: " in error_message
 
     assert error_displayed == expected_error_displayed

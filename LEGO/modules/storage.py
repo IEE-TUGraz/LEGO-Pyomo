@@ -39,10 +39,14 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     # Parameters
     model.pEnableChDisPower = cs.dPower_Parameters['pEnableChDisPower']  # Avoid simultaneous charging and discharging
+    model.pFixStInterResToIniReserve = cs.dPower_Parameters['pFixStInterResToIniReserve']  # True: vStInterRes[lastPeriod] == IniReserve, False: vStInterRes[lastPeriod] >= IniReserve
+    model.pReprPeriodEdgeHandlingIntraDayStorage = cs.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"]
     model.pE2PRatio = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['Ene2PowRatio'], doc='Energy to power ratio of storage unit g')
     model.pMinReserve = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['MinReserve'] * cs.dPower_Storage['MaxProd'] * cs.dPower_Storage['Ene2PowRatio'], doc='Minimum reserve of storage unit g [energy]')
     model.pIniReserve = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['IniReserve'] * cs.dPower_Storage['MaxProd'] * cs.dPower_Storage['Ene2PowRatio'], doc='Initial reserve of storage unit g [energy]')
     model.pMaxReserve = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['MaxProd'] * cs.dPower_Storage['Ene2PowRatio'], doc='Maximum reserve of storage unit g [energy]')
+    model.pDisEffic = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['DisEffic'], doc='Discharge efficiency of storage unit g [%, 0-1]')
+    model.pChEffic = pyo.Param(model.storageUnits, initialize=cs.dPower_Storage['ChEffic'], doc='Charge efficiency of storage unit g [%, 0-1]')
 
     dInflows = []
     for g in model.hydroStorageUnits:
@@ -67,16 +71,16 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     # Variables
     if model.pEnableChDisPower:
-        model.bChargeDisCharge = pyo.Var(model.storageUnits, model.rp, model.k, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
+        model.bChargeDisCharge = pyo.Var(model.rp, model.k, model.storageUnits, doc='Binary variable for charging of storage unit g', domain=pyo.Binary)
         second_stage_variables += [model.bChargeDisCharge]
 
-    model.vConsump = pyo.Var(model.rp, model.k, model.storageUnits, doc='Charging of storage unit g', bounds=lambda model, rp, k, g: (0, model.pMaxCons[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g]))))
+    model.vConsump = pyo.Var(model.rp, model.k, model.storageUnits, doc='Charging of storage unit g [power]', bounds=lambda model, rp, k, g: (0, model.pMaxCons[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g]))))
     second_stage_variables += [model.vConsump]
 
-    model.vStIntraRes = pyo.Var(model.rp, model.k, model.intraStorageUnits, doc='Intra-reserve of storage unit g', bounds=lambda m, rp, k, g: (m.pMinReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g])), m.pMaxReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g]))))
+    model.vStIntraRes = pyo.Var(model.rp, model.k, model.intraStorageUnits, doc='Intra-reserve of storage unit g [energy]', bounds=lambda m, rp, k, g: (m.pMinReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g])), m.pMaxReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g]))))
     second_stage_variables += [model.vStIntraRes]
 
-    model.vStInterRes = pyo.Var(model.movingWindowP, model.interStorageUnits, doc='Inter-reserve of storage unit g', bounds=lambda m, p, g: (m.pMinReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g])), m.pMaxReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g]))))
+    model.vStInterRes = pyo.Var(model.movingWindowP, model.interStorageUnits, doc='Inter-reserve of storage unit g [energy]', bounds=lambda m, p, g: (m.pMinReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g])), m.pMaxReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g]))))
     second_stage_variables += [model.vStInterRes]
 
     model.vStorageSpillage = pyo.Var(model.rp, model.k, model.hydroStorageUnits, doc='Spillage of hydro storage unit [power]', bounds=lambda m, rp, k, s: (0, (m.pMaxReserve[s] * (m.pExisUnits[s] + (m.pMaxInvest[s] * m.pEnabInv[s]))) + m.pStorageInflows[rp, k, s]))
@@ -88,56 +92,46 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
-    def eStIntraRes_rule(m, rp, k, g):
-        return (((m.pIniReserve[g] * (m.pExisUnits[g] + m.vGenInvest[g])) if (len(m.rp) == 1 and m.k.ord(k) == 1) else m.vStIntraRes[rp, m.k.prevw(k), g])  # If single representative period and first time step, use initial reserve, otherwise use previous time step
-                ==
-                + m.vStIntraRes[rp, k, g]
-                + m.vGenP[rp, k, g] * m.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic']
-                - m.vConsump[rp, k, g] * m.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
-                - ((m.pStorageInflows[rp, k, g] - m.vStorageSpillage[rp, k, g] * m.pWeight_k[k]) if g in m.hydroStorageUnits else 0))
+    @model.Constraint(model.rp, model.k, model.intraStorageUnits, doc='Intra-day reserve constraint for storage units')
+    def eStIntraRes(m, rp, k, s):
+        if len(m.rp) == 1:  # In single representative period case
+            if m.k.ord(k) == 1:  # In the first time step, use initial reserve
+                vStIntraRes_prev = m.pIniReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s])
+            else:  # Otherwise use previous time step
+                vStIntraRes_prev = m.vStIntraRes[rp, m.k.prev(k), s]
+        else:  # In multiple representative period case
+            match m.pReprPeriodEdgeHandlingIntraDayStorage:
+                case "notEnforced":
+                    if m.k.ord(k) == 1:
+                        return pyo.Constraint.Skip  # Don't enforce the constraint for the first time step at all
+                    else:
+                        vStIntraRes_prev = m.vStIntraRes[rp, m.k.prev(k), s]
+                case "cyclic":
+                    vStIntraRes_prev = m.vStIntraRes[rp, m.k.prevw(k), s]
+                case "markov":
+                    if m.k.ord(k) == 1:
+                        vStIntraRes_prev = LEGOUtilities.markov_summand(m.rp, rp, False, m.k.prevw(k), m.vStIntraRes, cs.rpTransitionMatrixRelativeFrom, s)
+                    else:
+                        vStIntraRes_prev = m.vStIntraRes[rp, m.k.prev(k), s]
+                case _:
+                    raise ValueError(f"Unknown pReprPeriodEdgeHandlingIntraDayStorage: '{m.pReprPeriodEdgeHandlingIntraDayStorage}'")
 
-    model.eStIntraRes = pyo.Constraint(model.rp, model.k, model.intraStorageUnits, doc='Intra-day reserve constraint for storage units', rule=eStIntraRes_rule)
+        return (vStIntraRes_prev
+                ==
+                + m.vStIntraRes[rp, k, s]
+                + m.vGenP[rp, k, s] * m.pWeight_k[k] / m.pDisEffic[s]
+                - m.vConsump[rp, k, s] * m.pWeight_k[k] * m.pChEffic[s]
+                - ((m.pStorageInflows[rp, k, s] - m.vStorageSpillage[rp, k, s]) if s in m.hydroStorageUnits else 0))
 
     if model.pEnableChDisPower:
-        # TODO: Check if we should rather do a +/- value and calculate charge/discharge ex-post
-        model.eExclusiveChargeDischarge = pyo.ConstraintList(doc='Enforce exclusive charge or discharge for storage units')
-        for rp in model.rp:
-            for k in model.k:
-                if len(model.rp) == 1:
-                    if model.k.ord(k) == 1:  # Adding IniReserve if it is the first time step (instead of 'prev' value)
-                        model.eStIntraRes.add(0 == model.pIniReserve[g] * (model.pExisUnits[g] + model.vGenInvest[g])
-                                              - model.vStIntraRes[rp, k, g]
-                                              - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
-                                              + ((model.pStorageInflows[rp, k, g] * model.pWeight_k[k] - model.vStorageSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationEnergyStorageUnits else 0))
-                    else:
-                        model.eStIntraRes.add(0 == model.vStIntraRes[rp, model.k.prev(k), g]
-                                              - model.vStIntraRes[rp, k, g]
-                                              - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
-                                              + ((model.pStorageInflows[rp, k, g] * model.pWeight_k[k] - model.vStorageSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationEnergyStorageUnits else 0))
-                elif len(model.rp) > 1:  # Only cyclic if it has multiple representative periods
-                    match cs.dPower_Parameters["pReprPeriodEdgeHandlingIntraDayStorage"]:
-                        case "notEnforced":
-                            if model.k.ord(k) == 1:
-                                continue  # Don't enforce the constraint for the first time step at all
-                            else:
-                                vStIntraRes_prev = model.vStIntraRes[rp, model.k.prev(k), g]
-                        case "cyclic":
-                            vStIntraRes_prev = model.vStIntraRes[rp, model.k.prevw(k), g]
-                        case "markov":
-                            if model.k.ord(k) == 1:
-                                vStIntraRes_prev = LEGOUtilities.markov_summand(model.rp, rp, False, model.k.prevw(k), model.vStIntraRes, cs.rpTransitionMatrixRelativeFrom, g)
-                            else:
-                                vStIntraRes_prev = model.vStIntraRes[rp, model.k.prev(k), g]
-                        case _:
-                            raise ValueError(f"Unknown pReprPeriodEdgeHandlingIntraDayStorage: '{cs.dPower_Parameters['pReprPeriodEdgeHandlingIntraDayStorage']}'")
-                    model.eStIntraRes.add(0 == vStIntraRes_prev
-                                          - model.vStIntraRes[rp, k, g]
-                                          - model.vGenP[rp, k, g] * model.pWeight_k[k] / cs.dPower_Storage.loc[g, 'DisEffic'] + model.vConsump[rp, k, g] * model.pWeight_k[k] * cs.dPower_Storage.loc[g, 'ChEffic']
-                                          + ((model.pStorageInflows[rp, k, g] * model.pWeight_k[k] - model.vStorageSpillage[rp, k, g] * model.pWeight_k[k]) if g in model.longDurationEnergyStorageUnits else 0))
-
-                for g in model.storageUnits:
-                    model.eExclusiveChargeDischarge.add(model.vConsump[rp, k, g] <= model.bChargeDisCharge[rp, k, g] * model.pMaxCons[g] * (model.pExisUnits[g] + model.vGenInvest[g]))
-                    model.eExclusiveChargeDischarge.add(model.vGenP[rp, k, g] <= (1 - model.bChargeDisCharge[rp, k, g]) * model.pMaxProd[g] * (model.pExisUnits[g] + model.vGenInvest[g]))
+        @model.Constraint(model.rp, model.k, model.storageUnits, ['charge', 'discharge'], doc='Enforce exclusive charge or discharge for storage units')
+        def eExclusiveChargeDischarge(m, rp, k, s, direction):
+            if direction == 'charge':
+                return m.vConsump[rp, k, s] <= m.bChargeDisCharge[rp, k, s] * m.pMaxCons[s] * (m.pExisUnits[s] + m.pMaxInvest[s])
+            elif direction == 'discharge':
+                return m.vGenP[rp, k, s] <= (1 - m.bChargeDisCharge[rp, k, s]) * m.pMaxProd[s] * (m.pExisUnits[s] + m.pMaxInvest[s])
+            else:
+                raise ValueError(f"Unknown direction: '{direction}'")
 
     model.eStMaxProd_expr = pyo.Expression(model.rp, model.k, model.storageUnits, doc='Max production expression for storage units', rule=lambda model, rp, k, s: model.vGenP[rp, k, s] - model.vConsump[rp, k, s] - model.pMaxProd[s] * (model.pExisUnits[s] + model.vGenInvest[s]))
     model.eStMaxProd = pyo.Constraint(model.rp, model.k, model.storageUnits, doc='Max production constraint for storage units', rule=lambda model, rp, k, s: model.eStMaxProd_expr[rp, k, s] <= 0)
@@ -159,7 +153,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         model.eStMaxInterRes = pyo.Constraint(model.movingWindowP, model.interStorageUnits, doc='Max inter-reserve constraint for storage units', rule=lambda m, p, s: m.vStInterRes[p, s] <= m.pMaxReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s]))
         model.eStMinInterRes = pyo.Constraint(model.movingWindowP, model.interStorageUnits, doc='Min inter-reserve constraint for storage units', rule=lambda m, p, s: m.vStInterRes[p, s] >= m.pMinReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s]))
 
-        model.eStFinInterRes = pyo.Constraint([model.movingWindowP.at(-1)], model.interStorageUnits, doc='Final inter-reserve storage level constraint', rule=lambda m, p, s: (m.vStInterRes[p, s] == m.pIniReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s])) if cs.dPower_Parameters['pFixStInterResToIniReserve'] else (m.vStInterRes[p, s] >= m.pIniReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s])))
+        model.eStFinInterRes = pyo.Constraint([model.movingWindowP.at(-1)], model.interStorageUnits, doc='Final inter-reserve storage level constraint', rule=lambda m, p, s: (m.vStInterRes[p, s] == m.pIniReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s])) if model.pFixStInterResToIniReserve else (m.vStInterRes[p, s] >= m.pIniReserve[s] * (m.pExisUnits[s] + m.vGenInvest[s])))
 
         def eStInterRes_rule(model, p, storage_unit):
             if model.movingWindowP.ord(p) == 1:
