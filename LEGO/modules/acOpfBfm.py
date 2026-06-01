@@ -90,18 +90,26 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vLineQ = pyo.Var(model.rp, model.k, model.la, doc="Reactive power flow from bus i to j", bounds=lambda m, rp, k, i, j, c: (-m.pQmax[i, j, c], m.pQmax[i, j, c]) if (i, j, c) in m.le else (-m.pQmax[j, i, c], m.pQmax[j, i, c]) if (i, j, c) in m.le_reverse else (None, None))
     second_stage_variables.append(model.vLineQ)
 
-    model.vSOCP_ui = pyo.Var(model.rp, model.k, model.i, doc='Squared voltage magnitude at bus i', bounds=lambda m, rp, k, i: (m.pVoltageBoundsLow[i] ** 2, m.pVoltageBoundsUp[i] ** 2))
+    model.vSOCP_ui = pyo.Var(model.rp, model.k, model.i, doc='Squared voltage magnitude at bus i', bounds=lambda m, rp, k, i: (m.pBusMinV[i] ** 2, m.pBusMaxV[i] ** 2))
     second_stage_variables.append(model.vSOCP_ui)
 
     if model.pEnableSoftVoltageLimits:
-        model.vSOCP_ui_slack_pos = pyo.Var(model.rp, model.k, model.i, doc='Slack variable to penalize voltage terms near the upper voltage limits', bounds=lambda m, rp, k, i: (0, (m.pBusMaxV[i] - m.pVoltageBoundsUp[i]) ** 2))
+        model.vSOCP_ui_slack_pos = pyo.Var(
+            model.rp, model.k, model.i,
+            doc='Soft upper voltage violation: max(0, V²_i - pVoltageBoundsUp²)',
+            bounds=lambda m, rp, k, i: (0, (m.pBusMaxV[i] **2 - m.pVoltageBoundsUp[i] **2))
+        )
         second_stage_variables.append(model.vSOCP_ui_slack_pos)
 
-        model.vSOCP_ui_slack_neg = pyo.Var(model.rp, model.k, model.i, doc='Slack variable to penalize voltage terms near the lower voltage limits', bounds=lambda m, rp, k, i: (0, (m.pVoltageBoundsLow[i] - m.pBusMinV[i]) ** 2))
+        model.vSOCP_ui_slack_neg = pyo.Var(
+            model.rp, model.k, model.i,
+            doc='Soft lower voltage violation: max(0, pVoltageBoundsLow² - V²_i)',
+            bounds=lambda m, rp, k, i: (0, (m.pVoltageBoundsLow[i] **2 - m.pBusMinV[i] **2))
+        )
         second_stage_variables.append(model.vSOCP_ui_slack_neg)
     else:
-         model.vSOCP_ui_slack_pos = pyo.Param(model.rp, model.k, model.i, initialize=0, doc='Slack variable to penalize voltage terms near the upper voltage limits (set to 0 when soft voltage limits are disabled)')
-         model.vSOCP_ui_slack_neg = pyo.Param(model.rp, model.k, model.i, initialize=0, doc='Slack variable to penalize voltage terms near the lower voltage limits (set to 0 when soft voltage limits are disabled)')
+         model.vSOCP_ui_slack_pos = pyo.Param(model.rp, model.k, model.i, initialize=0, doc='Disabled soft upper voltage slack')
+         model.vSOCP_ui_slack_neg = pyo.Param(model.rp, model.k, model.i, initialize=0, doc='Disabled soft lower voltage slack')
 
     model.vSOCP_lij = pyo.Var(model.rp, model.k, model.la, doc='Squared current magnitude on line ij', bounds=lambda m, rp, k, i, j, c: (0, None) if (i, j, c) in m.la else (None, None))  # m.pSijNom[i,j,c]/m.pBusMinV[i]
     second_stage_variables.append(model.vSOCP_lij)
@@ -197,8 +205,8 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     model.eSOCP_QMinOut2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc="Min negative reactive power output of generator unit", rule=lambda m, rp, k, g: (m.vGenQ[rp, k, g] / m.pMinGenQ[g] <= m.vCommit[rp, k, g]) if m.pMinGenQ[g] <= 0 and (m.pExisUnits[g] > 0 or m.pEnabInv[g] == 1) else pyo.Constraint.Skip)
 
     def eSOCP_VoltageDrop_rule(m, rp, k, i, j, c):
-        return ((m.vSOCP_ui[rp, k, j] + model.vSOCP_ui_slack_pos[rp, k, j] - model.vSOCP_ui_slack_neg[rp, k, j]) ==
-                (m.vSOCP_ui[rp, k, i] + model.vSOCP_ui_slack_pos[rp, k, i] - model.vSOCP_ui_slack_neg[rp, k, i]) -
+        return (m.vSOCP_ui[rp, k, j] ==
+                m.vSOCP_ui[rp, k, i]  -
                 2 * (m.pRline[i, j, c] * m.vLineP[rp, k, i, j, c] + m.pXline[i, j, c] * m.vLineQ[rp, k, i, j, c]) +
                 (m.pRline[i, j, c] ** 2 + m.pXline[i, j, c] ** 2) * m.vSOCP_lij[rp, k, i, j, c])
 
@@ -206,17 +214,19 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     def eSOCP_FlowDef_rule(m, rp, k, i, j, c):
         if any((i, j, c) in m.la for c in m.c):
-            return m.vSOCP_lij[rp, k, i, j, c] * (m.vSOCP_ui[rp, k, i] + m.vSOCP_ui_slack_pos[rp, k, i] - m.vSOCP_ui_slack_neg[rp, k, i])>= m.vLineP[rp, k, i, j, c] ** 2 + m.vLineQ[rp, k, i, j, c] ** 2
+            return m.vSOCP_lij[rp, k, i, j, c] * m.vSOCP_ui[rp, k, i] >= m.vLineP[rp, k, i, j, c] ** 2 + m.vLineQ[rp, k, i, j, c] ** 2
         else:
             return pyo.Constraint.Skip
 
     model.eSOCP_FlowDef = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc="SCOP constraints for existing lines (for AC-OPF) original set", rule=eSOCP_FlowDef_rule)
 
     def eSOCP_VoltageLimitSlack_rule1(m, rp, k, i):
-        return (m.vSOCP_ui[rp, k, i] - m.vSOCP_ui_slack_neg[rp, k, i]   >= m.pBusMinV[i] ** 2)
+        # True V² may go below the soft lower bound; slack_neg absorbs the deficit
+        return m.vSOCP_ui[rp, k, i] + m.vSOCP_ui_slack_neg[rp, k, i] >= m.pVoltageBoundsLow[i] ** 2
 
     def eSOCP_VoltageLimitSlack_rule2(m, rp, k, i):
-        return (m.vSOCP_ui[rp, k, i] + m.vSOCP_ui_slack_pos[rp, k, i] <= m.pBusMaxV[i] ** 2)
+        # True V² may go above the soft upper bound; slack_pos absorbs the excess
+        return m.vSOCP_ui[rp, k, i] - m.vSOCP_ui_slack_pos[rp, k, i] <= m.pVoltageBoundsUp[i] ** 2
 
     model.eSOCP_VoltageLimitSlack = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="SOCP constraints for voltage limits with slack variables", rule=eSOCP_VoltageLimitSlack_rule1)
     model.eSOCP_VoltageLimitSlack2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="SOCP constraints for voltage limits with slack variables", rule=eSOCP_VoltageLimitSlack_rule2)
@@ -244,7 +254,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
             return sum(
                 model.vQNS[rp, k, i] * model.pENSCost
                 + model.vEQS[rp, k, i] * model.pENSCost * 2
-                + (model.vSOCP_ui_slack_pos[rp, k, i] + model.vSOCP_ui_slack_neg[rp, k, i]) * model.pENSCost * 0.01  # Penalize voltage limit slack variables
+                + (model.vSOCP_ui_slack_pos[rp, k, i] + model.vSOCP_ui_slack_neg[rp, k, i]) * model.pENSCost * 0.005  # Penalize voltage limit slack variables
                 for i in model.i
         )
         else:

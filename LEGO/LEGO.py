@@ -85,8 +85,8 @@ class LEGO:
             printer.warning(f"Solver name {solver_name} does not match the one used in the case study ({self.cs.dGlobal_Parameters['pSolver']}) - using {solver_name}")
 
         # Add suffixes to request dual values from solver
-        if not hasattr(self.model, 'dual'):
-            self.model.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
+        # if not hasattr(self.model, 'dual'):
+        #     self.model.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
 
         start_time = time.time()
         self.work_units = None  # Initialize work_units
