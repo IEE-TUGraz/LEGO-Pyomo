@@ -123,3 +123,58 @@ python research/MK/EvaluateMarkov.py --plot --case-study-folder data/example
 | `--case-study-folder` | Case study folder for plots                              |
 | `--number-of-hours`   | Number of hours to show in plots                         |
 | `--start-hour`        | Start hour for plots                                     |
+
+### `CompareMarkov.py` — Cross-run comparison boxplots
+
+Reads all `MK-*.sqlite` files in a folder and produces **boxplot PNGs** comparing the
+edge-handling strategies (NoEnf, Cyclic, Markov — plus Markov-Strict with `--markov-strict`)
+against the Truth model. Each figure has one subplot per `(shift_tm, perturb_tm)` combination
+(shared y-axis), and within each subplot one boxplot per strategy. Every box aggregates over the
+**sub-cases** sharing that TM combination — i.e. the other run parameters that vary (`clusters`,
+`stretch_demand`, …). Truth is the deviation/regret reference, never drawn as a box.
+
+There are **9 logical plots**, and **each is emitted twice** — once with all strategies and once
+with NoEnf excluded (a `_noNoEnf` suffix), since NoEnf's large deviations often compress the scale
+— giving up to **18 PNGs**:
+
+| Base filename                                | Content                                                          |
+|----------------------------------------------|------------------------------------------------------------------|
+| `compare_workunits_operational_absolute.png` | A — Work units, operational runs                                 |
+| `compare_workunits_operational_relative.png` | A — Work units as % of Truth, operational runs                   |
+| `compare_vshutdown_operational_relative.png` | B — vShutdown deviation vs Truth-operational [%]                 |
+| `compare_vshutdown_operational_absolute.png` | B — vShutdown deviation vs Truth-operational (weighted units)    |
+| `compare_workunits_investment_absolute.png`  | C — Work units, investment (main) runs                           |
+| `compare_workunits_investment_relative.png`  | C — Work units as % of Truth, investment runs                    |
+| `compare_vshutdown_investment_relative.png`  | D — vShutdown deviation vs Truth-main [%]                        |
+| `compare_vshutdown_investment_absolute.png`  | D — vShutdown deviation vs Truth-main (weighted units)           |
+| `compare_invest_regret.png`                  | E — Invest-regret [%] over Truth's objective                     |
+
+"Operational runs" are the `--operational` runs (vGenInvest fixed to Truth's investment);
+"investment runs" are the regular main runs. The relative work-units plots show
+`work_units / truth_work_units * 100` (100% == as expensive as Truth), so they need a
+solver that reports work units (Gurobi); under solvers that don't (e.g. HiGHS) those plots are empty.
+A category with no files is skipped with a message (no crash). Reads only what each plot needs (run
+parameters, solver `work_units`, a SQL-aggregated weighted `vShutdown` sum, and the objective),
+loaded concurrently with a thread pool; `-regret.sqlite` files are ignored entirely.
+
+```bash
+python research/MK/CompareMarkov.py                                    # current directory
+python research/MK/CompareMarkov.py path/to/results                    # specific folder
+python research/MK/CompareMarkov.py results/ --output-dir plots/ --no-show
+python research/MK/CompareMarkov.py results/ --include-nonoptimal      # don't drop non-optimal runs
+python research/MK/CompareMarkov.py results/ --markov-strict           # add a Markov-Strict box
+python research/MK/CompareMarkov.py results/ --logscale                # log y-axis for work-units plots
+```
+
+| Parameter             | Default        | Description                                                                                 |
+|-----------------------|----------------|---------------------------------------------------------------------------------------------|
+| `folder`              | `.`            | Folder with `MK-*.sqlite` files                                                             |
+| `--output-dir`        | input folder   | Directory to save the PNGs in                                                               |
+| `--no-show`           | off            | Suppress interactive display (for headless/batch runs)                                      |
+| `--include-nonoptimal`| off            | Include runs with `termination_condition != 'optimal'` (default: optimal-only)              |
+| `--markov-strict`     | off            | Also draw a Markov-Strict box (only meaningful for `--enable-strict-markov` runs)           |
+| `--logscale`          | off            | Log-scale y-axis for the work-units plots (A/C); no effect on deviation/regret plots        |
+
+Subplots are ordered by shift first, then perturb: base, perturbTM, shiftTM, shiftTM+perturbTM, … .
+Invest-regret (E) uses Truth's `Objective` as the reference: `(invest-regret obj − truth obj) / |truth obj| * 100`
+(same convention as `EvaluateMarkov.py`'s `%` columns).
