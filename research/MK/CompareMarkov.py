@@ -4,20 +4,21 @@
 CompareMarkov.py - Boxplots comparing edge-handling strategies (NoEnf, Cyclic,
 Markov) against the Truth model across shift-tm / perturb-tm combinations.
 
-Produces 9 logical plots from a folder of MK-*.sqlite files; each is emitted
+Produces 10 logical plots from a folder of MK-*.sqlite files; each is emitted
 twice — once with all strategies and once with NoEnf excluded ('_noNoEnf'
 suffix, since NoEnf's large deviations otherwise compress the scale) — for up
-to 18 PNGs:
+to 20 PNGs:
 
   A  compare_workunits_operational_absolute.png   Work units, operational runs
      compare_workunits_operational_relative.png   Work units as % of Truth, operational
-  B  compare_vshutdown_operational_relative.png   vShutdown dev. vs Truth-op [%]
-     compare_vshutdown_operational_absolute.png   vShutdown dev. vs Truth-op (abs)
+  B  compare_vshutdown_operational_absolute.png   vShutdown dev. vs Truth-op (abs)
+     compare_vshutdown_operational_relative.png   vShutdown dev. vs Truth-op [%]
   C  compare_workunits_investment_absolute.png    Work units, investment (main) runs
      compare_workunits_investment_relative.png    Work units as % of Truth, investment
-  D  compare_vshutdown_investment_relative.png    vShutdown dev. vs Truth-main [%]
-     compare_vshutdown_investment_absolute.png    vShutdown dev. vs Truth-main (abs)
-  E  compare_invest_regret.png                    Invest-regret [%] vs Truth-main obj.
+  D  compare_vshutdown_investment_absolute.png    vShutdown dev. vs Truth-main (abs)
+     compare_vshutdown_investment_relative.png    vShutdown dev. vs Truth-main [%]
+  E  compare_invest_regret_absolute.png           Invest-regret (abs) vs Truth-main obj.
+     compare_invest_regret_relative.png           Invest-regret [%] vs Truth-main obj.
 
 Each figure has one subplot per (shift_tm, perturb_tm) combination (shared
 y-axis), and within each subplot one boxplot per edge handling (NoEnf, Cyclic,
@@ -92,13 +93,14 @@ EDGE_COLORS = {
 OUTPUT_NAMES = {
     'workunits_operational_abs': 'compare_workunits_operational_absolute.png',
     'workunits_operational_rel': 'compare_workunits_operational_relative.png',
-    'vshutdown_operational_rel': 'compare_vshutdown_operational_relative.png',
     'vshutdown_operational_abs': 'compare_vshutdown_operational_absolute.png',
+    'vshutdown_operational_rel': 'compare_vshutdown_operational_relative.png',
     'workunits_investment_abs': 'compare_workunits_investment_absolute.png',
     'workunits_investment_rel': 'compare_workunits_investment_relative.png',
-    'vshutdown_investment_rel': 'compare_vshutdown_investment_relative.png',
     'vshutdown_investment_abs': 'compare_vshutdown_investment_absolute.png',
-    'invest_regret': 'compare_invest_regret.png',
+    'vshutdown_investment_rel': 'compare_vshutdown_investment_relative.png',
+    'invest_regret_abs': 'compare_invest_regret_absolute.png',
+    'invest_regret_rel': 'compare_invest_regret_relative.png',
 }
 
 
@@ -354,10 +356,15 @@ def build_deviation_boxes(entries: list[dict], mode: str, edges: list[str]) -> d
 
 
 def build_regret_boxes(main_entries: list[dict], invest_regret_obj: dict,
-                       edges: list[str]) -> dict:
-    """Invest-regret as % cost increase over Truth's objective, per (tm, sub-case).
+                       mode: str, edges: list[str]) -> dict:
+    """Invest-regret cost increase over Truth's objective, per (tm, sub-case).
 
-    regret% = (invest_regret_obj - truth_obj) / |truth_obj| * 100
+    mode='relative': (invest_regret_obj - truth_obj) / |truth_obj| * 100  [%]
+    mode='absolute': invest_regret_obj - truth_obj                        [native objective units]
+
+    Sub-cases whose Truth objective is missing / 0 / -1 (the EvaluateMarkov "no
+    objective" sentinel) are skipped in both modes, so the relative and absolute
+    plots aggregate over the same sub-cases.
     """
     grouped: dict = defaultdict(lambda: defaultdict(dict))
     for e in main_entries:
@@ -380,7 +387,11 @@ def build_regret_boxes(main_entries: list[dict], invest_regret_obj: dict,
                 iregret = invest_regret_obj.get(ent['file'])
                 if iregret is None:
                     continue
-                boxes[tm_key][edge].append((iregret - truth_obj) / abs(truth_obj) * 100)
+                diff = iregret - truth_obj
+                if mode == 'relative':
+                    boxes[tm_key][edge].append(diff / abs(truth_obj) * 100)
+                else:
+                    boxes[tm_key][edge].append(diff)
     return boxes
 
 
@@ -478,8 +489,8 @@ def main():
     parser = argparse.ArgumentParser(description=("Boxplots of edge-handling strategies (NoEnf, Cyclic, Markov) vs. the "
                                                   "Truth model across shift-tm / perturb-tm combinations.\n\n"
                                                   "For both operational and investment runs: work-units (absolute + as %% "
-                                                  "of Truth) and vShutdown-deviation (relative + absolute), plus "
-                                                  "invest-regret. Each plot is emitted twice: with all strategies and with "
+                                                  "of Truth) and vShutdown-deviation (absolute + relative), plus "
+                                                  "invest-regret (absolute + relative). Each plot is emitted twice: with all strategies and with "
                                                   "NoEnf excluded (suffix '_noNoEnf')."),
                                      formatter_class=RichHelpFormatter)
     parser.add_argument("folder", nargs="?", default=".", help="Folder containing MK-*.sqlite files (default: current directory)")
@@ -537,14 +548,14 @@ def main():
     emit(build_runtime_relative_boxes(operational_entries, edges),
          "Work units (% of Truth) — Operational runs", "Work units [% of Truth]",
          'workunits_operational_rel', logy=args.logscale)
-    emit(build_deviation_boxes(operational_entries, 'relative', edges),
-         "vShutdown deviation vs Truth — Operational runs",
-         "Relative deviation from Truth [%]",
-         'vshutdown_operational_rel', ref_line=0, symmetric_y=True)
     emit(build_deviation_boxes(operational_entries, 'absolute', edges),
          "vShutdown deviation vs Truth — Operational runs",
          "Absolute deviation from Truth",
          'vshutdown_operational_abs', ref_line=0, symmetric_y=True)
+    emit(build_deviation_boxes(operational_entries, 'relative', edges),
+         "vShutdown deviation vs Truth — Operational runs",
+         "Relative deviation from Truth [%]",
+         'vshutdown_operational_rel', ref_line=0, symmetric_y=True)
 
     # --- Investment (main) runs ---
     emit(build_runtime_boxes(main_entries, edges),
@@ -553,20 +564,24 @@ def main():
     emit(build_runtime_relative_boxes(main_entries, edges),
          "Work units (% of Truth) — Investment runs", "Work units [% of Truth]",
          'workunits_investment_rel', logy=args.logscale)
-    emit(build_deviation_boxes(main_entries, 'relative', edges),
-         "vShutdown deviation vs Truth — Investment runs",
-         "Relative deviation from Truth [%]",
-         'vshutdown_investment_rel', ref_line=0, symmetric_y=True)
     emit(build_deviation_boxes(main_entries, 'absolute', edges),
          "vShutdown deviation vs Truth — Investment runs",
          "Absolute deviation from Truth",
          'vshutdown_investment_abs', ref_line=0, symmetric_y=True)
+    emit(build_deviation_boxes(main_entries, 'relative', edges),
+         "vShutdown deviation vs Truth — Investment runs",
+         "Relative deviation from Truth [%]",
+         'vshutdown_investment_rel', ref_line=0, symmetric_y=True)
 
     # --- Invest-regret (investment runs) ---
-    emit(build_regret_boxes(main_entries, invest_regret_obj, edges),
+    emit(build_regret_boxes(main_entries, invest_regret_obj, 'absolute', edges),
+         "Invest-regret vs Truth — Investment runs",
+         "Absolute invest-regret over Truth objective",
+         'invest_regret_abs', ref_line=0, symmetric_y=True)
+    emit(build_regret_boxes(main_entries, invest_regret_obj, 'relative', edges),
          "Invest-regret vs Truth — Investment runs",
          "Invest-regret over Truth objective [%]",
-         'invest_regret', ref_line=0, symmetric_y=True)
+         'invest_regret_rel', ref_line=0, symmetric_y=True)
 
 
 if __name__ == "__main__":

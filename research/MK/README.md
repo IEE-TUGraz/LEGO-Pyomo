@@ -133,21 +133,22 @@ against the Truth model. Each figure has one subplot per `(shift_tm, perturb_tm)
 **sub-cases** sharing that TM combination — i.e. the other run parameters that vary (`clusters`,
 `stretch_demand`, …). Truth is the deviation/regret reference, never drawn as a box.
 
-There are **9 logical plots**, and **each is emitted twice** — once with all strategies and once
+There are **10 logical plots**, and **each is emitted twice** — once with all strategies and once
 with NoEnf excluded (a `_noNoEnf` suffix), since NoEnf's large deviations often compress the scale
-— giving up to **18 PNGs**:
+— giving up to **20 PNGs**:
 
 | Base filename                                | Content                                                          |
 |----------------------------------------------|------------------------------------------------------------------|
 | `compare_workunits_operational_absolute.png` | A — Work units, operational runs                                 |
 | `compare_workunits_operational_relative.png` | A — Work units as % of Truth, operational runs                   |
-| `compare_vshutdown_operational_relative.png` | B — vShutdown deviation vs Truth-operational [%]                 |
 | `compare_vshutdown_operational_absolute.png` | B — vShutdown deviation vs Truth-operational (absolute)          |
+| `compare_vshutdown_operational_relative.png` | B — vShutdown deviation vs Truth-operational [%]                 |
 | `compare_workunits_investment_absolute.png`  | C — Work units, investment (main) runs                           |
 | `compare_workunits_investment_relative.png`  | C — Work units as % of Truth, investment runs                    |
-| `compare_vshutdown_investment_relative.png`  | D — vShutdown deviation vs Truth-main [%]                        |
 | `compare_vshutdown_investment_absolute.png`  | D — vShutdown deviation vs Truth-main (absolute)                 |
-| `compare_invest_regret.png`                  | E — Invest-regret [%] over Truth's objective                     |
+| `compare_vshutdown_investment_relative.png`  | D — vShutdown deviation vs Truth-main [%]                        |
+| `compare_invest_regret_absolute.png`         | E — Invest-regret (absolute) over Truth's objective              |
+| `compare_invest_regret_relative.png`         | E — Invest-regret [%] over Truth's objective                     |
 
 "Operational runs" are the `--operational` runs (vGenInvest fixed to Truth's investment);
 "investment runs" are the regular main runs. The relative work-units plots show
