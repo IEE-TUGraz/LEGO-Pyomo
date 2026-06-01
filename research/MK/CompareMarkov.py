@@ -200,7 +200,7 @@ def load_all(folder: str, include_nonoptimal: bool = False):
     files = sorted(f for f in glob.glob(pattern) if os.path.basename(f).startswith("MK-"))
     max_workers = min(len(files), (os.cpu_count() or 4), 60)
 
-    printer.information(f"Found {len(files)} MK-*.sqlite files in {folder}, loading with up to {max_workers} threads...")
+    printer.information(f"Found {len(files)} MK-*.sqlite files in '{folder}', loading with up to {max_workers} threads...")
 
     main_entries: list[dict] = []
     operational_entries: list[dict] = []
@@ -543,7 +543,7 @@ def main():
          'vshutdown_operational_rel', ref_line=0, symmetric_y=True)
     emit(build_deviation_boxes(operational_entries, 'absolute', edges),
          "vShutdown deviation vs Truth — Operational runs",
-         "Absolute deviation from Truth (weighted)",
+         "Absolute deviation from Truth",
          'vshutdown_operational_abs', ref_line=0, symmetric_y=True)
 
     # --- Investment (main) runs ---
@@ -559,7 +559,7 @@ def main():
          'vshutdown_investment_rel', ref_line=0, symmetric_y=True)
     emit(build_deviation_boxes(main_entries, 'absolute', edges),
          "vShutdown deviation vs Truth — Investment runs",
-         "Absolute deviation from Truth (weighted)",
+         "Absolute deviation from Truth",
          'vshutdown_investment_abs', ref_line=0, symmetric_y=True)
 
     # --- Invest-regret (investment runs) ---
