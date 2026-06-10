@@ -4,10 +4,10 @@
 CompareMarkov.py - Boxplots comparing edge-handling strategies (NoEnf, Cyclic,
 Markov) against the Truth model across shift-tm / perturb-tm combinations.
 
-Produces 10 logical plots from a folder of MK-*.sqlite files; each is emitted
+Produces 14 logical plots from a folder of MK-*.sqlite files; each is emitted
 twice — once with all strategies and once with NoEnf excluded ('_noNoEnf'
 suffix, since NoEnf's large deviations otherwise compress the scale) — for up
-to 20 PNGs:
+to 28 PNGs:
 
   A  compare_workunits_operational_absolute.png   Work units, operational runs
      compare_workunits_operational_relative.png   Work units as % of Truth, operational
@@ -19,6 +19,10 @@ to 20 PNGs:
      compare_vshutdown_investment_relative.png    vShutdown dev. vs Truth-main [%]
   E  compare_invest_regret_absolute.png           Invest-regret (abs) vs Truth-main obj.
      compare_invest_regret_relative.png           Invest-regret [%] vs Truth-main obj.
+  F  compare_regret_absolute.png                  Regret (abs) vs Truth-main obj. (invest+commit fixed)
+     compare_regret_relative.png                  Regret [%] vs Truth-main obj.
+  G  compare_operational_regret_absolute.png      Operational-regret (abs) vs Truth-operational obj.
+     compare_operational_regret_relative.png      Operational-regret [%] vs Truth-operational obj.
 
 Each figure has one subplot per (shift_tm, perturb_tm) combination (shared
 y-axis), and within each subplot one boxplot per edge handling (NoEnf, Cyclic,
@@ -101,6 +105,10 @@ OUTPUT_NAMES = {
     'vshutdown_investment_rel': 'compare_vshutdown_investment_relative.png',
     'invest_regret_abs': 'compare_invest_regret_absolute.png',
     'invest_regret_rel': 'compare_invest_regret_relative.png',
+    'regret_abs': 'compare_regret_absolute.png',
+    'regret_rel': 'compare_regret_relative.png',
+    'operational_regret_abs': 'compare_operational_regret_absolute.png',
+    'operational_regret_rel': 'compare_operational_regret_relative.png',
 }
 
 
@@ -157,15 +165,23 @@ def _load_compare_file(sqlite_file: str):
 
     Returns one of:
         ('skip', file, None, None)
-        ('invest_regret', file, termination, objective)
+        ('invest_regret'|'regret'|'operational_regret', file, termination, objective)
         ('main'|'operational', file, meta, payload)
     where payload = {'vShutdown': float|None, 'Objective': float|None}.
     """
     basename = os.path.basename(sqlite_file)
 
-    # invest-regret MUST be tested before regret (the suffix "-invest-regret.sqlite"
-    # also ends with "-regret.sqlite").
+    # Regret-objective files. Ordering matters: "-invest-regret.sqlite" and
+    # "-operational-regret.sqlite" both end in "-regret.sqlite", so both are tested before
+    # the bare "-regret.sqlite". Each yields just (termination, objective).
+    regret_kind = None
     if basename.endswith("-invest-regret.sqlite"):
+        regret_kind = 'invest_regret'
+    elif basename.endswith("-operational-regret.sqlite"):
+        regret_kind = 'operational_regret'
+    elif basename.endswith("-regret.sqlite"):
+        regret_kind = 'regret'
+    if regret_kind is not None:
         try:
             conn = sqlite3.connect(sqlite_file)
             obj = _read_objective(conn)
@@ -173,18 +189,16 @@ def _load_compare_file(sqlite_file: str):
             conn.close()
         except Exception:
             obj, term = None, None
-        return ('invest_regret', sqlite_file, term, obj)
-
-    # -regret.sqlite (operational regret from --calculate-regret) is not needed.
-    if basename.endswith("-regret.sqlite"):
-        return ('skip', sqlite_file, None, None)
+        return (regret_kind, sqlite_file, term, obj)
 
     kind = 'operational' if basename.endswith("-operational.sqlite") else 'main'
     try:
         conn = sqlite3.connect(sqlite_file)
         meta = _load_metadata_from_conn(conn, basename)
         vshut = _weighted_var_sum(conn, 'vShutdown')
-        obj = _read_objective(conn) if kind == 'main' else None
+        # Objective is read for operational too (it is the Truth-operational reference for
+        # the operational-regret plots; main runs reference it for the regret plots).
+        obj = _read_objective(conn)
         conn.close()
     except Exception:
         return ('skip', sqlite_file, None, None)
@@ -195,8 +209,10 @@ def _load_compare_file(sqlite_file: str):
 def load_all(folder: str, include_nonoptimal: bool = False):
     """Discover and load all MK-*.sqlite files in *folder* concurrently.
 
-    Returns (main_entries, operational_entries, invest_regret_map) where the map is
-    keyed by the *base* main file path -> invest-regret objective.
+    Returns (main_entries, operational_entries, invest_regret_obj, regret_obj,
+    operational_regret_obj). Each *_obj map is keyed by the base file it references:
+      invest_regret_obj / regret_obj  -> base MAIN file        -> objective
+      operational_regret_obj          -> base OPERATIONAL file -> objective
     """
     pattern = os.path.join(folder, "MK-*.sqlite")
     files = sorted(f for f in glob.glob(pattern) if os.path.basename(f).startswith("MK-"))
@@ -206,22 +222,35 @@ def load_all(folder: str, include_nonoptimal: bool = False):
 
     main_entries: list[dict] = []
     operational_entries: list[dict] = []
+    # Each regret map is paired with a termination map (same key) for the optimal-only filter.
     invest_regret_obj: dict[str, float] = {}
     invest_regret_term: dict[str, str | None] = {}
+    regret_obj: dict[str, float] = {}
+    regret_term: dict[str, str | None] = {}
+    operational_regret_obj: dict[str, float] = {}
+    operational_regret_term: dict[str, str | None] = {}
 
     if not files:
-        return main_entries, operational_entries, invest_regret_obj
+        return main_entries, operational_entries, invest_regret_obj, regret_obj, operational_regret_obj
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [pool.submit(_load_compare_file, f) for f in files]
         for future in as_completed(futures):
-            kind, f, meta, payload = future.result()
+            kind, f, meta, payload = future.result()  # for regret kinds: meta=termination, payload=objective
             if kind == 'skip':
                 continue
             if kind == 'invest_regret':
                 base = f.replace("-invest-regret.sqlite", ".sqlite")
                 invest_regret_obj[base] = payload
-                invest_regret_term[base] = meta  # termination condition
+                invest_regret_term[base] = meta
+            elif kind == 'regret':
+                base = f.replace("-regret.sqlite", ".sqlite")
+                regret_obj[base] = payload
+                regret_term[base] = meta
+            elif kind == 'operational_regret':
+                base = f.replace("-operational-regret.sqlite", "-operational.sqlite")
+                operational_regret_obj[base] = payload
+                operational_regret_term[base] = meta
             else:
                 entry = {**meta, **payload, 'file': f}
                 (operational_entries if kind == 'operational' else main_entries).append(entry)
@@ -229,10 +258,12 @@ def load_all(folder: str, include_nonoptimal: bool = False):
     if not include_nonoptimal:
         main_entries = [e for e in main_entries if e.get('termination_condition') == 'optimal']
         operational_entries = [e for e in operational_entries if e.get('termination_condition') == 'optimal']
-        invest_regret_obj = {b: o for b, o in invest_regret_obj.items()
-                             if invest_regret_term.get(b) == 'optimal'}
+        invest_regret_obj = {b: o for b, o in invest_regret_obj.items() if invest_regret_term.get(b) == 'optimal'}
+        regret_obj = {b: o for b, o in regret_obj.items() if regret_term.get(b) == 'optimal'}
+        operational_regret_obj = {b: o for b, o in operational_regret_obj.items()
+                                  if operational_regret_term.get(b) == 'optimal'}
 
-    return main_entries, operational_entries, invest_regret_obj
+    return main_entries, operational_entries, invest_regret_obj, regret_obj, operational_regret_obj
 
 
 # ---------------------------------------------------------------------------
@@ -355,19 +386,25 @@ def build_deviation_boxes(entries: list[dict], mode: str, edges: list[str]) -> d
     return boxes
 
 
-def build_regret_boxes(main_entries: list[dict], invest_regret_obj: dict,
+def build_regret_boxes(base_entries: list[dict], regret_obj: dict,
                        mode: str, edges: list[str]) -> dict:
-    """Invest-regret cost increase over Truth's objective, per (tm, sub-case).
+    """Regret cost increase over the same-kind Truth objective, per (tm, sub-case).
 
-    mode='relative': (invest_regret_obj - truth_obj) / |truth_obj| * 100  [%]
-    mode='absolute': invest_regret_obj - truth_obj                        [native objective units]
+    Generic over the three regret variants — the caller picks the pair:
+      invest-regret / regret -> base_entries = main runs (vs Truth-main objective)
+      operational-regret      -> base_entries = operational runs (vs Truth-operational objective)
+    `regret_obj` is keyed by each base entry's own `file`, so the reference Truth and the
+    regret value always come from the same run kind.
+
+    mode='relative': (regret_obj - truth_obj) / |truth_obj| * 100  [%]
+    mode='absolute': regret_obj - truth_obj                        [native objective units]
 
     Sub-cases whose Truth objective is missing / 0 / -1 (the EvaluateMarkov "no
     objective" sentinel) are skipped in both modes, so the relative and absolute
     plots aggregate over the same sub-cases.
     """
     grouped: dict = defaultdict(lambda: defaultdict(dict))
-    for e in main_entries:
+    for e in base_entries:
         edge = e.get('edge_handling')
         if edge is None:
             continue
@@ -384,10 +421,10 @@ def build_regret_boxes(main_entries: list[dict], invest_regret_obj: dict,
                 ent = eh_map.get(edge)
                 if ent is None:
                     continue
-                iregret = invest_regret_obj.get(ent['file'])
-                if iregret is None:
+                regret_val = regret_obj.get(ent['file'])
+                if regret_val is None:
                     continue
-                diff = iregret - truth_obj
+                diff = regret_val - truth_obj
                 if mode == 'relative':
                     boxes[tm_key][edge].append(diff / abs(truth_obj) * 100)
                 else:
@@ -490,7 +527,8 @@ def main():
                                                   "Truth model across shift-tm / perturb-tm combinations.\n\n"
                                                   "For both operational and investment runs: work-units (absolute + as %% "
                                                   "of Truth) and vShutdown-deviation (absolute + relative), plus "
-                                                  "invest-regret (absolute + relative). Each plot is emitted twice: with all strategies and with "
+                                                  "invest-regret, regret (vs Truth-main) and operational-regret (vs Truth-operational), "
+                                                  "each absolute + relative. Each plot is emitted twice: with all strategies and with "
                                                   "NoEnf excluded (suffix '_noNoEnf')."),
                                      formatter_class=RichHelpFormatter)
     parser.add_argument("folder", nargs="?", default=".", help="Folder containing MK-*.sqlite files (default: current directory)")
@@ -507,7 +545,7 @@ def main():
     edges = list(EDGE_ORDER) + ([EDGE_STRICT] if args.markov_strict else [])
 
     printer.information(f"Loading MK-*.sqlite files from '{args.folder}' ...")
-    main_entries, operational_entries, invest_regret_obj = load_all(args.folder, include_nonoptimal=args.include_nonoptimal)
+    main_entries, operational_entries, invest_regret_obj, regret_obj, operational_regret_obj = load_all(args.folder, include_nonoptimal=args.include_nonoptimal)
 
     if not main_entries and not operational_entries:
         printer.warning(f"  No usable MK-*.sqlite files found in '{args.folder}'"
@@ -525,7 +563,9 @@ def main():
                         f"NoEnf={_count(main_entries, 'NoEnf')}, Cyclic={_count(main_entries, 'Cyclic')}, "
                         f"Markov={_count(main_entries, 'Markov')}{strict_note}); "
                         f"operational={len(operational_entries)}; "
-                        f"invest-regret={len(invest_regret_obj)}")
+                        f"invest-regret={len(invest_regret_obj)}; "
+                        f"regret={len(regret_obj)}; "
+                        f"operational-regret={len(operational_regret_obj)}")
 
     def emit(boxes, title, ylabel, name_key, logy=False, ref_line=None,
              symmetric_y=False):
@@ -573,7 +613,7 @@ def main():
          "Relative deviation from Truth [%]",
          'vshutdown_investment_rel', ref_line=0, symmetric_y=True)
 
-    # --- Invest-regret (investment runs) ---
+    # --- Invest-regret (investment runs): vGenInvest fixed from the main run, vCommit free ---
     emit(build_regret_boxes(main_entries, invest_regret_obj, 'absolute', edges),
          "Invest-regret vs Truth — Investment runs",
          "Absolute invest-regret over Truth objective",
@@ -582,6 +622,27 @@ def main():
          "Invest-regret vs Truth — Investment runs",
          "Invest-regret over Truth objective [%]",
          'invest_regret_rel', ref_line=0, symmetric_y=True)
+
+    # --- Regret (investment runs): vGenInvest + vCommit fixed from the main run; vs Truth-main ---
+    emit(build_regret_boxes(main_entries, regret_obj, 'absolute', edges),
+         "Regret vs Truth — Investment runs",
+         "Absolute regret over Truth objective",
+         'regret_abs', ref_line=0, symmetric_y=True)
+    emit(build_regret_boxes(main_entries, regret_obj, 'relative', edges),
+         "Regret vs Truth — Investment runs",
+         "Regret over Truth objective [%]",
+         'regret_rel', ref_line=0, symmetric_y=True)
+
+    # --- Operational-regret (operational runs): fleet = Truth, vCommit fixed from the
+    #     operational run; referenced against the Truth-operational objective ---
+    emit(build_regret_boxes(operational_entries, operational_regret_obj, 'absolute', edges),
+         "Operational-regret vs Truth — Operational runs",
+         "Absolute operational-regret over Truth-operational objective",
+         'operational_regret_abs', ref_line=0, symmetric_y=True)
+    emit(build_regret_boxes(operational_entries, operational_regret_obj, 'relative', edges),
+         "Operational-regret vs Truth — Operational runs",
+         "Operational-regret over Truth-operational objective [%]",
+         'operational_regret_rel', ref_line=0, symmetric_y=True)
 
 
 if __name__ == "__main__":

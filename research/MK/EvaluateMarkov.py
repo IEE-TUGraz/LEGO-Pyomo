@@ -290,29 +290,26 @@ def _load_file(sqlite_file):
     basename = os.path.basename(sqlite_file)
     try:
         conn = sqlite3.connect(sqlite_file)
-        if basename.endswith("-invest-regret.sqlite"):
-            results = _load_results_from_conn(conn)
-            conn.close()
-            return ('invest_regret', sqlite_file, None, results)
-        if basename.endswith("-regret.sqlite"):
-            results = _load_results_from_conn(conn)
-            conn.close()
-            return ('regret', sqlite_file, None, results)
-        if basename.endswith("-operational.sqlite"):
-            # Operational runs are full solves (vGenInvest fixed to Truth's decision); they
-            # carry their own metadata and results but must be kept out of the regular
-            # comparison tables (same edge_handling would otherwise duplicate/skew rows).
-            meta = _load_metadata_from_conn(conn, basename)
-            results = _load_results_from_conn(conn)
-            conn.close()
-            return ('operational', sqlite_file, meta, results)
+        # Suffix routing. '-operational-regret' and '-invest-regret' both end in '-regret.sqlite',
+        # so they must be tested before the bare '-regret'. Operational and all three regret variants
+        # are full solves carrying their own metadata + results; each is shown in its own per-group
+        # table (kept out of the main comparison table, where a duplicate edge_handling would skew rows).
+        if basename.endswith("-operational-regret.sqlite"):
+            kind = 'operational_regret'
+        elif basename.endswith("-invest-regret.sqlite"):
+            kind = 'invest_regret'
+        elif basename.endswith("-regret.sqlite"):
+            kind = 'regret'
+        elif basename.endswith("-operational.sqlite"):
+            kind = 'operational'
+        else:
+            kind = 'main'
         meta = _load_metadata_from_conn(conn, basename)
         results = _load_results_from_conn(conn)
         conn.close()
+        return (kind, sqlite_file, meta, results)
     except Exception:
-        meta = {}
-        results = {}
-    return ('main', sqlite_file, meta, results)
+        return ('main', sqlite_file, {}, {})
 
 
 def _build_entry(sqlite_file, meta, results):
@@ -393,21 +390,13 @@ def print_comparison_table(group_entries):
     ref_entry = truth_entry if truth_entry is not None else markov_entry
     using_markov_ref = truth_entry is None and markov_entry is not None
 
-    # Compute relative change columns
-    ref_obj = ref_entry.get('Objective') if ref_entry else None
+    # Compute relative change columns. For regret tables (no Truth entry — Truth is never a regret
+    # run) the reference falls back to Markov, so the percentages read against Markov there.
     for entry in group_entries:
         for key in ["Objective", "vStartup", "vShutdown"]:
             val = entry.get(key)
             if ref_entry is not None and ref_entry.get(key) not in (-1, 0, None) and val not in (-1, None):
                 entry[f"{key} %"] = (val - ref_entry[key]) / abs(ref_entry[key]) * 100
-            else:
-                entry[f"{key} %"] = None
-
-        # Regret/invest-regret: show difference vs reference objective
-        for key in ["Regret Obj.", "Invest-Regret Obj."]:
-            val = entry.get(key)
-            if val is not None and ref_obj not in (-1, 0, None):
-                entry[f"{key} %"] = (val - ref_obj) / abs(ref_obj) * 100
             else:
                 entry[f"{key} %"] = None
 
@@ -423,13 +412,6 @@ def print_comparison_table(group_entries):
                "Work Units", "Status", "Term. Cond.", "MIP-Gap",
                "vGenP", "vCommit", "vStartup", "vStartup %",
                "vShutdown", "vShutdown %", "vPNS", "vEPS"]
-
-    has_regret = any(e.get("Regret Obj.") is not None for e in group_entries)
-    has_invest_regret = any(e.get("Invest-Regret Obj.") is not None for e in group_entries)
-    if has_regret:
-        columns.extend(["Regret Obj.", "Regret Obj. %"])
-    if has_invest_regret:
-        columns.extend(["Invest-Regret Obj.", "Invest-Regret Obj. %"])
 
     _print_table(columns, group_entries, highlight_pct_yellow=using_markov_ref)
     if using_markov_ref:
@@ -797,7 +779,8 @@ def _load_unit_commitment_from_sqlite(sqlite_file, case_label):
 
 
 def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24, start_hour=1, no_show=False):
-    # Find all MK-*.sqlite files (excluding regret and invest-regret)
+    # Find all MK-*.sqlite files; _load_file classifies each (main / operational / regret /
+    # invest_regret / operational_regret) by suffix and they are tabled separately.
     all_sqlite = sorted(f for f in glob.glob(os.path.join(folder, "*.sqlite"))
                         if os.path.basename(f).startswith("MK-"))
 
@@ -807,48 +790,52 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
 
     printer.information(f"Found {len(all_sqlite)} MK sqlite file(s) in '{folder}'")
 
-    # Load metadata and results for each file (parallelized across processes)
+    # Load metadata and results for each file (parallelized across processes). Operational and the
+    # three regret variants each go into their own entry list and are printed as separate per-group tables.
     entries = []
-    operational_entries = []
-    regret_files = {}
-    invest_regret_files = {}
+    kind_entries = {'operational': [], 'regret': [], 'invest_regret': [], 'operational_regret': []}
     max_workers = min(min(len(all_sqlite), os.cpu_count() or 4), 60)
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_load_file, f): f for f in all_sqlite}
         for future in as_completed(futures):
             kind, sqlite_file, meta, results = future.result()
-            if kind == 'invest_regret':
-                base_file = sqlite_file.replace("-invest-regret.sqlite", ".sqlite")
-                invest_regret_files[base_file] = results.get('Objective')
-            elif kind == 'regret':
-                base_file = sqlite_file.replace("-regret.sqlite", ".sqlite")
-                regret_files[base_file] = results.get('Objective')
-            elif kind == 'operational':
-                operational_entries.append(_build_entry(sqlite_file, meta, results))
+            entry = _build_entry(sqlite_file, meta, results)
+            if kind in kind_entries:
+                kind_entries[kind].append(entry)
             else:
-                entries.append(_build_entry(sqlite_file, meta, results))
+                entries.append(entry)
 
-    # Attach regret/invest-regret objectives to their base entries
-    for entry in entries:
-        entry['Regret Obj.'] = regret_files.get(entry['file'])
-        entry['Invest-Regret Obj.'] = invest_regret_files.get(entry['file'])
-
-    if not entries and not operational_entries:
-        printer.warning("No (non-regret) MK result files found")
+    if not entries and not any(kind_entries.values()):
+        printer.warning("No MK result files found")
         return
 
-    # Group by run parameters. Operational runs share the same grouping keys as their
-    # regular counterparts but are printed in a separate table per group.
-    groups = defaultdict(list)
-    for entry in entries:
-        groups[_group_key(entry)].append(entry)
+    # Group every entry list by run parameters. Operational and regret runs share the same grouping
+    # keys as their regular counterparts but are printed in separate tables per group.
+    def _group_entries(entry_list):
+        grouped = defaultdict(list)
+        for entry in entry_list:
+            grouped[_group_key(entry)].append(entry)
+        return grouped
 
-    op_groups = defaultdict(list)
-    for entry in operational_entries:
-        op_groups[_group_key(entry)].append(entry)
+    groups = _group_entries(entries)
+    op_groups = _group_entries(kind_entries['operational'])
+    regret_groups = _group_entries(kind_entries['regret'])
+    invest_regret_groups = _group_entries(kind_entries['invest_regret'])
+    op_regret_groups = _group_entries(kind_entries['operational_regret'])
 
-    # Iterate the union of group keys (regular first, then any operational-only groups)
-    all_group_keys = list(groups.keys()) + [k for k in op_groups if k not in groups]
+    # Tables to print per group, after the main + operational tables, in this order.
+    regret_table_specs = [
+        ("Regret runs (truth re-solved with vGenInvest + vCommit fixed from the edge handling's main run)", regret_groups),
+        ("Invest-regret runs (truth re-solved with vGenInvest fixed from the edge handling's main run)", invest_regret_groups),
+        ("Operational-regret runs (truth re-solved with vGenInvest fixed to Truth's, vCommit fixed from the operational run)", op_regret_groups),
+    ]
+
+    # Iterate the union of group keys (regular first, then any keys only seen in the extra tables)
+    all_group_keys = list(groups.keys())
+    for extra in (op_groups, regret_groups, invest_regret_groups, op_regret_groups):
+        for k in extra:
+            if k not in all_group_keys:
+                all_group_keys.append(k)
     for group_key in all_group_keys:
         group_entries = groups.get(group_key, [])
         op_entries = op_groups.get(group_key, [])
@@ -911,6 +898,14 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             printer.information("")
             printer.information("  Operational runs (vGenInvest fixed to Truth's investment)")
             print_comparison_table(op_entries)
+
+        # Separate table per regret variant (each is a full truth re-solve with variables fixed)
+        for label, regret_group in regret_table_specs:
+            r_entries = regret_group.get(group_key, [])
+            if r_entries:
+                printer.information("")
+                printer.information(f"  {label}")
+                print_comparison_table(r_entries)
 
         # Plot if requested (regular runs only)
         if plot and group_entries:

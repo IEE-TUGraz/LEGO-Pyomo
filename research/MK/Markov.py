@@ -265,7 +265,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          shift: int = 0, stretch_demand: float = 1.0, scale_vres: float = 1.0,
                          scale_invest_cost: float = 1.0,
                          thermal_invest_only: bool = False, merge_generators: bool = False,
-                         no_overwrite: bool = False, operational: bool = False, network: str | None = None,
+                         no_overwrite: bool = False, operational: bool = False, operational_regret: bool = False, network: str | None = None,
                          commit_consumption: float = 1.0, startup_consumption: float = 1.0,
                          shift_tm: int | None = None,
                          perturb_tm: float | None = None,
@@ -507,7 +507,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         shift_tm=shift_tm,
         perturb_tm=perturb_tm,
     )
-    sqlite_files, sqlite_labels, lego_models = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite, operational=operational, cs=cs, thermal_generator_relaxed=thermalGeneratorRelaxed, tee=tee)
+    sqlite_files, sqlite_labels, lego_models = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite, operational=operational, operational_regret=operational_regret, cs=cs, thermal_generator_relaxed=thermalGeneratorRelaxed, tee=tee)
 
     return sqlite_files, sqlite_labels, lego_models
 
@@ -637,7 +637,8 @@ def _build_full_hourly_truth_lego(cs: CaseStudy, thermal_generator_relaxed: dict
 def execute_operational_runs(lego_models: typing.Dict[str, LEGO], case_name: str, no_sqlite: bool,
                              run_params: dict | None, no_overwrite: bool, tee: bool,
                              sqlite_files: typing.List[str], sqlite_labels: typing.List[str],
-                             cs: CaseStudy | None = None, thermal_generator_relaxed: dict | None = None) -> None:
+                             cs: CaseStudy | None = None, thermal_generator_relaxed: dict | None = None,
+                             operational_regret: bool = False) -> None:
     """Solve an operational variant of each built edge-handling model (--operational).
 
     Each operational run fixes vGenInvest to the *Truth* investment decision (1 where
@@ -672,10 +673,16 @@ def execute_operational_runs(lego_models: typing.Dict[str, LEGO], case_name: str
             printer.warning("--operational with no in-memory Truth model and no CaseStudy to rebuild it — "
                             "skipping Truth-operational (other operational runs still proceed)")
 
+    # Full-hourly Truth base for --operational-regret re-solves, resolved on first actual need and
+    # reused across edge handlings (mirrors the regret base in execute_case_study).
+    truth_base = None
+
     for edgeHandlingType, lego in edge_items:
         normalized = edgeHandlingType.strip().replace('.', '').replace(' ', '')
         op_prefix = f"MK-{case_name}-{normalized}-operational"
         op_label = f"{normalized}-op"
+        op_lego = None  # the in-memory operational solve, if it ran this iteration (else loaded from sqlite below)
+        op_sibling_skip_file = None  # set to the skipping sibling's .sqlite when the operational run is smart-skipped
 
         # --no-overwrite: skip if the exact operational file is already optimal, or a smart
         # sibling check (matching run_params + edge_handling + run_type, differing only in
@@ -694,10 +701,11 @@ def execute_operational_runs(lego_models: typing.Dict[str, LEGO], case_name: str
                 current_edge_params = {**run_params, "edge_handling": normalized, "run_type": "operational"}
                 siblings = _find_sibling_runs(op_prefix, current_edge_params)
                 if siblings:
-                    skip, reason, _ = _should_skip_smart(run_params.get('work_limit'), siblings)
+                    skip, reason, sibling_file = _should_skip_smart(run_params.get('work_limit'), siblings)
                     if skip:
                         printer.information(f"  Skipping (--no-overwrite smart check): {reason}")
                         case_skipped = True
+                        op_sibling_skip_file = sibling_file  # reuse its vCommit for operational-regret below
                     else:
                         printer.information(f"  Running despite existing sibling run(s): {reason}")
 
@@ -736,8 +744,90 @@ def execute_operational_runs(lego_models: typing.Dict[str, LEGO], case_name: str
             sqlite_files.append(f"{op_prefix}.sqlite")
             sqlite_labels.append(op_label)
 
+        # Operational-regret (--operational-regret): re-solve the full-hourly truth model with vGenInvest
+        # fixed to the Truth investment (as above) and vCommit fixed to THIS edge handling's operational
+        # commitment. Files get a '-operational-regret' suffix and are NOT appended to
+        # sqlite_files/sqlite_labels (like the other regret variants).
+        if operational_regret and edgeHandlingType != "Truth ":
+            oregret_prefix = f"MK-{case_name}-{normalized}-operational-regret"
+            run_oregret = True
+            if no_overwrite and os.path.exists(f"{oregret_prefix}.sqlite"):
+                or_info = _read_sqlite_run_info(f"{oregret_prefix}.sqlite")
+                or_tc = or_info.get('stats', {}).get('termination_condition') if or_info else None
+                if or_tc == 'optimal':
+                    printer.information(f"  File '{oregret_prefix}.sqlite' already has optimal solution, skipping operational-regret (--no-overwrite)")
+                    run_oregret = False
+                else:
+                    printer.information(f"  File '{oregret_prefix}.sqlite' exists but status is '{or_tc or 'unknown'}' — re-running operational-regret")
+            if run_oregret:
+                try:
+                    # Source the operational commitment to pin: from the in-memory operational solve, or
+                    # from the exact '{op_prefix}.sqlite' if the operational run was no-overwrite-skipped, or
+                    # from the smart-skipping sibling (differs only in work_limit — its vCommit is a feasible
+                    # commitment for the same operational problem; soft-fixed below so optimality is not required).
+                    op_commit_model = None
+                    op_commit_source = None
+                    if op_lego is not None:
+                        op_commit_model = op_lego.model
+                    elif os.path.exists(f"{op_prefix}.sqlite"):
+                        op_commit_source = f"{op_prefix}.sqlite"
+                    elif op_sibling_skip_file is not None:
+                        op_commit_source = op_sibling_skip_file
+                    if op_commit_model is None and op_commit_source is not None:
+                        printer.information(f"Loading operational vCommit from '{op_commit_source}'")
+                        op_commit_lego = lego.copy()
+                        cnx = sqlite3.connect(op_commit_source)
+                        df_commit = pd.read_sql("SELECT * FROM vCommit", cnx)
+                        cnx.close()
+                        for _, row in df_commit.iterrows():
+                            op_commit_lego.model.vCommit[row.iloc[0], row.iloc[1], row.iloc[2]].value = row['values']
+                            op_commit_lego.model.vCommit[row.iloc[0], row.iloc[1], row.iloc[2]].stale = False
+                        op_commit_model = op_commit_lego.model
 
-def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_sqlite: bool, calculate_regret: bool, skip_truth: bool, invest_regret: bool = False, run_params: dict = None, no_overwrite: bool = False, operational: bool = False, cs: CaseStudy | None = None, thermal_generator_relaxed: dict | None = None, tee: bool = True) -> typing.Tuple[typing.List[str], typing.List[str], typing.Dict[str, LEGO]]:
+                    # Resolve the full-hourly Truth base on first need, then reuse it across edge
+                    # handlings (None = not yet resolved or unavailable).
+                    if truth_base is None:
+                        truth_base = lego_models.get("Truth ")
+                        if truth_base is None and cs is not None:
+                            printer.information("Building full-hourly Truth model on demand for operational-regret (--skip-truth)")
+                            truth_base = _build_full_hourly_truth_lego(cs, thermal_generator_relaxed)
+                    if truth_base is None:
+                        printer.warning(f"  Skipping operational-regret for '{normalized}': no Truth model available and no CaseStudy to build one")
+                    elif op_commit_model is None:
+                        printer.information(f"  Skipping operational-regret for '{normalized}': no operational vCommit available (no in-memory solve, exact file, or skipping sibling)")
+                    else:
+                        printer.information(f"\n{'=' * 60}\n{normalized} (operational-regret)\n{'=' * 60}")
+                        oregret_lego = truth_base.copy()
+                        _apply_solver_options(oregret_lego, run_params)
+                        # vGenInvest fixed to the Truth investment (same decision the operational runs use) ...
+                        for g in oregret_lego.model.vGenInvest:
+                            oregret_lego.model.vGenInvest[g].value = 1 if truth_invest.get(g, 0) > _OPERATIONAL_INVEST_THRESHOLD else 0
+                            oregret_lego.model.vGenInvest[g].fixed = True
+                        # ... and vCommit soft-fixed to this edge handling's operational commitment (hindex maps
+                        # the reduced (rp, k) onto the truth model's full-hourly k).
+                        add_UnitCommitmentSlack_And_FixVariables(oregret_lego, op_commit_model, lego.cs.dPower_Hindex, lego.cs.dPower_ThermalGen, lego.cs.dPower_Parameters["pENSCost"])
+
+                        printer.information("Re-solving truth model with fixed vGenInvest (Truth) and vCommit (operational) for operational-regret")
+                        oregret_result, oregret_timing, _ = oregret_lego.solve_model(already_solved_ok=True, raise_on_no_solution=False)
+                        printer.information(f"Solving operational-regret model took {oregret_timing:.2f} seconds")
+
+                        oregret_params = {**(run_params or {}), "edge_handling": normalized, "run_type": "operational-regret"}
+                        if oregret_lego.has_solution:
+                            write_results(oregret_lego, oregret_prefix, no_sqlite, **oregret_params)
+
+                        match oregret_result.solver.termination_condition:
+                            case pyo.TerminationCondition.optimal:
+                                printer.success("Optimal solution found")
+                            case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
+                                printer.error(f"Model is {oregret_result.solver.termination_condition}, logging infeasible constraints:")
+                                log_infeasible_constraints(oregret_lego.model)
+                            case _:
+                                printer.warning("Solver terminated with condition:", oregret_result.solver.termination_condition)
+                except Exception as e:
+                    printer.error(f"Operational-regret calculation failed for '{edgeHandlingType}': {e}")
+
+
+def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_sqlite: bool, calculate_regret: bool, skip_truth: bool, invest_regret: bool = False, run_params: dict = None, no_overwrite: bool = False, operational: bool = False, operational_regret: bool = False, cs: CaseStudy | None = None, thermal_generator_relaxed: dict | None = None, tee: bool = True) -> typing.Tuple[typing.List[str], typing.List[str], typing.Dict[str, LEGO]]:
     ########################################################################################################################
     # Evaluation
     ########################################################################################################################
@@ -817,24 +907,48 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
             sqlite_labels.append(edgeHandlingType)
 
         if calculate_regret and edgeHandlingType != "Truth " and not skip_truth:
-            if no_overwrite and os.path.exists(f"{file_prefix}-regret.sqlite"):
-                printer.information(f"  File '{file_prefix}-regret.sqlite' already exists, skipping regret (--no-overwrite)")
-            elif case_skipped and not os.path.exists(f"{file_prefix}.sqlite"):
+            # --no-overwrite: skip only if the existing -regret file is optimal (status-based, like the
+            # operational / invest-regret checks) — an existence-only check would silently keep a
+            # work-limited result, or an old-semantics file from before -regret also fixed vGenInvest.
+            regret_file = f"{file_prefix}-regret.sqlite"
+            run_regret = True
+            if no_overwrite and os.path.exists(regret_file):
+                r_info = _read_sqlite_run_info(regret_file)
+                r_tc = r_info.get('stats', {}).get('termination_condition') if r_info else None
+                if r_tc == 'optimal':
+                    printer.information(f"  File '{regret_file}' already has optimal solution, skipping regret (--no-overwrite)")
+                    run_regret = False
+                else:
+                    printer.information(f"  File '{regret_file}' exists but status is '{r_tc or 'unknown'}' — re-running regret")
+            if run_regret and case_skipped and not os.path.exists(f"{file_prefix}.sqlite"):
                 printer.information(f"  Skipping regret: '{file_prefix}.sqlite' does not exist (smart-skipped)")
-            else:
+                run_regret = False
+            if run_regret:
                 try:
                     regret_lego = truth_lego.copy()
                     _apply_solver_options(regret_lego, run_params)
 
-                    # Load vCommit values from sqlite if case was skipped
+                    # Source vCommit + vGenInvest from the edge-handling main run: in-memory when the main
+                    # solve ran this session, or from '{file_prefix}.sqlite' when it was no-overwrite-skipped.
                     if case_skipped:
-                        printer.information(f"Loading vCommit from '{file_prefix}.sqlite'")
+                        printer.information(f"Loading vCommit and vGenInvest from '{file_prefix}.sqlite'")
                         cnx = sqlite3.connect(f"{file_prefix}.sqlite")
                         df_commit = pd.read_sql("SELECT * FROM vCommit", cnx)
+                        df_inv = pd.read_sql("SELECT * FROM vGenInvest", cnx)
                         cnx.close()
                         for _, row in df_commit.iterrows():
                             model.vCommit[row.iloc[0], row.iloc[1], row.iloc[2]].value = row['values']
                             model.vCommit[row.iloc[0], row.iloc[1], row.iloc[2]].stale = False
+                        gen_invest_values = dict(zip(df_inv.iloc[:, 0], df_inv['values']))
+                    else:
+                        gen_invest_values = {g: model.vGenInvest[g].value for g in model.g}
+
+                    # Hard-fix vGenInvest from the edge-handling main run into the truth copy, on top of the
+                    # vCommit soft-fix below: -regret reflects the cost of the edge handling's full plan
+                    # (investment + commitment) evaluated in the truth world.
+                    for g in regret_lego.model.g:
+                        regret_lego.model.vGenInvest[g].value = gen_invest_values.get(g, 1)
+                        regret_lego.model.vGenInvest[g].fixed = True
 
                     add_UnitCommitmentSlack_And_FixVariables(regret_lego, model, lego.cs.dPower_Hindex, lego.cs.dPower_ThermalGen, lego.cs.dPower_Parameters["pENSCost"])
 
@@ -925,7 +1039,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
 
     if operational:
         execute_operational_runs(lego_models, case_name, no_sqlite, run_params, no_overwrite, tee, sqlite_files, sqlite_labels,
-                                 cs=cs, thermal_generator_relaxed=thermal_generator_relaxed)
+                                 cs=cs, thermal_generator_relaxed=thermal_generator_relaxed, operational_regret=operational_regret)
 
     return sqlite_files, sqlite_labels, lego_models
 
@@ -949,7 +1063,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
          scale_invest_cost: float = 1.0,
          thermal_invest_only: bool = False, merge_generators: bool = False,
          reuse_inputfiles: bool = False, enable_strict_markov: bool = False, invest_regret: bool = False,
-         no_investment: bool = False, operational: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False,
+         no_investment: bool = False, operational: bool = False, operational_regret: bool = False, no_overwrite: bool = False, rmip: bool = False, no_crossover: bool = False,
          force_barrier: bool = False, mip_gap: float | None = None, work_limit: float | None = None,
          node_file_start: float | None = None, node_file_dir: str | None = None,
          threads: int | None = None,
@@ -962,6 +1076,9 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
 
     if node_file_dir is not None and node_file_start is None:
         raise ValueError("--node-file-dir requires --node-file-start to be set")
+
+    if operational_regret and not operational:
+        raise ValueError("--operational-regret requires --operational (it re-solves with vCommit taken from each edge handling's operational run)")
 
     for folder in caseStudyFolder.split(","):
         try:
@@ -1099,7 +1216,8 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                                                                     node_file_start=node_file_start, node_file_dir=node_file_dir, threads=threads,
                                                                     filter_zone=filter_zone, limitK=limitK,
                                                                     clusters=cluster, shift=shift, stretch_demand=stretch_demand, scale_vres=scale_vres, scale_invest_cost=scale_invest_cost, thermal_invest_only=thermal_invest_only,
-                                                                    merge_generators=merge_generators, no_overwrite=no_overwrite, operational=operational, network=network,
+                                                                    merge_generators=merge_generators, no_overwrite=no_overwrite, operational=operational,
+                                                                    operational_regret=operational_regret, network=network,
                                                                     commit_consumption=commit_consumption, startup_consumption=startup_consumption,
                                                                     shift_tm=shift_tm, perturb_tm=perturb_tm)
         except Exception as e:
@@ -1137,6 +1255,7 @@ if __name__ == "__main__":
     parser.add_argument("--invest-regret", action="store_true", help="Calculate invest-regret: fix vGenInvest from each edge-handling model into the truth model and compare objectives")
     parser.add_argument("--no-investment", action="store_true", help="Fix vGenInvest to 1 for all generators (skip investment decisions)")
     parser.add_argument("--operational", action="store_true", help="Add an operational run for each edge-handling model (Truth, NoEnf, Cyclic, Markov, and Markov-Strict if enabled) that fixes vGenInvest to the Truth investment decision (1 where Truth invested, 0 otherwise) and re-solves. Truth investment is taken from the in-memory Truth solve, or an optimal Truth .sqlite if Truth was skipped; if neither is available, operational runs are skipped. Output files get a '-operational' suffix")
+    parser.add_argument("--operational-regret", action="store_true", help="Calculate operational-regret: for each non-Truth edge handling, re-solve the full-hourly truth model with vGenInvest fixed to the Truth investment (as in --operational) and vCommit fixed to that edge handling's OPERATIONAL run. Isolates operational regret under the correct (Truth) fleet. Requires --operational. Output files get a '-operational-regret' suffix")
     parser.add_argument("--no-overwrite", action="store_true", help="Skip cases where the output .sqlite file already exists")
     parser.add_argument("--rmip", action="store_true", help="Relax all integer variables (rMIP) before solving")
     parser.add_argument("--no-crossover", action="store_true", help="Disable Gurobi crossover for all solves (faster LP solving, but solution may not be a vertex)")
