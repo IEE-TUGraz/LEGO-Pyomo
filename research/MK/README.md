@@ -64,6 +64,7 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 | Parameter                | Default        | Description                                                                                                 |
 |--------------------------|----------------|-------------------------------------------------------------------------------------------------------------|
 | `caseStudyFolder`        | —              | Path to data folder (comma-separated list for multiple)                                                     |
+| `--debug`                | off            | Re-raise exceptions instead of continuing with the next case study                                          |
 | `--calculate-regret`     | off            | Re-solve truth model with `vGenInvest` **and** `vCommit` fixed from each model's main run (total regret)     |
 | `--skip-truth`           | off            | Skip solving the full-hourly truth model                                                                    |
 | `--relax-percentage`     | 0              | Fraction of thermal generators to relax from binary to continuous                                           |
@@ -83,11 +84,12 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 | `--no-investment`        | off            | Fix all vGenInvest to 1 (skip investment decisions)                                                         |
 | `--operational`          | off            | Add an operational run per edge-handling model (Truth, NoEnf, Cyclic, Markov, +Markov-Strict if enabled): fixes `vGenInvest` to the Truth investment (1 where Truth invested, 0 otherwise) and re-solves. See "Operational runs" below |
 | `--operational-regret`   | off            | Per non-Truth edge handling, re-solve the truth model with `vGenInvest` fixed to Truth's and `vCommit` fixed from that edge handling's **operational** run (operational regret under the correct fleet). **Requires `--operational`.** See "Operational-regret runs" below |
-| `--no-overwrite`         | off            | Skip runs where output `.sqlite` already exists                                                             |
+| `--no-overwrite`         | off            | Skip runs that already solved to optimality (existing file, or a sibling run differing only in `work_limit`); non-optimal results are re-run |
 | `--rmip`                 | off            | Relax all integer variables before solving                                                                  |
 | `--no-crossover`         | off            | Disable Gurobi crossover (must be paired with `--force-barrier`)                                            |
 | `--force-barrier`        | off            | Force Gurobi barrier method (must be paired with `--no-crossover`)                                          |
 | `--mip-gap`              | solver default | MIP gap tolerance, e.g. `0.01` for 1%                                                                       |
+| `--work-limit`           | no limit       | Gurobi WorkLimit (in work units): stop after the given budget regardless of solution quality                |
 | `--node-file-start`      | no spilling    | Gurobi NodefileStart (GB): B&B nodes spill to disk when in-memory storage exceeds this — useful when MIP runs OOM |
 | `--node-file-dir`        | `./gurobi-nodes/`  | Base directory for spilled nodes (auto-created). Requires `--node-file-start`. A `<pid>` subfolder is ALWAYS appended (e.g. `E:/tmp/nodes` becomes `E:/tmp/nodes/12345/`) to guarantee parallel spawns never share a dir. Use a fast local SSD, NOT NFS  |
 | `--threads`              | 0 (all cores)  | Gurobi Threads. Lower when running multiple processes in parallel (e.g. via `Caller.py --spawn N`) to avoid oversubscription |
@@ -102,7 +104,8 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 **Output naming**: `MK-{identifier}-{edgeHandling}.sqlite`. Regret files append `-regret`, `-invest-regret`, or
 `-operational-regret`; operational runs (`--operational`) append `-operational`.
 Non-default parameters are encoded in the identifier (e.g. `filterZoneR1`, `relaxed3`, `rMIP`, `mipGap0.01`,
-`networkTP`, `commitConsumption0.5`, `startupConsumption2`, `shiftTM2`, `perturbTM0.5`, `scaleVRES0.8`, `scaleInvestCost0.5`).
+`workLimit500`, `networkTP`, `commitConsumption0.5`, `startupConsumption2`, `shiftTM2`, `perturbTM0.5`,
+`scaleVRES0.8`, `scaleInvestCost0.5`).
 
 **Operational runs** (`--operational`): solves a variant of each edge-handling model with `vGenInvest` fixed to the
 **Truth** investment decision (1 where Truth invested above 0.5, 0 otherwise), isolating the operational cost of each
@@ -118,9 +121,9 @@ rebuild is lazy, happening only when the run isn't skipped).
 **Operational-regret runs** (`--operational-regret`, requires `--operational`): for each non-Truth edge handling,
 re-solves the full-hourly truth model with `vGenInvest` hard-fixed to the **Truth** investment (as in `--operational`)
 and `vCommit` soft-fixed to that edge handling's **operational** run — isolating its operational regret while the fleet
-is held at the correct (Truth) investment. The operational `vCommit` is taken from the in-memory operational solve, or
-loaded from the `-operational.sqlite` file if that run was no-overwrite-skipped; if the operational run was
-sibling-skipped (no exact file on disk), operational-regret is skipped for that edge handling. Output files append
+is held at the correct (Truth) investment. The operational `vCommit` is taken from the in-memory operational solve, the
+`-operational.sqlite` file if that run was no-overwrite-skipped, or the skipping sibling's `.sqlite` if it was
+sibling-skipped; only when none of these sources exists is operational-regret skipped for that edge handling. Output files append
 `-operational-regret`; like the other regret variants they are written but not returned for downstream plotting.
 `--no-overwrite` skips an operational-regret file only when it already solved to optimality.
 
@@ -191,6 +194,10 @@ python research/MK/CompareMarkov.py results/ --output-dir plots/ --no-show
 python research/MK/CompareMarkov.py results/ --include-nonoptimal      # don't drop non-optimal runs
 python research/MK/CompareMarkov.py results/ --markov-strict           # add a Markov-Strict box
 python research/MK/CompareMarkov.py results/ --logscale                # log y-axis for work-units plots
+python research/MK/CompareMarkov.py results/ --nrOfClusters 3,5,7      # only runs with 3, 5 or 7 clusters
+python research/MK/CompareMarkov.py results/ --separateClusters        # one plot set per cluster count
+python research/MK/CompareMarkov.py results/ --tm none:0.2 --tm 1:none # only those two TM subplots
+python research/MK/CompareMarkov.py results/ --tm "base,1:*"           # base + everything with shiftTM=1
 ```
 
 | Parameter             | Default        | Description                                                                                 |

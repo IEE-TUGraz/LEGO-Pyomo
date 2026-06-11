@@ -149,10 +149,11 @@ def _find_sibling_runs(file_prefix: str, current_edge_params: dict) -> list[dict
     """Find existing SQLite files matching all run parameters except work_limit."""
     dir_path = os.path.dirname(os.path.abspath(file_prefix)) or '.'
     exact_file = os.path.abspath(f"{file_prefix}.sqlite")
+    # '-regret.sqlite' also covers '-invest-regret' and '-operational-regret'; '-operational'
+    # files are kept as candidates and separated via the run_type compare key.
     candidates = [
         f for f in glob.glob(os.path.join(dir_path, 'MK-*.sqlite'))
         if not f.endswith('-regret.sqlite')
-           and not f.endswith('-invest-regret.sqlite')
            and os.path.abspath(f) != exact_file
     ]
     siblings = []
@@ -845,7 +846,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
 
         # Part 1: Solve the main model (or skip if no-overwrite and result exists)
         case_skipped = False
-        sibling_skip_file = None  # set to the optimal sibling's .sqlite path on a sibling-skip
+        sibling_skip_file = None  # set to the best sibling's .sqlite path on a sibling-skip (optimal or WL-comparison)
         if no_overwrite:
             if os.path.exists(f"{file_prefix}.sqlite"):
                 info = _read_sqlite_run_info(f"{file_prefix}.sqlite")
@@ -864,7 +865,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                     if skip:
                         printer.information(f"  Skipping (--no-overwrite smart check): {reason}")
                         case_skipped = True
-                        sibling_skip_file = sibling_file  # non-None only when skip is due to optimality
+                        sibling_skip_file = sibling_file  # set on both skip rules (optimal and WL-comparison)
                     else:
                         printer.information(f"  Running despite existing sibling run(s): {reason}")
         if not case_skipped:
@@ -986,9 +987,9 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                     printer.information(f"  File '{ir_file}' exists but status is '{ir_tc or 'unknown'}' — re-running invest-regret")
             elif case_skipped and not os.path.exists(f"{file_prefix}.sqlite"):
                 if sibling_skip_file is not None:
-                    printer.information(f"  Main solve was sibling-skipped; will use vGenInvest from optimal sibling '{sibling_skip_file}'")
+                    printer.information(f"  Main solve was sibling-skipped; will use vGenInvest from sibling '{sibling_skip_file}'")
                 else:
-                    printer.information(f"  Skipping invest-regret: no main file and no optimal sibling (WL-comparison skip)")
+                    printer.information(f"  Skipping invest-regret: no main file and no usable sibling")
                     run_invest_regret = False
             if run_invest_regret:
                 try:
@@ -997,7 +998,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
                     _apply_solver_options(invest_regret_lego, run_params)
 
                     # Load vGenInvest values: from in-memory model, or from an existing sqlite file.
-                    # When the main solve was skipped, use the exact file if it exists, or the optimal
+                    # When the main solve was skipped, use the exact file if it exists, or the best
                     # sibling's file if the exact file was never created (sibling-skip path).
                     if case_skipped:
                         source_file = f"{file_prefix}.sqlite" if os.path.exists(f"{file_prefix}.sqlite") else sibling_skip_file
@@ -1236,8 +1237,8 @@ if __name__ == "__main__":
     parser.add_argument("caseStudyFolder", type=str, help="Path to folder containing data for LEGO model. Can be a comma-separated list of multiple folders (executed after each other)")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode where exceptions are passed on")
     parser.add_argument("--no-sqlite", action="store_true", help="Do not save results to SQLite database")
-    parser.add_argument("--calculate-regret", action="store_true", help="Calculate regret by re-solving the truth model with fixed unit commitment from the other models (can take a while)")
-    parser.add_argument("--relax-percentage", type=float, default=0, help="Percentage of thermal-generators to be relaxed (default: 0 = no relaxation, all binary)")
+    parser.add_argument("--calculate-regret", action="store_true", help="Calculate regret by re-solving the truth model with vGenInvest and vCommit fixed from each model's main run (can take a while)")
+    parser.add_argument("--relax-percentage", type=float, default=0, help="Fraction (0-1) of thermal generators to be relaxed (default: 0 = no relaxation, all binary)")
     parser.add_argument("--skip-truth", action="store_true", help="Skip solving the truth model")
     parser.add_argument("--clusters", type=int, default=1, help="Number of clusters (default: 1, i.e., no clustering)")
     parser.add_argument("--cluster-stepsize", type=int, default=1, help="If in-/decreasing number of clusters should be used (default: 1, leave cluster-steps default to not use in-/decreasing number of clusters)")
@@ -1256,7 +1257,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-investment", action="store_true", help="Fix vGenInvest to 1 for all generators (skip investment decisions)")
     parser.add_argument("--operational", action="store_true", help="Add an operational run for each edge-handling model (Truth, NoEnf, Cyclic, Markov, and Markov-Strict if enabled) that fixes vGenInvest to the Truth investment decision (1 where Truth invested, 0 otherwise) and re-solves. Truth investment is taken from the in-memory Truth solve, or an optimal Truth .sqlite if Truth was skipped; if neither is available, operational runs are skipped. Output files get a '-operational' suffix")
     parser.add_argument("--operational-regret", action="store_true", help="Calculate operational-regret: for each non-Truth edge handling, re-solve the full-hourly truth model with vGenInvest fixed to the Truth investment (as in --operational) and vCommit fixed to that edge handling's OPERATIONAL run. Isolates operational regret under the correct (Truth) fleet. Requires --operational. Output files get a '-operational-regret' suffix")
-    parser.add_argument("--no-overwrite", action="store_true", help="Skip cases where the output .sqlite file already exists")
+    parser.add_argument("--no-overwrite", action="store_true", help="Skip cases that already solved to optimality (existing output .sqlite, or a sibling run differing only in work_limit); non-optimal results are re-run")
     parser.add_argument("--rmip", action="store_true", help="Relax all integer variables (rMIP) before solving")
     parser.add_argument("--no-crossover", action="store_true", help="Disable Gurobi crossover for all solves (faster LP solving, but solution may not be a vertex)")
     parser.add_argument("--force-barrier", action="store_true", help="Force Gurobi to use barrier method")
