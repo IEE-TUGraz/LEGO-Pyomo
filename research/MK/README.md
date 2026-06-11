@@ -145,8 +145,9 @@ python research/MK/EvaluateMarkov.py --plot --case-study-folder data/example
 | `folder`              | Folder with `.sqlite` files (default: current directory) |
 | `--plot`              | Show unit commitment plots                               |
 | `--case-study-folder` | Case study folder for plots                              |
-| `--number-of-hours`   | Number of hours to show in plots                         |
-| `--start-hour`        | Start hour for plots                                     |
+| `--number-of-hours`   | Number of hours to show in plots (default: 144)          |
+| `--start-hour`        | Start hour for plots (default: 1)                        |
+| `--no-show`           | Only save the plot, don't display it                     |
 
 ### `CompareMarkov.py` — Cross-run comparison boxplots
 
@@ -208,6 +209,9 @@ python research/MK/CompareMarkov.py results/ --tm "base,1:*"           # base + 
 | `--include-nonoptimal`| off            | Include runs with `termination_condition != 'optimal'` (default: optimal-only)              |
 | `--markov-strict`     | off            | Also draw a Markov-Strict box (only meaningful for `--enable-strict-markov` runs)           |
 | `--logscale`          | off            | Log-scale y-axis for the work-units plots (A/C); no effect on deviation/regret plots        |
+| `--nrOfClusters`      | all            | Comma-separated list of cluster counts; only runs whose `clusters` run-parameter is in the list are included (e.g. `3,5,7`) |
+| `--separateClusters`  | off            | Emit the full plot set once per cluster count found in the (filtered) data; filenames get a `_clusters{N}` suffix and titles a ` — N clusters` suffix |
+| `--tm`                | all            | Select which `(shift_tm, perturb_tm)` subplots to show. Repeatable and/or comma-separated specs `SHIFT:PERTURB`, each side a number, `none` (parameter unset) or `*` (any); `base` = `none:none`. E.g. `--tm none:0.2 --tm 1:*` |
 
 Subplots are ordered by shift first, then perturb: base, perturbTM, shiftTM, shiftTM+perturbTM, … .
 Invest-regret (E) uses Truth's `Objective` as the reference, emitted both relative —

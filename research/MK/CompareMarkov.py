@@ -38,11 +38,24 @@ a solver that reports work units (Gurobi) and are empty otherwise (e.g. HiGHS).
 By default only runs with termination_condition == 'optimal' are included
 (--include-nonoptimal to override).
 
+Filtering / splitting
+---------------------
+--nrOfClusters 3,5,7      keep only runs whose `clusters` run-parameter is 3, 5 or 7
+--separateClusters        emit the full plot set once per cluster count
+                          (filename suffix `_clusters{N}`)
+--tm SHIFT:PERTURB        show only the selected (shift_tm, perturb_tm) subplots;
+                          repeatable and/or comma-separated, each side a number,
+                          'none' (parameter unset) or '*' (any); 'base' is
+                          shorthand for none:none
+
 Usage
 -----
 python research/MK/CompareMarkov.py [folder]
 python research/MK/CompareMarkov.py results/ --output-dir plots/ --no-show
 python research/MK/CompareMarkov.py results/ --include-nonoptimal
+python research/MK/CompareMarkov.py results/ --nrOfClusters 3,5,7 --separateClusters
+python research/MK/CompareMarkov.py results/ --tm none:0.2 --tm 1:none --tm base
+python research/MK/CompareMarkov.py results/ --tm "1:*,2:*"
 """
 
 import argparse
@@ -270,6 +283,16 @@ def load_all(folder: str, include_nonoptimal: bool = False):
 # Grouping helpers
 # ---------------------------------------------------------------------------
 
+def _tm_value(v) -> float | None:
+    """Normalize a stored shift_tm/perturb_tm value to float, or None when unset."""
+    if v in (None, 'None'):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _tm_key(entry: dict) -> tuple:
     return (entry.get('shift_tm'), entry.get('perturb_tm'))
 
@@ -283,33 +306,120 @@ def _tm_sort(tm_key: tuple):
 
     Gives: base, perturb0.2, shift1, shift1+perturb0.2, shift2, shift2+perturb0.2, ...
     """
-    shift_tm, perturb_tm = tm_key
-    try:
-        s_val = float(shift_tm) if shift_tm not in (None, 'None') else float('-inf')
-    except (TypeError, ValueError):
-        s_val = float('-inf')
-    try:
-        p_val = float(perturb_tm) if perturb_tm not in (None, 'None') else float('-inf')
-    except (TypeError, ValueError):
-        p_val = float('-inf')
-    return (s_val, p_val)
+    shift, perturb = (_tm_value(v) for v in tm_key)
+    return (shift if shift is not None else float('-inf'),
+            perturb if perturb is not None else float('-inf'))
 
 
 def _tm_label(shift_tm, perturb_tm) -> str:
     parts = []
-    if shift_tm not in (None, 'None'):
-        parts.append(f"shiftTM={shift_tm}")
-    if perturb_tm not in (None, 'None'):
-        try:
-            parts.append(f"perturbTM={float(perturb_tm):g}")
-        except (TypeError, ValueError):
-            parts.append(f"perturbTM={perturb_tm}")
+    shift, perturb = _tm_value(shift_tm), _tm_value(perturb_tm)
+    if shift is not None:
+        parts.append(f"shiftTM={shift:g}")
+    if perturb is not None:
+        parts.append(f"perturbTM={perturb:g}")
     return ', '.join(parts) if parts else '(base)'
+
+
+# ---------------------------------------------------------------------------
+# Entry filters (--nrOfClusters / --tm)
+# ---------------------------------------------------------------------------
+
+def parse_tm_spec(spec: str) -> tuple:
+    """Parse one --tm spec into a (shift, perturb) pair.
+
+    Each side is a float, None ('none'/'-' = parameter unset) or '*' (any value);
+    'base' is shorthand for none:none. Raises ValueError on malformed input.
+    """
+    if spec.strip().lower() == 'base':
+        return (None, None)
+    parts = spec.split(':')
+    if len(parts) != 2:
+        raise ValueError(f"invalid TM spec '{spec}' (expected SHIFT:PERTURB or 'base')")
+    sides = []
+    for side in parts:
+        side = side.strip().lower()
+        if side == '*':
+            sides.append('*')
+        elif side in ('none', '-', ''):
+            sides.append(None)
+        else:
+            try:
+                sides.append(float(side))
+            except ValueError:
+                raise ValueError(f"invalid TM spec '{spec}': '{side}' is not a number, 'none' or '*'")
+    return tuple(sides)
+
+
+def _matches_tm(entry: dict, tm_specs: list[tuple]) -> bool:
+    """True if the entry's (shift_tm, perturb_tm) matches any spec (or no specs given)."""
+    if not tm_specs:
+        return True
+    shift, perturb = _tm_value(entry.get('shift_tm')), _tm_value(entry.get('perturb_tm'))
+    return any((s == '*' or s == shift) and (p == '*' or p == perturb)
+               for s, p in tm_specs)
+
+
+def filter_entries(entries: list[dict], cluster_filter: set[int] | None,
+                   tm_specs: list[tuple]) -> list[dict]:
+    return [e for e in entries
+            if (cluster_filter is None or e.get('clusters') in cluster_filter)
+            and _matches_tm(e, tm_specs)]
 
 
 # ---------------------------------------------------------------------------
 # Box builders — each returns {tm_key: {edge: [values]}}
 # ---------------------------------------------------------------------------
+
+def _iter_vs_truth(entries: list[dict], edges: list[str], edge_value, truth_value=None):
+    """Group entries by (tm_key, sub-case) and pair each edge with its Truth reference.
+
+    Yields (tm_key, edge, truth_ref, value) for every edge entry with a non-None
+    *edge_value* in a sub-case that has a Truth entry. *truth_value* extracts the
+    reference from the Truth entry (defaults to *edge_value*); callers decide
+    which truth_ref values to skip.
+    """
+    truth_value = truth_value or edge_value
+    grouped: dict = defaultdict(lambda: defaultdict(dict))
+    for e in entries:
+        edge = e.get('edge_handling')
+        if edge is not None:
+            grouped[_tm_key(e)][_subcase_key(e)][edge] = e
+    for tm_key, subcases in grouped.items():
+        for eh_map in subcases.values():
+            truth = eh_map.get('Truth')
+            if truth is None:
+                continue
+            truth_ref = truth_value(truth)
+            for edge in edges:
+                ent = eh_map.get(edge)
+                if ent is None:
+                    continue
+                val = edge_value(ent)
+                if val is not None:
+                    yield tm_key, edge, truth_ref, val
+
+
+def _diff_boxes(pairs, mode: str, truth_skip: tuple) -> dict:
+    """Difference-to-Truth boxes from an _iter_vs_truth stream.
+
+    mode='relative': (val - truth) / |truth| * 100  [%]   (skips truth==0)
+    mode='absolute': val - truth                          [native units]
+    Sub-cases whose truth_ref is in *truth_skip* are dropped in both modes.
+    """
+    boxes: dict = defaultdict(lambda: defaultdict(list))
+    for tm_key, edge, truth, val in pairs:
+        if truth in truth_skip:
+            continue
+        diff = float(val) - float(truth)
+        if mode == 'relative':
+            if truth == 0:
+                continue
+            boxes[tm_key][edge].append(diff / abs(float(truth)) * 100)
+        else:
+            boxes[tm_key][edge].append(diff)
+    return boxes
+
 
 def build_runtime_boxes(entries: list[dict], edges: list[str]) -> dict:
     """Absolute work units per (tm_key, edge), aggregated over sub-cases."""
@@ -331,59 +441,20 @@ def build_runtime_relative_boxes(entries: list[dict], edges: list[str]) -> dict:
     value = work_units / truth_work_units * 100   (100% == as expensive as Truth)
     Requires Truth to report work units (Gurobi); skips sub-cases where it doesn't.
     """
-    grouped: dict = defaultdict(lambda: defaultdict(dict))
-    for e in entries:
-        edge = e.get('edge_handling')
-        if edge is None:
-            continue
-        grouped[_tm_key(e)][_subcase_key(e)][edge] = e.get('work_units')
-
     boxes: dict = defaultdict(lambda: defaultdict(list))
-    for tm_key, subcases in grouped.items():
-        for _sk, eh_map in subcases.items():
-            truth = eh_map.get('Truth')
-            if truth in (None, 0):
-                continue
-            for edge in edges:
-                val = eh_map.get(edge)
-                if val is None:
-                    continue
-                boxes[tm_key][edge].append(float(val) / float(truth) * 100)
+    for tm_key, edge, truth, val in _iter_vs_truth(entries, edges,
+                                                   lambda e: e.get('work_units')):
+        if truth in (None, 0):
+            continue
+        boxes[tm_key][edge].append(float(val) / float(truth) * 100)
     return boxes
 
 
 def build_deviation_boxes(entries: list[dict], mode: str, edges: list[str]) -> dict:
-    """vShutdown deviation from the Truth entry of the same (tm, sub-case).
-
-    mode='relative': (val - truth) / |truth| * 100  [%]   (skips truth==0)
-    mode='absolute': val - truth                          [native weighted units]
-    """
-    # tm_key -> subcase_key -> {edge: vShutdown}
-    grouped: dict = defaultdict(lambda: defaultdict(dict))
-    for e in entries:
-        edge = e.get('edge_handling')
-        if edge is None:
-            continue
-        grouped[_tm_key(e)][_subcase_key(e)][edge] = e.get('vShutdown')
-
-    boxes: dict = defaultdict(lambda: defaultdict(list))
-    for tm_key, subcases in grouped.items():
-        for _sk, eh_map in subcases.items():
-            truth = eh_map.get('Truth')
-            if truth is None:
-                continue
-            for edge in edges:
-                val = eh_map.get(edge)
-                if val is None:
-                    continue
-                diff = float(val) - float(truth)
-                if mode == 'relative':
-                    if truth == 0:
-                        continue
-                    boxes[tm_key][edge].append(diff / abs(float(truth)) * 100)
-                else:
-                    boxes[tm_key][edge].append(diff)
-    return boxes
+    """vShutdown deviation from the Truth entry of the same (tm, sub-case)."""
+    return _diff_boxes(
+        _iter_vs_truth(entries, edges, lambda e: e.get('vShutdown')),
+        mode, truth_skip=(None,))
 
 
 def build_regret_boxes(base_entries: list[dict], regret_obj: dict,
@@ -396,40 +467,15 @@ def build_regret_boxes(base_entries: list[dict], regret_obj: dict,
     `regret_obj` is keyed by each base entry's own `file`, so the reference Truth and the
     regret value always come from the same run kind.
 
-    mode='relative': (regret_obj - truth_obj) / |truth_obj| * 100  [%]
-    mode='absolute': regret_obj - truth_obj                        [native objective units]
-
     Sub-cases whose Truth objective is missing / 0 / -1 (the EvaluateMarkov "no
     objective" sentinel) are skipped in both modes, so the relative and absolute
     plots aggregate over the same sub-cases.
     """
-    grouped: dict = defaultdict(lambda: defaultdict(dict))
-    for e in base_entries:
-        edge = e.get('edge_handling')
-        if edge is None:
-            continue
-        grouped[_tm_key(e)][_subcase_key(e)][edge] = e
-
-    boxes: dict = defaultdict(lambda: defaultdict(list))
-    for tm_key, subcases in grouped.items():
-        for _sk, eh_map in subcases.items():
-            truth = eh_map.get('Truth')
-            truth_obj = truth.get('Objective') if truth else None
-            if truth_obj in (None, 0, -1):
-                continue
-            for edge in edges:
-                ent = eh_map.get(edge)
-                if ent is None:
-                    continue
-                regret_val = regret_obj.get(ent['file'])
-                if regret_val is None:
-                    continue
-                diff = regret_val - truth_obj
-                if mode == 'relative':
-                    boxes[tm_key][edge].append(diff / abs(truth_obj) * 100)
-                else:
-                    boxes[tm_key][edge].append(diff)
-    return boxes
+    return _diff_boxes(
+        _iter_vs_truth(base_entries, edges,
+                       edge_value=lambda e: regret_obj.get(e['file']),
+                       truth_value=lambda e: e.get('Objective')),
+        mode, truth_skip=(None, 0, -1))
 
 
 # ---------------------------------------------------------------------------
@@ -451,10 +497,13 @@ def make_boxplot_figure(boxes: dict, title: str, ylabel: str,
     *symmetric_y*, if True, centres the (shared) y-axis on 0 so the limits are
     equidistant from 0 in both directions — used for plots whose values can be
     negative or positive (deviation / regret).
+
+    The figure is closed before returning (relevant for --separateClusters,
+    which renders many figures in one process).
     """
     if not _has_data(boxes, edges):
         printer.information(f"  [skip] {title}: no data")
-        return None
+        return
 
     tm_keys = sorted(boxes.keys(), key=_tm_sort)
     n = len(tm_keys)
@@ -519,60 +568,25 @@ def make_boxplot_figure(boxes: dict, title: str, ylabel: str,
         printer.information(f"  Saved {output}")
     if not no_show:
         plt.show()
-    return fig
+    plt.close(fig)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=("Boxplots of edge-handling strategies (NoEnf, Cyclic, Markov) vs. the "
-                                                  "Truth model across shift-tm / perturb-tm combinations.\n\n"
-                                                  "For both operational and investment runs: work-units (absolute + as %% "
-                                                  "of Truth) and vShutdown-deviation (absolute + relative), plus "
-                                                  "invest-regret, regret (vs Truth-main) and operational-regret (vs Truth-operational), "
-                                                  "each absolute + relative. Each plot is emitted twice: with all strategies and with "
-                                                  "NoEnf excluded (suffix '_noNoEnf')."),
-                                     formatter_class=RichHelpFormatter)
-    parser.add_argument("folder", nargs="?", default=".", help="Folder containing MK-*.sqlite files (default: current directory)")
-    parser.add_argument("--output-dir", default=None, help="Directory to save the PNG files in (default: the input folder)")
-    parser.add_argument("--no-show", action="store_true", help="Don't display the figures (useful for headless/batch runs)")
-    parser.add_argument("--include-nonoptimal", action="store_true", help="Include runs whose termination_condition is not 'optimal' (default: optimal only)")
-    parser.add_argument("--logscale", action="store_true", help="Use a log-scale y-axis for the work-units plots (default: linear). Has no effect on the deviation/regret plots (those can be negative).")
-    parser.add_argument("--markov-strict", action="store_true", help="Also include the Markov-Strict strategy as a box in every plot (only meaningful if runs were produced with --enable-strict-markov).")
-    args = parser.parse_args()
+def render_plots(main_entries: list[dict], operational_entries: list[dict],
+                 invest_regret_obj: dict, regret_obj: dict, operational_regret_obj: dict,
+                 edges: list[str], out_dir: str, args,
+                 fname_suffix: str = "", title_suffix: str = ""):
+    """Emit the full set of 14 logical plots (each with its '_noNoEnf' twin).
 
-    out_dir = args.output_dir or args.folder
-    os.makedirs(out_dir, exist_ok=True)
-
-    edges = list(EDGE_ORDER) + ([EDGE_STRICT] if args.markov_strict else [])
-
-    printer.information(f"Loading MK-*.sqlite files from '{args.folder}' ...")
-    main_entries, operational_entries, invest_regret_obj, regret_obj, operational_regret_obj = load_all(args.folder, include_nonoptimal=args.include_nonoptimal)
-
-    if not main_entries and not operational_entries:
-        printer.warning(f"  No usable MK-*.sqlite files found in '{args.folder}'"
-                        + ("" if args.include_nonoptimal else " (after filtering to optimal runs)"))
-        return
-
-    def _count(entries, edge):
-        return sum(1 for e in entries if e.get('edge_handling') == edge)
-
-    filt = "all" if args.include_nonoptimal else "optimal-only"
-    strict_note = (f", Markov-Strict={_count(main_entries, EDGE_STRICT)}"
-                   if args.markov_strict else "")
-    printer.information(f"  Loaded [{filt}]: "
-                        f"main={len(main_entries)} (Truth={_count(main_entries, 'Truth')}, "
-                        f"NoEnf={_count(main_entries, 'NoEnf')}, Cyclic={_count(main_entries, 'Cyclic')}, "
-                        f"Markov={_count(main_entries, 'Markov')}{strict_note}); "
-                        f"operational={len(operational_entries)}; "
-                        f"invest-regret={len(invest_regret_obj)}; "
-                        f"regret={len(regret_obj)}; "
-                        f"operational-regret={len(operational_regret_obj)}")
+    *fname_suffix* / *title_suffix* tag per-cluster outputs under --separateClusters.
+    """
 
     def emit(boxes, title, ylabel, name_key, logy=False, ref_line=None,
              symmetric_y=False):
         """Render the full figure and a NoEnf-excluded twin ('_noNoEnf' suffix)."""
-        fname = OUTPUT_NAMES[name_key]
-        stem, ext = os.path.splitext(fname)
-        make_boxplot_figure(boxes, title, ylabel, os.path.join(out_dir, fname),
+        stem, ext = os.path.splitext(OUTPUT_NAMES[name_key])
+        stem += fname_suffix
+        title += title_suffix
+        make_boxplot_figure(boxes, title, ylabel, os.path.join(out_dir, stem + ext),
                             args.no_show, edges, logy=logy, ref_line=ref_line,
                             symmetric_y=symmetric_y)
         sub_edges = [e for e in edges if e != 'NoEnf']
@@ -643,6 +657,94 @@ def main():
          "Operational-regret vs Truth — Operational runs",
          "Operational-regret over Truth-operational objective [%]",
          'operational_regret_rel', ref_line=0, symmetric_y=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=("Boxplots of edge-handling strategies (NoEnf, Cyclic, Markov) vs. the "
+                                                  "Truth model across shift-tm / perturb-tm combinations.\n\n"
+                                                  "For both operational and investment runs: work-units (absolute + as %% "
+                                                  "of Truth) and vShutdown-deviation (absolute + relative), plus "
+                                                  "invest-regret, regret (vs Truth-main) and operational-regret (vs Truth-operational), "
+                                                  "each absolute + relative. Each plot is emitted twice: with all strategies and with "
+                                                  "NoEnf excluded (suffix '_noNoEnf')."),
+                                     formatter_class=RichHelpFormatter)
+    parser.add_argument("folder", nargs="?", default=".", help="Folder containing MK-*.sqlite files (default: current directory)")
+    parser.add_argument("--output-dir", default=None, help="Directory to save the PNG files in (default: the input folder)")
+    parser.add_argument("--no-show", action="store_true", help="Don't display the figures (useful for headless/batch runs)")
+    parser.add_argument("--include-nonoptimal", action="store_true", help="Include runs whose termination_condition is not 'optimal' (default: optimal only)")
+    parser.add_argument("--logscale", action="store_true", help="Use a log-scale y-axis for the work-units plots (default: linear). Has no effect on the deviation/regret plots (those can be negative).")
+    parser.add_argument("--markov-strict", action="store_true", help="Also include the Markov-Strict strategy as a box in every plot (only meaningful if runs were produced with --enable-strict-markov).")
+    parser.add_argument("--nrOfClusters", default=None, metavar="N,N,...",
+                        help="Only include runs whose 'clusters' run-parameter is in this comma-separated list (e.g. 3,5,7).")
+    parser.add_argument("--separateClusters", action="store_true",
+                        help="Emit the full set of plots once per cluster count found in the (filtered) data, with a '_clusters{N}' filename suffix, instead of aggregating all cluster counts together.")
+    parser.add_argument("--tm", action="append", default=None, metavar="SHIFT:PERTURB",
+                        help="Only show the selected (shift_tm, perturb_tm) subplot combinations. Repeatable and/or comma-separated. Each side is a number, 'none' (parameter unset) or '*' (any); 'base' is shorthand for none:none. Examples: --tm none:0.2 --tm 1:none --tm base ; --tm \"1:*,2:*\". Default: show all.")
+    args = parser.parse_args()
+
+    try:
+        cluster_filter = ({int(t) for t in args.nrOfClusters.split(',') if t.strip()}
+                          if args.nrOfClusters else None)
+    except ValueError:
+        parser.error(f"--nrOfClusters expects a comma-separated list of integers, got '{args.nrOfClusters}'")
+    try:
+        tm_specs = [parse_tm_spec(s) for raw in (args.tm or []) for s in raw.split(',') if s.strip()]
+    except ValueError as exc:
+        parser.error(f"--tm: {exc}")
+
+    out_dir = args.output_dir or args.folder
+    os.makedirs(out_dir, exist_ok=True)
+
+    edges = list(EDGE_ORDER) + ([EDGE_STRICT] if args.markov_strict else [])
+
+    printer.information(f"Loading MK-*.sqlite files from '{args.folder}' ...")
+    main_entries, operational_entries, invest_regret_obj, regret_obj, operational_regret_obj = load_all(args.folder, include_nonoptimal=args.include_nonoptimal)
+
+    # Entry filters; the regret maps need no filtering — they are only ever looked
+    # up via the (filtered) entries' own files.
+    main_entries = filter_entries(main_entries, cluster_filter, tm_specs)
+    operational_entries = filter_entries(operational_entries, cluster_filter, tm_specs)
+
+    if not main_entries and not operational_entries:
+        reasons = [] if args.include_nonoptimal else ["filtering to optimal runs"]
+        if cluster_filter is not None:
+            reasons.append(f"--nrOfClusters {sorted(cluster_filter)}")
+        if tm_specs:
+            reasons.append("--tm filter")
+        printer.warning(f"  No usable MK-*.sqlite files found in '{args.folder}'"
+                        + (f" (after {', '.join(reasons)})" if reasons else ""))
+        return
+
+    def _count(entries, edge):
+        return sum(1 for e in entries if e.get('edge_handling') == edge)
+
+    filt = "all" if args.include_nonoptimal else "optimal-only"
+    strict_note = (f", Markov-Strict={_count(main_entries, EDGE_STRICT)}"
+                   if args.markov_strict else "")
+    printer.information(f"  Loaded [{filt}]: "
+                        f"main={len(main_entries)} (Truth={_count(main_entries, 'Truth')}, "
+                        f"NoEnf={_count(main_entries, 'NoEnf')}, Cyclic={_count(main_entries, 'Cyclic')}, "
+                        f"Markov={_count(main_entries, 'Markov')}{strict_note}); "
+                        f"operational={len(operational_entries)}; "
+                        f"invest-regret={len(invest_regret_obj)}; "
+                        f"regret={len(regret_obj)}; "
+                        f"operational-regret={len(operational_regret_obj)}")
+
+    if args.separateClusters:
+        cluster_values = sorted({e.get('clusters') for e in main_entries + operational_entries},
+                                key=lambda v: (v is None, v))
+        for value in cluster_values:
+            label = f"{value} clusters" if value is not None else "no clustering"
+            printer.information(f"Rendering plots for {label} ...")
+            render_plots([e for e in main_entries if e.get('clusters') == value],
+                         [e for e in operational_entries if e.get('clusters') == value],
+                         invest_regret_obj, regret_obj, operational_regret_obj,
+                         edges, out_dir, args,
+                         fname_suffix=f"_clusters{value}", title_suffix=f" — {label}")
+    else:
+        render_plots(main_entries, operational_entries,
+                     invest_regret_obj, regret_obj, operational_regret_obj,
+                     edges, out_dir, args)
 
 
 if __name__ == "__main__":
