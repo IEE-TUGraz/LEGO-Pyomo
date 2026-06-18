@@ -227,3 +227,39 @@ spans from the smallest to the largest such value (one band above, a mirrored on
 relative plot the band is just `±(mip_gap * 100) %` — a single horizontal line, since it is already
 in percent (it widens to a band only if the requested `mip_gap` varies across runs). The band is
 omitted when no plotted run carries a `mip_gap`.
+
+### `NonBinarityMarkov.py` — Overview of integrality violations
+
+Reads all `MK-*.sqlite` files in a folder and reports, per file and aggregated, how often the
+integrality-constrained variables actually take **non-integer** values. The model has five such
+variables: `vLineInvest` (binary), `vGenInvest` (integer), and `vCommit` / `vStartup` / `vShutdown`
+(binary, but **relaxed to continuous** for the non-edge timesteps under the Markov edge handling —
+so fractional values there are *expected*, and this script quantifies them).
+
+For each file it counts, per variable, how many stored values deviate from the nearest integer by
+more than `--tol`, plus the maximum such deviation. Results are aggregated into one table per run
+kind (main / operational / invest-regret / regret / operational-regret), with one row per
+`(shift_tm, perturb_tm)` × edge handling — the same axes `CompareMarkov.py` uses. Discovery and the
+`--nrOfClusters` / `--separateClusters` / `--tm` / `--include-nonoptimal` filters are imported from
+`CompareMarkov.py`, so a folder filtered here matches the same folder filtered there.
+
+```bash
+python research/MK/NonBinarityMarkov.py                                 # current directory
+python research/MK/NonBinarityMarkov.py path/to/results                 # specific folder
+python research/MK/NonBinarityMarkov.py results/ --per-file             # also one row per file
+python research/MK/NonBinarityMarkov.py results/ --tol 1e-4             # looser integrality tolerance
+python research/MK/NonBinarityMarkov.py results/ --include-nonoptimal   # don't drop non-optimal runs
+python research/MK/NonBinarityMarkov.py results/ --nrOfClusters 3,5,7   # only runs with 3, 5 or 7 clusters
+python research/MK/NonBinarityMarkov.py results/ --separateClusters     # one report per cluster count
+python research/MK/NonBinarityMarkov.py results/ --tm none:0.2 --tm 1:none
+```
+
+| Parameter             | Default      | Description                                                                                 |
+|-----------------------|--------------|---------------------------------------------------------------------------------------------|
+| `folder`              | `.`          | Folder with `MK-*.sqlite` files                                                              |
+| `--tol`               | `1e-6`       | A value counts as non-binary if it deviates from the nearest integer by more than this       |
+| `--per-file`          | off          | Also print a row per file (total fractional values + max deviation)                          |
+| `--include-nonoptimal`| off          | Include runs with `termination_condition != 'optimal'` (default: optimal-only)              |
+| `--nrOfClusters`      | all          | Comma-separated cluster counts; only runs whose `clusters` run-parameter is in the list (e.g. `3,5,7`) |
+| `--separateClusters`  | off          | Emit the full report once per cluster count found in the (filtered) data                     |
+| `--tm`                | all          | Select which `(shift_tm, perturb_tm)` combinations to include; same spec syntax as `CompareMarkov.py` |
