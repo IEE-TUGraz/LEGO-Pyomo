@@ -218,3 +218,12 @@ Invest-regret (E) uses Truth's `Objective` as the reference, emitted both relati
 `(invest-regret obj − truth obj) / |truth obj| * 100` (same convention as `EvaluateMarkov.py`'s `%`
 columns) — and absolute (`invest-regret obj − truth obj`, native objective units). Sub-cases whose
 Truth objective is missing / 0 / -1 are skipped in both, so the two plots cover the same sub-cases.
+
+Both invest-regret plots also draw a light-red **MIP-gap noise band** above and below the zero
+reference: a regret whose magnitude falls inside the band could be explained by solver tolerance
+alone. The band uses the requested `mip_gap` run-parameter. On the absolute plot each plotted result
+contributes `mip_gap * |invest-regret obj|`; since those objectives differ between sub-cases the band
+spans from the smallest to the largest such value (one band above, a mirrored one below). On the
+relative plot the band is just `±(mip_gap * 100) %` — a single horizontal line, since it is already
+in percent (it widens to a band only if the requested `mip_gap` varies across runs). The band is
+omitted when no plotted run carries a `mip_gap`.

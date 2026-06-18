@@ -106,6 +106,9 @@ EDGE_COLORS = {
     'Markov-Strict': '#2ca02c',  # green
 }
 
+# Colour of the MIP-gap noise band/line drawn on the invest-regret plots.
+GAP_COLOR = '#ff6666'  # light red
+
 # Base filename per logical plot (the "(excl. NoEnf)" variant inserts "_noNoEnf").
 OUTPUT_NAMES = {
     'workunits_operational_abs': 'compare_workunits_operational_absolute.png',
@@ -478,6 +481,49 @@ def build_regret_boxes(base_entries: list[dict], regret_obj: dict,
         mode, truth_skip=(None, 0, -1))
 
 
+def invest_regret_gap_band(main_entries: list[dict], invest_regret_obj: dict,
+                           mode: str, edges: list[str]) -> tuple[float, float] | None:
+    """Magnitude range of the MIP-gap "noise band" for the invest-regret plots.
+
+    Every plotted invest-regret point is only known to within the solver's
+    (requested) MIP gap, so a regret smaller than `mip_gap * objective` could be
+    attributable to solver tolerance alone. We collect that magnitude across the
+    *same* points the boxes are built from (same sub-case skips as
+    `build_regret_boxes`, restricted to the drawn *edges*) and return `(lo, hi)`:
+
+      absolute: lo/hi = min/max of `mip_gap * |invest-regret objective|` — a band,
+                since the plotted results' objectives differ between sub-cases.
+      relative: lo/hi = min/max of `mip_gap * 100` — collapses to a single line
+                when the requested mip_gap is uniform (it is in percent already).
+
+    The caller draws an upper band/line at `[lo, hi]` and a mirrored lower one at
+    `[-hi, -lo]`. Returns None when no plotted point carries a usable mip_gap.
+    """
+    grouped: dict = defaultdict(lambda: defaultdict(dict))
+    for e in main_entries:
+        edge = e.get('edge_handling')
+        if edge is not None:
+            grouped[_tm_key(e)][_subcase_key(e)][edge] = e
+
+    mags: list[float] = []
+    for subcases in grouped.values():
+        for eh_map in subcases.values():
+            truth = eh_map.get('Truth')
+            if truth is None or truth.get('Objective') in (None, 0, -1):
+                continue
+            for edge in edges:
+                ent = eh_map.get(edge)
+                if ent is None:
+                    continue
+                obj = invest_regret_obj.get(ent['file'])
+                gap = ent.get('mip_gap')
+                if obj is None or gap is None:
+                    continue
+                mags.append(gap * 100.0 if mode == 'relative' else gap * abs(float(obj)))
+
+    return (min(mags), max(mags)) if mags else None
+
+
 # ---------------------------------------------------------------------------
 # Plotting
 # ---------------------------------------------------------------------------
@@ -489,7 +535,8 @@ def _has_data(boxes: dict, edges: list[str]) -> bool:
 def make_boxplot_figure(boxes: dict, title: str, ylabel: str,
                         output: str | None, no_show: bool, edges: list[str],
                         logy: bool = False, ref_line: float | None = None,
-                        symmetric_y: bool = False):
+                        symmetric_y: bool = False,
+                        gap_band: tuple[float, float] | None = None):
     """Render one figure: a subplot per TM combination, one edge box per subplot.
 
     *edges* selects which strategies to draw (and their left-to-right order).
@@ -497,6 +544,10 @@ def make_boxplot_figure(boxes: dict, title: str, ylabel: str,
     *symmetric_y*, if True, centres the (shared) y-axis on 0 so the limits are
     equidistant from 0 in both directions — used for plots whose values can be
     negative or positive (deviation / regret).
+    *gap_band* `(lo, hi)`, if given, draws a light-red MIP-gap noise band on every
+    subplot: a filled band at `[lo, hi]` and a mirrored one at `[-hi, -lo]`. When
+    `lo == hi` (e.g. the relative invest-regret plot, where the band is in percent)
+    it degenerates to a pair of horizontal lines at `±lo` instead of filled bands.
 
     The figure is closed before returning (relevant for --separateClusters,
     which renders many figures in one process).
@@ -545,6 +596,14 @@ def make_boxplot_figure(boxes: dict, title: str, ylabel: str,
             ax.set_yscale('log')
         if ref_line is not None:
             ax.axhline(ref_line, color='black', linewidth=0.9, alpha=0.6)
+        if gap_band is not None and not use_log:
+            lo, hi = gap_band
+            if hi - lo < 1e-9:  # degenerate band -> a pair of lines (relative plot)
+                for y in (lo, -lo):
+                    ax.axhline(y, color=GAP_COLOR, linewidth=1.1, alpha=0.9, zorder=0.5)
+            else:
+                ax.axhspan(lo, hi, color=GAP_COLOR, alpha=0.25, lw=0, zorder=0)
+                ax.axhspan(-hi, -lo, color=GAP_COLOR, alpha=0.25, lw=0, zorder=0)
         ax.grid(axis='y', alpha=0.3, linestyle=':')
 
     # Centre the shared y-axis on 0 for signed plots so equal magnitudes above
@@ -553,6 +612,8 @@ def make_boxplot_figure(boxes: dict, title: str, ylabel: str,
         all_vals = [v for tm_key in tm_keys for edge in edges
                     for v in boxes[tm_key].get(edge, [])]
         ymax = max((abs(v) for v in all_vals), default=0.0)
+        if gap_band is not None:  # keep the band/line in view even if regrets are tiny
+            ymax = max(ymax, abs(gap_band[1]))
         if ymax > 0:
             axes[0].set_ylim(-ymax * 1.05, ymax * 1.05)  # sharey propagates to all
 
@@ -581,19 +642,25 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
     """
 
     def emit(boxes, title, ylabel, name_key, logy=False, ref_line=None,
-             symmetric_y=False):
-        """Render the full figure and a NoEnf-excluded twin ('_noNoEnf' suffix)."""
+             symmetric_y=False, gap_fn=None):
+        """Render the full figure and a NoEnf-excluded twin ('_noNoEnf' suffix).
+
+        *gap_fn*, if given, is called with the edge list actually drawn (full vs
+        twin) and returns the `(lo, hi)` MIP-gap band for that figure (or None).
+        """
         stem, ext = os.path.splitext(OUTPUT_NAMES[name_key])
         stem += fname_suffix
         title += title_suffix
         make_boxplot_figure(boxes, title, ylabel, os.path.join(out_dir, stem + ext),
                             args.no_show, edges, logy=logy, ref_line=ref_line,
-                            symmetric_y=symmetric_y)
+                            symmetric_y=symmetric_y,
+                            gap_band=gap_fn(edges) if gap_fn else None)
         sub_edges = [e for e in edges if e != 'NoEnf']
         make_boxplot_figure(boxes, f"{title} (excl. NoEnf)", ylabel,
                             os.path.join(out_dir, f"{stem}_noNoEnf{ext}"),
                             args.no_show, sub_edges, logy=logy, ref_line=ref_line,
-                            symmetric_y=symmetric_y)
+                            symmetric_y=symmetric_y,
+                            gap_band=gap_fn(sub_edges) if gap_fn else None)
 
     # --- Operational runs ---
     emit(build_runtime_boxes(operational_entries, edges),
@@ -631,11 +698,13 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
     emit(build_regret_boxes(main_entries, invest_regret_obj, 'absolute', edges),
          "Invest-regret vs Truth — Investment runs",
          "Absolute invest-regret over Truth objective",
-         'invest_regret_abs', ref_line=0, symmetric_y=True)
+         'invest_regret_abs', ref_line=0, symmetric_y=True,
+         gap_fn=lambda eds: invest_regret_gap_band(main_entries, invest_regret_obj, 'absolute', eds))
     emit(build_regret_boxes(main_entries, invest_regret_obj, 'relative', edges),
          "Invest-regret vs Truth — Investment runs",
          "Invest-regret over Truth objective [%]",
-         'invest_regret_rel', ref_line=0, symmetric_y=True)
+         'invest_regret_rel', ref_line=0, symmetric_y=True,
+         gap_fn=lambda eds: invest_regret_gap_band(main_entries, invest_regret_obj, 'relative', eds))
 
     # --- Regret (investment runs): vGenInvest + vCommit fixed from the main run; vs Truth-main ---
     emit(build_regret_boxes(main_entries, regret_obj, 'absolute', edges),
