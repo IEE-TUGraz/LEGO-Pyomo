@@ -38,6 +38,18 @@ a solver that reports work units (Gurobi) and are empty otherwise (e.g. HiGHS).
 By default only runs with termination_condition == 'optimal' are included
 (--include-nonoptimal to override).
 
+Results table
+-------------
+Alongside the PNGs, the mean/median/min/max *behind* each boxplot are aggregated
+per (TM_variant, method) cell into a numeric results table (for a paper). It is
+printed to the terminal and saved as 'compare_markov_results.txt' (+ '.csv') in
+the output dir. TM_variant is the (shift_tm, perturb_tm) axis ('Original' = both
+unset, 'ShiftN' = shift_tm=N); each cell aggregates over the sub-cases sharing
+that combination (clusters/RPs x demand x ...). Columns: operational vShutdown
+deviation [%], invest-regret [M EUR] (the LEGO objective is already in M EUR),
+and operational/investment work units [% of Truth]. Disable with
+--no-results-table.
+
 Filtering / splitting
 ---------------------
 --nrOfClusters 3,5,7      keep only runs whose `clusters` run-parameter is 3, 5 or 7
@@ -59,9 +71,11 @@ python research/MK/CompareMarkov.py results/ --tm "1:*,2:*"
 """
 
 import argparse
+import csv
 import glob
 import os
 import sqlite3
+import statistics
 import sys
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -728,6 +742,281 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
          'operational_regret_rel', ref_line=0, symmetric_y=True)
 
 
+# ---------------------------------------------------------------------------
+# Aggregated results table — the mean/median/min/max *behind* each boxplot,
+# grouped by (TM_variant, method), for dropping into a paper results table.
+# Printed to the terminal and saved to a .txt (and .csv) alongside the PNGs.
+# ---------------------------------------------------------------------------
+
+# Method (edge handling) order within each TM_variant block of the table.
+EDGE_DISPLAY_ORDER = ['NoEnf', 'Cyclic', 'Markov', 'Markov-Strict']
+
+
+def tm_variant_label(tm_key: tuple) -> str:
+    """(shift_tm, perturb_tm) -> paper TM-variant name ('Original', 'Shift1', ...)."""
+    shift, perturb = (_tm_value(v) for v in tm_key)
+    base = "Original" if shift is None else f"Shift{shift:g}"
+    if perturb is not None:
+        base += f"+perturb{perturb:g}"
+    return base
+
+
+def _agg(vals: list[float] | None) -> dict | None:
+    """mean / median / min / max / n of a box's values (None when empty)."""
+    if not vals:
+        return None
+    return {
+        'mean': statistics.mean(vals),
+        'median': statistics.median(vals),
+        'min': min(vals),
+        'max': max(vals),
+        'n': len(vals),
+    }
+
+
+def _aggregate_boxes(boxes: dict, edges: list[str]) -> dict:
+    """{tm_key: {edge: [vals]}} -> {(tm_key, edge): agg-dict}."""
+    out: dict = {}
+    for tm_key, edge_map in boxes.items():
+        for edge in edges:
+            agg = _agg(edge_map.get(edge))
+            if agg is not None:
+                out[(tm_key, edge)] = agg
+    return out
+
+
+def augment_startup(entries: list[dict]) -> None:
+    """Attach an annual-weighted 'vStartup' sum to each entry, in place.
+
+    The plots only need vShutdown; the table additionally reports NoEnf's
+    start-up deviation (which differs from its shut-down deviation, whereas
+    Cyclic/Markov have start-ups == shut-downs). Idempotent — entries already
+    carrying 'vStartup' are skipped, so per-cluster re-aggregation is cheap.
+    """
+    todo = [e for e in entries if 'vStartup' not in e]
+    if not todo:
+        return
+
+    def load_one(e: dict) -> None:
+        try:
+            conn = sqlite3.connect(e['file'])
+            e['vStartup'] = _weighted_var_sum(conn, 'vStartup')
+            conn.close()
+        except Exception:
+            e['vStartup'] = None
+
+    max_workers = min(len(todo), (os.cpu_count() or 4), 60)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        list(pool.map(load_one, todo))
+
+
+def build_startup_deviation_boxes(entries: list[dict], mode: str, edges: list[str]) -> dict:
+    """vStartup deviation from the Truth entry of the same (tm, sub-case).
+
+    Same shape as build_deviation_boxes, but on vStartup (needs augment_startup).
+    """
+    return _diff_boxes(
+        _iter_vs_truth(entries, edges, lambda e: e.get('vStartup')),
+        mode, truth_skip=(None,))
+
+
+def truth_objective_by_tm(entries: list[dict]) -> dict:
+    """{tm_key: agg-dict} of the Truth-entry Objective per TM combination [M EUR]."""
+    boxes: dict = defaultdict(list)
+    for e in entries:
+        if e.get('edge_handling') != 'Truth':
+            continue
+        obj = e.get('Objective')
+        if obj not in (None, 0, -1):
+            boxes[_tm_key(e)].append(float(obj))
+    return {tm: _agg(vals) for tm, vals in boxes.items()}
+
+
+def build_table_records(main_entries, operational_entries, invest_regret_obj, edges):
+    """Aggregate every box into per-(TM_variant, method) records.
+
+    Each metric is the *same* CompareMarkov box builder used for the figures, so
+    the numbers match the plots exactly. Returns (records, truth_main, truth_oper).
+    """
+    augment_startup(operational_entries)
+    augment_startup(main_entries)
+
+    dev_op = _aggregate_boxes(build_deviation_boxes(operational_entries, 'relative', edges), edges)
+    startup_op = _aggregate_boxes(build_startup_deviation_boxes(operational_entries, 'relative', edges), edges)
+    regret = _aggregate_boxes(build_regret_boxes(main_entries, invest_regret_obj, 'absolute', edges), edges)
+    wu_op = _aggregate_boxes(build_runtime_relative_boxes(operational_entries, edges), edges)
+    wu_inv = _aggregate_boxes(build_runtime_relative_boxes(main_entries, edges), edges)
+    dev_inv = _aggregate_boxes(build_deviation_boxes(main_entries, 'relative', edges), edges)
+
+    tm_keys = set()
+    for d in (dev_op, startup_op, regret, wu_op, wu_inv, dev_inv):
+        tm_keys |= {k for (k, _e) in d}
+
+    records = []
+    for tm_key in sorted(tm_keys, key=_tm_sort):
+        for edge in sorted(edges, key=lambda e: EDGE_DISPLAY_ORDER.index(e)
+                           if e in EDGE_DISPLAY_ORDER else 99):
+            key = (tm_key, edge)
+            rec = {
+                'TM_variant': tm_variant_label(tm_key),
+                'method': edge,
+                'oper_dev': dev_op.get(key),
+                'startup_dev': startup_op.get(key),
+                'invest_regret': regret.get(key),
+                'wu_oper': wu_op.get(key),
+                'wu_invest': wu_inv.get(key),
+                'invest_dev': dev_inv.get(key),
+            }
+            if any(rec[k] for k in ('oper_dev', 'startup_dev', 'invest_regret',
+                                    'wu_oper', 'wu_invest', 'invest_dev')):
+                records.append(rec)
+
+    return records, truth_objective_by_tm(main_entries), truth_objective_by_tm(operational_entries)
+
+
+def _f(x, fmt="%.1f") -> str:
+    return "n/a" if x is None else fmt % x
+
+
+def _md_table(headers: list[str], rows: list[list[str]]) -> str:
+    lines = ["| " + " | ".join(headers) + " |",
+             "|" + "|".join("---" for _ in headers) + "|"]
+    for r in rows:
+        lines.append("| " + " | ".join(r) + " |")
+    return "\n".join(lines)
+
+
+def render_results_markdown(records, truth_main, truth_oper, title_suffix="") -> str:
+    """Three Markdown tables: paper results, diagnostics, reference Truth objective."""
+    out = [f"# Markov results table{title_suffix}\n"]
+
+    out.append("## Mean over sub-cases per TM_variant x method\n")
+    headers = ["TM_variant", "method",
+               "oper_dev_mean_pct", "oper_dev_median_pct",
+               "oper_dev_min_pct", "oper_dev_max_pct",
+               "invest_regret_mean_MEUR", "invest_regret_median_MEUR",
+               "wu_oper_mean_pct", "wu_invest_mean_pct", "n_runs"]
+    rows = []
+    for r in records:
+        od, ir = r['oper_dev'], r['invest_regret']
+        rows.append([
+            r['TM_variant'], r['method'],
+            _f(od and od['mean']), _f(od and od['median']),
+            _f(od and od['min']), _f(od and od['max']),
+            _f(ir and ir['mean']), _f(ir and ir['median']),
+            _f(r['wu_oper'] and r['wu_oper']['mean']),
+            _f(r['wu_invest'] and r['wu_invest']['mean']),
+            str(od['n'] if od else (ir['n'] if ir else 0)),
+        ])
+    out.append(_md_table(headers, rows))
+    out.append("\n`n_runs` is the operational-deviation count (the primary quantity); "
+               "per-metric counts are in the diagnostics table below. invest_regret is in "
+               "M EUR (LEGO objective unit). An 'n/a' cell means no sub-case had the data "
+               "(e.g. no `--operational` runs, no Gurobi work units, or no optimal Truth "
+               "reference).\n")
+
+    out.append("## Diagnostics (start-up deviation, per-metric run counts)\n")
+    dheaders = ["TM_variant", "method",
+                "startup_dev_mean_pct", "startup_dev_median_pct",
+                "invest_run_shutdown_dev_mean_pct",
+                "n_oper_dev", "n_startup", "n_regret", "n_wu_oper", "n_wu_invest"]
+    drows = []
+    for r in records:
+        sd, idv = r['startup_dev'], r['invest_dev']
+        drows.append([
+            r['TM_variant'], r['method'],
+            _f(sd and sd['mean']), _f(sd and sd['median']),
+            _f(idv and idv['mean']),
+            str(r['oper_dev']['n'] if r['oper_dev'] else 0),
+            str(sd['n'] if sd else 0),
+            str(r['invest_regret']['n'] if r['invest_regret'] else 0),
+            str(r['wu_oper']['n'] if r['wu_oper'] else 0),
+            str(r['wu_invest']['n'] if r['wu_invest'] else 0),
+        ])
+    out.append(_md_table(dheaders, drows))
+    out.append("\nStart-ups equal shut-downs for Cyclic/Markov and differ for NoEnf. "
+               "`invest_run_shutdown_dev_mean_pct` is the deviation on the regular "
+               "(investment) runs - a fallback view when no `--operational` runs are present.\n")
+
+    out.append("## Reference Truth objective per TM_variant [M EUR]\n")
+    rheaders = ["TM_variant", "truth_main_obj_mean_MEUR", "n_main",
+                "truth_oper_obj_mean_MEUR", "n_oper"]
+    rrows = []
+    for tm_key in sorted(set(truth_main) | set(truth_oper), key=_tm_sort):
+        tm, to = truth_main.get(tm_key), truth_oper.get(tm_key)
+        rrows.append([
+            tm_variant_label(tm_key),
+            _f(tm and tm['mean']), str(tm['n'] if tm else 0),
+            _f(to and to['mean']), str(to['n'] if to else 0),
+        ])
+    out.append(_md_table(rheaders, rrows))
+    return "\n".join(out) + "\n"
+
+
+def write_results_csv(path, records):
+    cols = ["TM_variant", "method",
+            "oper_dev_mean_pct", "oper_dev_median_pct",
+            "oper_dev_min_pct", "oper_dev_max_pct",
+            "startup_dev_mean_pct", "startup_dev_median_pct",
+            "invest_regret_mean_MEUR", "invest_regret_median_MEUR",
+            "invest_regret_min_MEUR", "invest_regret_max_MEUR",
+            "wu_oper_mean_pct", "wu_invest_mean_pct",
+            "invest_run_shutdown_dev_mean_pct",
+            "n_oper_dev", "n_startup", "n_regret", "n_wu_oper", "n_wu_invest"]
+
+    def g(agg, field):
+        return "" if not agg else round(agg[field], 3)
+
+    def n(agg):
+        return agg['n'] if agg else 0
+
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(cols)
+        for r in records:
+            od, sd, ir = r['oper_dev'], r['startup_dev'], r['invest_regret']
+            w.writerow([
+                r['TM_variant'], r['method'],
+                g(od, 'mean'), g(od, 'median'), g(od, 'min'), g(od, 'max'),
+                g(sd, 'mean'), g(sd, 'median'),
+                g(ir, 'mean'), g(ir, 'median'), g(ir, 'min'), g(ir, 'max'),
+                g(r['wu_oper'], 'mean'), g(r['wu_invest'], 'mean'),
+                g(r['invest_dev'], 'mean'),
+                n(od), n(sd), n(ir), n(r['wu_oper']), n(r['wu_invest']),
+            ])
+
+
+def report_results_table(main_entries, operational_entries, invest_regret_obj, edges,
+                         out_dir, fname_suffix="", title_suffix=""):
+    """Build, print (terminal) and save (.txt + .csv) the aggregated results table.
+
+    *fname_suffix* / *title_suffix* tag per-cluster outputs under --separateClusters.
+    """
+    records, truth_main, truth_oper = build_table_records(
+        main_entries, operational_entries, invest_regret_obj, edges)
+    if not records:
+        printer.warning(f"  Results table{title_suffix}: no (TM_variant, method) cells had data.")
+        return
+
+    report = render_results_markdown(records, truth_main, truth_oper, title_suffix)
+    # Terminal (plain print avoids any rich re-wrapping of the table). Guard against
+    # a strict-ASCII console choking on a non-ASCII title_suffix (the file below is
+    # always written UTF-8, so only the live stream needs the fallback).
+    try:
+        print("\n" + report)
+    except UnicodeEncodeError:
+        sys.stdout.buffer.write(("\n" + report + "\n").encode("utf-8", "replace"))
+
+    stem = "compare_markov_results" + fname_suffix
+    txt_path = os.path.join(out_dir, stem + ".txt")
+    csv_path = os.path.join(out_dir, stem + ".csv")
+    with open(txt_path, "w", encoding="utf-8") as fh:
+        fh.write(report)
+    write_results_csv(csv_path, records)
+    printer.information(f"  Saved {txt_path}")
+    printer.information(f"  Saved {csv_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=("Boxplots of edge-handling strategies (NoEnf, Cyclic, Markov) vs. the "
                                                   "Truth model across shift-tm / perturb-tm combinations.\n\n"
@@ -749,6 +1038,8 @@ def main():
                         help="Emit the full set of plots once per cluster count found in the (filtered) data, with a '_clusters{N}' filename suffix, instead of aggregating all cluster counts together.")
     parser.add_argument("--tm", action="append", default=None, metavar="SHIFT:PERTURB",
                         help="Only show the selected (shift_tm, perturb_tm) subplot combinations. Repeatable and/or comma-separated. Each side is a number, 'none' (parameter unset) or '*' (any); 'base' is shorthand for none:none. Examples: --tm none:0.2 --tm 1:none --tm base ; --tm \"1:*,2:*\". Default: show all.")
+    parser.add_argument("--no-results-table", action="store_true",
+                        help="Skip the aggregated numeric results table (the mean/median/min/max behind each boxplot). By default the table is printed to the terminal and saved as 'compare_markov_results.txt' (+ '.csv') in the output dir.")
     args = parser.parse_args()
 
     try:
@@ -805,15 +1096,22 @@ def main():
         for value in cluster_values:
             label = f"{value} clusters" if value is not None else "no clustering"
             printer.information(f"Rendering plots for {label} ...")
-            render_plots([e for e in main_entries if e.get('clusters') == value],
-                         [e for e in operational_entries if e.get('clusters') == value],
+            sub_main = [e for e in main_entries if e.get('clusters') == value]
+            sub_oper = [e for e in operational_entries if e.get('clusters') == value]
+            render_plots(sub_main, sub_oper,
                          invest_regret_obj, regret_obj, operational_regret_obj,
                          edges, out_dir, args,
                          fname_suffix=f"_clusters{value}", title_suffix=f" — {label}")
+            if not args.no_results_table:
+                report_results_table(sub_main, sub_oper, invest_regret_obj, edges, out_dir,
+                                     fname_suffix=f"_clusters{value}", title_suffix=f" — {label}")
     else:
         render_plots(main_entries, operational_entries,
                      invest_regret_obj, regret_obj, operational_regret_obj,
                      edges, out_dir, args)
+        if not args.no_results_table:
+            report_results_table(main_entries, operational_entries, invest_regret_obj,
+                                 edges, out_dir)
 
 
 if __name__ == "__main__":

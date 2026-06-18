@@ -212,6 +212,7 @@ python research/MK/CompareMarkov.py results/ --tm "base,1:*"           # base + 
 | `--nrOfClusters`      | all            | Comma-separated list of cluster counts; only runs whose `clusters` run-parameter is in the list are included (e.g. `3,5,7`) |
 | `--separateClusters`  | off            | Emit the full plot set once per cluster count found in the (filtered) data; filenames get a `_clusters{N}` suffix and titles a ` — N clusters` suffix |
 | `--tm`                | all            | Select which `(shift_tm, perturb_tm)` subplots to show. Repeatable and/or comma-separated specs `SHIFT:PERTURB`, each side a number, `none` (parameter unset) or `*` (any); `base` = `none:none`. E.g. `--tm none:0.2 --tm 1:*` |
+| `--no-results-table`  | off            | Skip the aggregated numeric results table (saved/printed by default — see below)            |
 
 Subplots are ordered by shift first, then perturb: base, perturbTM, shiftTM, shiftTM+perturbTM, … .
 Invest-regret (E) uses Truth's `Objective` as the reference, emitted both relative —
@@ -227,6 +228,33 @@ spans from the smallest to the largest such value (one band above, a mirrored on
 relative plot the band is just `±(mip_gap * 100) %` — a single horizontal line, since it is already
 in percent (it widens to a band only if the requested `mip_gap` varies across runs). The band is
 omitted when no plotted run carries a `mip_gap`.
+
+#### Aggregated results table
+
+Alongside the PNGs, CompareMarkov produces the **mean** (plus median / min / max) *behind* each boxplot —
+the aggregated numbers for a paper results table. It is **printed to the terminal and saved** as
+`compare_markov_results.txt` (+ `.csv`) in the output dir (`_clusters{N}` suffix under
+`--separateClusters`). Disable with `--no-results-table`.
+
+One row per **(TM_variant, method)** cell — exactly one boxplot. `TM_variant` is the
+`(shift_tm, perturb_tm)` axis (`Original` = both unset, `ShiftN` = `shift_tm=N`); `method` is the edge
+handling. Each cell aggregates over the **sub-cases** sharing that TM combination (clusters/RP count,
+demand level, …) — i.e. the runs the paper means over (e.g. 3 RP counts × 4 demand levels = 12 runs).
+The four quantities are the same ones the figures plot:
+
+| Column                 | From the plot                              | Notes |
+|------------------------|--------------------------------------------|-------|
+| `oper_dev_*_pct`       | `compare_vshutdown_operational_relative`   | relative vShutdown deviation vs Truth-operational; mean/median/min/max |
+| `invest_regret_*_MEUR` | `compare_invest_regret_absolute`           | absolute invest-regret over Truth-main objective; the LEGO objective is already in **M EUR** (no conversion) |
+| `wu_oper_mean_pct`     | `compare_workunits_operational_relative`   | operational work units as % of Truth-operational (Gurobi only) |
+| `wu_invest_mean_pct`   | `compare_workunits_investment_relative`    | investment work units as % of Truth-main (Gurobi only) |
+
+A diagnostics table adds the start-up deviation (it differs from shut-downs for `NoEnf`, equal for
+`Cyclic`/`Markov`) and the per-metric run counts, and a reference table prints the mean Truth objective
+per `TM_variant` (so regret can be read relative to total cost). `n_runs` lets you confirm 12 runs per
+cell or see why a sub-case dropped (typically a non-optimal Truth, or a missing invest-regret/operational
+run). Operational and work-unit columns are empty without `--operational` runs / under HiGHS respectively;
+for the `Original/Shift1/Shift2` × `{3,5,7}` grid, pass e.g. `--nrOfClusters 3,5,7 --tm base --tm 1:none --tm 2:none`.
 
 ### `NonBinarityMarkov.py` — Overview of integrality violations
 
@@ -254,9 +282,13 @@ python research/MK/NonBinarityMarkov.py results/ --separateClusters     # one re
 python research/MK/NonBinarityMarkov.py results/ --tm none:0.2 --tm 1:none
 ```
 
+The report is also **saved to `nonbinarity_report.txt`** in the output dir (in addition to being printed).
+
 | Parameter             | Default      | Description                                                                                 |
 |-----------------------|--------------|---------------------------------------------------------------------------------------------|
 | `folder`              | `.`          | Folder with `MK-*.sqlite` files                                                              |
+| `--output-dir`        | input folder | Directory to save `nonbinarity_report.txt` in                                               |
+| `--no-txt`            | off          | Don't save the report to a `.txt` file (it is saved by default in addition to printing)     |
 | `--tol`               | `1e-6`       | A value counts as non-binary if it deviates from the nearest integer by more than this       |
 | `--per-file`          | off          | Also print a row per file (total fractional values + max deviation)                          |
 | `--include-nonoptimal`| off          | Include runs with `termination_condition != 'optimal'` (default: optimal-only)              |

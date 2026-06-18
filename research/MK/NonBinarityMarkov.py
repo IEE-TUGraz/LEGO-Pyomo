@@ -27,6 +27,9 @@ The discovery and filtering (--nrOfClusters, --separateClusters, --tm,
 --include-nonoptimal) are shared with CompareMarkov.py (imported directly), so a
 folder filtered here matches the same folder filtered there.
 
+In addition to printing the report, it is saved as 'nonbinarity_report.txt' in
+the output dir (--output-dir, default: the input folder); disable with --no-txt.
+
 Usage
 -----
 python research/MK/NonBinarityMarkov.py [folder]
@@ -338,6 +341,8 @@ def main():
                      "(--nrOfClusters, --separateClusters, --tm, --include-nonoptimal)."),
         formatter_class=RichHelpFormatter)
     parser.add_argument("folder", nargs="?", default=".", help="Folder containing MK-*.sqlite files (default: current directory)")
+    parser.add_argument("--output-dir", default=None, help="Directory to save the report .txt in (default: the input folder)")
+    parser.add_argument("--no-txt", action="store_true", help="Don't save the report to a .txt file (it is saved as 'nonbinarity_report.txt' by default, in addition to printing it).")
     parser.add_argument("--tol", type=float, default=1e-6, help="A value counts as non-binary if it deviates from the nearest integer by more than this (default: 1e-6).")
     parser.add_argument("--per-file", action="store_true", help="Also print a row per file (total fractional values + max deviation), not just the aggregated tables.")
     parser.add_argument("--include-nonoptimal", action="store_true", help="Include runs whose termination_condition is not 'optimal' (default: optimal only).")
@@ -376,15 +381,36 @@ def main():
     filt = "all" if args.include_nonoptimal else "optimal-only"
     printer.information(f"Loaded [{filt}]: {len(entries)} file(s).")
 
-    if args.separateClusters:
-        cluster_values = sorted({e.get('clusters') for e in entries},
-                                key=lambda v: (v is None, v))
-        for value in cluster_values:
-            label = f"{value} clusters" if value is not None else "no clustering"
-            report([e for e in entries if e.get('clusters') == value],
-                   args.per_file, label_suffix=f" — {label}")
-    else:
-        report(entries, args.per_file)
+    # Tee the report to a .txt via the Printer's logfile (it captures the plain
+    # text of every printer call). Truncate any old file, drop timestamps for a
+    # clean report, and always restore the printer state afterwards.
+    txt_path = None
+    prev_timestamp = printer.add_timestamp_to_logfile
+    if not args.no_txt:
+        out_dir = args.output_dir or args.folder
+        os.makedirs(out_dir, exist_ok=True)
+        txt_path = os.path.join(out_dir, "nonbinarity_report.txt")
+        if os.path.exists(txt_path):
+            os.remove(txt_path)
+        printer.add_timestamp_to_logfile = False
+        printer.set_logfile(txt_path)
+
+    try:
+        if args.separateClusters:
+            cluster_values = sorted({e.get('clusters') for e in entries},
+                                    key=lambda v: (v is None, v))
+            for value in cluster_values:
+                label = f"{value} clusters" if value is not None else "no clustering"
+                report([e for e in entries if e.get('clusters') == value],
+                       args.per_file, label_suffix=f" — {label}")
+        else:
+            report(entries, args.per_file)
+    finally:
+        printer.set_logfile(None)
+        printer.add_timestamp_to_logfile = prev_timestamp
+
+    if txt_path is not None:
+        printer.information(f"Saved {txt_path}")
 
 
 if __name__ == "__main__":
