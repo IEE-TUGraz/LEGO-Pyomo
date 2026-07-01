@@ -4,19 +4,23 @@
 CompareMarkov.py - Boxplots comparing edge-handling strategies (NoEnf, Cyclic,
 Markov) against the Truth model across shift-tm / perturb-tm combinations.
 
-Produces 14 logical plots from a folder of MK-*.sqlite files; each is emitted
+Produces 18 logical plots from a folder of MK-*.sqlite files; each is emitted
 twice — once with all strategies and once with NoEnf excluded ('_noNoEnf'
 suffix, since NoEnf's large deviations otherwise compress the scale) — for up
-to 28 PNGs:
+to 36 PNGs:
 
   A  compare_workunits_operational_absolute.png   Work units, operational runs
      compare_workunits_operational_relative.png   Work units as % of Truth, operational
   B  compare_vshutdown_operational_absolute.png   vShutdown dev. vs Truth-op (abs)
      compare_vshutdown_operational_relative.png   vShutdown dev. vs Truth-op [%]
+     compare_vshutdown_operational_absolute_magnitude.png  |vShutdown dev.| vs Truth-op (abs)
+     compare_vshutdown_operational_relative_magnitude.png  |vShutdown dev.| vs Truth-op [%]
   C  compare_workunits_investment_absolute.png    Work units, investment (main) runs
      compare_workunits_investment_relative.png    Work units as % of Truth, investment
   D  compare_vshutdown_investment_absolute.png    vShutdown dev. vs Truth-main (abs)
      compare_vshutdown_investment_relative.png    vShutdown dev. vs Truth-main [%]
+     compare_vshutdown_investment_absolute_magnitude.png   |vShutdown dev.| vs Truth-main (abs)
+     compare_vshutdown_investment_relative_magnitude.png   |vShutdown dev.| vs Truth-main [%]
   E  compare_invest_regret_absolute.png           Invest-regret (abs) vs Truth-main obj.
      compare_invest_regret_relative.png           Invest-regret [%] vs Truth-main obj.
   F  compare_regret_absolute.png                  Regret (abs) vs Truth-main obj. (invest+commit fixed)
@@ -30,6 +34,16 @@ Markov; +Markov-Strict with --markov-strict). Every box aggregates over the
 *sub-cases* that share that TM combination — i.e. the other run parameters that
 vary (clusters, stretch_demand, ...). Truth is the reference for
 deviation/regret, never a box.
+
+The B/D "_magnitude" plots show |deviation| (or |relative deviation|) instead
+of the signed value — useful for comparing how much Cyclic vs. Markov deviate
+from Truth in size, without sign direction obscuring the comparison. Their
+y-axis is clamped to [0, max*1.05] (never negative), unlike the signed B/D
+plots, whose y-axis is symmetric around 0. The E/F/G regret plots' y-axis is
+"tight" instead: [min(0, min*1.05), max*1.05] — regret is expected to be
+non-negative (fixing variables can only raise the objective), so the axis only
+dips as far negative as needed to show actual solver/MIP-gap noise, rather
+than mirroring the full positive range.
 
 "Operational runs" are the `--operational` runs (vGenInvest fixed to Truth's
 investment); "investment runs" are the regular main runs. Work-units plots need
@@ -129,10 +143,14 @@ OUTPUT_NAMES = {
     'workunits_operational_rel': 'compare_workunits_operational_relative.png',
     'vshutdown_operational_abs': 'compare_vshutdown_operational_absolute.png',
     'vshutdown_operational_rel': 'compare_vshutdown_operational_relative.png',
+    'vshutdown_operational_abs_mag': 'compare_vshutdown_operational_absolute_magnitude.png',
+    'vshutdown_operational_rel_mag': 'compare_vshutdown_operational_relative_magnitude.png',
     'workunits_investment_abs': 'compare_workunits_investment_absolute.png',
     'workunits_investment_rel': 'compare_workunits_investment_relative.png',
     'vshutdown_investment_abs': 'compare_vshutdown_investment_absolute.png',
     'vshutdown_investment_rel': 'compare_vshutdown_investment_relative.png',
+    'vshutdown_investment_abs_mag': 'compare_vshutdown_investment_absolute_magnitude.png',
+    'vshutdown_investment_rel_mag': 'compare_vshutdown_investment_relative_magnitude.png',
     'invest_regret_abs': 'compare_invest_regret_absolute.png',
     'invest_regret_rel': 'compare_invest_regret_relative.png',
     'regret_abs': 'compare_regret_absolute.png',
@@ -417,12 +435,15 @@ def _iter_vs_truth(entries: list[dict], edges: list[str], edge_value, truth_valu
                     yield tm_key, edge, truth_ref, val
 
 
-def _diff_boxes(pairs, mode: str, truth_skip: tuple) -> dict:
+def _diff_boxes(pairs, mode: str, truth_skip: tuple, magnitude: bool = False) -> dict:
     """Difference-to-Truth boxes from an _iter_vs_truth stream.
 
     mode='relative': (val - truth) / |truth| * 100  [%]   (skips truth==0)
     mode='absolute': val - truth                          [native units]
     Sub-cases whose truth_ref is in *truth_skip* are dropped in both modes.
+    *magnitude*, if True, stores abs(diff) instead of the signed diff — used for
+    the "|deviation|" plots, so Cyclic/Markov's typical deviation size can be
+    compared without over/under-shooting sign obscuring the comparison.
     """
     boxes: dict = defaultdict(lambda: defaultdict(list))
     for tm_key, edge, truth, val in pairs:
@@ -432,9 +453,8 @@ def _diff_boxes(pairs, mode: str, truth_skip: tuple) -> dict:
         if mode == 'relative':
             if truth == 0:
                 continue
-            boxes[tm_key][edge].append(diff / abs(float(truth)) * 100)
-        else:
-            boxes[tm_key][edge].append(diff)
+            diff = diff / abs(float(truth)) * 100
+        boxes[tm_key][edge].append(abs(diff) if magnitude else diff)
     return boxes
 
 
@@ -467,11 +487,12 @@ def build_runtime_relative_boxes(entries: list[dict], edges: list[str]) -> dict:
     return boxes
 
 
-def build_deviation_boxes(entries: list[dict], mode: str, edges: list[str]) -> dict:
+def build_deviation_boxes(entries: list[dict], mode: str, edges: list[str],
+                          magnitude: bool = False) -> dict:
     """vShutdown deviation from the Truth entry of the same (tm, sub-case)."""
     return _diff_boxes(
         _iter_vs_truth(entries, edges, lambda e: e.get('vShutdown')),
-        mode, truth_skip=(None,))
+        mode, truth_skip=(None,), magnitude=magnitude)
 
 
 def build_regret_boxes(base_entries: list[dict], regret_obj: dict,
@@ -549,7 +570,8 @@ def _has_data(boxes: dict, edges: list[str]) -> bool:
 def make_boxplot_figure(boxes: dict, title: str, ylabel: str,
                         output: str | None, no_show: bool, edges: list[str],
                         logy: bool = False, ref_line: float | None = None,
-                        symmetric_y: bool = False,
+                        symmetric_y: bool = False, nonneg_y: bool = False,
+                        tight_y: bool = False,
                         gap_band: tuple[float, float] | None = None):
     """Render one figure: a subplot per TM combination, one edge box per subplot.
 
@@ -558,6 +580,15 @@ def make_boxplot_figure(boxes: dict, title: str, ylabel: str,
     *symmetric_y*, if True, centres the (shared) y-axis on 0 so the limits are
     equidistant from 0 in both directions — used for plots whose values can be
     negative or positive (deviation / regret).
+    *nonneg_y*, if True, clamps the (shared) y-axis to [0, max*1.05] — used for
+    magnitude (absolute-value) plots, whose values are never negative, so no
+    vertical space should be wasted below 0.
+    *tight_y*, if True, sets the (shared) y-axis to [min(0, min*1.05), max*1.05]
+    — used for regret plots, which are expected to be non-negative but can dip
+    slightly negative from solver/MIP-gap noise; this shows just enough of the
+    negative side to capture those outliers instead of mirroring the full
+    positive range (as *symmetric_y* would).
+    At most one of *symmetric_y* / *nonneg_y* / *tight_y* should be set.
     *gap_band* `(lo, hi)`, if given, draws a light-red MIP-gap noise band on every
     subplot: a filled band at `[lo, hi]` and a mirrored one at `[-hi, -lo]`. When
     `lo == hi` (e.g. the relative invest-regret plot, where the band is in percent)
@@ -630,6 +661,26 @@ def make_boxplot_figure(boxes: dict, title: str, ylabel: str,
             ymax = max(ymax, abs(gap_band[1]))
         if ymax > 0:
             axes[0].set_ylim(-ymax * 1.05, ymax * 1.05)  # sharey propagates to all
+    elif nonneg_y and not use_log:
+        all_vals = [v for tm_key in tm_keys for edge in edges
+                    for v in boxes[tm_key].get(edge, [])]
+        ymax = max((abs(v) for v in all_vals), default=0.0)
+        if gap_band is not None:
+            ymax = max(ymax, abs(gap_band[1]))
+        if ymax > 0:
+            axes[0].set_ylim(0, ymax * 1.05)  # sharey propagates to all
+    elif tight_y and not use_log:
+        all_vals = [v for tm_key in tm_keys for edge in edges
+                    for v in boxes[tm_key].get(edge, [])]
+        vmin = min((v for v in all_vals), default=0.0)
+        vmax = max((v for v in all_vals), default=0.0)
+        lo = vmin * 1.05 if vmin < 0 else 0.0
+        hi = vmax * 1.05 if vmax > 0 else 0.0
+        if gap_band is not None:  # keep the band/line in view even if regrets are tiny
+            lo = min(lo, -gap_band[1])
+            hi = max(hi, gap_band[1])
+        if lo < 0 or hi > 0:
+            axes[0].set_ylim(lo, hi)  # sharey propagates to all
 
     axes[0].set_ylabel(ylabel)
 
@@ -656,7 +707,7 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
     """
 
     def emit(boxes, title, ylabel, name_key, logy=False, ref_line=None,
-             symmetric_y=False, gap_fn=None):
+             symmetric_y=False, nonneg_y=False, tight_y=False, gap_fn=None):
         """Render the full figure and a NoEnf-excluded twin ('_noNoEnf' suffix).
 
         *gap_fn*, if given, is called with the edge list actually drawn (full vs
@@ -667,13 +718,13 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
         title += title_suffix
         make_boxplot_figure(boxes, title, ylabel, os.path.join(out_dir, stem + ext),
                             args.no_show, edges, logy=logy, ref_line=ref_line,
-                            symmetric_y=symmetric_y,
+                            symmetric_y=symmetric_y, nonneg_y=nonneg_y, tight_y=tight_y,
                             gap_band=gap_fn(edges) if gap_fn else None)
         sub_edges = [e for e in edges if e != 'NoEnf']
         make_boxplot_figure(boxes, f"{title} (excl. NoEnf)", ylabel,
                             os.path.join(out_dir, f"{stem}_noNoEnf{ext}"),
                             args.no_show, sub_edges, logy=logy, ref_line=ref_line,
-                            symmetric_y=symmetric_y,
+                            symmetric_y=symmetric_y, nonneg_y=nonneg_y, tight_y=tight_y,
                             gap_band=gap_fn(sub_edges) if gap_fn else None)
 
     # --- Operational runs ---
@@ -691,6 +742,14 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
          "vShutdown deviation vs Truth — Operational runs",
          "Relative deviation from Truth [%]",
          'vshutdown_operational_rel', ref_line=0, symmetric_y=True)
+    emit(build_deviation_boxes(operational_entries, 'absolute', edges, magnitude=True),
+         "vShutdown |deviation| vs Truth — Operational runs",
+         "Absolute value of deviation from Truth",
+         'vshutdown_operational_abs_mag', nonneg_y=True)
+    emit(build_deviation_boxes(operational_entries, 'relative', edges, magnitude=True),
+         "vShutdown |deviation| vs Truth — Operational runs",
+         "Absolute value of relative deviation from Truth [%]",
+         'vshutdown_operational_rel_mag', nonneg_y=True)
 
     # --- Investment (main) runs ---
     emit(build_runtime_boxes(main_entries, edges),
@@ -707,39 +766,47 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
          "vShutdown deviation vs Truth — Investment runs",
          "Relative deviation from Truth [%]",
          'vshutdown_investment_rel', ref_line=0, symmetric_y=True)
+    emit(build_deviation_boxes(main_entries, 'absolute', edges, magnitude=True),
+         "vShutdown |deviation| vs Truth — Investment runs",
+         "Absolute value of deviation from Truth",
+         'vshutdown_investment_abs_mag', nonneg_y=True)
+    emit(build_deviation_boxes(main_entries, 'relative', edges, magnitude=True),
+         "vShutdown |deviation| vs Truth — Investment runs",
+         "Absolute value of relative deviation from Truth [%]",
+         'vshutdown_investment_rel_mag', nonneg_y=True)
 
     # --- Invest-regret (investment runs): vGenInvest fixed from the main run, vCommit free ---
     emit(build_regret_boxes(main_entries, invest_regret_obj, 'absolute', edges),
          "Invest-regret vs Truth — Investment runs",
          "Absolute invest-regret over Truth objective",
-         'invest_regret_abs', ref_line=0, symmetric_y=True,
+         'invest_regret_abs', ref_line=0, tight_y=True,
          gap_fn=lambda eds: invest_regret_gap_band(main_entries, invest_regret_obj, 'absolute', eds))
     emit(build_regret_boxes(main_entries, invest_regret_obj, 'relative', edges),
          "Invest-regret vs Truth — Investment runs",
          "Invest-regret over Truth objective [%]",
-         'invest_regret_rel', ref_line=0, symmetric_y=True,
+         'invest_regret_rel', ref_line=0, tight_y=True,
          gap_fn=lambda eds: invest_regret_gap_band(main_entries, invest_regret_obj, 'relative', eds))
 
     # --- Regret (investment runs): vGenInvest + vCommit fixed from the main run; vs Truth-main ---
     emit(build_regret_boxes(main_entries, regret_obj, 'absolute', edges),
          "Regret vs Truth — Investment runs",
          "Absolute regret over Truth objective",
-         'regret_abs', ref_line=0, symmetric_y=True)
+         'regret_abs', ref_line=0, tight_y=True)
     emit(build_regret_boxes(main_entries, regret_obj, 'relative', edges),
          "Regret vs Truth — Investment runs",
          "Regret over Truth objective [%]",
-         'regret_rel', ref_line=0, symmetric_y=True)
+         'regret_rel', ref_line=0, tight_y=True)
 
     # --- Operational-regret (operational runs): fleet = Truth, vCommit fixed from the
     #     operational run; referenced against the Truth-operational objective ---
     emit(build_regret_boxes(operational_entries, operational_regret_obj, 'absolute', edges),
          "Operational-regret vs Truth — Operational runs",
          "Absolute operational-regret over Truth-operational objective",
-         'operational_regret_abs', ref_line=0, symmetric_y=True)
+         'operational_regret_abs', ref_line=0, tight_y=True)
     emit(build_regret_boxes(operational_entries, operational_regret_obj, 'relative', edges),
          "Operational-regret vs Truth — Operational runs",
          "Operational-regret over Truth-operational objective [%]",
-         'operational_regret_rel', ref_line=0, symmetric_y=True)
+         'operational_regret_rel', ref_line=0, tight_y=True)
 
 
 # ---------------------------------------------------------------------------
