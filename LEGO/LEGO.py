@@ -10,7 +10,7 @@ from pyomo.core import TransformationFactory
 
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
-from LEGO.modules import dcOpf, acOpfNim, acOpfBfm, storage, power, secondReserve, importExport, softLineLoadLimits, thermalGen, vres, DMSM
+from LEGO.modules import dcOpf, acOpfNim, acOpfBfm, storage, power, secondReserve, importExport, softLineLoadLimits, thermalGen, vres, DMSM, DGA
 
 printer = Printer.getInstance()
 
@@ -273,6 +273,8 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
         model.first_stage_varlist += softLineLoadLimits.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableDSM"]:
         model.first_stage_varlist+=DMSM.add_element_definitions_and_bounds(model, cs)
+    if cs.dPower_Parameters["pEnableDGA"]:
+        model.first_stage_varlist += DGA.add_element_definitions_and_bounds(model, cs)
     # Helper Sets for zone of interest
     model.zoi_i = pyo.Set(doc="Buses in zone of interest", initialize=cs.dPower_BusInfo.loc[cs.dPower_BusInfo["zoi"] == 1].index.tolist(), within=model.i)
 
@@ -303,6 +305,8 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
         model.first_stage_objective += softLineLoadLimits.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableDSM"]:
         model.first_stage_objective += DMSM.add_constraints(model, cs)
+    if cs.dPower_Parameters["pEnableDGA"]:
+        model.first_stage_objective += DGA.add_constraints(model, cs)
     if cs.dGlobal_Parameters["pEnableRMIP"]:
         TransformationFactory('core.relax_integer_vars').apply_to(model)  # Relaxes all integer variables to continuous variables
 

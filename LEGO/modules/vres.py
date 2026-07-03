@@ -65,8 +65,11 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         for rp in model.rp:
             for k in model.k:
                 maximumProduction = base_cap * model.pCapacityFactors[rp, k, g]
-                model.vCurtailment[rp, k, g].setub(maximumProduction)
                 model.vGenP[rp, k, g].setub(maximumProduction)
+                if cs.dPower_Parameters["pEnableDGA"]:
+                    model.vCurtailment[rp, k, g].setub(0)  # If DGA is enabled, curtailment is not allowed (it will be handled by the DGA module)
+                else:
+                    model.vCurtailment[rp, k, g].setub(maximumProduction)
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
