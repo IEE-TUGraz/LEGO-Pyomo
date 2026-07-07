@@ -88,6 +88,7 @@ import argparse
 import csv
 import glob
 import os
+import re
 import sqlite3
 import statistics
 import sys
@@ -361,18 +362,42 @@ def _tm_label(shift_tm, perturb_tm, base_label: str = '(base)') -> str:
     return ', '.join(parts) if parts else base_label
 
 
+# Trailing path components that Markov.py appends to the dataset folder for each
+# preprocessing step (see execute_case_studies in Markov.py). They are stripped
+# from `case_study_directory` so the *dataset* name (e.g. 'RTS-GMLC') is recovered
+# rather than a subfolder like '7 clusters' / 'mergeGenerators'.
+_PREPROCESSING_SUBFOLDER = re.compile(
+    r'^(data|filterZone.+|limitK.+|shift\d+|stretchDemand.+|mergeGenerators|\d+ clusters)$')
+
+
+def _dataset_name(case_study_directory: str) -> str:
+    """Dataset name from a `case_study_directory`, ignoring preprocessing subfolders.
+
+    e.g. 'data/RTS-GMLC/7 clusters/' -> 'RTS-GMLC'. Strips trailing
+    filterZone/limitK/shift/stretchDemand/mergeGenerators/'{N} clusters' components
+    (any depth), then returns the basename of what remains.
+    """
+    parts = [p for p in str(case_study_directory).replace('\\', '/').split('/') if p]
+    while parts and _PREPROCESSING_SUBFOLDER.match(parts[-1]):
+        parts.pop()
+    return parts[-1] if parts else ''
+
+
 def _data_label(entries: list[dict]) -> str:
-    """Dataset name(s) behind *entries*, from their `case_study_directory` basename.
+    """Dataset name(s) behind *entries*, from their `case_study_directory`.
 
     Used as the subplot title for the unperturbed ('base') TM combination — e.g.
-    'RTS-GMLC' when the runs came from data/RTS-GMLC. Multiple distinct datasets
-    are joined with ' / '; falls back to '(base)' when none is recorded.
+    'RTS-GMLC' when the runs came from data/RTS-GMLC (any clustering/preprocessing
+    subfolder is ignored). Multiple distinct datasets are joined with ' / ';
+    falls back to '(base)' when none is recorded.
     """
     names = set()
     for e in entries:
         d = e.get('case_study_directory')
         if d:
-            names.add(str(d).replace('\\', '/').rstrip('/').rsplit('/', 1)[-1])
+            name = _dataset_name(d)
+            if name:
+                names.add(name)
     return ' / '.join(sorted(names)) if names else '(base)'
 
 
@@ -759,7 +784,7 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
          "Work units — Operational runs", "Work units",
          'workunits_operational_abs', logy=args.logscale)
     emit(build_runtime_relative_boxes(operational_entries, edges),
-         "Work units (% of Truth) — Operational runs", "Work units [% of Truth]",
+         "Work units (% of Truth) — Operational runs", "Work units [% of Reference]",
          'workunits_operational_rel', logy=args.logscale)
     emit(build_deviation_boxes(operational_entries, 'absolute', edges),
          "vShutdown deviation vs Truth — Operational runs",
@@ -767,7 +792,7 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
          'vshutdown_operational_abs', ref_line=0, symmetric_y=True)
     emit(build_deviation_boxes(operational_entries, 'relative', edges),
          "vShutdown deviation vs Truth — Operational runs",
-         "Relative deviation from Truth [%]",
+         "Deviation of shutdowns relative to the Reference [%]",
          'vshutdown_operational_rel', ref_line=0, symmetric_y=True)
     emit(build_deviation_boxes(operational_entries, 'absolute', edges, magnitude=True),
          "vShutdown |deviation| vs Truth — Operational runs",
@@ -775,7 +800,7 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
          'vshutdown_operational_abs_mag', nonneg_y=True)
     emit(build_deviation_boxes(operational_entries, 'relative', edges, magnitude=True),
          "vShutdown |deviation| vs Truth — Operational runs",
-         "Absolute value of relative deviation from Truth [%]",
+         "Absolute deviation of shutdowns relative to the Reference [%]",
          'vshutdown_operational_rel_mag', nonneg_y=True)
 
     # --- Investment (main) runs ---
@@ -783,7 +808,7 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
          "Work units — Investment runs", "Work units",
          'workunits_investment_abs', logy=args.logscale)
     emit(build_runtime_relative_boxes(main_entries, edges),
-         "Work units (% of Truth) — Investment runs", "Work units [% of Truth]",
+         "Work units (% of Truth) — Investment runs", "Work units [% of Reference]",
          'workunits_investment_rel', logy=args.logscale)
     emit(build_deviation_boxes(main_entries, 'absolute', edges),
          "vShutdown deviation vs Truth — Investment runs",
@@ -805,7 +830,7 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
     # --- Invest-regret (investment runs): vGenInvest fixed from the main run, vCommit free ---
     emit(build_regret_boxes(main_entries, invest_regret_obj, 'absolute', edges),
          "Invest-regret vs Truth — Investment runs",
-         "Absolute invest-regret over Truth objective",
+         "Absolute invest-regret [million EUR]",
          'invest_regret_abs', ref_line=0, tight_y=True,
          gap_fn=lambda eds: invest_regret_gap_band(main_entries, invest_regret_obj, 'absolute', eds))
     emit(build_regret_boxes(main_entries, invest_regret_obj, 'relative', edges),
