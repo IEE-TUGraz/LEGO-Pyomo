@@ -23,6 +23,15 @@ printer.set_width(300)
 
 EDGE_HANDLING_SORT = {"Truth": 0, "NoEnf": 1, "Cyclic": 2, "Markov": 3, "Markov-Strict": 4}
 
+# Display titles for unit-commitment plots (keys are the normalized edge_handling strings).
+CASE_DISPLAY_TITLES = {
+    "Markov": "Markov Transition",
+    "Markov-Strict": "Markov Transition (Strict)",
+    "NoEnf": "No Enforcement",
+    "Cyclic": "Cyclic Connection",
+    "Truth": "Reference Case",
+}
+
 
 def _parse_metadata_from_filename(basename):
     """Fallback: extract edge_handling and case_study_directory from MK filename.
@@ -650,15 +659,17 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder=None, numb
                      [counter - b for b in range(0, int(df.loc[case, rp, k, g]["pMinDownTime"] - 1)) if counter - b > 0]])
 
             axs2 = axs[i, j].twinx()
-            if i == 0:
-                axs2.set_title(f"{g}\n{case}")
+            display_name = CASE_DISPLAY_TITLES.get(case.strip(), case.strip())
+            if i == 0 and nr_generators > 1:
+                axs2.set_title(f"{g}\n{display_name}")
             else:
-                axs2.set_title(f"{case}")
+                axs2.set_title(display_name)
             axs2.set_ylim(0, 3)
 
             # Grey hatched background when this strategy did not invest in this generator
+            # (skipped when only one unit is available — shading a single column is pointless)
             inv_val = per_case_investment.get((case, g))
-            if inv_val is not None and inv_val <= 0:
+            if nr_generators > 1 and inv_val is not None and inv_val <= 0:
                 x_fill = [min(index) - 0.5, max(index) + 0.5]
                 hatch_kw = dict(color='grey', alpha=0.12, hatch='///', edgecolor='#999999', linewidth=0, zorder=0)
                 axs[i, j].fill_between(x_fill, -1, 1, **hatch_kw)
@@ -666,11 +677,11 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder=None, numb
 
             axs2.bar(index, data_bar_startup.values(), color="green", alpha=0.5,
                      bottom=[list(data_vCommit.values())[-1]] + list(data_vCommit.values())[:-1], width=1,
-                     label="Startup")
+                     label="Start-up")
             axs2.bar(index, data_bar_shutdown.values(), color="red", alpha=0.5, bottom=data_vCommit.values(), width=1,
                      label="Shutd.")
-            axs2.plot(index, data_vCommit.values(), color="gray", alpha=0.5, label="Commit", linewidth=1.5)
-            axs2.set_ylabel("Startup / Shutdown", color="black")
+            axs2.plot(index, data_vCommit.values(), color="black", alpha=0.5, label="Commit", linewidth=1.5)
+            axs2.set_ylabel("Start-up & Shutdown", color="black")
 
             axs2.bar(index, data_bar_min_uptime_height.values(), color="green", alpha=0.2, width=1)
             axs2.bar(index, bottom=data_bar_min_downtime_bottom.values(),
@@ -684,7 +695,7 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder=None, numb
             # Plot demand on second y-axis, add PNS and EPS
             axs[i, j].set_ylim(-1, 1)
             axs[i, j].plot(index, data_demand.values(), color="blue", alpha=0.3, label="Demand")
-            axs[i, j].plot(index, data_vGenP.values(), color="black", alpha=0.3, label="Prod.")
+            axs[i, j].plot(index, data_vGenP.values(), color="black", alpha=0.3, label="Gen.")
 
             axs[i, j].bar(index, data_vPNS.values(), color="orange", alpha=0.3, label="PNS", bottom=data_vGenP.values())
             axs[i, j].bar(index, data_vEPS.values(), color="purple", alpha=0.3, label="EPS", bottom=data_demand.values())
@@ -692,7 +703,7 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder=None, numb
 
             axs[i, j].hlines(y=0, xmin=0, xmax=len(data_bar_shutdown.values()), color="gray", linestyle=(0, (1, 1)),
                              alpha=0.5)
-            axs[i, j].set_ylabel("Generation / Demand", color="black")
+            axs[i, j].set_ylabel("Demand & Generation", color="black")
             axs[i, j].set_yticks([0, 0.5, 1], ["0.0", "0.5", "1.0"])
 
             # Set ticks and vertical lines
@@ -723,6 +734,8 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder=None, numb
 
             axs[i, j].set_xticks(index_positions)
             axs[i, j].set_xticklabels(index_labels)
+            if i == nr_cases - 1:
+                axs[i, j].set_xlabel("Individual time steps (hours 1 to 144)")
             for x in axvline_thick_positions:
                 axs[i, j].axvline(x=x, color="gray", linestyle="--", alpha=0.5)
             for x in axvline_thin_positions:

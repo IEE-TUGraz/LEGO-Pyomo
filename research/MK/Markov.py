@@ -382,9 +382,9 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
 
     tm_title_parts = []
     if shift_tm is not None:
-        tm_title_parts.append(f"shiftTM={shift_tm}")
+        tm_title_parts.append(f"Diagonal shifted to the right by {shift_tm} steps")
     if perturb_tm is not None:
-        tm_title_parts.append(f"perturbTM={perturb_tm}")
+        tm_title_parts.append(f"Perturbed by {perturb_tm}")
     Utilities.plot_transition_matrix(cs.rpTransitionMatrixAbsolute, title=", ".join(tm_title_parts), output=f"MK-{identifier}.png")
 
     if any(cs.dPower_ThermalGen["MinUpTime"] > len(cs.dPower_WeightsK.index)) or any(cs.dPower_ThermalGen["MinDownTime"] > len(cs.dPower_WeightsK.index)):
