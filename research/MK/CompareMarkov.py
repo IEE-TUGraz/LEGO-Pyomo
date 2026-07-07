@@ -134,6 +134,10 @@ EDGE_COLORS = {
     'Markov-Strict': '#2ca02c',  # green
 }
 
+# Pretty x-axis labels for the boxes (the internal edge keys stay as-is for
+# lookups/colors); only entries listed here are relabelled, the rest show verbatim.
+EDGE_LABELS = {'NoEnf': 'No Enf.'}
+
 # Colour of the MIP-gap noise band/line drawn on the invest-regret plots.
 GAP_COLOR = '#ff6666'  # light red
 
@@ -346,14 +350,30 @@ def _tm_sort(tm_key: tuple):
             perturb if perturb is not None else float('-inf'))
 
 
-def _tm_label(shift_tm, perturb_tm) -> str:
+def _tm_label(shift_tm, perturb_tm, base_label: str = '(base)') -> str:
     parts = []
     shift, perturb = _tm_value(shift_tm), _tm_value(perturb_tm)
     if shift is not None:
-        parts.append(f"shiftTM={shift:g}")
+        parts.append(f"Transition Matrix\nshifted by {shift:g}")
     if perturb is not None:
         parts.append(f"perturbTM={perturb:g}")
-    return ', '.join(parts) if parts else '(base)'
+    # The unperturbed ("base") subplot is labelled with the dataset name instead.
+    return ', '.join(parts) if parts else base_label
+
+
+def _data_label(entries: list[dict]) -> str:
+    """Dataset name(s) behind *entries*, from their `case_study_directory` basename.
+
+    Used as the subplot title for the unperturbed ('base') TM combination — e.g.
+    'RTS-GMLC' when the runs came from data/RTS-GMLC. Multiple distinct datasets
+    are joined with ' / '; falls back to '(base)' when none is recorded.
+    """
+    names = set()
+    for e in entries:
+        d = e.get('case_study_directory')
+        if d:
+            names.add(str(d).replace('\\', '/').rstrip('/').rsplit('/', 1)[-1])
+    return ' / '.join(sorted(names)) if names else '(base)'
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +592,8 @@ def make_boxplot_figure(boxes: dict, title: str, ylabel: str,
                         logy: bool = False, ref_line: float | None = None,
                         symmetric_y: bool = False, nonneg_y: bool = False,
                         tight_y: bool = False,
-                        gap_band: tuple[float, float] | None = None):
+                        gap_band: tuple[float, float] | None = None,
+                        data_label: str = '(base)'):
     """Render one figure: a subplot per TM combination, one edge box per subplot.
 
     *edges* selects which strategies to draw (and their left-to-right order).
@@ -593,7 +614,9 @@ def make_boxplot_figure(boxes: dict, title: str, ylabel: str,
     subplot: a filled band at `[lo, hi]` and a mirrored one at `[-hi, -lo]`. When
     `lo == hi` (e.g. the relative invest-regret plot, where the band is in percent)
     it degenerates to a pair of horizontal lines at `±lo` instead of filled bands.
+    *data_label* titles the unperturbed ('base') TM subplot (the dataset name).
 
+    The figure has no overall (sup)title — the per-subplot titles carry context.
     The figure is closed before returning (relevant for --separateClusters,
     which renders many figures in one process).
     """
@@ -634,9 +657,9 @@ def make_boxplot_figure(boxes: dict, title: str, ylabel: str,
                         ha='center', va='top', fontsize=7, color='dimgray')
 
         ax.set_xticks(list(positions.values()))
-        ax.set_xticklabels(edges, fontsize=8)
+        ax.set_xticklabels([EDGE_LABELS.get(e, e) for e in edges], fontsize=8)
         ax.set_xlim(0.5, len(edges) + 0.5)
-        ax.set_title(_tm_label(*tm_key), fontsize=9, fontweight='bold')
+        ax.set_title(_tm_label(*tm_key, base_label=data_label), fontsize=9, fontweight='bold')
         if use_log:
             ax.set_yscale('log')
         if ref_line is not None:
@@ -685,9 +708,9 @@ def make_boxplot_figure(boxes: dict, title: str, ylabel: str,
     axes[0].set_ylabel(ylabel)
 
     # No legend: each subplot's x-axis already labels the boxes and the colors
-    # are consistent across all subplots.
-    fig.suptitle(title, fontweight='bold')
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    # are consistent across all subplots. No figure title either — the subplot
+    # titles (dataset name / TM perturbation) carry the context.
+    fig.tight_layout()
 
     if output:
         fig.savefig(output, dpi=150, bbox_inches='tight')
@@ -705,6 +728,8 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
 
     *fname_suffix* / *title_suffix* tag per-cluster outputs under --separateClusters.
     """
+    # The 'base' (unperturbed TM) subplot is titled with the dataset name.
+    data_label = _data_label(main_entries + operational_entries)
 
     def emit(boxes, title, ylabel, name_key, logy=False, ref_line=None,
              symmetric_y=False, nonneg_y=False, tight_y=False, gap_fn=None):
@@ -719,13 +744,15 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
         make_boxplot_figure(boxes, title, ylabel, os.path.join(out_dir, stem + ext),
                             args.no_show, edges, logy=logy, ref_line=ref_line,
                             symmetric_y=symmetric_y, nonneg_y=nonneg_y, tight_y=tight_y,
-                            gap_band=gap_fn(edges) if gap_fn else None)
+                            gap_band=gap_fn(edges) if gap_fn else None,
+                            data_label=data_label)
         sub_edges = [e for e in edges if e != 'NoEnf']
         make_boxplot_figure(boxes, f"{title} (excl. NoEnf)", ylabel,
                             os.path.join(out_dir, f"{stem}_noNoEnf{ext}"),
                             args.no_show, sub_edges, logy=logy, ref_line=ref_line,
                             symmetric_y=symmetric_y, nonneg_y=nonneg_y, tight_y=tight_y,
-                            gap_band=gap_fn(sub_edges) if gap_fn else None)
+                            gap_band=gap_fn(sub_edges) if gap_fn else None,
+                            data_label=data_label)
 
     # --- Operational runs ---
     emit(build_runtime_boxes(operational_entries, edges),
