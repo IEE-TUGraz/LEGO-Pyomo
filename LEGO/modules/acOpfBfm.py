@@ -169,9 +169,12 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def eActivePowerBalance_rule(m, rp, k, i):
         return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])
                 - (m.pDemandP[rp, k, i])
+                + m.vDSM_Reduction[rp, k, i] #Netzbalance um DSM Reduction erweitert
                 + m.vPNS[rp, k, i]
                 - m.vEPS[rp, k, i]
                 )
+
+
 
     def eReactivePowerBalance_rule(m, rp, k, i):
         return (sum(m.vGenQ[rp, k, g] for g in m.gi_node[i])
