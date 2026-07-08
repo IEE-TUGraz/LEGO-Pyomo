@@ -800,7 +800,7 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
          'vshutdown_operational_abs_mag', nonneg_y=True)
     emit(build_deviation_boxes(operational_entries, 'relative', edges, magnitude=True),
          "vShutdown |deviation| vs Truth — Operational runs",
-         "Absolute deviation of shutdowns relative to the Reference [%]",
+         "Unsigned relative deviation of shutdowns [%]",
          'vshutdown_operational_rel_mag', nonneg_y=True)
 
     # --- Investment (main) runs ---
@@ -830,7 +830,7 @@ def render_plots(main_entries: list[dict], operational_entries: list[dict],
     # --- Invest-regret (investment runs): vGenInvest fixed from the main run, vCommit free ---
     emit(build_regret_boxes(main_entries, invest_regret_obj, 'absolute', edges),
          "Invest-regret vs Truth — Investment runs",
-         "Absolute invest-regret [million EUR]",
+         "Investment regret [million EUR]",
          'invest_regret_abs', ref_line=0, tight_y=True,
          gap_fn=lambda eds: invest_regret_gap_band(main_entries, invest_regret_obj, 'absolute', eds))
     emit(build_regret_boxes(main_entries, invest_regret_obj, 'relative', edges),
