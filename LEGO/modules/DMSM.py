@@ -48,6 +48,7 @@
 #     model.objective.expr += first_stage_objective + second_stage_objective
 #     return first_stage_objective
 
+
 import pandas as pd
 import pyomo.environ as pyo
 
@@ -62,25 +63,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     first_stage_variables = []
     second_stage_variables = []
 
-        
-# Dynamische Regel für die Obergrenze, Eigene base_load Variable damit Wert übernommen werden kann
-    def dsm_upper_bound_rule(model, rp, k, i):
-        base_load = 0.0
-        
-        # Direkte Prüfung, ob die Kombination (Szenario, Zeitschritt, Knoten) existiert
-        if (rp, k, i) in model.pDemandP:
-            base_load = pyo.value(model.pDemandP[rp, k, i])
-                    
-        return (0.0, 0.50 * base_load)  # Reduktion Grenze je Knoten
-              
-                    
-        
+    # Definition der DSM-Variable ohne feste Bounds beim Erstellen
+    model.vDSM_Reduction = pyo.Var(model.rp, model.constraintsActiveK, model.i)
     
-    # In pyo für Optimierungssolver, maximale reduktion um dsm_upper_bound_rule
-    # Definition der DSM-Variable (Second-Stage: Reagiert flexibel je nach Szenario)
-    # Dem Framework mitteilen, dass DSM eine betriebliche Reaktion (Second Stage) ist
-
-    model.vDSM_Reduction = pyo.Var(model.rp, model.constraintsActiveK, model.i, bounds=dsm_upper_bound_rule)
     second_stage_variables.append(model.vDSM_Reduction)
     return first_stage_variables, second_stage_variables
 
@@ -89,24 +74,53 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     
     # 1. Variablen definieren für den Datenbank-Export
-    model.eNetPowerDemandKnoten = pyo.Var(model.rp, model.constraintsActiveK, model.i)
-    model.eTotalNetDemand = pyo.Var(model.rp, model.constraintsActiveK)
+    model.vNetPowerDemandKnoten = pyo.Var(model.rp, model.constraintsActiveK, model.i)
+    model.vTotalNetDemand = pyo.Var(model.rp, model.constraintsActiveK)
 
-    # 2. Gleichung: Netto-Last pro Knoten = Last - DSM
+    # 2. Gleichung: Netto-Last pro Knoten = Echte Excel-Last (pDemandP) - DSM
     def net_power_demand_eq(m, rp, k, i):
-        return m.eNetPowerDemandKnoten[rp, k, i] == m.pDemandP[rp, k, i] - m.vDSM_Reduction[rp, k, i]
+        if (rp, k, i) in m.pDemandP:
+            return m.vNetPowerDemandKnoten[rp, k, i] == m.pDemandP[rp, k, i] - m.vDSM_Reduction[rp, k, i]
+        return m.vNetPowerDemandKnoten[rp, k, i] == 0.0 - m.vDSM_Reduction[rp, k, i]
     
     model.cNetPowerDemandKnoten = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, rule=net_power_demand_eq)
 
     # 3. Gleichung: Gesamtlast = Summe aller Knotenlasten
     def total_net_demand_eq(m, rp, k):
-        return m.eTotalNetDemand[rp, k] == sum(m.eNetPowerDemandKnoten[rp, k, i] for i in m.i)
+        return m.vTotalNetDemand[rp, k] == sum(m.vNetPowerDemandKnoten[rp, k, i] for i in m.i)
     
     model.cTotalNetDemand = pyo.Constraint(model.rp, model.constraintsActiveK, rule=total_net_demand_eq)
+    
+# 4. HÄRTERE DSM-SCHRANKE ALS CONSTRAINT (Nutzt jetzt auch sicher pDemandP)
+    def dsm_force_reduction_eq(m, rp, k, i):
+        base_load = 0.0
+        if (rp, k, i) in m.pDemandP:
+            base_load = pyo.value(m.pDemandP[rp, k, i])
+        
+        # Bereich vorgeben: von Untergrenze bis Obergrenze
+        lower_bound = 0.00 * base_load  # Mindestens 0% (keine Erhöhung)
+        upper_bound = 0.20 * base_load  # Maximal 20% Reduktion
+        
+        return lower_bound <= m.vDSM_Reduction[rp, k, i] <= upper_bound
+
+    model.cDsmBoundsEnforced = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, rule=dsm_force_reduction_eq)
+
+# Zur Kontrolle ob DSM eine gesamt Reduktion beeinflusst
+
+    # 1. Echte Variable für den Datenbank-Export definieren
+    model.vErgebnisDC_BalanceP = pyo.Var(model.rp, model.constraintsActiveK, model.i)
+
+    # 2. Gleichung: Die Variable spiegelt exakt den aktuellen Wert der Expression wider
+    def export_balance_expr_eq(m, rp, k, i):
+        # Wir weisen der Variable den mathematischen Ausdruck (Expression) direkt zu
+        return m.vErgebnisDC_BalanceP[rp, k, i] == m.eDC_BalanceP_expr[rp, k, i]
+
+    # WICHTIG: Damit Gurobi weiß, dass diese Variable nur ein "Spiegel" ist,
+    # muss sie genau für die gleichen Indizes wie die Expression gebaut werden.
+    model.cExportBalanceExpr = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, rule=export_balance_expr_eq)
+
 
     # Zielfunktions-Rückgabe (Erwartet vom LEGO-Framework)
     first_stage_objective = 0.0
     model.objective.expr += first_stage_objective
     return first_stage_objective
-
-#pDemandP wird derzeit noch nicht reduziert
