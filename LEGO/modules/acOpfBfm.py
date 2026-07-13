@@ -167,12 +167,20 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     # Define active- and reactive power balance expressions
     def eActivePowerBalance_rule(m, rp, k, i):
-        return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])
-                - (m.pDemandP[rp, k, i])
-                + m.vDSM_Reduction[rp, k, i] #Netzbalance um DSM Reduction erweitert
-                + m.vPNS[rp, k, i]
-                - m.vEPS[rp, k, i]
-                )
+        if cs.dPower_Parameters["pEnableDSM"]:
+            return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])
+                    - (m.pDemandP[rp, k, i])
+                    + m.vDSM_Reduction[rp, k, i]  #Power Reduction at node through DSM if its active
+                    + m.vPNS[rp, k, i]
+                    - m.vEPS[rp, k, i]
+                    )
+        
+        else:
+            return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])
+                    - (m.pDemandP[rp, k, i])
+                    + m.vPNS[rp, k, i]
+                    - m.vEPS[rp, k, i]
+                    )
 
 
 

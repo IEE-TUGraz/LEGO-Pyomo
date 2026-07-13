@@ -64,8 +64,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     second_stage_variables = []
 
     # Definition der DSM-Variable ohne feste Bounds beim Erstellen
-    model.vDSM_Reduction = pyo.Var(model.rp, model.constraintsActiveK, model.i)
-    
+    model.vDSM_Reduction = pyo.Var(model.rp, model.constraintsActiveK, model.i) 
     second_stage_variables.append(model.vDSM_Reduction)
     return first_stage_variables, second_stage_variables
 
@@ -91,19 +90,17 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     
     model.cTotalNetDemand = pyo.Constraint(model.rp, model.constraintsActiveK, rule=total_net_demand_eq)
     
-# 4. HÄRTERE DSM-SCHRANKE ALS CONSTRAINT (Nutzt jetzt auch sicher pDemandP)
-    def dsm_force_reduction_eq(m, rp, k, i):
-        base_load = 0.0
-        if (rp, k, i) in m.pDemandP:
-            base_load = pyo.value(m.pDemandP[rp, k, i])
-        
-        # Bereich vorgeben: von Untergrenze bis Obergrenze
-        lower_bound = 0.00 * base_load  # Mindestens 0% (keine Erhöhung)
-        upper_bound = 0.20 * base_load  # Maximal 20% Reduktion
-        
-        return lower_bound <= m.vDSM_Reduction[rp, k, i] <= upper_bound
-
-    model.cDsmBoundsEnforced = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, rule=dsm_force_reduction_eq)
+# DSM Schranken
+    for rp in model.rp:
+        for k in model.constraintsActiveK:
+            for i in model.i:
+                base_load = 0.0
+            if (rp, k, i) in model.pDemandP:
+                base_load = pyo.value(model.pDemandP[rp, k, i])
+            
+            # Hier weisen wir die Schranken direkt der existierenden Variable zu
+            model.vDSM_Reduction[rp, k, i].setlb(0.00 * base_load)  # Lower Bound
+            model.vDSM_Reduction[rp, k, i].setub(0.20 * base_load)  # Upper Bound
 
 # Zur Kontrolle ob DSM eine gesamt Reduktion beeinflusst
 
@@ -120,7 +117,20 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     model.cExportBalanceExpr = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, rule=export_balance_expr_eq)
 
 
-    # Zielfunktions-Rückgabe (Erwartet vom LEGO-Framework)
+    # Zielfunktions-Rückgabe + Kosten für DSM
     first_stage_objective = 0.0
-    model.objective.expr += first_stage_objective
+    second_stage_objective = sum(model.pWeight_rp[rp] *
+                                 sum(model.pWeight_k[k] *
+                                     sum(model.vDSM_Reduction[rp, k, i]     
+                                         for i in model.i)                   
+                                     for k in model.constraintsActiveK)
+                                 for rp in model.rp) * 0.01        #  DSM-Kostensatz, hardgecodete kosten
+
+    model.objective.expr += first_stage_objective + second_stage_objective
     return first_stage_objective
+
+#doc mit übernehmen
+#Check im AC eine If gleichung machen falls DSM ausgeschaltet ist sucht er die variable DSM reduction, eine If wenn das aktiv ist dann das mit sonst ohne, wie bei vres Zeile 69 pEnebleDSM
+#Check Kosten übergeben damit vernünftigere Werte, minimal DGA Zeile 73 statt r für nodes i
+#Datein einlesen DGA 17, 3 untermenüs immer kobieren und namen und indices ändern statt g hab ich i
+#cs = cs.filter_timestamps kürzt Zeitabschnitte zusammen, deswegen in casestudy 22 meinen excel namen dazugeben
