@@ -65,7 +65,7 @@ parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to fol
 parser.add_argument("modelType", default=ModelType.DETERMINISTIC, type=lambda s: ModelType[s], choices=list(ModelType), nargs="?", help="ModelType of first model")
 args = parser.parse_args()
 
-# Load case study
+# Load case study restriction of calculations
 printer.information(f"Loading case study from '{args.caseStudyDirectory}'\n")
 start_time = time.time()
 cs = CaseStudy(args.caseStudyDirectory)
@@ -171,5 +171,5 @@ else:
 printer.information(f"Finished in {time.time() - start_time:.2f} seconds")
 
 SQLiteWriter.model_to_sqlite(model, "model.sqlite")
-#ExcelWriter.model_to_excel(model, "model.xlsx")
+ExcelWriter.model_to_excel(model, "model.xlsx")
 model.write("model.mps", io_options={'labeler': NameLabeler()})

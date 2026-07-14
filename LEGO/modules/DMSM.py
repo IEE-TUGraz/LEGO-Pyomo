@@ -62,33 +62,39 @@ printer = Printer.getInstance()
 def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> (list[pyo.Var], list[pyo.Var]):
     first_stage_variables = []
     second_stage_variables = []
+    
+    #Einlesen des DSM vom Excel
+   
+    model.pDSM_pos = pyo.Param(model.rp, model.constraintsActiveK, model.i, initialize=cs.dPower_DSM_pos['value'], default=0.0, doc="Maximum positive DSM reduction potential per node and timestep")
+
 
     # Definition der DSM-Variable ohne feste Bounds beim Erstellen
     model.vDSM_Reduction = pyo.Var(model.rp, model.constraintsActiveK, model.i) 
     second_stage_variables.append(model.vDSM_Reduction)
     return first_stage_variables, second_stage_variables
 
+    
 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     
     # 1. Variablen definieren für den Datenbank-Export
-    model.vNetPowerDemandKnoten = pyo.Var(model.rp, model.constraintsActiveK, model.i)
-    model.vTotalNetDemand = pyo.Var(model.rp, model.constraintsActiveK)
+    #model.vNetPowerDemandKnoten = pyo.Var(model.rp, model.constraintsActiveK, model.i)
+    #model.vTotalNetDemand = pyo.Var(model.rp, model.constraintsActiveK)
 
-    # 2. Gleichung: Netto-Last pro Knoten = Echte Excel-Last (pDemandP) - DSM
-    def net_power_demand_eq(m, rp, k, i):
-        if (rp, k, i) in m.pDemandP:
-            return m.vNetPowerDemandKnoten[rp, k, i] == m.pDemandP[rp, k, i] - m.vDSM_Reduction[rp, k, i]
-        return m.vNetPowerDemandKnoten[rp, k, i] == 0.0 - m.vDSM_Reduction[rp, k, i]
+    # # 2. Gleichung: Netto-Last pro Knoten = Echte Excel-Last (pDemandP) - DSM
+    # def net_power_demand_eq(m, rp, k, i):
+    #     if (rp, k, i) in m.pDemandP:
+    #         return m.vNetPowerDemandKnoten[rp, k, i] == m.pDemandP[rp, k, i] - m.vDSM_Reduction[rp, k, i]
+    #     return m.vNetPowerDemandKnoten[rp, k, i] == 0.0 - m.vDSM_Reduction[rp, k, i]
     
-    model.cNetPowerDemandKnoten = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, rule=net_power_demand_eq)
+    # model.cNetPowerDemandKnoten = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, rule=net_power_demand_eq)
 
-    # 3. Gleichung: Gesamtlast = Summe aller Knotenlasten
-    def total_net_demand_eq(m, rp, k):
-        return m.vTotalNetDemand[rp, k] == sum(m.vNetPowerDemandKnoten[rp, k, i] for i in m.i)
+    # # 3. Gleichung: Gesamtlast = Summe aller Knotenlasten
+    # def total_net_demand_eq(m, rp, k):
+    #     return m.vTotalNetDemand[rp, k] == sum(m.vNetPowerDemandKnoten[rp, k, i] for i in m.i)
     
-    model.cTotalNetDemand = pyo.Constraint(model.rp, model.constraintsActiveK, rule=total_net_demand_eq)
+    # model.cTotalNetDemand = pyo.Constraint(model.rp, model.constraintsActiveK, rule=total_net_demand_eq)
     
 # DSM Schranken
     for rp in model.rp:
@@ -104,17 +110,27 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
 # Zur Kontrolle ob DSM eine gesamt Reduktion beeinflusst
 
-    # 1. Echte Variable für den Datenbank-Export definieren
-    model.vErgebnisDC_BalanceP = pyo.Var(model.rp, model.constraintsActiveK, model.i)
+    # # 1. Echte Variable für den Datenbank-Export definieren
+    # model.vErgebnisDC_BalanceP = pyo.Var(model.rp, model.constraintsActiveK, model.i)
 
-    # 2. Gleichung: Die Variable spiegelt exakt den aktuellen Wert der Expression wider
-    def export_balance_expr_eq(m, rp, k, i):
-        # Wir weisen der Variable den mathematischen Ausdruck (Expression) direkt zu
-        return m.vErgebnisDC_BalanceP[rp, k, i] == m.eDC_BalanceP_expr[rp, k, i]
+    # # 2. Gleichung: Die Variable spiegelt exakt den aktuellen Wert der Expression wider
+    # def export_balance_expr_eq(m, rp, k, i):
+    #     # Wir weisen der Variable den mathematischen Ausdruck (Expression) direkt zu
+    #     return m.vErgebnisDC_BalanceP[rp, k, i] == m.eDC_BalanceP_expr[rp, k, i]
 
     # WICHTIG: Damit Gurobi weiß, dass diese Variable nur ein "Spiegel" ist,
     # muss sie genau für die gleichen Indizes wie die Expression gebaut werden.
-    model.cExportBalanceExpr = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, rule=export_balance_expr_eq)
+   # model.cExportBalanceExpr = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, rule=export_balance_expr_eq)
+
+    # #Zur Ausgabe von DSM_pos im SQL
+    # def eSaveDSMPotentialRule(model, rp, k, i):
+    #     return model.vDSM_pos_max_value[rp, k, i] == model.pDSM_pos[rp, k, i]
+    
+    # model.eSaveDSMPotential = pyo.Constraint(
+    #     model.rp, model.constraintsActiveK, model.i, 
+    #     doc="Fixing helper variable to parameter value for SQL export", 
+    #     rule=eSaveDSMPotentialRule
+    # )
 
 
     # Zielfunktions-Rückgabe + Kosten für DSM
@@ -132,5 +148,5 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 #doc mit übernehmen
 #Check im AC eine If gleichung machen falls DSM ausgeschaltet ist sucht er die variable DSM reduction, eine If wenn das aktiv ist dann das mit sonst ohne, wie bei vres Zeile 69 pEnebleDSM
 #Check Kosten übergeben damit vernünftigere Werte, minimal DGA Zeile 73 statt r für nodes i
-#Datein einlesen DGA 17, 3 untermenüs immer kobieren und namen und indices ändern statt g hab ich i
+#Datein einlesen DGA 17, 3 untermenüs immer kobieren und namen und indices ändern statt g hab ich i, auch bei Liste in CaseStudy hinzufügen
 #cs = cs.filter_timestamps kürzt Zeitabschnitte zusammen, deswegen in casestudy 22 meinen excel namen dazugeben
