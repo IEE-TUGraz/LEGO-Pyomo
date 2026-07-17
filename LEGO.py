@@ -4,17 +4,20 @@ import os
 import time
 
 import pyomo.environ as pyo
-from InOutModule import SQLiteWriter
-from InOutModule.ExcelWriter import ExcelWriter
-from InOutModule.CaseStudy import CaseStudy
-from InOutModule.printer import Printer
 from pyomo.core import NameLabeler
 from pyomo.util.infeasible import log_infeasible_constraints
 from rich_argparse import RichHelpFormatter
 
+from InOutModule import SQLiteWriter
+from InOutModule.CaseStudy import CaseStudy
+from InOutModule.ExcelWriter import ExcelWriter
+from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO, ModelType
 
+LOGFILE = "LEGO.log"
+
 printer = Printer.getInstance()
+printer.set_logfile(LOGFILE)
 
 # Set up logging so that infeasible constraints are logged by pyomo
 logger = logging.getLogger("pyomo")
