@@ -69,19 +69,24 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
     speed_of_sound = 400 # speed of sound in gas in m/s
 
-    tonns / hour and bar
+    gas_mass_unit = "kg"  # "kg", "t"
+    gas_time_unit = "s"  # "s", "h"
+    gas_pressure_unit = "Pa^2"  # "Pa^2", "bar^2", "MPa^2"
 
-    mass: t, kg
-    time: s, h
-    pressure: Pa^2=1, bar^2 = 10^10, MPa^2 = 10^6
+    mass_factor = {"kg": 1, "t": 1000}
+    time_factor = {"s": 1, "h": 3600}
+    pressure_factor = {"Pa^2": 1, "bar^2": 10 ** 10, "MPa^2": 10 ** 12}
 
-    neu = 1000**2 / (3600**2 * 10 ** 10)
+    gas_unit_scale = (
+            mass_factor[gas_mass_unit] ** 2
+            / (time_factor[gas_time_unit] ** 2 * pressure_factor[gas_pressure_unit])
+    )
 
-    cs.dGas_Network['pPipeCharacteristics'] =  neu * (16 * speed_of_sound ** 2 * cs.dGas_Network['pLength'] * (2 * np.log10(cs.dGas_Network['pDiam'] / cs.dGas_Network['pRough']) + 1.138) ** -2 )/ (math.pi ** 2 * cs.dGas_Network['pDiam'] ** 5)
+    cs.dGas_Network['pPipeCharacteristics'] =  gas_unit_scale * (16 * speed_of_sound ** 2 * cs.dGas_Network['pLength'] * (2 * np.log10(cs.dGas_Network['pDiam'] / cs.dGas_Network['pRough']) + 1.138) ** -2 )/ (math.pi ** 2 * cs.dGas_Network['pDiam'] ** 5)
     model.pPipe = pyo.Param(model.pipee, initialize=lambda mdl, m, n, l, d: cs.dGas_Network.loc[(m, n, l), 'pPipeCharacteristics'] , doc='Condensed parameters of pipeline pipea')
 
     cs.dGas_CandDiam['pCandidateCharacteristicsQuotient'] = ((2 * np.log10(cs.dGas_CandDiam['pDiam'] / cs.dGas_CandDiam['pRough']) + 1.138) ** -2) / (math.pi ** 2 * cs.dGas_CandDiam['pDiam'] ** 5)
-    LEGO.addToParameter(model, 'pPipe', {(m, n, l, d): (0.0 if d == 'cand_d0' else (16 * speed_of_sound ** 2 * cs.dGas_Network.loc[(m, n, l), 'pLength'] * cs.dGas_CandDiam.loc[d, 'pCandidateCharacteristicsQuotient']))  for m, n, l, d in model.pipec}, indices=model.pipec)
+    LEGO.addToParameter(model, 'pPipe', {(m, n, l, d): (0.0 if d == 'cand_d0' else (gas_unit_scale * 16 * speed_of_sound ** 2 * cs.dGas_Network.loc[(m, n, l), 'pLength'] * cs.dGas_CandDiam.loc[d, 'pCandidateCharacteristicsQuotient']))  for m, n, l, d in model.pipec}, indices=model.pipec)
 
     model.pFlowTP = pyo.Param(model.pipea, initialize=lambda model, m, n, l, d: (0.0 if d == 'cand_d0' else ( sqrt((model.pMaxPress[m] ** 2 - model.pMinPress[m] ** 2) / model.pPipe[m, n, l ,d]))), doc='Maximum flow on pipea under transport problem')
 
