@@ -11,7 +11,7 @@ from pyomo.core import TransformationFactory
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO.LEGOUtilities import reset_execution_safety_dict
-from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits, thermalGen, vres
+from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits, thermalGen, vres, gas
 
 printer = Printer.getInstance()
 
@@ -328,6 +328,8 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
         model.first_stage_varlist += vres.add_element_definitions_and_bounds(model, cs)
     if cs.dPower_Parameters["pEnableStorage"]:
         model.first_stage_varlist += storage.add_element_definitions_and_bounds(model, cs)
+    if cs.dGas_Parameters["pEnableGas"]:
+        model.first_stage_varlist += gas.add_element_definitions_and_bounds(model, cs)
 
     if cs.dPower_Parameters["p2ndResUp"] > 0.0 or cs.dPower_Parameters["p2ndResDW"] > 0.0:
         model.first_stage_varlist += secondReserve.add_element_definitions_and_bounds(model, cs)
@@ -348,6 +350,8 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
         model.first_stage_objective += vres.add_constraints(model, cs)
     if cs.dPower_Parameters["pEnableStorage"]:
         model.first_stage_objective += storage.add_constraints(model, cs)
+    if cs.dGas_Parameters["pEnableGas"]:
+        model.first_stage_objective += gas.add_constraints(model, cs)
 
     if cs.dPower_Parameters["p2ndResUp"] > 0.0 or cs.dPower_Parameters["p2ndResDW"] > 0.0:
         model.first_stage_objective += secondReserve.add_constraints(model, cs)
@@ -402,7 +406,9 @@ def addToParameter(model: pyo.ConcreteModel, parameter_name: str, values: iter, 
         if not doc:
             doc = model.component(parameter_name).doc
         if not indices:
-            indices = [model.component(parameter_name).index_set()]
+            indices = model.component(parameter_name).index_set()
+        else:
+            indices = model.component(parameter_name).index_set() | indices
         if not overwrite:  # Check if any value would be overwritten
             for k, v in values.items():
                 if k in current_values.keys():
@@ -410,4 +416,4 @@ def addToParameter(model: pyo.ConcreteModel, parameter_name: str, values: iter, 
 
         model.del_component(parameter_name)  # Delete parameter
         current_values.update(values)  # Update values with new values
-        model.add_component(parameter_name, pyo.Param(*indices, initialize=current_values, doc=doc, domain=pyo.Reals))  # Add parameter as new parameter
+        model.add_component(parameter_name, pyo.Param(indices, initialize=current_values, doc=doc, domain=pyo.Reals))  # Add parameter as new parameter
