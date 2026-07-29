@@ -1,5 +1,6 @@
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -34,7 +35,7 @@ def _q(s):
     return f'"{s}"' if (" " in s or "\t" in s) else s
 
 
-def build_jobs(scenario_file, case_study_directory, model_type, lego_script, python_exe, own_window):
+def build_jobs(scenario_file, case_study_directory, model_type, lego_script, python_exe, own_window, mpi_ranks=1):
     """Read the scenario Excel, write per-scenario params JSON files, and
     return (output_root, list_of_jobs) where each job is a dict describing
     one scenario invocation."""
@@ -78,6 +79,11 @@ def build_jobs(scenario_file, case_study_directory, model_type, lego_script, pyt
             "--output-dir", str(scenario_output_dir),
             "--scenario-name", scenario_name,
         ]
+        # For decomposition methods (e.g. BENDERS) launch each scenario under MPI so
+        # mpi-sppy distributes the sub-problem build+solve across ranks. Useful ranks are
+        # capped by the number of stochastic scenarios in the case study; extra ranks idle.
+        if mpi_ranks > 1:
+            cmd = ["mpiexec", "-n", str(mpi_ranks)] + cmd
         jobs.append({"name": scenario_name, "cmd": cmd, "log": scenario_output_dir / "run.log", "sentinel": scenario_output_dir / ".done", "bat": scenario_output_dir / "_run_window.bat", "own_window": own_window})
         printer.information(f"Prepared scenario {idx + 1}/{len(df_scenarios)}: {scenario_name}")
 
@@ -153,7 +159,19 @@ if __name__ == "__main__":
                         help="Open a separate cmd window per scenario to watch progress "
                              "live (Windows only). Without this, output goes to "
                              "results/<scenario>/run.log.")
+    parser.add_argument("--mpi-ranks", type=int, default=1,
+                        help="Launch each scenario under 'mpiexec -n N' so decomposition "
+                             "methods (BENDERS) parallelise sub-problem build+solve across N "
+                             "ranks (default: 1 = no MPI). Don't exceed the number of "
+                             "stochastic scenarios in the case study (extra ranks idle). "
+                             "Outer --workers is divided by N to avoid CPU oversubscription.")
     args = parser.parse_args()
+
+    mpi_ranks = max(1, args.mpi_ranks)
+    if mpi_ranks > 1 and shutil.which("mpiexec") is None:
+        printer.error("--mpi-ranks > 1 requested but 'mpiexec' is not on PATH. "
+                      "Install/enable Microsoft MPI (or run without --mpi-ranks).")
+        sys.exit(2)
 
     output_root, jobs = build_jobs(
         scenario_file=args.scenarioFile,
@@ -162,6 +180,7 @@ if __name__ == "__main__":
         lego_script=args.lego_script,
         python_exe=args.python,
         own_window=args.windows,
+        mpi_ranks=mpi_ranks,
     )
 
     if not jobs:
@@ -188,8 +207,16 @@ if __name__ == "__main__":
     printer.information(f"Using interpreter: {py}")
     printer.information(f"Using worker script: {args.lego_script}")
 
-    # Never spawn more workers than there are scenarios
-    n_workers = max(1, min(args.workers, len(jobs)))
+    # Never spawn more workers than there are scenarios. When each job itself uses MPI
+    # (mpi_ranks ranks), divide the outer worker count so total processes ~= --workers
+    # and we don't oversubscribe the CPUs.
+    n_workers = max(1, min(args.workers // mpi_ranks, len(jobs)))
+    if mpi_ranks > 1:
+        printer.information(
+            f"MPI enabled: each scenario runs under 'mpiexec -n {mpi_ranks}'. "
+            f"Outer parallelism reduced to {n_workers} concurrent scenario(s) "
+            f"(~{n_workers * mpi_ranks} processes total)."
+        )
     printer.information(
         f"Running {len(jobs)} scenario(s) with up to {n_workers} in parallel"
     )

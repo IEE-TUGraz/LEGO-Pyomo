@@ -78,12 +78,22 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.availabeBESS = pyo.Var(model.rp, model.k, model.tau, bounds=(0, None), doc="Available BESS capacity during outage window")
     model.availableBackupGen = pyo.Var(model.rp, model.k, model.tau, bounds=(0, None), doc="Available backup generator capacity during outage window")
 
+    # Slack for the power self-sufficiency constraint: power-not-supplied at outage window anchor k.
+    # Keeps the model feasible in the expost (fixed-investment) re-solve where the fixed capacity
+    # may be unable to cover demand + P2H load over every window. Penalized in the objective so it
+    # stays at 0 whenever the constraint is otherwise feasible. Indexed over k (not tau), so one
+    # slack per anchor hour is shared across all outage durations.
+    model.vOutage_PNS = pyo.Var(
+        model.rp, model.k, model.node_subset, bounds=(0, None),
+        doc="Slack: power not supplied at an outage self-sufficiency window anchor [MWh]"
+    )
+
     # Tank investment variable: only meaningful when an outage is modelled
 
     model.DieselStorageTankInvest = pyo.Var(model.tanks, bounds=(0, None), doc="Investment in fuel storage capacity for backup generator in MWh")
     first_stage_variables += [model.DieselStorageTankInvest]
 
-    second_stage_variables += [model.vOutage_P2H, model.availabeBESS, model.availableBackupGen]
+    second_stage_variables += [model.vOutage_P2H, model.availabeBESS, model.availableBackupGen, model.vOutage_PNS]
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
     return first_stage_variables, second_stage_variables
 
@@ -135,7 +145,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         lhs_demand = sum(m.pHeatDemandPerTechnology[rp, kp, hn, dt, htec] for kp in set_t)
 
         # RHS: storage level + max thermal headroom
-        rhs_buffer = m.vHeatStorageLevel[rp, k, hn, dt, htec] + (m.Building_ThermalMass[hn] * m.Building_MaxTempOutage)
+        rhs_buffer = - m.vHeatStorageLevel[rp, k, hn, dt, htec] + (m.Building_ThermalMass[hn] * m.Building_MaxTempOutage)
 
         return lhs_p2h - lhs_demand <= rhs_buffer
 
@@ -194,6 +204,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                     for kp in set_t for pv in pvset)
                 + m.availabeBESS[rp, k, tau]
                 + m.availableBackupGen[rp, k, tau]
+                + m.vOutage_PNS[rp, k, node_subset]  # slack: power not supplied (keeps expost feasible)
         )
 
         return lhs <= rhs
@@ -254,7 +265,14 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         first_stage_objective = sum(model.DieselStorageTankInvest[tank] * model.DiselStorageTankCost for tank in model.tanks)
     else:
         first_stage_objective = 0
-    second_stage_objective = 0
+
+    # Penalize the outage power-not-supplied slack so it only activates when the self-sufficiency
+    # constraint is otherwise infeasible (e.g. expost re-solve with fixed investment). Reuses the
+    # power module's ENS cost and weights by the representative-period weight for consistency.
+    second_stage_objective = sum(
+        model.pWeight_rp[rp] * model.vOutage_PNS[rp, k, node_subset] * model.pENSCost
+        for rp in model.rp for k in model.k for node_subset in model.node_subset
+    )
 
     # Adjust objective and return first_stage_objective expression
     model.objective.expr += first_stage_objective + second_stage_objective

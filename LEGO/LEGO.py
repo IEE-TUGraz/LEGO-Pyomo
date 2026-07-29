@@ -1,6 +1,7 @@
+import contextlib
 import copy
 import enum
-import os
+import logging
 import time
 import typing
 
@@ -14,6 +15,39 @@ from LEGO.LEGOUtilities import reset_execution_safety_dict, set_range_non_cyclic
 from LEGO.modules import storage, power, secondReserve, importExport, softLineLoadLimits, thermalGen, vres, selfSufficiency, heat
 
 printer = Printer.getInstance()
+
+
+def mpi_rank() -> int:
+    """This process's MPI rank, or 0 when not launched under mpiexec.
+
+    mpi-sppy already initialises mpi4py; a plain `python` process has a world
+    communicator of size 1 (rank 0), so every rank-gated branch runs normally in
+    the non-MPI case. Under `mpiexec -n K` the decomposition (subproblem build +
+    solve) is split across ranks, but only rank 0 holds the master solution."""
+    try:
+        from mpi4py import MPI
+        return MPI.COMM_WORLD.Get_rank()
+    except Exception:
+        return 0
+
+
+@contextlib.contextmanager
+def _suppress_relaxed_integer_warning():
+    """Silence Pyomo's harmless 'Implicitly replacing ... _relaxed_integer_vars'
+    warning emitted when mpi-sppy's L-shaped relaxes subproblems that _build_model
+    (with pEnableRMIP) already relaxed. Filters ONLY that exact message on the
+    'pyomo.core' logger, so genuine 'implicitly replacing' warnings for other
+    components still surface."""
+    pyomo_logger = logging.getLogger("pyomo.core")
+
+    def _drop_relaxed_integer(record):
+        return "_relaxed_integer_vars" not in record.getMessage()
+
+    pyomo_logger.addFilter(_drop_relaxed_integer)
+    try:
+        yield
+    finally:
+        pyomo_logger.removeFilter(_drop_relaxed_integer)
 
 
 class ModelType(enum.Enum):
@@ -34,6 +68,7 @@ class LEGO:
         self.timings = {"model_building": -1.0, "model_solving": -1.0}
         self.solver_name = None
         self._extensive_form = None  # Used for the ExtensiveForm model type, not used in other model types
+        self.scenario_models = None  # {scenario_name: solved sub-problem model}; populated for BENDERS
 
     def build_model(self, already_existing_ok: bool = False, model_type: ModelType = ModelType.DETERMINISTIC, solver_name: str = None) -> (pyo.Model, float):
         if not already_existing_ok and self.model is not None:
@@ -84,8 +119,8 @@ class LEGO:
         elif self.cs.dGlobal_Parameters["pSolver"] != solver_name:
             printer.warning(f"Solver name {solver_name} does not match the one used in the case study ({self.cs.dGlobal_Parameters['pSolver']}) - using {solver_name}")
 
-        # Add suffixes to request dual values from solver
-        if not hasattr(self.model, 'dual'):
+        # Add suffixes to request dual values from solver (skip for decomposition methods that don't have a single root model)
+        if self.model is not None and not hasattr(self.model, 'dual'):
             self.model.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
 
         start_time = time.time()
@@ -112,7 +147,16 @@ class LEGO:
                 if solver_name != self.solver_name:
                     raise RuntimeError(f"Optimizer name {solver_name} does not match the one used to build the model ({self.solver_name}), please use the same optimizer name when solving using the 'ExtensiveForm' model type")
                 start_time = time.time()
-                results = self._extensive_form.solve_extensive_form(tee=True)
+
+                solver_options = {
+                    "BarHomogeneous": 1,  # robust homogeneous self-dual barrier (Gurobi's own suggestion)
+                    "NumericFocus": 2,  # prioritize numerical stability (try 3 if it still breaks)
+                    "Method": 2,  # barrier only — stop wasting cores on concurrent simplex
+                    "ScaleFlag": 2,  # aggressive geometric scaling for the wide coefficient range
+                    "Crossover": 0,  # return the interior solution directly, skip crossover
+                }
+
+                results = self._extensive_form.solve_extensive_form(solver_options= solver_options,tee=True)
                 stop_time = time.time()
                 objective_value = self._extensive_form.get_objective_value() if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
 
@@ -124,28 +168,70 @@ class LEGO:
                 from mpisppy.opt.lshaped import LShapedMethod
 
                 scenario_names = self.cs.dGlobal_Scenarios.index.tolist()
+                # Supplying ANY valid_eta_lb flips mpi-sppy's compute_eta_bound to False, which
+                # makes create_subproblem SKIP a standalone set_instance()+solve of every
+                # subproblem (lshaped.py) — that duplicate persistent build of each large
+                # subproblem was the dominant cost. We deliberately do NOT reuse a self-computed
+                # standalone optimum here: mpi-sppy's eta_s is the *probability-weighted,
+                # second-stage-only* cost (lshaped.py multiplies each 2nd-stage coef by
+                # _mpisppy_probability), whereas our scenario objective is unweighted and includes
+                # first-stage cost — so that number is not a valid eta bound and could cut off the
+                # optimum. A sufficiently negative constant is always a valid lower bound (it can
+                # never bind above the optimum, regardless of weighting); the only price is possibly
+                # a few extra Benders iterations, which are cheap warm-started re-solves. Make it
+                # more negative if any scenario's weighted recourse cost could fall below this.
+                LOOSE_ETA_LB = -1e3
+                eta_lb = {s: LOOSE_ETA_LB for s in scenario_names}
                 options = {
-                    "root_solver": solver_name,
-                    "sp_solver": solver_name,
-                    "sp_solver_options": {"threads": os.cpu_count() - 1},  # Use all but one CPU core
-                    # "valid_eta_lb": None,  # TODO: Check how to set bounds dynamically
-                    "max_iter": 1000,
+                    "root_solver": "gurobi_persistent",
+                    "sp_solver": "gurobi_persistent",
+                    # Sub-problems are large pure LPs (~315k rows each). Barrier (Gurobi's default
+                    # concurrent solve) is far faster on them than simplex from scratch. Dual
+                    # simplex would warm-start in principle, but mpi-sppy adds/removes the
+                    # first-stage-fixing constraints every iteration (benders_cuts.py), so the basis
+                    # cannot carry over and we'd pay a cold simplex start each time (~3x slower here).
+                    # Default crossover still yields exact vertex duals for valid cuts.
+                    "sp_solver_options": {"Threads": 14},
+                    "tol": 1e-6,  # default is 1e-8 — too tight; causes non-improving cuts to keep firing
+                    "max_iter": 200,
+                    "valid_eta_lb": eta_lb,  # -> compute_eta_bound=False -> skips the duplicate per-subproblem build
                 }
                 start_time = time.time()
-                ls = LShapedMethod(options, scenario_names, _scenario_creator, scenario_creator_kwargs={"full_case_study": self.cs})
-                results = ls.lshaped_algorithm()
+                with _suppress_relaxed_integer_warning():
+                    ls = LShapedMethod(options, scenario_names, _scenario_creator,
+                                       scenario_creator_kwargs={"full_case_study": self.cs})
+                    results = ls.lshaped_algorithm()
                 stop_time = time.time()
 
-                objective_value = pyo.value(ls.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
+                # Keep the solved per-scenario sub-problem models for result export. mpi-sppy
+                # splits the scenarios across ranks, so each rank holds only its local ones;
+                # after convergence each model carries the full solution (first-stage fixed to
+                # the optimum + second-stage optimal, with variable values loaded).
+                self.scenario_models = dict(ls.local_scenarios)
 
                 # variables = ls.gather_var_values_to_rank0()
                 # for ((scen_name, var_name), var_value) in variables.items():
                 #   print(scen_name, var_name, var_value)
 
-                lower_bound = results.json_repn()['Problem'][0]['Lower bound']
-                upper_bound = results.json_repn()['Problem'][0]['Upper bound']
-                printer.warning(f"Lower bound: {lower_bound:.2f}, Upper bound: {upper_bound:.2f}, spread: {upper_bound - lower_bound:.2f} | {(upper_bound - lower_bound) / upper_bound * 100:.2f}%)")
-                printer.warning(f"Reporting lower bound as objective value, please check if this is correct")
+                # Under mpiexec only rank 0 (the master) gets a populated SolverResults from
+                # lshaped_algorithm(); worker ranks return None (they only solved their
+                # subproblems), so the bound/objective extraction must be rank-0 only.
+                if mpi_rank() == 0:
+                    lower_bound = results.json_repn()['Problem'][0]['Lower bound']
+                    upper_bound = results.json_repn()['Problem'][0]['Upper bound']
+                    spread = upper_bound - lower_bound
+                    rel_gap_pct = (spread / upper_bound * 100) if upper_bound not in (0, None) else float('nan')
+                    printer.warning(f"Lower bound: {lower_bound:.2f}, Upper bound: {upper_bound:.2f}, spread: {spread:.2f} | {rel_gap_pct:.2f}%)")
+
+                    # LShapedMethod has no `.objective` attribute; use the best feasible (upper) bound from the results object.
+                    # For a minimization problem this is the best incumbent objective found; at convergence it equals the lower bound.
+                    if results.solver.termination_condition == pyo.TerminationCondition.optimal:
+                        objective_value = upper_bound
+                        printer.warning("Reporting upper bound (best feasible) as objective value for BENDERS.")
+                    else:
+                        objective_value = -1
+                else:
+                    objective_value = -1
 
             case ModelType.PROGRESSIVE_HEDGING:
                 printer.warning("Progressive Hedging NOT FULLY TESTED YET, MIGHT HAVE SOME ISSUES OR BUGS!")
@@ -241,7 +327,11 @@ def _scenario_creator(scenario_name: str, full_case_study: CaseStudy) -> pyo.Con
 
     model = _build_model(full_case_study.filter_scenario(scenario_name))
     sputils.attach_root_node(model, model.first_stage_objective, model.first_stage_varlist)
-    model._mpisppy_probability = sum(full_case_study.dGlobal_Scenarios.loc[:, "relativeWeight"]) / full_case_study.dGlobal_Scenarios.loc[scenario_name, "relativeWeight"]
+    # in _scenario_creator — correct probability (was inverted)
+    model._mpisppy_probability = (
+            full_case_study.dGlobal_Scenarios.loc[scenario_name, "relativeWeight"]
+            / full_case_study.dGlobal_Scenarios.loc[:, "relativeWeight"].sum()
+    )
     return model
 
 
@@ -255,7 +345,11 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
     reset_execution_safety_dict(model)  # Reset the execution safety dict to ensure that decorators work correctly
     model.objective = pyo.Objective(doc='Total production cost (Objective Function)', sense=pyo.minimize, expr=0.0)  # Initialize objective function
 
-    # Initialize first_stage variables and objective required for stochasticity
+    # Initialize first_stage variables and objective required for stochasticity.
+    # Note: add_element_definitions_and_bounds is wrapped by
+    # safetyCheck_AddElementDefinitionsAndBounds, which validates that every new variable is
+    # assigned to exactly one stage and returns ONLY the first-stage variables, so `+=` here
+    # correctly extends first_stage_varlist with a flat list of the nonanticipative vars.
     model.first_stage_varlist = []
     model.first_stage_objective = 0.0
 
@@ -278,7 +372,7 @@ def _build_model(cs: CaseStudy) -> pyo.ConcreteModel:
 
     if cs.dGlobal_Parameters["pEnableSelfSufficiency"]:
         model.first_stage_varlist += selfSufficiency.add_element_definitions_and_bounds(model, cs)
-        
+
     if cs.dGlobal_Parameters["pEnableHeat"]:
         model.first_stage_varlist += heat.add_element_definitions_and_bounds(model, cs)
 

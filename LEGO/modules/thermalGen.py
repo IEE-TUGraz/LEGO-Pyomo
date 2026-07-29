@@ -5,6 +5,17 @@ import pyomo.environ as pyo
 from InOutModule.CaseStudy import CaseStudy
 from LEGO import LEGOUtilities, LEGO
 
+# --- PROJECT SWITCH (hardcoded) -------------------------------------------------------------
+# When False, the whole thermal unit-commitment build is skipped: no vCommit/vStartup/vShutdown/
+# vGenP1 (or markov) variables and no UC/ramp/min-up-down constraints or startup/commit costs.
+# Thermal generators instead run as a simple linear dispatch: 0 <= vGenP <= pMaxProd*(vGenInvest
+# + ExisUnits). The investment variable vGenInvest (defined in power.py, used by the resilience
+# constraint) and the per-MWh fuel cost (power.py) are untouched, so investment still bounds
+# output and remains meaningful. NOTE: assumes the UC vars aren't referenced by other active
+# blocks (true here: pEnableSOCP=0 and 2nd reserve off).
+BUILD_UNIT_COMMITMENT = False
+# --------------------------------------------------------------------------------------------
+
 
 @LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
 def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> typing.Tuple[list[pyo.Var], list[pyo.Var]]:
@@ -39,6 +50,12 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     LEGO.addToParameter(model, 'pMinGenQ', cs.dPower_ThermalGen['Qmin'])
 
     # Variables
+    # PROJECT SWITCH: skip building all unit-commitment variables. The sets/params above are kept
+    # (used by power.py's vGenP bounds/cost and the resilience constraint); no thermal variables
+    # are added here in that case, so both stage lists stay empty.
+    if not BUILD_UNIT_COMMITMENT:
+        return first_stage_variables, second_stage_variables
+
     # Used to relax vCommit, vStartup and vShutdown in the first timesteps of each representative period
     # Required when using Markov-Chains to connect the timesteps of the representative periods - since fractions of the binary variables (which are present due to the transition-probabilities) are otherwise not possible
     def vUC_domain(model, k, relax_duration_from_beginning):
@@ -84,6 +101,19 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
+    # PROJECT SWITCH: no unit commitment -> simple linear thermal dispatch. Cap output by existing
+    # + INVESTED capacity so vGenInvest still bounds generation (vGenP's static bound in power.py
+    # uses pMaxInvest, i.e. the max investable, and would let output ignore the investment
+    # decision). This reproduces eUCTotOut + eThMaxUC for the relaxed/MinProd=0 case. No
+    # startup/commit costs are added; the per-MWh fuel cost stays in power.py.
+    if not BUILD_UNIT_COMMITMENT:
+        model.eThMaxOut = pyo.Constraint(
+            model.rp, model.k, model.thermalGenerators,
+            doc='Thermal output capped by existing + invested capacity (unit commitment disabled)',
+            rule=lambda m, rp, k, g: m.vGenP[rp, k, g] <= m.pMaxProd[g] * (m.vGenInvest[g] + m.pExisUnits[g]),
+        )
+        return 0.0
+
     def eThRampUp_rule(model, rp, k, g, transition_matrix):
         match cs.dPower_Parameters["pReprPeriodEdgeHandlingRamping"]:
             case "notEnforced":
