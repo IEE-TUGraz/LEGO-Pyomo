@@ -169,12 +169,21 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     line_investement_candidates = False if len(model.lc) == 0 else True
     # Power balance for nodes DC ann SOCP
     def eDC_BalanceP_rule(m, rp, k, i):
-        return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])  # Gen at bus i (O(1) lookup)
-                    - sum(m.vLineP[rp, k, i2, j, c] for (i2, j, c) in m.la_outflows[i])  # Only outflows from i (O(1) lookup)
-                    - m.vSOCP_cii[rp, k, i] * m.pBusG[i]
-                    - (m.pDemandP[rp, k, i])
-                    + m.vPNS[rp, k, i]
-                    - m.vEPS[rp, k, i])
+        if cs.dPower_Parameters["pEnableDSM"]:
+            return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])  # Gen at bus i (O(1) lookup)
+                        - sum(m.vLineP[rp, k, i2, j, c] for (i2, j, c) in m.la_outflows[i])  # Only outflows from i (O(1) lookup)
+                        - m.vSOCP_cii[rp, k, i] * m.pBusG[i]
+                        - (m.pDemandP[rp, k, i])
+                        + m.vDSM_Reduction[rp, k, i]  # Power Reduction at node through DSM if its active
+                        + m.vPNS[rp, k, i]
+                        - m.vEPS[rp, k, i])
+        else:
+            return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])  # Gen at bus i (O(1) lookup)
+                        - sum(m.vLineP[rp, k, i2, j, c] for (i2, j, c) in m.la_outflows[i])  # Only outflows from i (O(1) lookup)
+                        - m.vSOCP_cii[rp, k, i] * m.pBusG[i]
+                        - (m.pDemandP[rp, k, i])
+                        + m.vPNS[rp, k, i]
+                        - m.vEPS[rp, k, i])
 
     model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.i, rule=eDC_BalanceP_rule)
     model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eDC_BalanceP_expr[rp, k, i] == 0)

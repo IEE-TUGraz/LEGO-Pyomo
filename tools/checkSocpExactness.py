@@ -22,10 +22,10 @@ def check_exactness_of_socp_solution(lego):
         for rp in model.rp:
             for k in model.constraintsActiveK:
                 for (i, j, c) in model.la:
-                    ui = pyo.value(model.vSOCP_ui[rp, k, i])
-                    lij = pyo.value(model.vSOCP_lij[rp, k, i, j, c])
-                    vLineP = pyo.value(model.vLineP[rp, k, i, j, c])
-                    vLineQ = pyo.value(model.vLineQ[rp, k, i, j, c])
+                    ui = pyo.value(model.vSOCP_ui[rp, k, i], exception=False)
+                    lij = pyo.value(model.vSOCP_lij[rp, k, i, j, c], exception=False)
+                    vLineP = pyo.value(model.vLineP[rp, k, i, j, c], exception=False)
+                    vLineQ = pyo.value(model.vLineQ[rp, k, i, j, c], exception=False)
 
                     if ui is None or vLineP is None or lij is None or vLineQ is None:
                         continue  # Skip if any value is None
@@ -40,10 +40,10 @@ def check_exactness_of_socp_solution(lego):
         for rp in model.rp:
             for k in model.constraintsActiveK:
                 for (i, j, c) in model.la:
-                    cii = pyo.value(model.vSOCP_cii[rp, k, i])
-                    cjj = pyo.value(model.vSOCP_cii[rp, k, j])
-                    sij = pyo.value(model.vSOCP_sij[rp, k, i, j])
-                    cij = pyo.value(model.vSOCP_cij[rp, k, i, j])
+                    cii = pyo.value(model.vSOCP_cii[rp, k, i], exception=False)
+                    cjj = pyo.value(model.vSOCP_cii[rp, k, j], exception=False)
+                    sij = pyo.value(model.vSOCP_sij[rp, k, i, j], exception=False)
+                    cij = pyo.value(model.vSOCP_cij[rp, k, i, j], exception=False)
 
                     if cii is None or cjj is None or sij is None or cij is None:
                         continue  # Skip if any value is None
