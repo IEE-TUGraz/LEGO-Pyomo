@@ -170,7 +170,10 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         if cs.dPower_Parameters["pEnableDSM"]:
             return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])
                     - (m.pDemandP[rp, k, i])
-                    + m.vDSM_Reduction[rp, k, i]  #Power Reduction at node through DSM if its active
+                    + m.vDSM_pos[rp, k, i]  #Power Reduction at node through DSM if its active
+                    - m.vDSM_pos_payback[rp, k, i]  #Payback of a prior DSM reduction at node
+                    - m.vDSM_neg[rp, k, i]  #Voluntary power increase at node through negative DSM if its active
+                    + m.vDSM_neg_payback[rp, k, i]  #Payback of a prior negative DSM increase at node
                     + m.vPNS[rp, k, i]
                     - m.vEPS[rp, k, i]
                     )
