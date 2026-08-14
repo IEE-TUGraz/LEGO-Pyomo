@@ -63,12 +63,13 @@ def process_results(model_results):
 
 parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to folder containing data for LEGO model")
 parser.add_argument("modelType", default=ModelType.DETERMINISTIC, type=lambda s: ModelType[s], choices=list(ModelType), nargs="?", help="ModelType of first model")
+parser.add_argument("--n-jobs", type=int, default=4, help="Number of Excel files to read in parallel while loading the case study (default 4). Lower this (e.g. to 1 for fully sequential) on memory-constrained machines if loading crashes with an out-of-memory error on large case studies.")
 args = parser.parse_args()
 
 # Load case study restriction of calculations
 printer.information(f"Loading case study from '{args.caseStudyDirectory}'\n")
 start_time = time.time()
-cs = CaseStudy(args.caseStudyDirectory)
+cs = CaseStudy(args.caseStudyDirectory, n_jobs=args.n_jobs)
 cs = cs.filter_timesteps('k00001','k00020')
 
 
