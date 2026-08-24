@@ -92,11 +92,22 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     #Power balance for nodes DC
     def eDC_BalanceP_rule(m, rp, k, i):
-        return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])  # Production of generators at bus i (O(1) lookup)
-                    + sum(m.vLineP[rp, k, e] if (e[1] == i) else -m.vLineP[rp, k, e] for e in model.la_nodeRelevant[i])  # Add power flow from bus j to bus i and subtract from bus i to bus j
-                    - m.pDemandP[rp, k, i]  # Demand at bus i
-                    + m.vPNS[rp, k, i]  # Slack variable for demand not served
-                    - m.vEPS[rp, k, i])  # Slack variable for overproduction
+        if cs.dPower_Parameters["pEnableDSM"]:
+            return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])  # Production of generators at bus i (O(1) lookup)
+                        + sum(m.vLineP[rp, k, e] if (e[1] == i) else -m.vLineP[rp, k, e] for e in model.la_nodeRelevant[i])  # Add power flow from bus j to bus i and subtract from bus i to bus j
+                        - m.pDemandP[rp, k, i]  # Demand at bus i
+                        + m.vDSM_pos[rp, k, i]  # Power Reduction at node through DSM if its active
+                        - m.vDSM_pos_payback[rp, k, i]  # Payback of a prior DSM reduction at node
+                        - m.vDSM_neg[rp, k, i]  # Voluntary power increase at node through negative DSM if its active
+                        + m.vDSM_neg_payback[rp, k, i]  # Payback of a prior negative DSM increase at node
+                        + m.vPNS[rp, k, i]  # Slack variable for demand not served
+                        - m.vEPS[rp, k, i])  # Slack variable for overproduction
+        else:
+            return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])  # Production of generators at bus i (O(1) lookup)
+                        + sum(m.vLineP[rp, k, e] if (e[1] == i) else -m.vLineP[rp, k, e] for e in model.la_nodeRelevant[i])  # Add power flow from bus j to bus i and subtract from bus i to bus j
+                        - m.pDemandP[rp, k, i]  # Demand at bus i
+                        + m.vPNS[rp, k, i]  # Slack variable for demand not served
+                        - m.vEPS[rp, k, i])  # Slack variable for overproduction
     
     model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.i, rule=eDC_BalanceP_rule)
     model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eDC_BalanceP_expr[rp, k, i] == 0)

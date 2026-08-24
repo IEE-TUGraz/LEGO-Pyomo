@@ -1,25 +1,17 @@
-
-
-
-
-import pandas as pd
 import pyomo.environ as pyo
 
 from InOutModule.CaseStudy import CaseStudy
-from InOutModule.printer import Printer
 from LEGO import LEGO, LEGOUtilities
 
-printer = Printer.getInstance()
 
-
-def _shift_window(model, k, activation_time_param, i):
+def _shift_window(model, k, activation_time):
     """
-    Returns the list of timesteps kk that lie up to ActivationTime[i] steps before k (including k
-    itself), cyclically within the rp. Used both for the repayment-deadline constraint and for
+    Returns the list of timesteps kk that lie up to `activation_time` steps before k (including k
+    itself), cyclically within the rp. Used both for the MaxDuration window-sum constraint and for
     computing the bound of the repayment variable.
     """
     horizon = len(model.constraintsActiveK)
-    activation_time = int(pyo.value(activation_time_param[i]))
+    activation_time = int(activation_time)
     # Window size: ActivationTime timesteps before k, plus k itself, capped at the full cycle length
     # (if ActivationTime >= horizon, the entire cycle is reachable anyway).
     window_size = min(activation_time + 1, horizon)
@@ -40,7 +32,7 @@ def _forward_step(model, k, steps):
     """
     Returns the timestep that lies `steps` steps after k, cyclically within the rp (wraps back to the
     start at the end of the horizon). Used for the start-anchored repayment deadline (target timestep =
-    start of an activation cycle + 2*ActivationTime).
+    start of an activation cycle + Ramping + 2*ActivationTime).
     """
     horizon = len(model.constraintsActiveK)
     target_ord = ((model.constraintsActiveK.ord(k) - 1 + steps) % horizon) + 1
@@ -56,25 +48,14 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.pDSM_pos = pyo.Param(model.rp, model.constraintsActiveK, model.i, initialize=cs.dPower_DSM_pos['value'], default=0.0, doc="Maximum positive DSM reduction potential per node and timestep [p.u. of demand]")
     model.pDSM_neg = pyo.Param(model.rp, model.constraintsActiveK, model.i, initialize=cs.dPower_DSM_neg['value'], default=0.0, doc="Maximum negative DSM increase potential per node and timestep [p.u. of demand]")
 
-    model.pDSM_Ramping_pos = pyo.Param(model.i, initialize=cs.dPower_DSM_Ramping['DSM_Ramping_pos'], default=0.0, doc="Ramp-up delay (in timesteps) after activation before positive DSM can start reducing at all")
-    model.pDSM_ActivationTime_pos = pyo.Param(model.i, initialize=cs.dPower_DSM_Ramping['DSM_activation_time_pos'], default=0.0, doc="Maximum number of consecutive timesteps a positive DSM activation cycle may run; together with the 2x rule, also the basis for its repayment deadline")
-    model.pDSM_Ramping_neg = pyo.Param(model.i, initialize=cs.dPower_DSM_Ramping['DSM_Ramping_neg'], default=0.0, doc="Ramp-up delay (in timesteps) after activation before negative DSM can start increasing at all")
-    model.pDSM_ActivationTime_neg = pyo.Param(model.i, initialize=cs.dPower_DSM_Ramping['DSM_activation_time_neg'], default=0.0, doc="Maximum number of consecutive timesteps a negative DSM activation cycle may run; together with the 2x rule, also the basis for its repayment deadline")
-
-    # Debug output
-    sample_rp = list(model.rp)[0]
-    sample_k = list(model.constraintsActiveK)[0]
-    printer.information("DSM_Ramping / DSM_activation_time eingelesen (erste 10 Knoten):")
-    for i in list(model.i)[:10]:
-        demand_sample = pyo.value(model.pDemandP[sample_rp, sample_k, i])
-        dsm_pos_sample = pyo.value(model.pDSM_pos[sample_rp, sample_k, i])
-        dsm_neg_sample = pyo.value(model.pDSM_neg[sample_rp, sample_k, i])
-        # printer.information(
-        #     f"  {i}: pos: Ramping={pyo.value(model.pDSM_Ramping_pos[i])}, ActivationTime={pyo.value(model.pDSM_ActivationTime_pos[i])}, "
-        #     f"pDSM_pos[{sample_rp},{sample_k}]={dsm_pos_sample:.4f} p.u. -> {dsm_pos_sample * demand_sample:.4f} MW | "
-        #     f"neg: Ramping={pyo.value(model.pDSM_Ramping_neg[i])}, ActivationTime={pyo.value(model.pDSM_ActivationTime_neg[i])}, "
-        #     f"pDSM_neg[{sample_rp},{sample_k}]={dsm_neg_sample:.4f} p.u. -> {dsm_neg_sample * demand_sample:.4f} MW "
-        #     f"(pDemandP[{sample_rp},{sample_k}]={demand_sample:.4f} MW)")
+    # Ramping/ActivationTime vary by season, not by rp/k directly - plain dicts keyed by (i, season)
+    # instead of pyo.Param, since they're only ever used as constant bounds/RHS values (via
+    # season_of_k[k] below), never summed symbolically in the objective like pDSM_pos/neg above.
+    model.season_of_k = cs.dPower_WeightsK['season'].to_dict()
+    model.pDSM_Ramping_pos = cs.dPower_DSM_Ramping['DSM_Ramping_pos'].to_dict()
+    model.pDSM_ActivationTime_pos = cs.dPower_DSM_Ramping['DSM_activation_time_pos'].to_dict()
+    model.pDSM_Ramping_neg = cs.dPower_DSM_Ramping['DSM_Ramping_neg'].to_dict()
+    model.pDSM_ActivationTime_neg = cs.dPower_DSM_Ramping['DSM_activation_time_neg'].to_dict()
 
     # Variables
     model.vDSM_pos = pyo.Var(model.rp, model.constraintsActiveK, model.i, doc="Power reduction at bus i through demand-side management", bounds=(0, None))
@@ -107,11 +88,23 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         doc="1 if negative DSM increase is switched on at this node/timestep (ongoing activation cycle)")
     second_stage_variables.append(model.bDSM_neg_Active)
 
+    # Continuous, not binary: Startup only ever appears as a tightening term in eDSM_pos_RampUpDelay/
+    # RepaymentDeadline below, never as a benefit, so cost-minimization always pushes it down to its
+    # lower bound - combined with eDSM_pos_StartStop's inequality (pins Startup to 1 at a genuine 0->1
+    # transition) and eDSM_pos_StartupLink (forces Startup to 0 whenever Active is 0, including at
+    # deactivations, where StartStop's RHS is negative and would otherwise leave Startup unconstrained),
+    # it's naturally integral at the optimum without needing an explicit Binary domain.
+    model.vDSM_pos_Startup = pyo.Var(model.rp, model.constraintsActiveK, model.i, bounds=(0, 1), doc="1 if a new positive DSM activation cycle starts at this node/timestep")
+    second_stage_variables.append(model.vDSM_pos_Startup)
+
+    model.vDSM_neg_Startup = pyo.Var(model.rp, model.constraintsActiveK, model.i, bounds=(0, 1), doc="1 if a new negative DSM activation cycle starts at this node/timestep")
+    second_stage_variables.append(model.vDSM_neg_Startup)
+
     # Bounds
     # Upper bound per node/timestep for the activation variables (vDSM_pos/vDSM_neg): share pDSM_pos/
-    # pDSM_neg of the node's demand in that SAME timestep. Within the ramp-up delay (the first
-    # pDSM_Ramping_pos/neg[i] timesteps per rp), DSM cannot be activated yet - the activation variable
-    # stays fixed at 0 there, after which the bound jumps to the full value.
+    # pDSM_neg of the node's demand in that SAME timestep. The ramp-up delay itself (Ramping steps after
+    # a cycle's start during which no actual reduction/increase is allowed yet) is enforced separately
+    # via eDSM_pos/neg_RampUpDelay below, not through this bound.
     #
     # For the repayment variables, the demand of the repayment timestep itself is NOT the right
     # quantity - the bound instead needs to reflect what was actually available in the timesteps where a
@@ -120,27 +113,20 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     # precision comes from the vDSM_pos_Bank state balance, not from this bound itself.
     for rp in model.rp:
         for k in model.constraintsActiveK:
+            season = model.season_of_k[k]
             for i in model.i:
                 max_shift_pos = pyo.value(model.pDSM_pos[rp, k, i]) * pyo.value(model.pDemandP[rp, k, i])
-                if model.constraintsActiveK.ord(k) <= pyo.value(model.pDSM_Ramping_pos[i]):
-                    model.vDSM_pos[rp, k, i].setub(0)  # still in the ramp-up delay
-                    model.bDSM_pos_Active[rp, k, i].setub(0)
-                else:
-                    model.vDSM_pos[rp, k, i].setub(max_shift_pos)
+                model.vDSM_pos[rp, k, i].setub(max_shift_pos)
 
-                window_pos = _shift_window(model, k, model.pDSM_ActivationTime_pos, i)
+                window_pos = _shift_window(model, k, model.pDSM_ActivationTime_pos[i, season])
                 max_payback_pos = sum(pyo.value(model.pDSM_pos[rp, kk, i]) * pyo.value(model.pDemandP[rp, kk, i]) for kk in window_pos)
                 model.vDSM_pos_payback[rp, k, i].setub(max_payback_pos)
                 model.vDSM_pos_Bank[rp, k, i].setub(max_payback_pos)
 
                 max_shift_neg = pyo.value(model.pDSM_neg[rp, k, i]) * pyo.value(model.pDemandP[rp, k, i])
-                if model.constraintsActiveK.ord(k) <= pyo.value(model.pDSM_Ramping_neg[i]):
-                    model.vDSM_neg[rp, k, i].setub(0)  # still in the ramp-up delay
-                    model.bDSM_neg_Active[rp, k, i].setub(0)
-                else:
-                    model.vDSM_neg[rp, k, i].setub(max_shift_neg)
+                model.vDSM_neg[rp, k, i].setub(max_shift_neg)
 
-                window_neg = _shift_window(model, k, model.pDSM_ActivationTime_neg, i)
+                window_neg = _shift_window(model, k, model.pDSM_ActivationTime_neg[i, season])
                 max_payback_neg = sum(pyo.value(model.pDSM_neg[rp, kk, i]) * pyo.value(model.pDemandP[rp, kk, i]) for kk in window_neg)
                 model.vDSM_neg_payback[rp, k, i].setub(max_payback_neg)
                 model.vDSM_neg_Bank[rp, k, i].setub(max_payback_neg)
@@ -165,6 +151,22 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     model.eDSM_pos_BankBalance = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Cyclic outstanding-debt balance for positive DSM", rule=eDSM_pos_BankBalance_rule)
 
+    # Links activation transitions to a dedicated startup indicator (no separate shutdown variable
+    # needed). The >= inequality alone only pins Startup at genuine 0->1 transitions (RHS=+1); at a
+    # deactivation (RHS=-1) it leaves Startup unconstrained from below, so it's paired with the
+    # StartupLink constraint below (Startup <= Active) to force it to 0 whenever the node isn't active,
+    # closing that gap without needing an explicit Binary domain or a separate Shutdown variable.
+    def eDSM_pos_StartStop_rule(model, rp, k, i):
+        prev_k = model.constraintsActiveK.prevw(k)
+        return model.vDSM_pos_Startup[rp, k, i] >= model.bDSM_pos_Active[rp, k, i] - model.bDSM_pos_Active[rp, prev_k, i]
+
+    model.eDSM_pos_StartStop = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Links positive DSM activation transitions to a dedicated startup indicator", rule=eDSM_pos_StartStop_rule)
+
+    def eDSM_pos_StartupLink_rule(model, rp, k, i):
+        return model.vDSM_pos_Startup[rp, k, i] <= model.bDSM_pos_Active[rp, k, i]
+
+    model.eDSM_pos_StartupLink = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Positive DSM startup indicator can only be set while the node is active", rule=eDSM_pos_StartupLink_rule)
+
     # Big-M via the variable's own already-known tight bound, instead of a generic Big-M constant
     def eDSM_pos_ActiveLink_rule(model, rp, k, i):
         return model.vDSM_pos[rp, k, i] <= model.vDSM_pos[rp, k, i].ub * model.bDSM_pos_Active[rp, k, i]
@@ -172,24 +174,44 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     model.eDSM_pos_ActiveLink = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Positive DSM reduction only allowed when switched on", rule=eDSM_pos_ActiveLink_rule)
 
     # Window-sum constraint modeled on thermalGen.py's eMinUpTime, but as an upper bound instead of a
-    # lower bound (max instead of min consecutive active timesteps)
+    # lower bound (max instead of min consecutive active timesteps). ActivationTime describes only the
+    # actually-productive duration (after ramp-up) - the allowed length of the whole Active block is
+    # therefore ActivationTime + Ramping, so the ramp-up phase (Active but not yet producing, see
+    # eDSM_pos_RampUpDelay) doesn't eat into the productive time.
     def eDSM_pos_MaxDuration_rule(model, rp, k, i):
-        window = _shift_window(model, k, model.pDSM_ActivationTime_pos, i)
-        return sum(model.bDSM_pos_Active[rp, kk, i] for kk in window) <= model.pDSM_ActivationTime_pos[i]
+        season = model.season_of_k[k]
+        activation_time = model.pDSM_ActivationTime_pos[i, season]
+        ramping = model.pDSM_Ramping_pos[i, season]
+        total_allowed_duration = activation_time + ramping
+        window = _shift_window(model, k, total_allowed_duration)
+        return sum(model.bDSM_pos_Active[rp, kk, i] for kk in window) <= total_allowed_duration
 
-    model.eDSM_pos_MaxDuration = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Positive DSM reduction may be active for at most ActivationTime consecutive timesteps", rule=eDSM_pos_MaxDuration_rule)
+    model.eDSM_pos_MaxDuration = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Positive DSM reduction may be active for at most ActivationTime+Ramping consecutive timesteps", rule=eDSM_pos_MaxDuration_rule)
 
-    # start_expr is 1 only on a genuine 0->1 transition of bDSM_pos_Active - detects the start of a new
-    # activation cycle without a dedicated start variable. target_k is "start + 2*ActivationTime - 1":
-    # the start timestep itself counts as timestep 1 of that total, so e.g. with ActivationTime=2 either
-    # 2 timesteps of activation + 2 of repayment, or 1 + 3, are possible (both sum to 2*ActivationTime).
-    # If a cycle starts at k, the bank must be fully repaid (0) by target_k.
+    # Ramp-up delay: for Ramping steps after a cycle's start (window of the last Ramping steps,
+    # including k, containing a Startup), the actual reduction stays at 0 even though bDSM_pos_Active is
+    # already 1 - the cycle has "started" but isn't producing yet. Skipped entirely when Ramping==0.
+    def eDSM_pos_RampUpDelay_rule(model, rp, k, i):
+        ramping = int(model.pDSM_Ramping_pos[i, model.season_of_k[k]])
+        if ramping == 0:
+            return pyo.Constraint.Skip
+        window = LEGOUtilities.set_range_cyclic(model.constraintsActiveK, model.constraintsActiveK.ord(k) - ramping + 1, model.constraintsActiveK.ord(k))
+        return model.vDSM_pos[rp, k, i] <= model.vDSM_pos[rp, k, i].ub * (1 - sum(model.vDSM_pos_Startup[rp, k2, i] for k2 in window))
+
+    model.eDSM_pos_RampUpDelay = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Positive DSM cannot actually reduce load until Ramping steps after its activation cycle starts", rule=eDSM_pos_RampUpDelay_rule)
+
+    # target_k is "start + Ramping + 2*ActivationTime - 1": the start timestep itself counts as timestep
+    # 1 of that total, and the first Ramping steps produce no reduction at all (see
+    # eDSM_pos_RampUpDelay), so they're added on top of the usual activation+repayment budget (e.g. with
+    # ActivationTime=2, Ramping=0: 2 timesteps of activation + 2 of repayment, or 1 + 3, both sum to
+    # 2*ActivationTime; with Ramping=1, the same budget is available but only starting 1 step later). If
+    # a cycle starts at k, the bank must be fully repaid (0) by target_k.
     def eDSM_pos_RepaymentDeadline_rule(model, rp, k, i):
-        activation_time = int(pyo.value(model.pDSM_ActivationTime_pos[i]))
-        prev_k = model.constraintsActiveK.prevw(k)
-        start_expr = model.bDSM_pos_Active[rp, k, i] - model.bDSM_pos_Active[rp, prev_k, i]
-        target_k = _forward_step(model, k, 2 * activation_time - 1)
-        return model.vDSM_pos_Bank[rp, target_k, i] <= model.vDSM_pos_Bank[rp, target_k, i].ub * (1 - start_expr)
+        season = model.season_of_k[k]
+        activation_time = int(model.pDSM_ActivationTime_pos[i, season])
+        ramping = int(model.pDSM_Ramping_pos[i, season])
+        target_k = _forward_step(model, k, ramping + 2 * activation_time - 1)
+        return model.vDSM_pos_Bank[rp, target_k, i] <= model.vDSM_pos_Bank[rp, target_k, i].ub * (1 - model.vDSM_pos_Startup[rp, k, i])
 
     model.eDSM_pos_RepaymentDeadline = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Repayment of an activation cycle must be completed at most 2xActivationTime steps after its start", rule=eDSM_pos_RepaymentDeadline_rule)
 
@@ -200,23 +222,47 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     model.eDSM_neg_BankBalance = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Cyclic outstanding-debt balance for negative DSM", rule=eDSM_neg_BankBalance_rule)
 
+    def eDSM_neg_StartStop_rule(model, rp, k, i):
+        prev_k = model.constraintsActiveK.prevw(k)
+        return model.vDSM_neg_Startup[rp, k, i] >= model.bDSM_neg_Active[rp, k, i] - model.bDSM_neg_Active[rp, prev_k, i]
+
+    model.eDSM_neg_StartStop = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Links negative DSM activation transitions to a dedicated startup indicator", rule=eDSM_neg_StartStop_rule)
+
+    def eDSM_neg_StartupLink_rule(model, rp, k, i):
+        return model.vDSM_neg_Startup[rp, k, i] <= model.bDSM_neg_Active[rp, k, i]
+
+    model.eDSM_neg_StartupLink = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Negative DSM startup indicator can only be set while the node is active", rule=eDSM_neg_StartupLink_rule)
+
     def eDSM_neg_ActiveLink_rule(model, rp, k, i):
         return model.vDSM_neg[rp, k, i] <= model.vDSM_neg[rp, k, i].ub * model.bDSM_neg_Active[rp, k, i]
 
     model.eDSM_neg_ActiveLink = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Negative DSM increase only allowed when switched on", rule=eDSM_neg_ActiveLink_rule)
 
     def eDSM_neg_MaxDuration_rule(model, rp, k, i):
-        window = _shift_window(model, k, model.pDSM_ActivationTime_neg, i)
-        return sum(model.bDSM_neg_Active[rp, kk, i] for kk in window) <= model.pDSM_ActivationTime_neg[i]
+        season = model.season_of_k[k]
+        activation_time = model.pDSM_ActivationTime_neg[i, season]
+        ramping = model.pDSM_Ramping_neg[i, season]
+        total_allowed_duration = activation_time + ramping
+        window = _shift_window(model, k, total_allowed_duration)
+        return sum(model.bDSM_neg_Active[rp, kk, i] for kk in window) <= total_allowed_duration
 
-    model.eDSM_neg_MaxDuration = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Negative DSM increase may be active for at most ActivationTime consecutive timesteps", rule=eDSM_neg_MaxDuration_rule)
+    model.eDSM_neg_MaxDuration = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Negative DSM increase may be active for at most ActivationTime+Ramping consecutive timesteps", rule=eDSM_neg_MaxDuration_rule)
+
+    def eDSM_neg_RampUpDelay_rule(model, rp, k, i):
+        ramping = int(model.pDSM_Ramping_neg[i, model.season_of_k[k]])
+        if ramping == 0:
+            return pyo.Constraint.Skip
+        window = LEGOUtilities.set_range_cyclic(model.constraintsActiveK, model.constraintsActiveK.ord(k) - ramping + 1, model.constraintsActiveK.ord(k))
+        return model.vDSM_neg[rp, k, i] <= model.vDSM_neg[rp, k, i].ub * (1 - sum(model.vDSM_neg_Startup[rp, k2, i] for k2 in window))
+
+    model.eDSM_neg_RampUpDelay = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Negative DSM cannot actually increase load until Ramping steps after its activation cycle starts", rule=eDSM_neg_RampUpDelay_rule)
 
     def eDSM_neg_RepaymentDeadline_rule(model, rp, k, i):
-        activation_time = int(pyo.value(model.pDSM_ActivationTime_neg[i]))
-        prev_k = model.constraintsActiveK.prevw(k)
-        start_expr = model.bDSM_neg_Active[rp, k, i] - model.bDSM_neg_Active[rp, prev_k, i]
-        target_k = _forward_step(model, k, 2 * activation_time - 1)
-        return model.vDSM_neg_Bank[rp, target_k, i] <= model.vDSM_neg_Bank[rp, target_k, i].ub * (1 - start_expr)
+        season = model.season_of_k[k]
+        activation_time = int(model.pDSM_ActivationTime_neg[i, season])
+        ramping = int(model.pDSM_Ramping_neg[i, season])
+        target_k = _forward_step(model, k, ramping + 2 * activation_time - 1)
+        return model.vDSM_neg_Bank[rp, target_k, i] <= model.vDSM_neg_Bank[rp, target_k, i].ub * (1 - model.vDSM_neg_Startup[rp, k, i])
 
     model.eDSM_neg_RepaymentDeadline = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="Repayment of an activation cycle must be completed at most 2xActivationTime steps after its start", rule=eDSM_neg_RepaymentDeadline_rule)
 
@@ -244,7 +290,7 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                                      sum(model.vDSM_pos[rp, k, i] + model.vDSM_neg[rp, k, i]
                                          for i in model.i)
                                      for k in model.constraintsActiveK)
-                                 for rp in model.rp) * 0.00        #  DSM cost rate, hardcoded
+                                 for rp in model.rp) * 0.01        #  DSM cost rate, hardcoded
 
     model.objective.expr += first_stage_objective + second_stage_objective
     return first_stage_objective
