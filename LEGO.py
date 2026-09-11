@@ -32,12 +32,16 @@ def directory_path(string):
         raise argparse.ArgumentTypeError(f"Directory path not valid: '{string}'")
 
 
-def main(case_study_directory, model_type, number_of_rps, length_of_rps):
+def main(case_study_directory, model_type, number_of_rps, length_of_rps, k_start, k_end):
     # Load case study
     printer.information(f"Loading case study from '{case_study_directory}'")
     start_time = time.time()
     cs = CaseStudy(case_study_directory)
     printer.information(f"Loading case study took {time.time() - start_time:.2f} seconds")
+
+    if k_start and k_end:
+        printer.information(f"Limiting K values to '{k_start}'<= k_values <= '{k_end}'")
+        cs.filter_timesteps(k_start, k_end, True, False)
 
     if number_of_rps > 0:
         cs.apply_kmedoids_aggregation(number_of_rps, length_of_rps)
@@ -89,6 +93,13 @@ if __name__ == "__main__":
     parser.add_argument("modelType", default=ModelType.DETERMINISTIC, type=lambda s: ModelType[s], choices=list(ModelType), nargs="?", help="ModelType of first model")
     parser.add_argument("--numberOfRPs", type=int, default=0, help="Number of representative periods to cluster the data into")
     parser.add_argument("--lengthOfRPs", type=int, default=24, help="Hours per representative period (e.g., 24, 48)")
+    parser.add_argument("--limitK", type=str, help="Limit the ks, format: 'k0025-k0048'", nargs="?", default=None)
     args = parser.parse_args()
 
-    main(args.caseStudyDirectory, args.modelType, args.numberOfRPs, args.lengthOfRPs)
+    if args.limitK is not None:
+        k_start, k_end = args.limitK.split("-")
+    else:
+        k_start = None
+        k_end = None
+
+    main(args.caseStudyDirectory, args.modelType, args.numberOfRPs, args.lengthOfRPs, k_start, k_end)
