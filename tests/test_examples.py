@@ -13,8 +13,8 @@ from LEGO.helpers.CompareModels import compareModels, ModelTypeForComparison
 printer = Printer.getInstance()
 
 mps_compare_combinations = [
-    ("data/example", ModelTypeForComparison.DETERMINISTIC, f"tests/data/mps-archive/example-02d0e5c039a4894bbc68ff866920ba1e33908e3a.mps"),
-    ("data/exampleStochastic", ModelTypeForComparison.EXTENSIVE_FORM, f"tests/data/mps-archive/exampleStochastic-ExtensiveForm-addc96124b5ee0162dadd12be9fe649a537d9e41.mps"),
+    ("data/example", ModelTypeForComparison.DETERMINISTIC, f"tests/data/mps-archive/example-5eff918d3120362f810b1c25c5e8c7ae478ad001.mps"),
+    ("data/exampleStochastic", ModelTypeForComparison.EXTENSIVE_FORM, f"tests/data/mps-archive/exampleStochastic-ExtensiveForm-5eff918d3120362f810b1c25c5e8c7ae478ad001.mps"),
 ]
 
 
@@ -39,7 +39,7 @@ def test_socp(tmp_path):
     :return: None
     """
     data_folder = "data/example"
-    comparison_mps = "tests/data/mps-archive/example-SOCP-fa7dc14c2c814953ef0dcb93e98c4dd78dee6b78.mps"
+    comparison_mps = "tests/data/mps-archive/example-SOCP-5eff918d3120362f810b1c25c5e8c7ae478ad001.mps"
 
     # Copy the data folder to a temporary path
     tmp_path_originalData = str(tmp_path / "originalData")
