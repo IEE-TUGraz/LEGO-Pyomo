@@ -181,12 +181,17 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         completed_buses.add(index)
 
         # Set slack node
-        if cs.dPower_Parameters["is"] == None:
+        slack_node_parameter = cs.dPower_Parameters["is"]
+        if slack_node_parameter == "CALCULATE_FROM_MAX_DEMAND":
             printer.information(f"Determining slack node based on highest demand in this island...")
             slack_node = cs.dPower_Demand.loc[:, :, connected_buses].groupby('i').sum().idxmax().values[0]
+        elif slack_node_parameter not in model.i:
+            error_message = (f"Power_Parameters value for 'is' ({slack_node_parameter}) is not a known bus. "
+                             f"If you want the slack node to be calculated, use 'CALCULATE_FROM_MAX_DEMAND'.")
+            raise ValueError(error_message)
         else:
-            printer.information(f"Using predefined slack node from Power_Parameters: {cs.dPower_Parameters['is']}")
-            slack_node = cs.dPower_Parameters["is"]
+            printer.information(f"Using predefined slack node from Power_Parameters: {slack_node_parameter}")
+            slack_node = slack_node_parameter
         i += 1
         printer.information(f"Zone {i:>2} - Slack node: {slack_node}")
         for rp in model.rp:
