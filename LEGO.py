@@ -61,15 +61,128 @@ def process_results(model_results):
             printer.warning(f"Solver terminated with condition: {model_results.solver.termination_condition}")
 
 
+def report_socp_metrics(model, label):
+    def weighted_sum(component):
+        return sum(
+            pyo.value(model.pWeight_rp[rp]) * pyo.value(model.pWeight_k[k]) * pyo.value(component[rp, k, i])
+            for rp in model.rp
+            for k in model.constraintsActiveK
+            for i in model.i
+        )
+
+    pns = weighted_sum(model.vPNS)
+    eps = weighted_sum(model.vEPS)
+    voltage_slack = 0.0
+    if model.pEnableSoftVoltageLimits:
+        voltage_slack = weighted_sum(model.vSOCP_ui_slack_pos) + weighted_sum(model.vSOCP_ui_slack_neg)
+
+    storage_charge = 0.0
+    if hasattr(model, "vConsump"):
+        storage_charge = sum(
+            pyo.value(model.pWeight_rp[rp]) * pyo.value(model.pWeight_k[k]) * pyo.value(model.vConsump[rp, k, g])
+            for rp in model.rp
+            for k in model.constraintsActiveK
+            for g in model.storageUnits
+        )
+
+    printer.information(
+        f"{label}: PNS={pns:.8g}, EPS={eps:.8g}, voltage slack={voltage_slack:.8g}, "
+        f"storage charge={storage_charge:.8g}, weighted losses={pyo.value(model.eSOCPTighteningLoss):.8g}"
+    )
+
+
+def solve_with_optional_socp_tightening(lego, model):
+    if not args.socp_two_stage:
+        return lego.solve_model(model_type=args.modelType)
+
+    if args.modelType != ModelType.DETERMINISTIC or not hasattr(model, "eSOCPTighteningLoss"):
+        printer.warning("Hierarchical SOCP tightening is only available for the deterministic BFM model; using the normal solve.")
+        return lego.solve_model(model_type=args.modelType)
+
+    if args.socp_voltage_slack_factor is not None:
+        model.pVoltageSlackPenaltyFactor.set_value(args.socp_voltage_slack_factor)
+
+    tightening_term = model.pSOCPTighteningEpsilon * model.eSOCPTighteningLoss
+    voltage_slack_penalty = model.eSOCPVoltageSlackPenalty
+    primary_objective = model.objective.expr - tightening_term - voltage_slack_penalty
+    reporting_objective = primary_objective + voltage_slack_penalty
+    model.objective.set_value(primary_objective)
+
+    printer.information("Phase 1/3: solving supply, investment and operating costs")
+    primary_results, primary_timing, primary_value = lego.solve_model(model_type=args.modelType)
+    if primary_results.solver.termination_condition != pyo.TerminationCondition.optimal:
+        return primary_results, primary_timing, primary_value
+    report_socp_metrics(model, "Phase 1")
+    check_exactness_of_socp_solution(lego)
+
+    allowed_degradation = max(
+        args.socp_primary_absolute_tolerance,
+        abs(primary_value) * args.socp_primary_relative_tolerance,
+    )
+    model.eSOCPPrimaryObjectiveLimit = pyo.Constraint(
+        expr=primary_objective <= primary_value + allowed_degradation
+    )
+    model.objective.set_value(model.eSOCPTighteningLoss)
+
+    printer.information(
+        f"Phase 2/3: minimizing weighted line losses with primary objective <= "
+        f"{primary_value + allowed_degradation:.8g}"
+    )
+    loss_results, loss_timing, loss_value = lego.solve_model(
+        model_type=args.modelType,
+        already_solved_ok=True,
+    )
+    if loss_results.solver.termination_condition != pyo.TerminationCondition.optimal:
+        model.objective.set_value(reporting_objective)
+        return loss_results, primary_timing + loss_timing, pyo.value(reporting_objective)
+    report_socp_metrics(model, "Phase 2")
+    check_exactness_of_socp_solution(lego)
+
+    allowed_loss_degradation = max(
+        args.socp_loss_absolute_tolerance,
+        abs(loss_value) * args.socp_loss_relative_tolerance,
+    )
+    model.eSOCPLossLimit = pyo.Constraint(
+        expr=model.eSOCPTighteningLoss <= loss_value + allowed_loss_degradation
+    )
+    model.objective.set_value(model.eSOCPVoltageSlack)
+
+    printer.information(
+        f"Phase 3/3: minimizing voltage soft-limit violations with weighted losses <= "
+        f"{loss_value + allowed_loss_degradation:.8g}"
+    )
+    voltage_results, voltage_timing, voltage_value = lego.solve_model(
+        model_type=args.modelType,
+        already_solved_ok=True,
+    )
+
+    model.objective.set_value(reporting_objective)
+    if voltage_results.solver.termination_condition == pyo.TerminationCondition.optimal:
+        report_socp_metrics(model, "Phase 3")
+        printer.information(
+            f"Hierarchical result: primary objective={pyo.value(primary_objective):.8g}, "
+            f"weighted losses={pyo.value(model.eSOCPTighteningLoss):.8g}, "
+            f"voltage slack={voltage_value:.8g}"
+        )
+
+    return voltage_results, primary_timing + loss_timing + voltage_timing, pyo.value(reporting_objective)
+
+
 parser.add_argument("caseStudyDirectory", type=directory_path, help="Path to folder containing data for LEGO model")
 parser.add_argument("modelType", default=ModelType.DETERMINISTIC, type=lambda s: ModelType[s], choices=list(ModelType), nargs="?", help="ModelType of first model")
+parser.add_argument("--socp-hierarchical", "--socp-two-stage", dest="socp_two_stage", action="store_true", help="Solve BFM hierarchically: system objective, losses, then voltage soft-limit violations")
+parser.add_argument("--socp-primary-relative-tolerance", type=float, default=1e-6, help="Relative primary-objective degradation allowed after phase 1 (default: 1e-6)")
+parser.add_argument("--socp-primary-absolute-tolerance", type=float, default=1e-8, help="Absolute primary-objective degradation allowed after phase 1 (default: 1e-8)")
+parser.add_argument("--socp-loss-relative-tolerance", type=float, default=1e-6, help="Relative loss degradation allowed in phase 3 (default: 1e-6)")
+parser.add_argument("--socp-loss-absolute-tolerance", type=float, default=1e-8, help="Absolute loss degradation allowed in phase 3 (default: 1e-8)")
+parser.add_argument("--socp-voltage-slack-factor", type=float, default=None, help="Voltage-slack penalty as a factor of ENS cost; default keeps the model value 0.0001")
 args = parser.parse_args()
 
 # Load case study
 printer.information(f"Loading case study from '{args.caseStudyDirectory}'\n")
 start_time = time.time()
 cs = CaseStudy(args.caseStudyDirectory)
-cs = cs.filter_timesteps('k00001','k00100')
+#cs = cs.filter_timesteps('k00001','k01000')
 
 
 rh_length = cs.dGlobal_Parameters["pMovingWindowLength"]
@@ -94,7 +207,7 @@ if not use_moving_window:
     # Solve LEGO model
     printer.information("Solving LEGO model")
     try:
-        results, timing, objective_value = lego.solve_model(model_type=args.modelType)
+        results, timing, objective_value = solve_with_optional_socp_tightening(lego, model)
         printer.information(f"Solving LEGO model took {timing:.2f} seconds\n")
         process_results(results)
         check_exactness_of_socp_solution(lego)
@@ -154,7 +267,7 @@ else:
         # Solve LEGO model
         printer.information("Solving LEGO model")
         try:
-            results, timing, objective_value = lego.solve_model(model_type=args.modelType)
+            results, timing, objective_value = solve_with_optional_socp_tightening(lego, model)
             printer.information(f"Solving LEGO model took {timing:.2f} seconds")
             process_results(results)
             check_exactness_of_socp_solution(lego)
