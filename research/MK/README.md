@@ -68,7 +68,7 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 | `--calculate-regret`     | off            | Re-solve truth model with `vGenInvest` **and** `vCommit` fixed from each model's main run (total regret)     |
 | `--skip-truth`           | off            | Skip solving the full-hourly truth model                                                                    |
 | `--relax-percentage`     | 0              | Fraction of thermal generators to relax from binary to continuous                                           |
-| `--clusters`             | 1              | Number of k-medoids clusters (1 = no clustering)                                                            |
+| `--clusters`             | 1              | Number of k-medoids clusters (1 = no clustering); comma-separated list runs several, e.g. `3,5,7,10,14,18`  |
 | `--cluster-stepsize`     | 1              | Step size when sweeping cluster counts                                                                      |
 | `--cluster-steps`        | 0              | Number of additional cluster count steps                                                                    |
 | `--filter-zone`          | —              | Restrict to buses in a single zone (exact match of `z` column in Power_BusInfo, e.g. `R1`)                  |
@@ -100,6 +100,9 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 | `--perturb-tm`           | —              | Perturb each row of the transition matrix: `new_prob = (1-r)*orig + r*random`, with `r` in [0.0, 1.0]      |
 | `--no-sqlite`            | off            | Do not save results to SQLite                                                                               |
 | `--reuse-inputfiles`     | off            | Reuse already-prepared input folders (e.g. after limitK)                                                    |
+| `--prepare-only`         | off            | Only create the preprocessed input folders (limitK, stretch demand, clusters, …) and exit without solving   |
+| `--original-reference`   | off            | Also evaluate each model's decisions in the **original** (unclustered) full-chronological model — see "Original reference" below. Requires `--invest-regret` and/or `--calculate-regret` |
+| `--original-reference-only` | off         | Only solve the original full-chronological model of the (preprocessed) folder (`MK-…-TruthOriginal.sqlite`) and exit |
 
 **Output naming**: `MK-{identifier}-{edgeHandling}.sqlite`. Regret files append `-regret`, `-invest-regret`, or
 `-operational-regret`; operational runs (`--operational`) append `-operational`.
@@ -126,6 +129,68 @@ is held at the correct (Truth) investment. The operational `vCommit` is taken fr
 sibling-skipped; only when none of these sources exists is operational-regret skipped for that edge handling. Output files append
 `-operational-regret`; like the other regret variants they are written but not returned for downstream plotting.
 `--no-overwrite` skips an operational-regret file only when it already solved to optimality.
+
+**Per-run analysis tables**: every written `.sqlite` (main, operational and all regret runs) additionally gets
+tables computed right after the solve (`MarkovAnalysis.py`):
+
+| Table                        | Content                                                                                                                  |
+|------------------------------|--------------------------------------------------------------------------------------------------------------------------|
+| `mk_metrics`                 | Model size (Gurobi `NumVars`, `NumBinVars`, `NumConstrs`, `NumNZs`), number of RPs and nonzero transition probabilities, memory (Gurobi `MaxMemUsed`, process peak RSS), solver runtime, work units, objective split into investment/operating cost, curtailment and load shedding (MWh and %), vCommit corrections of soft-fixed runs |
+| `mk_nonbinarity`             | How non-binary `vCommit`/`vStartup`/`vShutdown` are: share of RP transitions with a fractional value, maximum and mean distance to 0/1, per variable and for the relaxed window (first `max(MinUp, MinDown)` hours of each RP) |
+| `mk_nonbinary_values`        | Every fractional UC value (raw data for the distribution plots)                                                          |
+| `mk_feasibility`             | Static check (no solve) whether the UC schedule, laid out along the chronology, would be feasible in the full chronological model |
+| `mk_feasibility_violations`  | Violations per day, unit and check                                                                                       |
+
+A **transition** is one chronological RP boundary (day d-1 → d) times one active thermal unit (existing or invested).
+Tolerance for "fractional" is `1e-4` (above Gurobi's `IntFeasTol`). The feasibility check lays the RP schedule out via
+Hindex and checks start-up/shut-down logic, ramping, the shut-down output limit and minimum up/down times hour by hour.
+Every fractional value counts as a violation (`feas_infeasible_pct`); additionally the commitment is rounded at 0.5, the
+start-ups/shut-downs are derived from it and minimum up/down times are checked again (`feas_infeasible_rounded_pct` —
+dispatch-related checks are not repeated there, since the dispatch could always be adjusted to a given commitment).
+So the strict value also counts start-up/shut-down decisions that do not match the chronology (e.g. Cyclic starts a unit
+at the beginning of an RP although it was already running in the chronologically preceding day), while the rounded value
+only counts commitments that are infeasible as such (minimum up/down times violated across the boundary).
+
+**Original reference** (`--original-reference`): Truth is the full-chronological model rebuilt from copies of the RPs.
+With this flag each model's decisions are additionally evaluated in the model with the *original* time series (the
+folder before clustering): `-original-invest-regret` (vGenInvest fixed, also for Truth — isolating the clustering error)
+and `-original-regret` (vGenInvest + vCommit fixed, like `--calculate-regret`). These files carry `reference=original`
+in `run_parameters`. The original model's own optimum is solved once per folder with `--original-reference-only`
+(`MK-…-TruthOriginal.sqlite`), since it does not depend on the number of RPs. MinUp/MinDown times are capped to the RP
+length in the original model as well, so only the time series differ. Skipped (with a warning) for `--shift-tm` /
+`--perturb-tm`, whose chronology is resampled and has no original counterpart.
+
+### `SummarizeMarkov.py` — Tables and plots for the analysis tables
+
+Collects the tables above from all `MK-*.sqlite` files (recursively) into `markov_runs.csv` (one row per file, incl.
+the regret against the matching reference: Truth, Truth-operational or TruthOriginal) and `markov_summary.csv` (mean
+over variants per dataset × number of RPs × edge handling × run kind), and plots per dataset the distribution of how
+non-binary the Markov RP transitions are (`nonbinarity_{dataset}.png`) and the share of infeasible transitions
+(`feasibility_{dataset}.png`).
+
+```bash
+python research/MK/SummarizeMarkov.py results/ --output-dir results/summary
+```
+
+| Parameter              | Default      | Description                                          |
+|------------------------|--------------|------------------------------------------------------|
+| `folder`               | `.`          | Folder with `MK-*.sqlite` files (searched recursively) |
+| `--output-dir`         | input folder | Directory for CSVs and plots                         |
+| `--include-nonoptimal` | off          | Also use non-optimal runs for summary and plots      |
+| `--no-plots`           | off          | Only write the CSV tables                            |
+
+### Revision runs (`jobs-revision.txt`)
+
+All runs for the revision: RTS-GMLC, NREL-118 and TX-123BT × 3/5/7/10/14/18 RPs × demand variability
+(100/50/70/90%) × transition matrix (original, shifted by 1, shifted by 2). Stages must run in order:
+
+0. `--prepare-only` jobs — create all input folders (parallel jobs with `--reuse-inputfiles` would otherwise write the
+   same folders concurrently).
+1. `--original-reference-only` jobs — one original full-chronological solve per dataset and demand variability.
+2. RP jobs — independent of each other and of stage 1 (can run in parallel).
+3. Evaluation (`SummarizeMarkov.py`, `CompareMarkov.py`, `EvaluateMarkov.py`).
+
+`--node-file-dir $TMPDIR/gurobi-nodes` assumes a Linux cluster with node-local `$TMPDIR`.
 
 ### `EvaluateMarkov.py` — Result evaluation
 

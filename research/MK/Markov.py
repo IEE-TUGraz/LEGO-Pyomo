@@ -2,8 +2,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import argparse
+import gc
 import glob
 import logging
 import math
@@ -25,6 +27,7 @@ from InOutModule.ExcelWriter import ExcelWriter
 from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO
 from LEGO.LEGOUtilities import add_UnitCommitmentSlack_And_FixVariables, markov_summand, markov_sum
+from MarkovAnalysis import analyze_and_write
 
 ########################################################################################################################
 # Setup
@@ -37,7 +40,14 @@ pyomo_logger = logging.getLogger('pyomo')
 pyomo_logger.setLevel(logging.INFO)
 
 
-def write_results(lego, file_prefix: str, no_sqlite: bool, **run_parameters):
+def write_results(lego, file_prefix: str, no_sqlite: bool, tm_cs: CaseStudy | None = None, **run_parameters):
+    """Write model results, solver statistics and run parameters to '{file_prefix}.sqlite', then add the
+    per-run analysis tables (metrics, non-binarity, chronological feasibility - see MarkovAnalysis.py).
+
+    :param tm_cs: Case study whose transition matrix is reported in the metrics (the edge handling's reduced case
+        study for runs that re-solve a full-hourly model; default: lego.cs)
+    """
+    sqlite_file = None
     if not no_sqlite:
         sqlite_timer = time.time()
         sqlite_file = f"{file_prefix}.sqlite"
@@ -47,6 +57,7 @@ def write_results(lego, file_prefix: str, no_sqlite: bool, **run_parameters):
         if run_parameters:
             SQLiteWriter.add_run_parameters_to_sqlite(sqlite_file, **run_parameters)
         printer.information(f"Writing model to SQLite database took {time.time() - sqlite_timer:.2f} seconds")
+    analyze_and_write(lego, sqlite_file, tm_cs=tm_cs)
 
 
 def _add_push_markov_constraints(lego: LEGO, thermalGeneratorRelaxed: dict):
@@ -130,7 +141,7 @@ _SIBLING_COMPARE_KEYS = [
     'scale_vres', 'scale_invest_cost', 'thermal_invest_only', 'merge_generators',
     'relax_count', 'no_investment', 'rmip', 'no_crossover', 'force_barrier',
     'mip_gap', 'network', 'commit_consumption', 'startup_consumption', 'edge_handling',
-    'shift_tm', 'perturb_tm', 'run_type',
+    'shift_tm', 'perturb_tm', 'run_type', 'reference',
 ]
 
 
@@ -254,6 +265,130 @@ def _should_skip_smart(current_work_limit: float | None, siblings: list[dict]) -
     return False, f"current work_limit={current_work_limit} is strictly higher than all clean run(s) ({limit_strs}) — re-running", None
 
 
+def _data_identifier(case_study_path: str) -> str:
+    """First part of the sqlite identifier, derived from the case study folder."""
+    return f"data{case_study_path.rstrip('/').replace('/', '_').replace(' ', '')}"
+
+
+def _apply_case_modifications(case_studies: typing.List[CaseStudy], rmip: bool = False, no_crossover: bool = False,
+                              force_barrier: bool = False, mip_gap: float | None = None, work_limit: float | None = None,
+                              node_file_start: float | None = None, node_file_dir: str | None = None,
+                              threads: int | None = None, network: str | None = None,
+                              commit_consumption: float = 1.0, startup_consumption: float = 1.0,
+                              scale_vres: float = 1.0, scale_invest_cost: float = 1.0,
+                              thermal_invest_only: bool = False) -> typing.List[str]:
+    """Apply solver options and data modifications in place to all given case studies (the RP case study and, with
+    --original-reference, the original one - so both see identical settings). node_file_dir must already contain
+    the per-PID subfolder. Returns the identifier parts for the sqlite filenames (Gurobi resource options excluded)."""
+    identifier_parts = []
+    if rmip:
+        printer.information("Setting up case study as rMIP (relaxing all integer variables)")
+        identifier_parts.append("rMIP")
+    if no_crossover:
+        printer.information("Disabling crossover for all solves")
+        identifier_parts.append("noCrossover")
+    if force_barrier:
+        printer.information("Forcing barrier method for all solves")
+        identifier_parts.append("forceBarrier")
+    if mip_gap is not None:
+        printer.information(f"Setting MIP gap to {mip_gap}")
+        identifier_parts.append(f"mipGap{mip_gap:g}")
+    if work_limit is not None:
+        printer.information(f"Setting work limit to {work_limit}")
+        identifier_parts.append(f"workLimit{work_limit:g}")
+    # Gurobi memory-management knobs: not in identifier or sibling-compare keys (resource management, does not affect the solution)
+    if node_file_start is not None:
+        printer.information(f"Setting Gurobi NodefileStart to {node_file_start} GB")
+    if threads is not None:
+        printer.information(f"Setting Gurobi Threads to {threads}")
+    if network is not None:
+        printer.information(f"Setting all lines to network representation '{network}'")
+        identifier_parts.append(f"network{network}")
+    if commit_consumption != 1.0:
+        printer.information(f"Scaling CommitConsumption by {commit_consumption}")
+        identifier_parts.append(f"commitConsumption{commit_consumption:g}")
+    if startup_consumption != 1.0:
+        printer.information(f"Scaling StartupConsumption by {startup_consumption}")
+        identifier_parts.append(f"startupConsumption{startup_consumption:g}")
+    if scale_vres != 1.0:
+        printer.information(f"Scaling VRES MaxProd by {scale_vres}")
+        identifier_parts.append(f"scaleVRES{scale_vres:g}")
+    if scale_invest_cost != 1.0:
+        printer.information(f"Scaling InvestCostEUR by {scale_invest_cost}")
+        identifier_parts.append(f"scaleInvestCost{scale_invest_cost:g}")
+    if thermal_invest_only:
+        printer.information("Setting ExisUnits=1 for all non-thermal generators (thermalInvestOnly)")
+        identifier_parts.append("thermalInvestOnly")
+
+    for cs in case_studies:
+        if rmip:
+            cs.dGlobal_Parameters["pEnableRMIP"] = True
+        if no_crossover:
+            cs.dGlobal_Parameters["pDisableCrossover"] = True
+        if force_barrier:
+            cs.dGlobal_Parameters["pForceBarrier"] = True
+        if mip_gap is not None:
+            cs.dGlobal_Parameters["pMIPGap"] = mip_gap
+        if work_limit is not None:
+            cs.dGlobal_Parameters["pWorkLimit"] = work_limit
+        if node_file_start is not None:
+            cs.dGlobal_Parameters["pNodeFileStart"] = node_file_start
+            cs.dGlobal_Parameters["pNodeFileDir"] = node_file_dir
+        if threads is not None:
+            cs.dGlobal_Parameters["pThreads"] = threads
+        if network is not None:
+            cs.dPower_Network["pTecRepr"] = network
+        if commit_consumption != 1.0:
+            cs.dPower_ThermalGen['pInterVarCostEUR'] *= commit_consumption
+        if startup_consumption != 1.0:
+            cs.dPower_ThermalGen['pStartupCostEUR'] *= startup_consumption
+        if scale_vres != 1.0:
+            cs.dPower_VRES['MaxProd'] *= scale_vres
+        if scale_invest_cost != 1.0:
+            cs.dPower_ThermalGen['InvestCostEUR'] *= scale_invest_cost
+            cs.dPower_VRES['InvestCostEUR'] *= scale_invest_cost
+            cs.dPower_Storage['InvestCostEUR'] *= scale_invest_cost
+        if thermal_invest_only:
+            cs.dPower_VRES['ExisUnits'] = 1
+            cs.dPower_VRES['EnableInvest'] = 0
+            cs.dPower_Storage['ExisUnits'] = 1
+            cs.dPower_Storage['EnableInvest'] = 0
+    return identifier_parts
+
+
+def _cap_min_up_down_times(cs: CaseStudy, cap: int) -> None:
+    """Cap MinUpTime/MinDownTime to `cap` timesteps (the RP length), as the RP models cannot represent longer times."""
+    if any(cs.dPower_ThermalGen["MinUpTime"] > cap) or any(cs.dPower_ThermalGen["MinDownTime"] > cap):
+        printer.warning(f"Some thermal generators have MinUpTime or MinDownTime greater than {cap} - capping it to that number")
+        cs.dPower_ThermalGen["MinUpTime"] = cs.dPower_ThermalGen["MinUpTime"].clip(upper=cap)
+        cs.dPower_ThermalGen["MinDownTime"] = cs.dPower_ThermalGen["MinDownTime"].clip(upper=cap)
+
+
+def _select_relaxed_generators(cs: CaseStudy, relax_percentage: float) -> typing.Tuple[dict, int]:
+    """Thermal generators whose UC variables are relaxed (--relax-percentage): the ones with the smallest
+    MinUpTime + MinDownTime. Returns ({generator: relaxed?}, number relaxed)."""
+    if relax_percentage == 0:
+        return {}, 0
+    thermalGenerators = cs.dPower_ThermalGen.copy()
+    count_relaxed = math.ceil(len(thermalGenerators.index) * relax_percentage)
+    thermalGenerators["MinUpDownTime-Sum"] = thermalGenerators["MinUpTime"] + thermalGenerators["MinDownTime"]
+    thermalGenerators.sort_values(by=["MinUpDownTime-Sum"], inplace=True)
+    return {t: i < count_relaxed for i, t in enumerate(thermalGenerators.index)}, count_relaxed
+
+
+def _relax_unit_commitment(lego: LEGO, thermal_generator_relaxed: dict | None) -> None:
+    """Relax vCommit/vStartup/vShutdown to [0, 1] for the selected generators."""
+    if not thermal_generator_relaxed:
+        return
+    for g in lego.model.thermalGenerators:
+        if thermal_generator_relaxed.get(g):
+            for rp in lego.model.rp:
+                for k in lego.model.k:
+                    lego.model.vCommit[rp, k, g].domain = pyo.PercentFraction
+                    lego.model.vStartup[rp, k, g].domain = pyo.PercentFraction
+                    lego.model.vShutdown[rp, k, g].domain = pyo.PercentFraction
+
+
 def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          calculate_regret: bool = False, relax_percentage: float = 0, skip_truth: bool = False,
                          enable_strict_markov: bool = False, invest_regret: bool = False,
@@ -271,6 +406,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          shift_tm: int | None = None,
                          perturb_tm: float | None = None,
                          cs: CaseStudy | None = None,
+                         original_folder: str | None = None,
                          tee: bool = True) -> typing.Tuple[typing.List[str], typing.List[str], typing.Dict[str, LEGO]]:
     ########################################################################################################################
     # Data input from case study
@@ -287,83 +423,32 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
     else:
         printer.information(f"Using provided CaseStudy object (skipping Excel load)")
 
-    # Build identifier parts for sqlite filenames (similar to TR/ID naming convention)
-    identifier_parts = [f"data{case_study_path.rstrip('/').replace('/', '_').replace(' ', '')}"]
-    if rmip:
-        printer.information("Setting up case study as rMIP (relaxing all integer variables)")
-        cs.dGlobal_Parameters["pEnableRMIP"] = True
-        identifier_parts.append("rMIP")
-
-    if no_crossover:
-        printer.information("Disabling crossover for all solves")
-        cs.dGlobal_Parameters["pDisableCrossover"] = True
-        identifier_parts.append("noCrossover")
-
-    if force_barrier:
-        printer.information("Forcing barrier method for all solves")
-        cs.dGlobal_Parameters["pForceBarrier"] = True
-        identifier_parts.append("forceBarrier")
-
-    if mip_gap is not None:
-        printer.information(f"Setting MIP gap to {mip_gap}")
-        cs.dGlobal_Parameters["pMIPGap"] = mip_gap
-        identifier_parts.append(f"mipGap{mip_gap:g}")
-
-    if work_limit is not None:
-        printer.information(f"Setting work limit to {work_limit}")
-        cs.dGlobal_Parameters["pWorkLimit"] = work_limit
-        identifier_parts.append(f"workLimit{work_limit:g}")
-
-    # Gurobi memory-management knobs: not in identifier or sibling-compare keys
-    # (resource management, does not affect the solution).
     if node_file_start is not None:
-        printer.information(f"Setting Gurobi NodefileStart to {node_file_start} GB")
-        cs.dGlobal_Parameters["pNodeFileStart"] = node_file_start
-        node_file_dir_base = node_file_dir if node_file_dir is not None else os.path.join(os.getcwd(), "gurobi-nodes")
         # Always append a per-PID subfolder so parallel spawns never collide on a shared dir,
         # even if the user passed a path without thinking about parallelism.
+        node_file_dir_base = node_file_dir if node_file_dir is not None else os.path.join(os.getcwd(), "gurobi-nodes")
         node_file_dir = os.path.join(node_file_dir_base, str(os.getpid()))
         printer.information(f"NodeFileDir: '{node_file_dir}' (base '{node_file_dir_base}' + PID subfolder)")
-        cs.dGlobal_Parameters["pNodeFileDir"] = node_file_dir
 
-    if threads is not None:
-        printer.information(f"Setting Gurobi Threads to {threads}")
-        cs.dGlobal_Parameters["pThreads"] = threads
+    # Original full-chronological reference (--original-reference): only meaningful for the unperturbed
+    # transition matrix, since --shift-tm/--perturb-tm resample a synthetic chronology
+    cs_original = None
+    if original_folder is not None and (invest_regret or calculate_regret):
+        if shift_tm is not None or perturb_tm is not None:
+            printer.warning("--original-reference is skipped for runs with --shift-tm/--perturb-tm (their chronology is resampled and does not match the original one)")
+        else:
+            start_time = time.time()
+            cs_original = CaseStudy(original_folder, clip_method="none", clip_value=0)
+            printer.information(f"Loading original (unclustered) case study from '{original_folder}' took {time.time() - start_time:.2f} seconds")
 
-    if network is not None:
-        printer.information(f"Setting all lines to network representation '{network}'")
-        cs.dPower_Network["pTecRepr"] = network
-        identifier_parts.append(f"network{network}")
-
-    if commit_consumption != 1.0:
-        printer.information(f"Scaling CommitConsumption by {commit_consumption}")
-        cs.dPower_ThermalGen['pInterVarCostEUR'] *= commit_consumption
-        identifier_parts.append(f"commitConsumption{commit_consumption:g}")
-
-    if startup_consumption != 1.0:
-        printer.information(f"Scaling StartupConsumption by {startup_consumption}")
-        cs.dPower_ThermalGen['pStartupCostEUR'] *= startup_consumption
-        identifier_parts.append(f"startupConsumption{startup_consumption:g}")
-
-    if scale_vres != 1.0:
-        printer.information(f"Scaling VRES MaxProd by {scale_vres}")
-        cs.dPower_VRES['MaxProd'] *= scale_vres
-        identifier_parts.append(f"scaleVRES{scale_vres:g}")
-
-    if scale_invest_cost != 1.0:
-        printer.information(f"Scaling InvestCostEUR by {scale_invest_cost}")
-        cs.dPower_ThermalGen['InvestCostEUR'] *= scale_invest_cost
-        cs.dPower_VRES['InvestCostEUR'] *= scale_invest_cost
-        cs.dPower_Storage['InvestCostEUR'] *= scale_invest_cost
-        identifier_parts.append(f"scaleInvestCost{scale_invest_cost:g}")
-
-    if thermal_invest_only:
-        printer.information("Setting ExisUnits=1 for all non-thermal generators (thermalInvestOnly)")
-        cs.dPower_VRES['ExisUnits'] = 1
-        cs.dPower_VRES['EnableInvest'] = 0
-        cs.dPower_Storage['ExisUnits'] = 1
-        cs.dPower_Storage['EnableInvest'] = 0
-        identifier_parts.append("thermalInvestOnly")
+    # Build identifier parts for sqlite filenames (similar to TR/ID naming convention)
+    modification_parts = _apply_case_modifications([cs] + ([cs_original] if cs_original is not None else []),
+                                                   rmip=rmip, no_crossover=no_crossover, force_barrier=force_barrier, mip_gap=mip_gap,
+                                                   work_limit=work_limit, node_file_start=node_file_start, node_file_dir=node_file_dir,
+                                                   threads=threads, network=network, commit_consumption=commit_consumption,
+                                                   startup_consumption=startup_consumption, scale_vres=scale_vres,
+                                                   scale_invest_cost=scale_invest_cost, thermal_invest_only=thermal_invest_only)
+    identifier_parts = [_data_identifier(case_study_path)] + modification_parts
 
     if relax_percentage > 0:
         identifier_parts.append(f"relaxed{math.ceil(len(cs.dPower_ThermalGen.index) * relax_percentage)}")
@@ -387,10 +472,9 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         tm_title_parts.append(f"Perturbed by {perturb_tm}")
     Utilities.plot_transition_matrix(cs.rpTransitionMatrixAbsolute, title=", ".join(tm_title_parts), output=f"MK-{identifier}.png")
 
-    if any(cs.dPower_ThermalGen["MinUpTime"] > len(cs.dPower_WeightsK.index)) or any(cs.dPower_ThermalGen["MinDownTime"] > len(cs.dPower_WeightsK.index)):
-        printer.warning(f"Some thermal generators have MinUpTime or MinDownTime greater than the number of K-values ({len(cs.dPower_WeightsK.index)}) - capping it to that number")
-        cs.dPower_ThermalGen["MinUpTime"] = cs.dPower_ThermalGen["MinUpTime"].clip(upper=len(cs.dPower_WeightsK.index))
-        cs.dPower_ThermalGen["MinDownTime"] = cs.dPower_ThermalGen["MinDownTime"].clip(upper=len(cs.dPower_WeightsK.index))
+    _cap_min_up_down_times(cs, len(cs.dPower_WeightsK.index))
+    if cs_original is not None:  # Same cap as the RP models, so only the time series differ between the models
+        _cap_min_up_down_times(cs_original, len(cs.dPower_WeightsK.index))
 
     # Create varied case studies
     start_time = time.time()
@@ -441,34 +525,16 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         printer.information(f"Building model for case study '{name}' took {build_time:.2f} seconds")
     printer.information(f"Building the LEGO models took {time.time() - start_time:.2f} seconds overall")
 
-    thermalGeneratorRelaxed = {}
-    if relax_percentage == 0:
+    thermalGeneratorRelaxed, count_relaxed = _select_relaxed_generators(cs, relax_percentage)
+    if count_relaxed == 0:
         printer.information(f"Not relaxing any unit commitment variables, all thermal generators stay binary")
-        count_relaxed = 0
     else:
-        thermalGenerators = cs.dPower_ThermalGen.copy()
         start_time = time.time()
         printer.information(f"Relaxing {relax_percentage * 100:.1f}% of unit commitment variables for thermal generators")
-        count_relaxed = math.ceil(len(thermalGenerators.index) * relax_percentage)
-
-        printer.information(f"Relaxing {count_relaxed} thermal generator(s), keeping {len(thermalGenerators.index) - count_relaxed} binary")
-        thermalGenerators["MinUpDownTime-Sum"] = thermalGenerators["MinUpTime"] + thermalGenerators["MinDownTime"]
-        thermalGenerators.sort_values(by=["MinUpDownTime-Sum"], inplace=True)
-
-        thermalGeneratorRelaxed = {}
-        for i, t in enumerate(thermalGenerators.index):
-            thermalGeneratorRelaxed[t] = True if i < count_relaxed else False
-
-        printer.information(f"Relaxing {count_relaxed} thermal generators: {[g for g in thermalGenerators.index if thermalGeneratorRelaxed[g]]}")
+        printer.information(f"Relaxing {count_relaxed} thermal generator(s), keeping {len(thermalGeneratorRelaxed) - count_relaxed} binary")
+        printer.information(f"Relaxing {count_relaxed} thermal generators: {[g for g, relaxed in thermalGeneratorRelaxed.items() if relaxed]}")
         for case_name, lego in lego_models.items():
-            # Relax unit commitment variables for selected generators
-            for g in lego.model.thermalGenerators:
-                if thermalGeneratorRelaxed[g]:
-                    for rp in lego.model.rp:
-                        for k in lego.model.k:
-                            lego.model.vCommit[rp, k, g].domain = pyo.PercentFraction
-                            lego.model.vStartup[rp, k, g].domain = pyo.PercentFraction
-                            lego.model.vShutdown[rp, k, g].domain = pyo.PercentFraction
+            _relax_unit_commitment(lego, thermalGeneratorRelaxed)
         printer.information(f"Relaxing {count_relaxed} thermal generators took {time.time() - start_time:.2f} seconds")
 
     if enable_strict_markov:
@@ -509,6 +575,10 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         perturb_tm=perturb_tm,
     )
     sqlite_files, sqlite_labels, lego_models = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite, operational=operational, operational_regret=operational_regret, cs=cs, thermal_generator_relaxed=thermalGeneratorRelaxed, tee=tee)
+
+    if cs_original is not None:
+        execute_original_reference_runs(lego_models, identifier, cs_original, run_params, no_sqlite, no_overwrite, invest_regret, calculate_regret,
+                                        thermalGeneratorRelaxed, tee, tm_cs=cs)
 
     return sqlite_files, sqlite_labels, lego_models
 
@@ -624,14 +694,7 @@ def _build_full_hourly_truth_lego(cs: CaseStudy, thermal_generator_relaxed: dict
     truth_cs = cs.to_full_hourly_model(inplace=False)
     truth_lego = LEGO(truth_cs)
     truth_lego.build_model()
-    if thermal_generator_relaxed:
-        for g in truth_lego.model.thermalGenerators:
-            if thermal_generator_relaxed.get(g):
-                for rp in truth_lego.model.rp:
-                    for k in truth_lego.model.k:
-                        truth_lego.model.vCommit[rp, k, g].domain = pyo.PercentFraction
-                        truth_lego.model.vStartup[rp, k, g].domain = pyo.PercentFraction
-                        truth_lego.model.vShutdown[rp, k, g].domain = pyo.PercentFraction
+    _relax_unit_commitment(truth_lego, thermal_generator_relaxed)
     return truth_lego
 
 
@@ -814,7 +877,7 @@ def execute_operational_runs(lego_models: typing.Dict[str, LEGO], case_name: str
 
                         oregret_params = {**(run_params or {}), "edge_handling": normalized, "run_type": "operational-regret"}
                         if oregret_lego.has_solution:
-                            write_results(oregret_lego, oregret_prefix, no_sqlite, **oregret_params)
+                            write_results(oregret_lego, oregret_prefix, no_sqlite, tm_cs=lego.cs, **oregret_params)
 
                         match oregret_result.solver.termination_condition:
                             case pyo.TerminationCondition.optimal:
@@ -960,7 +1023,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
 
                     regret_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', ''), "run_type": "regret"}
                     if regret_lego.has_solution:
-                        write_results(regret_lego, f"{file_prefix}-regret", no_sqlite, **regret_params)
+                        write_results(regret_lego, f"{file_prefix}-regret", no_sqlite, tm_cs=lego.cs, **regret_params)
 
                     match regret_result.solver.termination_condition:
                         case pyo.TerminationCondition.optimal:
@@ -1025,7 +1088,7 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
 
                     invest_regret_params = {**(run_params or {}), "edge_handling": edgeHandlingType.strip().replace('.', '').replace(' ', ''), "run_type": "invest-regret"}
                     if invest_regret_lego.has_solution:
-                        write_results(invest_regret_lego, f"{file_prefix}-invest-regret", no_sqlite, **invest_regret_params)
+                        write_results(invest_regret_lego, f"{file_prefix}-invest-regret", no_sqlite, tm_cs=lego.cs, **invest_regret_params)
 
                     match invest_regret_result.solver.termination_condition:
                         case pyo.TerminationCondition.optimal:
@@ -1045,6 +1108,180 @@ def execute_case_study(lego_models: typing.Dict[str, LEGO], case_name: str, no_s
     return sqlite_files, sqlite_labels, lego_models
 
 
+def _build_original_reference_lego(cs_original: CaseStudy, thermal_generator_relaxed: dict | None) -> LEGO:
+    """Build (not solve) the original full-chronological model (--original-reference)."""
+    start_time = time.time()
+    cs_original.to_full_hourly_model(inplace=True)  # No-op for hourly data; rebuilds the chronology if the original data uses RPs
+    original_lego = LEGO(cs_original)
+    original_lego.build_model()
+    _relax_unit_commitment(original_lego, thermal_generator_relaxed)
+    printer.information(f"Building original full-chronological model took {time.time() - start_time:.2f} seconds")
+    return original_lego
+
+
+def _solve_and_write(lego: LEGO, file_prefix: str, no_sqlite: bool, params: dict, tee: bool, label: str, tm_cs: CaseStudy | None = None) -> None:
+    """Solve an already set-up model (never raises on a failed solve), write it if a solution exists and log the outcome."""
+    result, timing, objective = lego.solve_model(tee=tee, already_solved_ok=True, raise_on_no_solution=False)
+    work_units_str = f"{lego.work_units:.2f} work units" if lego.work_units is not None else "work units unavailable"
+    printer.information(f"Solving {label} model took {timing:.2f} seconds ({work_units_str})")
+    if lego.has_solution:
+        write_results(lego, file_prefix, no_sqlite, tm_cs=tm_cs, **params)
+    match result.solver.termination_condition:
+        case pyo.TerminationCondition.optimal:
+            printer.success(f"Optimal {label} solution: {objective:.4f}")
+        case pyo.TerminationCondition.infeasible | pyo.TerminationCondition.unbounded:
+            printer.error(f"{label} model is {result.solver.termination_condition}, logging infeasible constraints:")
+            log_infeasible_constraints(lego.model)
+        case _:
+            printer.warning(f"{label} solver terminated with condition:", result.solver.termination_condition)
+
+
+def _is_optimal_file(sqlite_file: str) -> bool:
+    info = _read_sqlite_run_info(sqlite_file) if os.path.exists(sqlite_file) else None
+    return info is not None and info.get('stats', {}).get('termination_condition') == 'optimal'
+
+
+def _edge_main_decisions(lego: LEGO, file_prefix: str, run_params: dict | None, normalized: str, need_commit: bool) -> typing.Tuple[dict | None, pyo.Model | None, str | None]:
+    """vGenInvest (and optionally vCommit) of an edge handling's main run.
+
+    Source: the in-memory model if it was solved in this session, else '{file_prefix}.sqlite', else the sibling
+    that --no-overwrite would have skipped for (differs only in work_limit). vCommit is loaded into the (unsolved)
+    in-memory edge model so it can be used by add_UnitCommitmentSlack_And_FixVariables.
+    Returns (vGenInvest dict, model holding vCommit or None, description) or (None, None, None).
+    """
+    model = lego.model
+    if lego.results is not None and getattr(lego, 'has_solution', False):
+        return {g: model.vGenInvest[g].value for g in model.g}, (model if need_commit else None), "in-memory model"
+    source = f"{file_prefix}.sqlite" if os.path.exists(f"{file_prefix}.sqlite") else None
+    if source is None and run_params is not None:
+        siblings = _find_sibling_runs(file_prefix, {**run_params, "edge_handling": normalized})
+        _, _, source = _should_skip_smart(run_params.get('work_limit'), siblings) if siblings else (False, "", None)
+    if source is None:
+        return None, None, None
+    with sqlite3.connect(source) as cnx:
+        df_inv = pd.read_sql("SELECT * FROM vGenInvest", cnx)
+        df_commit = pd.read_sql("SELECT * FROM vCommit", cnx) if need_commit else None
+    if df_commit is not None:
+        for _, row in df_commit.iterrows():
+            model.vCommit[row.iloc[0], row.iloc[1], row.iloc[2]].value = row['values']
+            model.vCommit[row.iloc[0], row.iloc[1], row.iloc[2]].stale = False
+    return dict(zip(df_inv.iloc[:, 0], df_inv['values'])), (model if need_commit else None), f"'{source}'"
+
+
+def execute_original_reference_runs(lego_models: typing.Dict[str, LEGO], case_name: str, cs_original: CaseStudy,
+                                    run_params: dict | None, no_sqlite: bool, no_overwrite: bool, invest_regret: bool,
+                                    calculate_regret: bool, thermal_generator_relaxed: dict | None, tee: bool,
+                                    tm_cs: CaseStudy | None = None) -> None:
+    """Evaluate each edge handling's decisions in the ORIGINAL full-chronological model (--original-reference).
+
+    Mirrors --invest-regret (vGenInvest hard-fixed) and --calculate-regret (vGenInvest hard-fixed + vCommit soft-fixed
+    via the edge handling's Hindex) against the original, unclustered time series instead of the chronology rebuilt
+    from RP copies. Truth (RP copies) is included in invest-regret: its regret against the original isolates the
+    error of the clustering itself. Files: 'MK-{case}-{edge}-original-{invest-regret|regret}.sqlite' with
+    run_parameters reference='original'. The original model is built lazily (only if a run is not skipped), and the
+    in-memory Truth (RP copies) model is released first, since both are full-year models.
+    tm_cs is the RP case study whose transition matrix is reported in the metrics.
+    """
+    printer.information(f"\n\n{'#' * 60}\nOriginal-reference runs (--original-reference)\n{'#' * 60}")
+    variants = ([("invest-regret", False)] if invest_regret else []) + ([("regret", True)] if calculate_regret else [])
+
+    # Resolve all decisions first, so the large Truth (RP copies) model can be released before building the original model
+    jobs = []
+    for edgeHandlingType, lego in list(lego_models.items()):
+        normalized = edgeHandlingType.strip().replace('.', '').replace(' ', '')
+        file_prefix = f"MK-{case_name}-{normalized}"
+        for run_type, fix_commit in variants:
+            if fix_commit and edgeHandlingType == "Truth ":
+                continue  # Only invest-regret for Truth (its vCommit would require keeping the full-year model)
+            out_prefix = f"{file_prefix}-original-{run_type}"
+            if no_overwrite and _is_optimal_file(f"{out_prefix}.sqlite"):
+                printer.information(f"  File '{out_prefix}.sqlite' already has optimal solution, skipping (--no-overwrite)")
+                continue
+            gen_invest, commit_model, source = _edge_main_decisions(lego, file_prefix, run_params, normalized, need_commit=fix_commit)
+            if gen_invest is None:
+                printer.information(f"  Skipping original {run_type} for '{normalized}': no main-run result available")
+                continue
+            jobs.append((normalized, lego.cs, run_type, out_prefix, gen_invest, commit_model, source))  # No reference to the lego itself, so Truth can be released
+    if "Truth " in lego_models:
+        del lego_models["Truth "]
+        gc.collect()
+
+    original_base = None
+    for normalized, edge_cs, run_type, out_prefix, gen_invest, commit_model, source in jobs:
+        try:
+            printer.information(f"\n{'=' * 60}\n{normalized} (original {run_type}, decisions from {source})\n{'=' * 60}")
+            if original_base is None:
+                original_base = _build_original_reference_lego(cs_original, thermal_generator_relaxed)
+            original_lego = original_base.copy()
+            _apply_solver_options(original_lego, run_params)
+            for g in original_lego.model.g:
+                original_lego.model.vGenInvest[g].value = gen_invest.get(g, 1)
+                original_lego.model.vGenInvest[g].fixed = True
+            if commit_model is not None:
+                # Pyomo's stale flags are global: every solve since the edge's own solve marked its variables stale,
+                # and add_UnitCommitmentSlack_And_FixVariables maps stale values to 0 - so re-mark the values as fresh
+                for var in commit_model.vCommit.values():
+                    if var.value is not None:
+                        var.stale = False
+                add_UnitCommitmentSlack_And_FixVariables(original_lego, commit_model, edge_cs.dPower_Hindex, edge_cs.dPower_ThermalGen, edge_cs.dPower_Parameters["pENSCost"])
+            params = {**(run_params or {}), "edge_handling": normalized, "run_type": run_type, "reference": "original"}
+            _solve_and_write(original_lego, out_prefix, no_sqlite, params, tee, f"original {run_type}", tm_cs=tm_cs if tm_cs is not None else edge_cs)
+            del original_lego
+            gc.collect()
+        except Exception as e:
+            printer.error(f"Original {run_type} failed for '{normalized}': {e}")
+
+
+def execute_original_truth(original_folder: str, no_sqlite: bool = False, relax_percentage: float = 0, no_investment: bool = False,
+                           no_overwrite: bool = False, min_time_cap: int = 24, tee: bool = True, **options) -> None:
+    """Solve the original full-chronological model once (--original-reference-only). It depends only on the data
+    folder (incl. preprocessing such as --stretch-demand) and the model options, not on the number of RPs or the edge
+    handling, so one solve serves all RP runs. MinUp/MinDown times are capped to `min_time_cap` (the RP length),
+    as in the RP models. Writes 'MK-{identifier}-TruthOriginal.sqlite' with reference='original'.
+
+    :param options: The data/solver options accepted by _apply_case_modifications, plus the run-parameter-only
+        entries filter_zone, limit_k, shift, stretch_demand, merge_generators
+    """
+    modification_keys = ['rmip', 'no_crossover', 'force_barrier', 'mip_gap', 'work_limit', 'node_file_start', 'node_file_dir', 'threads', 'network',
+                         'commit_consumption', 'startup_consumption', 'scale_vres', 'scale_invest_cost', 'thermal_invest_only']
+    modifications = {key: options.get(key) for key in modification_keys if options.get(key) is not None}
+    if modifications.get('node_file_start') is not None:
+        node_file_dir_base = modifications.get('node_file_dir') or os.path.join(os.getcwd(), "gurobi-nodes")
+        modifications['node_file_dir'] = os.path.join(node_file_dir_base, str(os.getpid()))
+
+    cs = CaseStudy(original_folder, clip_method="none", clip_value=0)
+    identifier_parts = [_data_identifier(original_folder)] + _apply_case_modifications([cs], **modifications)
+    thermal_generator_relaxed, count_relaxed = _select_relaxed_generators(cs, relax_percentage)
+    if count_relaxed > 0:
+        identifier_parts.append(f"relaxed{count_relaxed}")
+    _cap_min_up_down_times(cs, min_time_cap)
+    file_prefix = f"MK-{'-'.join(identifier_parts)}-TruthOriginal"
+
+    if no_overwrite and _is_optimal_file(f"{file_prefix}.sqlite"):
+        printer.information(f"File '{file_prefix}.sqlite' already has optimal solution, skipping (--no-overwrite)")
+        return
+
+    lego = _build_original_reference_lego(cs, thermal_generator_relaxed)
+    if no_investment:
+        for g in lego.model.g:
+            lego.model.vGenInvest[g].value = 1
+            lego.model.vGenInvest[g].fixed = True
+    params = dict(case_study_directory=original_folder, filter_zone=options.get('filter_zone'), limit_k=options.get('limit_k'), clusters=None,
+                  shift=options.get('shift') or None, stretch_demand=options.get('stretch_demand') if options.get('stretch_demand', 1.0) != 1.0 else None,
+                  scale_vres=modifications.get('scale_vres') if modifications.get('scale_vres', 1.0) != 1.0 else None,
+                  scale_invest_cost=modifications.get('scale_invest_cost') if modifications.get('scale_invest_cost', 1.0) != 1.0 else None,
+                  thermal_invest_only=modifications.get('thermal_invest_only') or None, merge_generators=options.get('merge_generators') or None,
+                  relax_count=count_relaxed or None, no_investment=no_investment or None, rmip=modifications.get('rmip') or None,
+                  no_crossover=modifications.get('no_crossover') or None, force_barrier=modifications.get('force_barrier') or None,
+                  mip_gap=modifications.get('mip_gap'), work_limit=modifications.get('work_limit'), node_file_start=modifications.get('node_file_start'),
+                  node_file_dir=modifications.get('node_file_dir'), threads=modifications.get('threads'), network=modifications.get('network'),
+                  commit_consumption=modifications.get('commit_consumption') if modifications.get('commit_consumption', 1.0) != 1.0 else None,
+                  startup_consumption=modifications.get('startup_consumption') if modifications.get('startup_consumption', 1.0) != 1.0 else None,
+                  shift_tm=None, perturb_tm=None, edge_handling="TruthOriginal", reference="original", min_time_cap=min_time_cap)
+    printer.information(f"\n{'=' * 60}\nTruthOriginal ({original_folder})\n{'=' * 60}")
+    _solve_and_write(lego, file_prefix, no_sqlite, params, tee, "TruthOriginal")
+
+
 def copy_files_non_recursive(src_folder: str, dst_folder: str):
     if not os.path.exists(dst_folder):
         os.makedirs(dst_folder)
@@ -1058,7 +1295,7 @@ def copy_files_non_recursive(src_folder: str, dst_folder: str):
 
 def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, calculate_regret: bool = False,
          relax_percentage: float = 0.0, skip_truth: bool = False,
-         clusters: int = 1, cluster_stepsize: int = 1, cluster_steps: int = 0,
+         clusters: int | str = 1, cluster_stepsize: int = 1, cluster_steps: int = 0,
          filter_zone: str | None = None, limitK: str | None = None,
          shift: int = 0, stretch_demand: float = 1, scale_vres: float = 1.0,
          scale_invest_cost: float = 1.0,
@@ -1069,8 +1306,19 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
          node_file_start: float | None = None, node_file_dir: str | None = None,
          threads: int | None = None,
          network: str | None = None, commit_consumption: float = 1.0, startup_consumption: float = 1.0,
-         shift_tm: int | None = None, perturb_tm: float | None = None):
+         shift_tm: int | None = None, perturb_tm: float | None = None,
+         prepare_only: bool = False, original_reference: bool = False, original_reference_only: bool = False):
     ew = ExcelWriter()
+
+    # --clusters accepts a single number or a comma-separated list (e.g. '3,5,7,10,14,18')
+    cluster_list = [int(c) for c in str(clusters).split(",")]
+    if len(cluster_list) > 1 and cluster_steps != 0:
+        raise ValueError("--cluster-steps cannot be combined with a list of --clusters")
+    if len(cluster_list) == 1:
+        cluster_list = list(range(cluster_list[0], cluster_list[0] + cluster_steps * cluster_stepsize + 1, cluster_stepsize))
+
+    if original_reference and not (invest_regret or calculate_regret):
+        raise ValueError("--original-reference requires --invest-regret and/or --calculate-regret (it evaluates their decisions in the original model)")
 
     if no_crossover != force_barrier:
         raise ValueError("Either both or none of no_crossover and force_barrier must be true")
@@ -1196,8 +1444,19 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                     ew.write_caseStudy(cs, folder)
                     printer.information(f"Wrote generator-merged case study to '{folder}'")
 
-            clusters = list(range(clusters, clusters + cluster_steps * cluster_stepsize + 1, cluster_stepsize))
-            for cluster in clusters:
+            if original_reference_only:
+                # Solve only the original full-chronological model of the (preprocessed) folder - independent of the
+                # number of RPs, so run this once per folder before the RP runs that use --original-reference
+                execute_original_truth(folder, no_sqlite=no_sqlite, relax_percentage=relax_percentage, no_investment=no_investment,
+                                       no_overwrite=no_overwrite, rmip=rmip, no_crossover=no_crossover, force_barrier=force_barrier,
+                                       mip_gap=mip_gap, work_limit=work_limit, node_file_start=node_file_start, node_file_dir=node_file_dir,
+                                       threads=threads, network=network, commit_consumption=commit_consumption,
+                                       startup_consumption=startup_consumption, scale_vres=scale_vres, scale_invest_cost=scale_invest_cost,
+                                       thermal_invest_only=thermal_invest_only, filter_zone=filter_zone, limit_k=limitK, shift=shift,
+                                       stretch_demand=stretch_demand, merge_generators=merge_generators)
+                continue
+
+            for cluster in cluster_list:
                 cluster_folder = folder
                 if cluster > 1:
                     cluster_folder = cluster_folder + f"{cluster} clusters/"
@@ -1210,6 +1469,10 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                         cs_clustered = Utilities.apply_kmedoids_aggregation(cs, cluster, verbose=True)
                         ew.write_caseStudy(cs_clustered, cluster_folder)
 
+                if prepare_only:
+                    printer.information(f"Prepared input files in '{cluster_folder}' (--prepare-only, not solving)")
+                    continue
+
                 printer.information(f"Loading case study from '{cluster_folder}'")
 
                 sqlite_files, case_labels, _ = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret,
@@ -1220,7 +1483,8 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                                                                     merge_generators=merge_generators, no_overwrite=no_overwrite, operational=operational,
                                                                     operational_regret=operational_regret, network=network,
                                                                     commit_consumption=commit_consumption, startup_consumption=startup_consumption,
-                                                                    shift_tm=shift_tm, perturb_tm=perturb_tm)
+                                                                    shift_tm=shift_tm, perturb_tm=perturb_tm,
+                                                                    original_folder=folder if original_reference and cluster > 1 else None)
         except Exception as e:
             printer.error(f"Exception while executing case study '{locals().get('cluster_folder', folder)}': {e}")  # locals-hack to always get correct folder-name
             if debug:
@@ -1240,7 +1504,7 @@ if __name__ == "__main__":
     parser.add_argument("--calculate-regret", action="store_true", help="Calculate regret by re-solving the truth model with vGenInvest and vCommit fixed from each model's main run (can take a while)")
     parser.add_argument("--relax-percentage", type=float, default=0, help="Fraction (0-1) of thermal generators to be relaxed (default: 0 = no relaxation, all binary)")
     parser.add_argument("--skip-truth", action="store_true", help="Skip solving the truth model")
-    parser.add_argument("--clusters", type=int, default=1, help="Number of clusters (default: 1, i.e., no clustering)")
+    parser.add_argument("--clusters", type=str, default="1", help="Number of clusters (default: 1, i.e., no clustering). Can be a comma-separated list, e.g. '3,5,7,10,14,18' (executed after each other)")
     parser.add_argument("--cluster-stepsize", type=int, default=1, help="If in-/decreasing number of clusters should be used (default: 1, leave cluster-steps default to not use in-/decreasing number of clusters)")
     parser.add_argument("--cluster-steps", type=int, default=0, help="Number of steps for in-/decreasing number of clusters (default: 0, i.e., leave clusters as given)")
     parser.add_argument("--filter-zone", type=str, default=None, help="Filter the case study to only include buses in the given zone (exact match of the 'z' column in Power_BusInfo), e.g. 'R1'")
@@ -1271,6 +1535,9 @@ if __name__ == "__main__":
     parser.add_argument("--startup-consumption", type=float, default=1.0, help="Multiplier for the StartupConsumption column of Power_ThermalGen (default: 1.0, no change)")
     parser.add_argument("--shift-tm", type=int, default=None, help="Shift the transition matrix by <N> positions to the right")
     parser.add_argument("--perturb-tm", type=float, default=None, help="Perturb the transition matrix with randomness in [0.0, 1.0]: new_prob = (1-r)*orig + r*random")
+    parser.add_argument("--prepare-only", action="store_true", help="Only create the preprocessed input folders (e.g. clusters, stretched demand) and exit without solving. Run this before starting parallel jobs that use --reuse-inputfiles, so they do not write the same folders concurrently")
+    parser.add_argument("--original-reference", action="store_true", help="Additionally evaluate each model's decisions in the ORIGINAL (unclustered) full-chronological model: '-original-invest-regret' (with --invest-regret, incl. Truth) and '-original-regret' (with --calculate-regret). Only for runs without --shift-tm/--perturb-tm")
+    parser.add_argument("--original-reference-only", action="store_true", help="Only solve the original full-chronological model of the (preprocessed) folder ('MK-...-TruthOriginal.sqlite') and exit. Independent of --clusters, so one run serves all RP counts")
     args = parser.parse_args()
 
     kwargs = vars(args)

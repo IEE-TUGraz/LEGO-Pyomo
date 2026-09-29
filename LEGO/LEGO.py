@@ -32,6 +32,7 @@ class LEGO:
     def __init__(self, cs: typing.Optional[CaseStudy] = None, model: typing.Optional[pyo.Model] = None, results=None):
         self.mip_gap = None
         self.work_units = None
+        self.solver_attributes = {}
         self.cs: typing.Optional[CaseStudy] = cs
         self.model: typing.Optional[pyo.Model] = model
         self.results: typing.Optional[pyomo.opt.results.results_.SolverResults] = results
@@ -98,6 +99,7 @@ class LEGO:
         self.work_units = None  # Initialize work_units
         self.mip_gap = None  # Initialize mip_gap
         self.has_solution = None  # Initialize has_solution (set by the Gurobi solve path)
+        self.solver_attributes = {}  # Gurobi model attributes (size, runtime, memory) - only filled by the Gurobi solve path
         match model_type:
             case ModelType.DETERMINISTIC:
                 # Use persistent solver for Gurobi to access work units
@@ -188,6 +190,13 @@ class LEGO:
                             printer.information("Model is an LP — no MIP gap stored in .sqlite")
                     except Exception as e:
                         printer.warning(f"Could not extract MIP gap from Gurobi: {e}")
+                    # Model size, runtime and peak memory as seen by Gurobi (each read individually,
+                    # since some attributes are unavailable after a crash or in older Gurobi versions)
+                    for attr in ['NumVars', 'NumBinVars', 'NumIntVars', 'NumConstrs', 'NumNZs', 'Runtime', 'MaxMemUsed']:
+                        try:
+                            self.solver_attributes[attr] = getattr(optimizer._solver_model, attr)
+                        except Exception:
+                            pass
                 else:
                     optimizer = pyo.SolverFactory(solver_name)
                     # Apply solver options. MIPGap has a HiGHS equivalent (mip_rel_gap); the other

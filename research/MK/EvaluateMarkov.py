@@ -95,6 +95,7 @@ def _load_metadata_from_conn(conn, basename):
         'merge_generators': None,
         'shift_tm': None,
         'perturb_tm': None,
+        'reference': None,
         'edge_handling': None,
         'run_type': None,
         'work_units': None,
@@ -121,7 +122,7 @@ def _load_metadata_from_conn(conn, basename):
             for key in ['stretch_demand', 'scale_vres', 'scale_invest_cost', 'mip_gap', 'perturb_tm']:
                 if key in row and row[key] not in (None, 'None'):
                     meta[key] = float(row[key])
-            for key in ['network', 'filter_zone', 'shift_tm']:
+            for key in ['network', 'filter_zone', 'shift_tm', 'reference']:
                 if key in row and row[key] not in (None, 'None'):
                     meta[key] = str(row[key])
             for key in ['commit_consumption', 'startup_consumption']:
@@ -361,6 +362,7 @@ def _group_key(entry):
         entry.get('network'),
         entry.get('commit_consumption'),
         entry.get('startup_consumption'),
+        entry.get('reference'),
     )
 
 
@@ -852,7 +854,7 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
     for group_key in all_group_keys:
         group_entries = groups.get(group_key, [])
         op_entries = op_groups.get(group_key, [])
-        case_dir, filter_zone, limit_k, clusters, shift, stretch_demand, scale_vres, scale_invest_cost, thermal_invest_only, merge_generators, shift_tm, perturb_tm, relax_count, no_investment, rmip, no_crossover, force_barrier, mip_gap, network, commit_consumption, startup_consumption = group_key
+        case_dir, filter_zone, limit_k, clusters, shift, stretch_demand, scale_vres, scale_invest_cost, thermal_invest_only, merge_generators, shift_tm, perturb_tm, relax_count, no_investment, rmip, no_crossover, force_barrier, mip_gap, network, commit_consumption, startup_consumption, reference = group_key
 
         # Print group header
         parts = []
@@ -898,6 +900,8 @@ def main(folder=".", plot=False, case_study_folder=None, number_of_hours=6 * 24,
             parts.append(f"shift_tm={shift_tm}")
         if perturb_tm is not None:
             parts.append(f"perturb_tm={perturb_tm:g}")
+        if reference is not None:
+            parts.append(f"reference={reference}")
 
         printer.information(f"\n{'=' * 80}")
         printer.information(f"Group: {', '.join(parts) if parts else '(default)'}")
