@@ -5,12 +5,13 @@ import pyomo.environ as pyo
 from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO import LEGOUtilities
+from LEGO.modules.LoopDetectionBfm import detect_cycle_basis
 
 printer = Printer.getInstance()
 
 
 @LEGOUtilities.safetyCheck_AddElementDefinitionsAndBounds
-def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> (list[pyo.Var], list[pyo.Var]):
+def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) -> tuple[list[pyo.Var], list[pyo.Var]]:
     # Lists for defining stochastic behavior. First stage variables are common for all scenarios, second stage variables are scenario-specific.
     first_stage_variables = []
     second_stage_variables = []
@@ -39,20 +40,22 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.lc_full_no_c = pyo.Set(doc='Candidate lines incl. reverse lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc_full}, dimen=2)
     model.lc_no_c = pyo.Set(doc='Candidate lines without circuit dependency', initialize=lambda m: {(i, j) for (i, j, c) in m.lc}, dimen=2)
 
-    # node -> list of lines where node is sending/receiving
-    model.la_outflows = {node: [] for node in model.i}  # lines where node is the sending end (outflows from node)
-    model.la_inflows = {node: [] for node in model.i}  # lines where node is the receiving end (inflows to node)
-    for (i, j, c) in model.la_full:
+    # node -> list of directed lines where node is sending/receiving
+    model.la_outflows = {node: [] for node in model.i}
+    model.la_inflows = {node: [] for node in model.i}
+    for (i, j, c) in model.la:
         model.la_outflows[i].append((i, j, c))
         model.la_inflows[j].append((i, j, c))
 
     # Parameters
     model.pBusG = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusG'], doc='Conductance of bus i')
-    model.pBusB = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusG'], doc='Susceptance of bus i')
+    model.pBusB = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusB'], doc='Susceptance of bus i')
     model.pBus_pf = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBus_pf'], doc='PowerFactor of bus i')
     model.pRline = pyo.Param(model.la, initialize=cs.dPower_Network['pRline'], doc='Resistance of line la')
     model.pQmax = pyo.Param(model.la, initialize=lambda model, i, j, c: model.pPmax[i, j, c], doc='Maximum reactive power flow on line la')  # It is asumed that Qmax is ident to Pmax
     model.pBigM_SOCP = pyo.Param(initialize=1e3, doc="Big M for SOCP")
+    model.pSOCPTighteningEpsilon = pyo.Param(initialize=1e-3, doc='Small penalty weight for line-current tightening in SOCP BFM')
+    model.pVoltageSlackPenaltyFactor = pyo.Param(initialize=0.0001, mutable=True, doc='Voltage slack penalty relative to ENS cost')
     model.pMaxAngleDiff = pyo.Param(initialize=cs.dPower_Parameters["pMaxAngleDiff"] * np.pi / 180, doc='Maximum angle difference between two buses for the SOCP formulation')
     model.pBusMaxV = pyo.Param(model.i, initialize=cs.dPower_BusInfo['pBusMaxV'], doc='Maximum voltage at bus i')
     model.pBusMinV = pyo.Param(model.i, initialize=lambda model, i: max(cs.dPower_BusInfo['pBusMinV'][i], 0.1), doc='Minimum voltage at bus i (with a lower bound of 0.1)')
@@ -90,26 +93,18 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vLineQ = pyo.Var(model.rp, model.k, model.la, doc="Reactive power flow from bus i to j", bounds=lambda m, rp, k, i, j, c: (-m.pQmax[i, j, c], m.pQmax[i, j, c]) if (i, j, c) in m.le else (-m.pQmax[j, i, c], m.pQmax[j, i, c]) if (i, j, c) in m.le_reverse else (None, None))
     second_stage_variables.append(model.vLineQ)
 
-    model.vSOCP_ui = pyo.Var(model.rp, model.k, model.i, doc='Squared voltage magnitude at bus i', bounds=lambda m, rp, k, i: (m.pBusMinV[i] ** 2, m.pBusMaxV[i] ** 2))
+    model.vSOCP_ui = pyo.Var(model.rp, model.k, model.i, doc='Squared voltage magnitude at bus i', bounds=lambda m, rp, k, i: (m.pVoltageBoundsLow[i] ** 2, m.pVoltageBoundsUp[i] ** 2))
     second_stage_variables.append(model.vSOCP_ui)
 
     if model.pEnableSoftVoltageLimits:
-        model.vSOCP_ui_slack_pos = pyo.Var(
-            model.rp, model.k, model.i,
-            doc='Soft upper voltage violation: max(0, V²_i - pVoltageBoundsUp²)',
-            bounds=lambda m, rp, k, i: (0, (m.pBusMaxV[i] **2 - m.pVoltageBoundsUp[i] **2))
-        )
+        model.vSOCP_ui_slack_pos = pyo.Var(model.rp, model.k, model.i, doc='Slack variable to penalize voltage terms near the upper voltage limits', bounds=lambda m, rp, k, i: (0, m.pBusMaxV[i] **2 - m.pVoltageBoundsUp[i] ** 2))
         second_stage_variables.append(model.vSOCP_ui_slack_pos)
 
-        model.vSOCP_ui_slack_neg = pyo.Var(
-            model.rp, model.k, model.i,
-            doc='Soft lower voltage violation: max(0, pVoltageBoundsLow² - V²_i)',
-            bounds=lambda m, rp, k, i: (0, (m.pVoltageBoundsLow[i] **2 - m.pBusMinV[i] **2))
-        )
+        model.vSOCP_ui_slack_neg = pyo.Var(model.rp, model.k, model.i, doc='Slack variable to penalize voltage terms near the lower voltage limits', bounds=lambda m, rp, k, i: (0, m.pVoltageBoundsLow[i] ** 2 - m.pBusMinV[i] ** 2))
         second_stage_variables.append(model.vSOCP_ui_slack_neg)
     else:
-         model.vSOCP_ui_slack_pos = pyo.Param(model.rp, model.k, model.i, initialize=0, doc='Disabled soft upper voltage slack')
-         model.vSOCP_ui_slack_neg = pyo.Param(model.rp, model.k, model.i, initialize=0, doc='Disabled soft lower voltage slack')
+         model.vSOCP_ui_slack_pos = pyo.Param(model.rp, model.k, model.i, initialize=0, doc='Slack variable to penalize voltage terms near the upper voltage limits (set to 0 when soft voltage limits are disabled)')
+         model.vSOCP_ui_slack_neg = pyo.Param(model.rp, model.k, model.i, initialize=0, doc='Slack variable to penalize voltage terms near the lower voltage limits (set to 0 when soft voltage limits are disabled)')
 
     model.vSOCP_lij = pyo.Var(model.rp, model.k, model.la, doc='Squared current magnitude on line ij', bounds=lambda m, rp, k, i, j, c: (0, None) if (i, j, c) in m.la else (None, None))  # m.pSijNom[i,j,c]/m.pBusMinV[i]
     second_stage_variables.append(model.vSOCP_lij)
@@ -165,12 +160,16 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
+    model.socp_cycle_basis = detect_cycle_basis(model)
+
     # Define active- and reactive power balance expressions
     def eActivePowerBalance_rule(m, rp, k, i):
         return (sum(m.vGenP[rp, k, g] for g in m.gi_node[i])
                 - (m.pDemandP[rp, k, i])
                 + m.vPNS[rp, k, i]
                 - m.vEPS[rp, k, i]
+                + sum(m.vLineP[rp, k, j, i, c] - m.pRline[j, i, c] * m.vSOCP_lij[rp, k, j, i, c] for (j, i2, c) in m.la_inflows[i] if i2 == i)
+                - sum(m.vLineP[rp, k, i, j, c] for (i2, j, c) in m.la_outflows[i] if i2 == i)
                 )
 
     def eReactivePowerBalance_rule(m, rp, k, i):
@@ -178,35 +177,20 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
                 - (m.pDemandQ[rp, k, i])
                 + m.vQNS[rp, k, i]
                 - m.vEQS[rp, k, i]
+                + sum(m.vLineQ[rp, k, j, i, c] - m.pXline[j, i, c] * m.vSOCP_lij[rp, k, j, i, c] for (j, i2, c) in m.la_inflows[i] if i2 == i)
+                - sum(m.vLineQ[rp, k, i, j, c] for (i2, j, c) in m.la_outflows[i] if i2 == i)
                 )
 
     model.eDC_BalanceP_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.i, rule=eActivePowerBalance_rule)
     model.eSOCP_BalanceQ_expr = pyo.Expression(model.rp, model.constraintsActiveK, model.i, rule=eReactivePowerBalance_rule)
-
-    def eSOCP_ActivePowerFlow_rule(m, rp, k, i, j, c):
-        return (- m.vLineP[rp, k, i, j, c]
-                + m.pRline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c]
-                - m.eDC_BalanceP_expr[rp, k, j]
-                + sum(m.vLineP[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j)
-                == 0
-                )
-
-    model.eSOCP_ActivePowerFlow = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc='Active power flow on line ij', rule=eSOCP_ActivePowerFlow_rule)
-
-    def eSOCP_ReactivePowerFlow_rule(m, rp, k, i, j, c):
-        return (m.vLineQ[rp, k, i, j, c] == m.pXline[i, j, c] * m.vSOCP_lij[rp, k, i, j, c]
-                - m.eSOCP_BalanceQ_expr[rp, k, j]
-                + sum(m.vLineQ[rp, k, j2, m_con, c] for (j2, m_con, c) in m.la if j2 == j))  # Only outflows from i
-
-    model.eSOCP_ReactivePowerFlow = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc='Reactive power flow over line ij (SOCP)', rule=eSOCP_ReactivePowerFlow_rule)
 
     model.eSOCP_QMaxOut = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc="Max reactive power output of generator unit", rule=lambda m, rp, k, g: (m.vGenQ[rp, k, g] / m.pMaxGenQ[g] <= m.vCommit[rp, k, g]) if m.pMaxGenQ[g] != 0 and (m.pExisUnits[g] > 0 or m.pEnabInv[g] == 1) else pyo.Constraint.Skip)
     model.eSOCP_QMinOut1 = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc="Min positive reactive power output of generator unit", rule=lambda m, rp, k, g: (m.vGenQ[rp, k, g] / m.pMinGenQ[g] >= m.vCommit[rp, k, g]) if m.pMinGenQ[g] >= 0 and (m.pExisUnits[g] > 0 or m.pEnabInv[g] == 1) else pyo.Constraint.Skip)
     model.eSOCP_QMinOut2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.thermalGenerators, doc="Min negative reactive power output of generator unit", rule=lambda m, rp, k, g: (m.vGenQ[rp, k, g] / m.pMinGenQ[g] <= m.vCommit[rp, k, g]) if m.pMinGenQ[g] <= 0 and (m.pExisUnits[g] > 0 or m.pEnabInv[g] == 1) else pyo.Constraint.Skip)
 
     def eSOCP_VoltageDrop_rule(m, rp, k, i, j, c):
-        return (m.vSOCP_ui[rp, k, j] ==
-                m.vSOCP_ui[rp, k, i]  -
+        return ((m.vSOCP_ui[rp, k, j] + model.vSOCP_ui_slack_pos[rp, k, j] - model.vSOCP_ui_slack_neg[rp, k, j]) ==
+                (m.vSOCP_ui[rp, k, i] + model.vSOCP_ui_slack_pos[rp, k, i] - model.vSOCP_ui_slack_neg[rp, k, i]) -
                 2 * (m.pRline[i, j, c] * m.vLineP[rp, k, i, j, c] + m.pXline[i, j, c] * m.vLineQ[rp, k, i, j, c]) +
                 (m.pRline[i, j, c] ** 2 + m.pXline[i, j, c] ** 2) * m.vSOCP_lij[rp, k, i, j, c])
 
@@ -214,19 +198,26 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     def eSOCP_FlowDef_rule(m, rp, k, i, j, c):
         if any((i, j, c) in m.la for c in m.c):
-            return m.vSOCP_lij[rp, k, i, j, c] * m.vSOCP_ui[rp, k, i] >= m.vLineP[rp, k, i, j, c] ** 2 + m.vLineQ[rp, k, i, j, c] ** 2
+            return m.vSOCP_lij[rp, k, i, j, c] * (m.vSOCP_ui[rp, k, i] + m.vSOCP_ui_slack_pos[rp, k, i] - m.vSOCP_ui_slack_neg[rp, k, i])>= m.vLineP[rp, k, i, j, c] ** 2 + m.vLineQ[rp, k, i, j, c] ** 2
         else:
             return pyo.Constraint.Skip
 
     model.eSOCP_FlowDef = pyo.Constraint(model.rp, model.constraintsActiveK, model.la, doc="SCOP constraints for existing lines (for AC-OPF) original set", rule=eSOCP_FlowDef_rule)
 
+    model.eSOCP_CycleAngleLin = pyo.ConstraintList(doc='Linearized meshed-network cycle constraints for SOCP BFM')
+    for cycle_edges in model.socp_cycle_basis:
+        for rp in model.rp:
+            for k in model.constraintsActiveK:
+                model.eSOCP_CycleAngleLin.add(
+                    sum(sign * (model.pXline[i, j, c] * model.vLineP[rp, k, i, j, c] - model.pRline[i, j, c] * model.vLineQ[rp, k, i, j, c])
+                        for sign, i, j, c in cycle_edges) == 0
+                )
+
     def eSOCP_VoltageLimitSlack_rule1(m, rp, k, i):
-        # True V² may go below the soft lower bound; slack_neg absorbs the deficit
-        return m.vSOCP_ui[rp, k, i] + m.vSOCP_ui_slack_neg[rp, k, i] >= m.pVoltageBoundsLow[i] ** 2
+        return (m.vSOCP_ui[rp, k, i] - m.vSOCP_ui_slack_neg[rp, k, i]   >= m.pBusMinV[i] ** 2)
 
     def eSOCP_VoltageLimitSlack_rule2(m, rp, k, i):
-        # True V² may go above the soft upper bound; slack_pos absorbs the excess
-        return m.vSOCP_ui[rp, k, i] - m.vSOCP_ui_slack_pos[rp, k, i] <= m.pVoltageBoundsUp[i] ** 2
+        return (m.vSOCP_ui[rp, k, i] + m.vSOCP_ui_slack_pos[rp, k, i] <= m.pBusMaxV[i] ** 2)
 
     model.eSOCP_VoltageLimitSlack = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="SOCP constraints for voltage limits with slack variables", rule=eSOCP_VoltageLimitSlack_rule1)
     model.eSOCP_VoltageLimitSlack2 = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc="SOCP constraints for voltage limits with slack variables", rule=eSOCP_VoltageLimitSlack_rule2)
@@ -235,40 +226,49 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         model.eSOCP_QMinFACTS = pyo.Constraint(model.rp, model.constraintsActiveK, model.facts, doc='min reactive power output of FACTS unit', rule=lambda m, rp, k, i: m.vGenQ[rp, k, i] >= m.pMaxGenQ[i] * (m.pExisUnits[i] + m.vGenInvest[i]))
         model.eSOCP_QMaxFACTS = pyo.Constraint(model.rp, model.constraintsActiveK, model.facts, doc='max reactive power output of FACTS unit', rule=lambda m, rp, k, i: m.vGenQ[rp, k, i] <= m.pMaxGenQ[i] * (m.pExisUnits[i] + m.vGenInvest[i]))
 
-    # define a active and reactive power balance constraint for the slack bus to use the ImExport implementation (only called DC to be consistent with the rest of the model)
-    for rp in model.rp:
-        for k in model.constraintsActiveK:
-            for i in model.slack_node:
-                model.eDC_BalanceP_expr[rp, k, i] -= sum(model.vLineP[rp, k, j, m_con, c] for (j, m_con, c) in model.la if j == i)
-                model.eSOCP_BalanceQ_expr[rp, k, i] -= sum(model.vLineQ[rp, k, j, m_con, c] for (j, m_con, c) in model.la if j == i)
-
-    model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.slack_node, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eDC_BalanceP_expr[rp, k, i] == 0)
-    model.eSOCP_BalanceQ = pyo.Constraint(model.rp, model.constraintsActiveK, model.slack_node, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eSOCP_BalanceQ_expr[rp, k, i] == 0)
+    model.eDC_BalanceP = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc='Power balance constraint for each bus', rule=lambda m, rp, k, i: m.eDC_BalanceP_expr[rp, k, i] == 0)
+    model.eSOCP_BalanceQ = pyo.Constraint(model.rp, model.constraintsActiveK, model.i, doc='Reactive power balance constraint for each bus', rule=lambda m, rp, k, i: m.eSOCP_BalanceQ_expr[rp, k, i] == 0)
 
     # OBJECTIVE FUNCTION ADJUSTMENT(S)
     first_stage_objective = (sum(model.pFixedCost[i, j, c] * model.vLineInvest[i, j, c] for i, j, c in model.lc))  # Investment cost of transmission lines
 
-    # Reactive slack node terms included when SOCP active
-    def ens_terms(rp, k):
-        if model.pEnableSoftVoltageLimits:
-            return sum(
-                model.vQNS[rp, k, i] * model.pENSCost
-                + model.vEQS[rp, k, i] * model.pENSCost * 2
-                + (model.vSOCP_ui_slack_pos[rp, k, i] + model.vSOCP_ui_slack_neg[rp, k, i]) * model.pENSCost * 0.005  # Penalize voltage limit slack variables
-                for i in model.i
-        )
-        else:
-            return sum(
-                model.vQNS[rp, k, i] * model.pENSCost
-                + model.vEQS[rp, k, i] * model.pENSCost * 2
-                for i in model.i
+    def reactive_slack_terms(rp, k):
+        return sum(
+            model.vQNS[rp, k, i] * model.pENSCost
+            + model.vEQS[rp, k, i] * model.pENSCost * 2
+            for i in model.i
         )
 
-    second_stage_objective = sum(model.pWeight_rp[rp] *  # Weight of representative periods
-                                 sum(model.pWeight_k[k] *  # Weight of time steps
-                                     ens_terms(rp, k)  # Power non supplied terms
+    model.eSOCPVoltageSlack = pyo.Expression(
+        expr=(sum(model.pWeight_rp[rp] *
+                  sum(model.pWeight_k[k] *
+                      sum(model.vSOCP_ui_slack_pos[rp, k, i] + model.vSOCP_ui_slack_neg[rp, k, i]
+                          for i in model.i)
+                      for k in model.constraintsActiveK)
+                  for rp in model.rp)
+              if model.pEnableSoftVoltageLimits else 0.0),
+        doc="Weighted voltage-limit violation in squared per-unit voltage",
+    )
+    model.eSOCPVoltageSlackPenalty = pyo.Expression(
+        expr=model.pENSCost * model.pVoltageSlackPenaltyFactor * model.eSOCPVoltageSlack,
+        doc="Voltage-limit violation contribution to the standard objective",
+    )
+
+    model.eSOCPTighteningLoss = pyo.Expression(
+        expr=sum(model.pWeight_rp[rp] *
+                 sum(model.pWeight_k[k] *
+                     sum(model.pRline[i, j, c] * model.vSOCP_lij[rp, k, i, j, c] for i, j, c in model.la)
+                     for k in model.constraintsActiveK)
+                 for rp in model.rp),
+        doc="Weighted active line losses used for SOCP tightening",
+    )
+
+    second_stage_objective = sum(model.pWeight_rp[rp] *
+                                 sum(model.pWeight_k[k] * reactive_slack_terms(rp, k)
                                      for k in model.constraintsActiveK)
                                  for rp in model.rp)
+    second_stage_objective += model.eSOCPVoltageSlackPenalty
+    second_stage_objective += model.pSOCPTighteningEpsilon * model.eSOCPTighteningLoss
 
     # Adjust objective and return first_stage_objective expression
     model.objective.expr += first_stage_objective + second_stage_objective

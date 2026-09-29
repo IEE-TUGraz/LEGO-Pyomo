@@ -15,10 +15,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.dummySet_DGA = pyo.Set(initialize=[None]) # Dummy set for scalar variable
 
     model.pDGAFactor = pyo.Param(model.rp, model.k, model.vresGenerators,initialize=cs.dPower_DGA['value'],default=0,doc="Curtailment factor of VRES generators")
-    model.pDGACurtailShare = 0.3 # Maximum curtailment of the installed PV capacity
-
-    model.vDGATestFirst= pyo.Var(model.rp, model.k,  doc="First Stage Test variable for DGA", bounds=(0, None))
-    first_stage_variables.append(model.vDGATestFirst)
 
     model.vDGACurtailment = pyo.Var(model.rp, model.k, model.vresGenerators, doc="Curtailment per generator and time", bounds=(0, None))
     second_stage_variables.append(model.vDGACurtailment)
@@ -37,14 +33,20 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     def eDGA_MaxCurtailmentRule(model, rp, k, r):
-        return model.vDGACurtailment[rp, k, r] <= model.pDGAFactor[rp, k, r]  # Example constraint for DGA test variable
+        available = model.pMaxProd[r] * (model.pExisUnits[r] + model.vGenInvest[r]) * model.pCapacityFactors[rp, k, r]
+        if r in model.vresGenerators:
+            return model.vGenP[rp, k, r] + model.vDGACurtailment[rp, k, r] == available
+        return model.vGenP[rp, k, r] == available  # non-PV: must-take, no curtailment
     model.eDGA_MaxCurtailment = pyo.Constraint(model.rp, model.constraintsActiveK, model.vresGenerators, doc='Maximum curtailment constraint for DGA from parameters', rule=eDGA_MaxCurtailmentRule)
 
     def eMaxCPowerClipping_rule(model, rp, k, r):
-        if model.pCapacityFactors[rp, k, r]  <= (1-model.pDGACurtailShare):
-            return model.vDGACurtailment[rp, k, r] == 0
-        else:
-            return model.vDGACurtailment[rp, k, r] <= model.pMaxProd[r] * (model.pExisUnits[r] + model.vGenInvest[r]) * (model.pCapacityFactors[rp, k, r]  - (1-model.pDGACurtailShare))
+        if r in model.vresGenerators:
+            shaveable_share = max(0.0, pyo.value(model.pCapacityFactors[rp, k, r]) - (1 - pyo.value(model.pDGAFactor[rp, k, r])))
+            installed_cap = model.pMaxProd[r] * (model.pExisUnits[r] + model.vGenInvest[r])
+            if shaveable_share == 0:
+                return model.vDGACurtailment[rp, k, r] == 0
+            return model.vDGACurtailment[rp, k, r] <= installed_cap * shaveable_share
+        return pyo.Constraint.Skip
 
     model.eMaxCPowerClipping = pyo.Constraint(model.rp, model.constraintsActiveK, model.vresGenerators, rule=eMaxCPowerClipping_rule , doc='Curtailment can only occur when the capacity factor exceeds the maximum allowed curtailment share')
 
@@ -66,18 +68,13 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
 
     model.eDGA_TotalCurtailment = pyo.Constraint(model.dummySet_DGA, rule=eDGA_TotalCurtailment_rule)
 
-    def eDGA_Test_rule_first(model, rp, k):
-        return model.vDGATestFirst[rp, k] == 33  # Example constraint for DGA test variable
-    model.eDGA_Test_first = pyo.Constraint(model.rp, model.constraintsActiveK, doc='Test constraint for first stage varibale', rule=eDGA_Test_rule_first)
-
-
     first_stage_objective = 0.0
     second_stage_objective = sum(model.pWeight_rp[rp] *
                                  sum(model.pWeight_k[k] *
                                      sum(model.vDGACurtailment[rp, k, r]
                                          for r in model.vresGenerators)
                                      for k in model.constraintsActiveK)
-                                 for rp in model.rp) * model.pLOLCost * 0.01
+                                 for rp in model.rp) * model.pLOLCost * 0.0001
 
     model.objective.expr += first_stage_objective + second_stage_objective
     return first_stage_objective
