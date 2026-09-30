@@ -163,12 +163,12 @@ def create_case_study(storage, pEnableChDisPower, network_entries=None):
         "pReprPeriodEdgeHandlingUnitCommitment": "cyclic",
         "pReprPeriodEdgeHandlingRamping": "cyclic",
         "pReprPeriodEdgeHandlingIntraDayStorage": "cyclic",
-        "is": None,
+        "is": "CALCULATE_FROM_MAX_DEMAND",
     }
 
     dPower_Hindex = pd.DataFrame(data={"scenario": scenario}, index=pd.MultiIndex.from_tuples([(k.replace("k", "h"), rp, k) for k in ks], names=["p", "rp", "k"]))
 
-    dPower_WeightsK = pd.DataFrame(data={"pWeight_k": 1}, index=pd.Index(ks, name="k"))
+    dPower_WeightsK = pd.DataFrame(data={"pWeight_k": 1, "scenario": scenario}, index=pd.Index(ks, name="k"))
 
     buses = [bus]
     for entry in network_entries:
@@ -176,7 +176,7 @@ def create_case_study(storage, pEnableChDisPower, network_entries=None):
             if network_bus not in buses:
                 buses.append(network_bus)
 
-    dPower_BusInfo = pd.DataFrame({"z": ["TestZone"] * len(buses), "zoi": [1] * len(buses)}, index=pd.Index(buses, name="i"))
+    dPower_BusInfo = pd.DataFrame({"z": ["TestZone"] * len(buses), "zoi": [1] * len(buses), "scenario": scenario}, index=pd.Index(buses, name="i"))
 
     dPower_Demand = pd.DataFrame(
         {
@@ -195,8 +195,8 @@ def create_case_study(storage, pEnableChDisPower, network_entries=None):
         index=pd.MultiIndex.from_tuples(network_lines, names=["i", "j", "c"]),
     )
 
-    dPower_ThermalGen = pd.DataFrame(columns=["excl", "tec", "i", "ExisUnits", "MaxProd", "MinProd", "RampUp", "RampDw", "MinUpTime", "MinDownTime", "Qmax", "Qmin", "FuelCost", "Efficiency", "CommitConsumption", "OMVarCost", "StartupConsumption", "EFOR", "EnableInvest", "InvestCost"],
-                                     data=[(None, "Gas", bus, 1, 60, 60, 60, 60, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0)],
+    dPower_ThermalGen = pd.DataFrame(columns=["excl", "tec", "i", "ExisUnits", "MaxProd", "MinProd", "RampUp", "RampDw", "MinUpTime", "MinDownTime", "Qmax", "Qmin", "FuelCost", "Efficiency", "CommitConsumption", "OMVarCost", "StartupConsumption", "EFOR", "EnableInvest", "InvestCost", "scenario"],
+                                     data=[(None, "Gas", bus, 1, 60, 60, 60, 60, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, scenario)],
                                      index=pd.Index(["FixedGenerator"], name="g"))
 
     dPower_Storage = pd.DataFrame(
@@ -220,6 +220,7 @@ def create_case_study(storage, pEnableChDisPower, network_entries=None):
             "InvestCostPerMW": [0],
             "InvestCostPerMWh": [0],
             "Ene2PowRatio": [1],
+            "scenario": [scenario],
         },
         index=pd.Index([storage], name="g"),
     )
