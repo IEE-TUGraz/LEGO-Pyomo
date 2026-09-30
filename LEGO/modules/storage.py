@@ -77,10 +77,10 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vConsump = pyo.Var(model.rp, model.k, model.storageUnits, doc='Charging of storage unit g [power]', bounds=lambda model, rp, k, g: (0, model.pMaxCons[g] * (model.pExisUnits[g] + (model.pMaxInvest[g] * model.pEnabInv[g]))))
     second_stage_variables += [model.vConsump]
 
-    model.vStIntraRes = pyo.Var(model.rp, model.k, model.intraStorageUnits, doc='Intra-reserve of storage unit g [energy]', bounds=lambda m, rp, k, g: (m.pMinReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g])), m.pMaxReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g]))))
+    model.vStIntraRes = pyo.Var(model.rp, model.k, model.intraStorageUnits, doc='Intra-reserve of storage unit g [energy]', bounds=lambda m, rp, k, g: (m.pMinReserve[g] * m.pExisUnits[g], m.pMaxReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g]))))
     second_stage_variables += [model.vStIntraRes]
 
-    model.vStInterRes = pyo.Var(model.movingWindowP, model.interStorageUnits, doc='Inter-reserve of storage unit g [energy]', bounds=lambda m, p, g: (m.pMinReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g])), m.pMaxReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g]))))
+    model.vStInterRes = pyo.Var(model.movingWindowP, model.interStorageUnits, doc='Inter-reserve of storage unit g [energy]', bounds=lambda m, p, g: (m.pMinReserve[g] * m.pExisUnits[g], m.pMaxReserve[g] * (m.pExisUnits[g] + (m.pMaxInvest[g] * m.pEnabInv[g]))))
     second_stage_variables += [model.vStInterRes]
 
     model.vStorageSpillage = pyo.Var(model.rp, model.k, model.hydroStorageUnits, doc='Spillage of hydro storage unit [power]', bounds=lambda m, rp, k, s: (0, (m.pMaxReserve[s] * (m.pExisUnits[s] + (m.pMaxInvest[s] * m.pEnabInv[s]))) + m.pStorageInflows[rp, k, s]))
