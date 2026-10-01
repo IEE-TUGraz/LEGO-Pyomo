@@ -19,10 +19,11 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.vDGACurtailment = pyo.Var(model.rp, model.k, model.vresGenerators, doc="Curtailment per generator and time", bounds=(0, None))
     second_stage_variables.append(model.vDGACurtailment)
 
-    model.vDGAGeneratorCurtailment = pyo.Var(model.vresGenerators, doc= "Total curtailment of each generator compared to the total energy produced", bounds=(0, None))
+    # Result values only (not part of any constraint) - filled after solving by calculate_curtailment_results()
+    model.vDGAGeneratorCurtailment = pyo.Var(model.vresGenerators, doc="Curtailed energy of each generator as share of its available energy [%]", bounds=(0, None))
     second_stage_variables.append(model.vDGAGeneratorCurtailment)
 
-    model.vDGATotalCurtailment = pyo.Var(model.dummySet_DGA,doc= "Total curtailed energy of VRES generators", bounds=(0, None))
+    model.vDGATotalCurtailment = pyo.Var(model.dummySet_DGA, doc="Total curtailed energy of VRES generators [p.u. x h]", bounds=(0, None))
     second_stage_variables.append(model.vDGATotalCurtailment)
 
 
@@ -31,13 +32,6 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 
 @LEGOUtilities.safetyCheck_addConstraints([add_element_definitions_and_bounds])
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
-
-    def eDGA_MaxCurtailmentRule(model, rp, k, r):
-        available = model.pMaxProd[r] * (model.pExisUnits[r] + model.vGenInvest[r]) * model.pCapacityFactors[rp, k, r]
-        if r in model.vresGenerators:
-            return model.vGenP[rp, k, r] + model.vDGACurtailment[rp, k, r] == available
-        return model.vGenP[rp, k, r] == available  # non-PV: must-take, no curtailment
-    model.eDGA_MaxCurtailment = pyo.Constraint(model.rp, model.constraintsActiveK, model.vresGenerators, doc='Maximum curtailment constraint for DGA from parameters', rule=eDGA_MaxCurtailmentRule)
 
     def eMaxCPowerClipping_rule(model, rp, k, r):
         if r in model.vresGenerators:
@@ -54,27 +48,39 @@ def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
         return model.vGenP[rp, k, r] + model.vDGACurtailment[rp, k, r] == model.pMaxProd[r] * (model.pExisUnits[r] + model.vGenInvest[r]) * model.pCapacityFactors[rp, k, r]
     model.eReMaxProdDGA = pyo.Constraint(model.rp, model.constraintsActiveK, model.vresGenerators, doc= 'Production constraint with curtailment', rule=eReMaxProdDGA_rule)
 
-    # Result calculations for curtailed energy
-
-    def eDGA_GeneratorCurtailment_rule(model, r):
-        return model.vDGAGeneratorCurtailment[r] == sum(model.pWeight_rp[rp] * model.vDGACurtailment[rp, k, r] for rp in model.rp for k in model.constraintsActiveK)
-    model.eDGA_GeneratorCurtailment = pyo.Constraint(model.vresGenerators, doc='Total curtailment for each generator compared to the maximum possible generation', rule=eDGA_GeneratorCurtailment_rule)
-
-    def eDGA_TotalCurtailment_rule(model, d):
-        return model.vDGATotalCurtailment[d] == sum(
-            model.vDGACurtailment[rp, k, r]
-            for rp in model.rp for k in model.constraintsActiveK for r in model.vresGenerators
-        )
-
-    model.eDGA_TotalCurtailment = pyo.Constraint(model.dummySet_DGA, rule=eDGA_TotalCurtailment_rule)
-
     first_stage_objective = 0.0
     second_stage_objective = sum(model.pWeight_rp[rp] *
                                  sum(model.pWeight_k[k] *
                                      sum(model.vDGACurtailment[rp, k, r]
                                          for r in model.vresGenerators)
                                      for k in model.constraintsActiveK)
-                                 for rp in model.rp) * model.pLOLCost * 0.0001
+                                 for rp in model.rp) * model.pLOLCost * 0.00001
 
     model.objective.expr += first_stage_objective + second_stage_objective
     return first_stage_objective
+
+
+def calculate_curtailment_results(model: pyo.ConcreteModel) -> None:
+    """Fill vDGAGeneratorCurtailment and vDGATotalCurtailment after solving (call before writing results).
+
+    Share per generator = weighted curtailed energy / weighted available energy (vGenP + vDGACurtailment) in %.
+    This is a ratio of variables (vGenInvest is a decision), so it cannot be a linear constraint and is computed
+    from the solution instead. Sums run over all k with a solution value, so moving-window runs are covered too.
+    """
+    total = 0.0
+    for r in model.vresGenerators:
+        curtailed = available = 0.0
+        for rp in model.rp:
+            for k in model.k:
+                c = model.vDGACurtailment[rp, k, r].value
+                p = model.vGenP[rp, k, r].value
+                if c is None or p is None:
+                    continue
+                w = pyo.value(model.pWeight_rp[rp]) * pyo.value(model.pWeight_k[k])
+                curtailed += w * c
+                available += w * (p + c)
+        share = 100 * curtailed / available if available > 1e-9 else 0.0
+        model.vDGAGeneratorCurtailment[r].set_value(max(share, 0.0), skip_validation=True)
+        total += curtailed
+    for d in model.dummySet_DGA:
+        model.vDGATotalCurtailment[d].set_value(max(total, 0.0), skip_validation=True)

@@ -14,6 +14,7 @@ from InOutModule.CaseStudy import CaseStudy
 from InOutModule.printer import Printer
 from LEGO.LEGO import LEGO, ModelType
 from LEGO.LEGOUtilities import analyze_infeasible_constraints
+from LEGO.modules import DGA
 
 from tools.checkSocpExactness import check_exactness_of_socp_solution
 
@@ -69,7 +70,7 @@ args = parser.parse_args()
 printer.information(f"Loading case study from '{args.caseStudyDirectory}'\n")
 start_time = time.time()
 cs = CaseStudy(args.caseStudyDirectory)
-cs = cs.filter_timesteps('k24000','k25000')
+cs = cs.filter_timesteps('k20000','k25000')
 
 
 rh_length = cs.dGlobal_Parameters["pMovingWindowLength"]
@@ -170,6 +171,8 @@ else:
 
 printer.information(f"Finished in {time.time() - start_time:.2f} seconds")
 
+if cs.dPower_Parameters["pEnableDGA"]:
+    DGA.calculate_curtailment_results(model)  # Result shares need the solution, see DGA.py
 SQLiteWriter.model_to_sqlite(model, "model.sqlite")
 #ExcelWriter.model_to_excel(model, "model.xlsx")
 model.write("model.mps", io_options={'labeler': NameLabeler()})

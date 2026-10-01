@@ -28,7 +28,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
             model.vGenInvest[g].fix(0)  # Ensure that max investment is exactly zero if investment is disabled
 
     LEGO.addToParameter(model, "pInvestCost", cs.dPower_VRES['InvestCostEUR'])
-    LEGO.addToParameter(model, "pMaxProd", cs.dPower_VRES['MaxProd'])
+    LEGO.addToParameter(model, "pMaxProd", cs.dPower_VRES['MaxProd']*1.3333333)
     LEGO.addToParameter(model, "pMinProd", cs.dPower_VRES['MinProd'])
     LEGO.addToParameter(model, "pExisUnits", cs.dPower_VRES['ExisUnits'])
 
