@@ -22,7 +22,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     model.windGenerators = pyo.Set(doc='Wind generators',initialize=cs.dPower_VRES.loc[cs.dPower_VRES['tec'] == 'Wind'].index.tolist())
 
     # Parameters
-    model.pCurtailmentLimit = pyo.Param( initialize=0.3,doc="Curtailment limit for PV generators")
+    model.pCurtailmentLimit = pyo.Param( initialize=0.4,doc="Curtailment limit for PV generators")
 
     LEGO.addToParameter(model, "pOMVarCost", cs.dPower_VRES['OMVarCost'])
     LEGO.addToParameter(model, "pEnabInv", cs.dPower_VRES['EnableInvest'])
@@ -81,19 +81,19 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
 def add_constraints(model: pyo.ConcreteModel, cs: CaseStudy):
     def eReMaxProd_rule(model, rp, k, r):
         available = model.pMaxProd[r] * (model.pExisUnits[r] + model.vGenInvest[r]) * model.pCapacityFactors[rp, k, r]
-        if r in model.vresGenerators:
+        if r in model.pvGenerators:
             return model.vGenP[rp, k, r] + model.vCurtailment[rp, k, r] == available
         return model.vGenP[rp, k, r] == available  # non-PV: must-take, no curtailment
 
     def eMaxCurtailment_rule(model, rp, k, r):
-        if r in model.vresGenerators:
+        if r in model.pvGenerators:
             maximum_Curtailment = model.pMaxProd[r] * (model.pExisUnits[r] + model.vGenInvest[r]) * model.pCurtailmentLimit
             return model.vCurtailment[rp, k, r] <= maximum_Curtailment
         return pyo.Constraint.Skip  # Skip for non-PV generators
 
     def ePeakshaving_rule(model, rp, k, r):
         # Only the share of available power above (1 - L) * installed capacity may be curtailed
-        if r in model.vresGenerators:
+        if r in model.pvGenerators:
             shaveable_share = max(0.0, pyo.value(model.pCapacityFactors[rp, k, r]) - (1 - pyo.value(model.pCurtailmentLimit)))
             installed_cap = model.pMaxProd[r] * (model.pExisUnits[r] + model.vGenInvest[r])
             if shaveable_share == 0:
