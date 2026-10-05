@@ -68,7 +68,7 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 | `--calculate-regret`     | off            | Re-solve truth model with `vGenInvest` **and** `vCommit` fixed from each model's main run (total regret)     |
 | `--skip-truth`           | off            | Skip solving the full-hourly truth model                                                                    |
 | `--relax-percentage`     | 0              | Fraction of thermal generators to relax from binary to continuous                                           |
-| `--clusters`             | 1              | Number of k-medoids clusters (1 = no clustering)                                                            |
+| `--clusters`             | 1              | Number of k-medoids clusters (1 = no clustering); comma-separated list runs several, e.g. `3,5,7,10,14,18`  |
 | `--cluster-stepsize`     | 1              | Step size when sweeping cluster counts                                                                      |
 | `--cluster-steps`        | 0              | Number of additional cluster count steps                                                                    |
 | `--filter-zone`          | —              | Restrict to buses in a single zone (exact match of `z` column in Power_BusInfo, e.g. `R1`)                  |
@@ -100,12 +100,20 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 | `--perturb-tm`           | —              | Perturb each row of the transition matrix: `new_prob = (1-r)*orig + r*random`, with `r` in [0.0, 1.0]      |
 | `--no-sqlite`            | off            | Do not save results to SQLite                                                                               |
 | `--reuse-inputfiles`     | off            | Reuse already-prepared input folders (e.g. after limitK)                                                    |
+| `--prepare-only`         | off            | Only create the preprocessed input folders (limitK, stretch demand, clusters, …) and exit without solving   |
+| `--original-reference`   | off            | Also evaluate each model's decisions in the **original** (unclustered) full-chronological model — see "Original reference" below. Requires `--invest-regret` and/or `--calculate-regret` |
+| `--original-reference-only` | off         | Only solve the original full-chronological model of the (preprocessed) folder (`MK-…-TruthOriginal.sqlite`) and exit |
+
 
 **Output naming**: `MK-{identifier}-{edgeHandling}.sqlite`. Regret files append `-regret`, `-invest-regret`, or
 `-operational-regret`; operational runs (`--operational`) append `-operational`.
 Non-default parameters are encoded in the identifier (e.g. `filterZoneR1`, `relaxed3`, `rMIP`, `mipGap0.01`,
 `workLimit500`, `networkTP`, `commitConsumption0.5`, `startupConsumption2`, `shiftTM2`, `perturbTM0.5`,
 `scaleVRES0.8`, `scaleInvestCost0.5`).
+
+**Regret runs** (`--calculate-regret`, `--invest-regret`): the edge handling's main-run decisions come from the
+in-memory model if its main run was solved in this session, otherwise from its `.sqlite` file, otherwise (when the main
+run was skipped by `--no-overwrite` because of a sibling run differing only in `work_limit`) from that sibling's file.
 
 **Operational runs** (`--operational`): solves a variant of each edge-handling model with `vGenInvest` fixed to the
 **Truth** investment decision (1 where Truth invested above 0.5, 0 otherwise), isolating the operational cost of each
@@ -127,171 +135,159 @@ sibling-skipped; only when none of these sources exists is operational-regret sk
 `-operational-regret`; like the other regret variants they are written but not returned for downstream plotting.
 `--no-overwrite` skips an operational-regret file only when it already solved to optimality.
 
+**Per-run analysis tables**: every written `.sqlite` (main, operational and all regret runs) additionally gets
+tables computed right after the solve (section "Per-run analysis" in `Markov.py`):
+
+| Table                        | Content                                                                                                                  |
+|------------------------------|--------------------------------------------------------------------------------------------------------------------------|
+| `mk_metrics`                 | Model size (Gurobi `NumVars`, `NumBinVars`, `NumConstrs`, `NumNZs`), number of RPs and nonzero transition probabilities, memory (Gurobi `MaxMemUsed`, process peak RSS), solver runtime, work units, objective split into investment/operating cost, curtailment and load shedding (MWh and %), vCommit corrections of soft-fixed runs |
+| `mk_nonbinarity`             | How non-binary `vCommit`/`vStartup`/`vShutdown` are: share of RP transitions with a fractional value, maximum and mean distance to 0/1, per variable and for the relaxed window (first `max(MinUp, MinDown)` hours of each RP) |
+| `mk_nonbinary_values`        | Every fractional UC value (raw data for the distribution plots)                                                          |
+| `mk_feasibility`             | Static check (no solve) whether the UC schedule, laid out along the chronology, would be feasible in the full chronological model |
+| `mk_feasibility_violations`  | Violations per day, unit and check                                                                                       |
+
+The transition-matrix columns of `mk_metrics` (`num_rps`, `num_k_per_rp`, `tm_entries`, `tm_nonzero`) always describe
+the RP model whose decisions are evaluated. In regret files the re-solved model is full-hourly (1 RP × 8760 h), so they
+report the edge handling's RP model instead — e.g. for 7 RPs the main file and its `-invest-regret` file both show
+`num_rps = 7`, `tm_entries = 49`, while `num_vars` etc. describe the model actually solved. (Truth's own main file
+reports its single RP; its `-original-invest-regret` file reports the RP case study Truth was built from.)
+
+A **transition** is one chronological RP boundary (day d-1 → d) times one active thermal unit (existing or invested).
+Tolerance for "fractional" is `1e-4` (above Gurobi's `IntFeasTol`). The feasibility check lays the RP schedule out via
+Hindex and checks start-up/shut-down logic, ramping, the shut-down output limit and minimum up/down times hour by hour.
+Every fractional value counts as a violation (`feas_infeasible_pct`); additionally the commitment is rounded at 0.5, the
+start-ups/shut-downs are derived from it and minimum up/down times are checked again (`feas_infeasible_rounded_pct` —
+dispatch-related checks are not repeated there, since the dispatch could always be adjusted to a given commitment).
+So the strict value also counts start-up/shut-down decisions that do not match the chronology (e.g. Cyclic starts a unit
+at the beginning of an RP although it was already running in the chronologically preceding day), while the rounded value
+only counts commitments that are infeasible as such (minimum up/down times violated across the boundary).
+
+**Original reference** (`--original-reference`): Truth is the full-chronological model rebuilt from copies of the RPs.
+With this flag each model's decisions are additionally evaluated in the model with the *original* time series (the
+folder before clustering): `-original-invest-regret` (vGenInvest fixed, also for Truth — isolating the clustering error)
+and `-original-regret` (vGenInvest + vCommit fixed, like `--calculate-regret`). These files carry `reference=original`
+in `run_parameters`. The original model's own optimum is solved once per folder with `--original-reference-only`
+(`MK-…-TruthOriginal.sqlite`), since it does not depend on the number of RPs. MinUp/MinDown times are capped to the RP
+length in the original model as well, so only the time series differ. Skipped (with a warning) for `--shift-tm` /
+`--perturb-tm`, whose chronology is resampled and has no original counterpart.
+
+### Revision runs (`jobs-revision.txt`)
+
+All runs for the revision: RTS-GMLC, NREL-118 and TX-123BT × 3/5/7/10/14/18 RPs × demand variability
+(100/50/70/90%) × transition matrix (original, shifted by 1, shifted by 2). Stages must run in order:
+
+0. `--prepare-only` jobs — create all input folders (parallel jobs with `--reuse-inputfiles` would otherwise write the
+   same folders concurrently).
+1. `--original-reference-only` jobs — one original full-chronological solve per dataset and demand variability.
+2. RP jobs — independent of each other and of stage 1 (can run in parallel).
+3. Evaluation (`EvaluateMarkov.py all`).
+
+`--node-file-dir $TMPDIR/gurobi-nodes` assumes a Linux cluster with node-local `$TMPDIR`.
+
 ### `EvaluateMarkov.py` — Result evaluation
 
-Reads all `MK-*.sqlite` files in a folder and prints comparison tables. Operational runs (`-operational.sqlite`) and
-each regret variant (`-regret.sqlite`, `-invest-regret.sqlite`, `-operational-regret.sqlite`) are shown in their own
-separate table per group, below the main comparison (regret tables have no Truth row, so their `%` columns read
-against Markov).
+Reads all `MK-*.sqlite` files of a folder (with `--recursive` also of its subfolders) and evaluates them with one of
+four subcommands:
+
+| Subcommand | Output |
+|------------|--------|
+| `tables`   | Per-group comparison tables in the terminal (optionally unit-commitment plots with `--plot`) |
+| `plots`    | Boxplot PNGs of the edge handlings vs Truth + the aggregated results table behind them (`compare_markov_results.txt/.csv`) |
+| `summary`  | `markov_runs.csv`, `markov_summary.csv` and the non-binarity / feasibility plots of the per-run analysis tables |
+| `all`      | All of the above from a single load of the files |
 
 ```bash
-python research/MK/EvaluateMarkov.py                             # current directory
-python research/MK/EvaluateMarkov.py path/to/results             # specific folder
-python research/MK/EvaluateMarkov.py --plot --case-study-folder data/example
+python research/MK/EvaluateMarkov.py tables results/                                  # comparison tables
+python research/MK/EvaluateMarkov.py tables results/ --plot --case-study-folder data/example
+python research/MK/EvaluateMarkov.py plots results/ --output-dir plots/ --no-show
+python research/MK/EvaluateMarkov.py plots results/ --nrOfClusters 3,5,7 --separateClusters
+python research/MK/EvaluateMarkov.py plots results/ --tm none:0.2 --tm 1:none         # only those two TM subplots
+python research/MK/EvaluateMarkov.py plots results/ --tm "base,1:*"                   # base + everything with shiftTM=1
+python research/MK/EvaluateMarkov.py summary results/ --output-dir results/summary
+python research/MK/EvaluateMarkov.py all results/ --no-show --separateClusters
 ```
 
-| Parameter             | Description                                              |
-|-----------------------|----------------------------------------------------------|
-| `folder`              | Folder with `.sqlite` files (default: current directory) |
-| `--plot`              | Show unit commitment plots                               |
-| `--case-study-folder` | Case study folder for plots                              |
-| `--number-of-hours`   | Number of hours to show in plots (default: 144)          |
-| `--start-hour`        | Start hour for plots (default: 1)                        |
-| `--no-show`           | Only save the plot, don't display it                     |
+| Parameter               | Subcommands    | Default      | Description |
+|-------------------------|----------------|--------------|-------------|
+| `folder`                | all            | `.`          | Folder with `MK-*.sqlite` files |
+| `--recursive`           | all            | off          | Also search subfolders |
+| `--output-dir`          | all            | input folder | Directory for PNGs, CSVs and the results table |
+| `--include-nonoptimal`  | plots, summary | off          | Also use runs with `termination_condition != 'optimal'` (`tables` always shows all runs, with the status highlighted) |
+| `--nrOfClusters`        | all            | all          | Comma-separated cluster counts; only runs whose `clusters` run parameter is in the list (e.g. `3,5,7`). Unclustered runs (incl. `TruthOriginal`) are dropped when given |
+| `--tm`                  | all            | all          | Select `(shift_tm, perturb_tm)` combinations. Repeatable and/or comma-separated specs `SHIFT:PERTURB`, each side a number, `none` (parameter unset) or `*` (any); `base` = `none:none` |
+| `--no-show`             | all            | off          | Don't display figures (only save them) |
+| `--plot`                | tables         | off          | Unit-commitment plot of each group's main runs |
+| `--case-study-folder`   | tables         | —            | Case study folder for the plot (fallback if the `.sqlite` has no `hindex`) |
+| `--number-of-hours`     | tables         | 144          | Hours shown in the plot |
+| `--start-hour`          | tables         | 1            | First hour shown in the plot |
+| `--logscale`            | plots          | off          | Log-scale y-axis for the work-units plots |
+| `--markov-strict`       | plots          | off          | Also draw a Markov-Strict box (runs with `--enable-strict-markov`) |
+| `--separateClusters`    | plots          | off          | Emit the full plot set (and results table) once per cluster count; filenames get a `_clusters{N}` suffix |
+| `--no-results-table`    | plots          | off          | Skip the aggregated results table |
+| `--no-plots`            | summary        | off          | Only write the CSV tables |
 
-### `CompareMarkov.py` — Cross-run comparison boxplots
+**Run kinds** are told apart by the file suffix: main, `-operational`, `-regret`, `-invest-regret`,
+`-operational-regret` (and `-original-regret` / `-original-invest-regret`, which carry `reference=original`).
+**Regret** is computed once for all subcommands as `objective − reference objective`: regret and invest-regret
+against the optimal Truth main run of the same TM variant and sub-case, operational-regret against Truth-operational,
+`-original-*` runs against `TruthOriginal` (same folder before clustering, same other run parameters). `plots` and
+`summary` use the optimal main/operational runs that pass the filters, plus the optimal regret runs whose base run
+(the run whose decisions they evaluate) was selected.
 
-Reads all `MK-*.sqlite` files in a folder and produces **boxplot PNGs** comparing the
-edge-handling strategies (NoEnf, Cyclic, Markov — plus Markov-Strict with `--markov-strict`)
-against the Truth model. Each figure has one subplot per `(shift_tm, perturb_tm)` combination
-(shared y-axis), and within each subplot one boxplot per strategy. Every box aggregates over the
-**sub-cases** sharing that TM combination — i.e. the other run parameters that vary (`clusters`,
-`stretch_demand`, …). Truth is the deviation/regret reference, never drawn as a box.
+#### `tables`
 
-There are **14 logical plots**, and **each is emitted twice** — once with all strategies and once
-with NoEnf excluded (a `_noNoEnf` suffix), since NoEnf's large deviations often compress the scale
-— giving up to **28 PNGs**:
+One block per run-parameter group: the main comparison table (objective, first-stage share, work units, status,
+MIP gap, weighted `vGenP`/`vCommit`/`vStartup`/`vShutdown`/`vPNS`/`vEPS`, with `%` columns relative to Truth), the
+investment table (`vGenInvest`) and the invested-capacity table (`vGenInvest * pMaxProd`), each in total and per
+technology. Operational runs and every regret variant are printed in their own table per group (regret tables have no
+Truth row, so their `%` columns read against Markov). Original-reference runs form their own group.
 
-| Base filename                                  | Content                                                          |
-|------------------------------------------------|------------------------------------------------------------------|
-| `compare_workunits_operational_absolute.png`   | A — Work units, operational runs                                 |
-| `compare_workunits_operational_relative.png`   | A — Work units as % of Truth, operational runs                   |
-| `compare_vshutdown_operational_absolute.png`   | B — vShutdown deviation vs Truth-operational (absolute)          |
-| `compare_vshutdown_operational_relative.png`   | B — vShutdown deviation vs Truth-operational [%]                 |
-| `compare_workunits_investment_absolute.png`    | C — Work units, investment (main) runs                           |
-| `compare_workunits_investment_relative.png`    | C — Work units as % of Truth, investment runs                    |
-| `compare_vshutdown_investment_absolute.png`    | D — vShutdown deviation vs Truth-main (absolute)                 |
-| `compare_vshutdown_investment_relative.png`    | D — vShutdown deviation vs Truth-main [%]                        |
-| `compare_invest_regret_absolute.png`           | E — Invest-regret (absolute) over Truth-main objective           |
-| `compare_invest_regret_relative.png`           | E — Invest-regret [%] over Truth-main objective                  |
-| `compare_regret_absolute.png`                  | F — Regret (absolute) over Truth-main objective (invest+commit fixed) |
-| `compare_regret_relative.png`                  | F — Regret [%] over Truth-main objective                         |
-| `compare_operational_regret_absolute.png`      | G — Operational-regret (absolute) over Truth-operational objective |
-| `compare_operational_regret_relative.png`      | G — Operational-regret [%] over Truth-operational objective      |
+#### `plots`
 
-"Operational runs" are the `--operational` runs (vGenInvest fixed to Truth's investment);
-"investment runs" are the regular main runs. The three regret plots reference the **same-kind** Truth
-objective: invest-regret (E) and regret (F) against Truth-main, operational-regret (G) against
-Truth-operational. The relative work-units plots show `work_units / truth_work_units * 100`
-(100% == as expensive as Truth), so they need a solver that reports work units (Gurobi); under solvers
-that don't (e.g. HiGHS) those plots are empty. A category with no files is skipped with a message (no
-crash). Reads only what each plot needs (run parameters, solver `work_units`, a SQL-aggregated weighted
-`vShutdown` sum, and the objective), loaded concurrently with a thread pool.
+Boxplot PNGs comparing the edge handlings (NoEnf, Cyclic, Markov — plus Markov-Strict with `--markov-strict`) against
+Truth. Each figure has one subplot per `(shift_tm, perturb_tm)` combination (shared y-axis, ordered base, perturbTM,
+shiftTM, shiftTM+perturbTM, …), and within each subplot one box per edge handling. Every box aggregates over the
+**sub-cases** sharing that TM combination — the other run parameters that vary (`clusters`, `stretch_demand`, …).
+Truth is the reference, never a box. There are **18 logical plots**, each emitted twice — with all edge handlings and
+with NoEnf excluded (`_noNoEnf` suffix), since NoEnf's large deviations often compress the scale:
 
-```bash
-python research/MK/CompareMarkov.py                                    # current directory
-python research/MK/CompareMarkov.py path/to/results                    # specific folder
-python research/MK/CompareMarkov.py results/ --output-dir plots/ --no-show
-python research/MK/CompareMarkov.py results/ --include-nonoptimal      # don't drop non-optimal runs
-python research/MK/CompareMarkov.py results/ --markov-strict           # add a Markov-Strict box
-python research/MK/CompareMarkov.py results/ --logscale                # log y-axis for work-units plots
-python research/MK/CompareMarkov.py results/ --nrOfClusters 3,5,7      # only runs with 3, 5 or 7 clusters
-python research/MK/CompareMarkov.py results/ --separateClusters        # one plot set per cluster count
-python research/MK/CompareMarkov.py results/ --tm none:0.2 --tm 1:none # only those two TM subplots
-python research/MK/CompareMarkov.py results/ --tm "base,1:*"           # base + everything with shiftTM=1
-```
+| Base filename                                          | Content                                                          |
+|--------------------------------------------------------|------------------------------------------------------------------|
+| `compare_workunits_{operational,investment}_absolute`  | Work units                                                       |
+| `compare_workunits_{operational,investment}_relative`  | Work units as % of Truth (Gurobi only; empty under HiGHS)        |
+| `compare_vshutdown_{operational,investment}_absolute`  | vShutdown deviation vs Truth (signed, y-axis symmetric around 0) |
+| `compare_vshutdown_{operational,investment}_relative`  | vShutdown deviation vs Truth [%]                                 |
+| `compare_vshutdown_{operational,investment}_*_magnitude` | \|deviation\| (absolute and relative), y-axis from 0           |
+| `compare_invest_regret_{absolute,relative}`            | Invest-regret over the Truth-main objective, with MIP-gap band   |
+| `compare_regret_{absolute,relative}`                   | Regret (investment + commitment fixed) over the Truth-main objective |
+| `compare_operational_regret_{absolute,relative}`       | Operational-regret over the Truth-operational objective          |
 
-| Parameter             | Default        | Description                                                                                 |
-|-----------------------|----------------|---------------------------------------------------------------------------------------------|
-| `folder`              | `.`            | Folder with `MK-*.sqlite` files                                                             |
-| `--output-dir`        | input folder   | Directory to save the PNGs in                                                               |
-| `--no-show`           | off            | Suppress interactive display (for headless/batch runs)                                      |
-| `--include-nonoptimal`| off            | Include runs with `termination_condition != 'optimal'` (default: optimal-only)              |
-| `--markov-strict`     | off            | Also draw a Markov-Strict box (only meaningful for `--enable-strict-markov` runs)           |
-| `--logscale`          | off            | Log-scale y-axis for the work-units plots (A/C); no effect on deviation/regret plots        |
-| `--nrOfClusters`      | all            | Comma-separated list of cluster counts; only runs whose `clusters` run-parameter is in the list are included (e.g. `3,5,7`) |
-| `--separateClusters`  | off            | Emit the full plot set once per cluster count found in the (filtered) data; filenames get a `_clusters{N}` suffix and titles a ` — N clusters` suffix |
-| `--tm`                | all            | Select which `(shift_tm, perturb_tm)` subplots to show. Repeatable and/or comma-separated specs `SHIFT:PERTURB`, each side a number, `none` (parameter unset) or `*` (any); `base` = `none:none`. E.g. `--tm none:0.2 --tm 1:*` |
-| `--no-results-table`  | off            | Skip the aggregated numeric results table (saved/printed by default — see below)            |
+"Operational" plots use the `--operational` runs (vGenInvest fixed to Truth's investment) and their Truth-operational
+reference; "investment" plots use the regular main runs. The regret plots' y-axis reaches only as far below 0 as
+needed (regret is expected to be non-negative, small negative values are solver noise). Both invest-regret plots draw
+a light-red **MIP-gap noise band**: a regret inside it could be explained by solver tolerance alone. It uses the
+requested `mip_gap` run parameter — `mip_gap * |invest-regret objective|` on the absolute plot (a band, since the
+objectives differ between sub-cases), `±mip_gap * 100 %` on the relative plot (a line for a uniform `mip_gap`).
 
-Subplots are ordered by shift first, then perturb: base, perturbTM, shiftTM, shiftTM+perturbTM, … .
-Invest-regret (E) uses Truth's `Objective` as the reference, emitted both relative —
-`(invest-regret obj − truth obj) / |truth obj| * 100` (same convention as `EvaluateMarkov.py`'s `%`
-columns) — and absolute (`invest-regret obj − truth obj`, native objective units). Sub-cases whose
-Truth objective is missing / 0 / -1 are skipped in both, so the two plots cover the same sub-cases.
-
-Both invest-regret plots also draw a light-red **MIP-gap noise band** above and below the zero
-reference: a regret whose magnitude falls inside the band could be explained by solver tolerance
-alone. The band uses the requested `mip_gap` run-parameter. On the absolute plot each plotted result
-contributes `mip_gap * |invest-regret obj|`; since those objectives differ between sub-cases the band
-spans from the smallest to the largest such value (one band above, a mirrored one below). On the
-relative plot the band is just `±(mip_gap * 100) %` — a single horizontal line, since it is already
-in percent (it widens to a band only if the requested `mip_gap` varies across runs). The band is
-omitted when no plotted run carries a `mip_gap`.
-
-#### Aggregated results table
-
-Alongside the PNGs, CompareMarkov produces the **mean** (plus median / min / max) *behind* each boxplot —
-the aggregated numbers for a paper results table. It is **printed to the terminal and saved** as
-`compare_markov_results.txt` (+ `.csv`) in the output dir (`_clusters{N}` suffix under
-`--separateClusters`). Disable with `--no-results-table`.
-
-One row per **(TM_variant, method)** cell — exactly one boxplot. `TM_variant` is the
-`(shift_tm, perturb_tm)` axis (`Original` = both unset, `ShiftN` = `shift_tm=N`); `method` is the edge
-handling. Each cell aggregates over the **sub-cases** sharing that TM combination (clusters/RP count,
-demand level, …) — i.e. the runs the paper means over (e.g. 3 RP counts × 4 demand levels = 12 runs).
-The four quantities are the same ones the figures plot:
+**Aggregated results table**: the **mean** (plus median / min / max) *behind* the boxplots, one row per
+**(TM_variant, method)** cell, printed and saved as `compare_markov_results.txt` (+ `.csv`; `_clusters{N}` suffix under
+`--separateClusters`). `TM_variant` is `Original` (no TM shift), `ShiftN`, with `+perturbX` if perturbed.
 
 | Column                 | From the plot                              | Notes |
 |------------------------|--------------------------------------------|-------|
 | `oper_dev_*_pct`       | `compare_vshutdown_operational_relative`   | relative vShutdown deviation vs Truth-operational; mean/median/min/max |
-| `invest_regret_*_MEUR` | `compare_invest_regret_absolute`           | absolute invest-regret over Truth-main objective; the LEGO objective is already in **M EUR** (no conversion) |
+| `invest_regret_*_MEUR` | `compare_invest_regret_absolute`           | absolute invest-regret; the LEGO objective is already in **M EUR** |
 | `wu_oper_mean_pct`     | `compare_workunits_operational_relative`   | operational work units as % of Truth-operational (Gurobi only) |
 | `wu_invest_mean_pct`   | `compare_workunits_investment_relative`    | investment work units as % of Truth-main (Gurobi only) |
 
-A diagnostics table adds the start-up deviation (it differs from shut-downs for `NoEnf`, equal for
-`Cyclic`/`Markov`) and the per-metric run counts, and a reference table prints the mean Truth objective
-per `TM_variant` (so regret can be read relative to total cost). `n_runs` lets you confirm 12 runs per
-cell or see why a sub-case dropped (typically a non-optimal Truth, or a missing invest-regret/operational
-run). Operational and work-unit columns are empty without `--operational` runs / under HiGHS respectively;
-for the `Original/Shift1/Shift2` × `{3,5,7}` grid, pass e.g. `--nrOfClusters 3,5,7 --tm base --tm 1:none --tm 2:none`.
+A diagnostics table adds the start-up deviation (differs from shut-downs for NoEnf, equal for Cyclic/Markov) and the
+per-metric run counts, and a reference table the mean Truth objective per `TM_variant`. For the
+`Original/Shift1/Shift2` × `{3,5,7}` grid, pass e.g. `--nrOfClusters 3,5,7 --tm base --tm 1:none --tm 2:none`.
 
-### `NonBinarityMarkov.py` — Overview of integrality violations
+#### `summary`
 
-Reads all `MK-*.sqlite` files in a folder and reports, per file and aggregated, how often the
-integrality-constrained variables actually take **non-integer** values. The model has five such
-variables: `vLineInvest` (binary), `vGenInvest` (integer), and `vCommit` / `vStartup` / `vShutdown`
-(binary, but **relaxed to continuous** for the non-edge timesteps under the Markov edge handling —
-so fractional values there are *expected*, and this script quantifies them).
-
-For each file it counts, per variable, how many stored values deviate from the nearest integer by
-more than `--tol`, plus the maximum such deviation. Results are aggregated into one table per run
-kind (main / operational / invest-regret / regret / operational-regret), with one row per
-`(shift_tm, perturb_tm)` × edge handling — the same axes `CompareMarkov.py` uses. Discovery and the
-`--nrOfClusters` / `--separateClusters` / `--tm` / `--include-nonoptimal` filters are imported from
-`CompareMarkov.py`, so a folder filtered here matches the same folder filtered there.
-
-```bash
-python research/MK/NonBinarityMarkov.py                                 # current directory
-python research/MK/NonBinarityMarkov.py path/to/results                 # specific folder
-python research/MK/NonBinarityMarkov.py results/ --per-file             # also one row per file
-python research/MK/NonBinarityMarkov.py results/ --tol 1e-4             # looser integrality tolerance
-python research/MK/NonBinarityMarkov.py results/ --include-nonoptimal   # don't drop non-optimal runs
-python research/MK/NonBinarityMarkov.py results/ --nrOfClusters 3,5,7   # only runs with 3, 5 or 7 clusters
-python research/MK/NonBinarityMarkov.py results/ --separateClusters     # one report per cluster count
-python research/MK/NonBinarityMarkov.py results/ --tm none:0.2 --tm 1:none
-```
-
-The report is also **saved to `nonbinarity_report.txt`** in the output dir (in addition to being printed).
-
-| Parameter             | Default      | Description                                                                                 |
-|-----------------------|--------------|---------------------------------------------------------------------------------------------|
-| `folder`              | `.`          | Folder with `MK-*.sqlite` files                                                              |
-| `--output-dir`        | input folder | Directory to save `nonbinarity_report.txt` in                                               |
-| `--no-txt`            | off          | Don't save the report to a `.txt` file (it is saved by default in addition to printing)     |
-| `--tol`               | `1e-6`       | A value counts as non-binary if it deviates from the nearest integer by more than this       |
-| `--per-file`          | off          | Also print a row per file (total fractional values + max deviation)                          |
-| `--include-nonoptimal`| off          | Include runs with `termination_condition != 'optimal'` (default: optimal-only)              |
-| `--nrOfClusters`      | all          | Comma-separated cluster counts; only runs whose `clusters` run-parameter is in the list (e.g. `3,5,7`) |
-| `--separateClusters`  | off          | Emit the full report once per cluster count found in the (filtered) data                     |
-| `--tm`                | all          | Select which `(shift_tm, perturb_tm)` combinations to include; same spec syntax as `CompareMarkov.py` |
+Collects the per-run analysis tables (see above) into `markov_runs.csv` (one row per file — all files, incl.
+non-optimal ones — with run parameters, solver statistics, all metrics and the regret) and `markov_summary.csv` (mean
+over the variants per dataset × number of RPs × edge handling × run kind; run kinds of original-reference runs get an
+`@original` suffix), and plots per dataset the distribution of how non-binary the Markov RP transitions are
+(`nonbinarity_{dataset}.png`) and the share of infeasible transitions (`feasibility_{dataset}.png`).
