@@ -552,11 +552,12 @@ def _soft_fix_commit(lego: LEGO, commit_model: pyo.Model, edge_cs: CaseStudy) ->
 
 def _solve_fixed_decisions(base_lego: LEGO, out_prefix: str, gen_invest: dict, gen_invest_default: float, commit_model: pyo.Model | None,
                            edge_cs: CaseStudy, run_params: dict | None, params: dict, no_sqlite: bool, tee: bool, label: str,
-                           tm_cs: CaseStudy | None = None) -> None:
+                           tm_cs: CaseStudy | None = None, copy_base: bool = True) -> None:
     """Re-solve a copy of a full-chronological model (Truth or the original) with vGenInvest hard-fixed and, if
     commit_model is given, vCommit soft-fixed to an edge handling's decisions - the common core of all regret runs.
-    The transition-matrix metrics of the written file describe tm_cs (default: the edge handling's model, edge_cs)."""
-    fixed_lego = base_lego.copy()
+    The transition-matrix metrics of the written file describe tm_cs (default: the edge handling's model, edge_cs).
+    copy_base=False modifies and solves base_lego itself (single-solve --task runs: avoids holding two full-year models)."""
+    fixed_lego = base_lego.copy() if copy_base else base_lego
     _apply_solver_options(fixed_lego, run_params)
     _fix_gen_invest(fixed_lego, gen_invest, gen_invest_default)
     if commit_model is not None:
@@ -1495,11 +1496,11 @@ def execute_original_reference_runs(lego_models: typing.Dict[str, LEGO], case_na
 def execute_original_truth(original_folder: str, no_sqlite: bool = False, relax_percentage: float = 0, no_investment: bool = False,
                            no_overwrite: bool = False, min_time_cap: int = 24, tee: bool = True, filter_zone: str | None = None,
                            limit_k: str | None = None, shift: int = 0, stretch_demand: float = 1.0, merge_generators: bool = False,
-                           **modifications) -> None:
+                           **modifications) -> str:
     """Solve the original full-chronological model once (--original-reference-only). It depends only on the data
     folder (incl. preprocessing such as --stretch-demand) and the model options, not on the number of RPs or the edge
     handling, so one solve serves all RP runs. MinUp/MinDown times are capped to `min_time_cap` (the RP length),
-    as in the RP models. Writes 'MK-{identifier}-TruthOriginal.sqlite' with reference='original'.
+    as in the RP models. Writes 'MK-{identifier}-TruthOriginal.sqlite' with reference='original' and returns its prefix.
 
     :param modifications: The data/solver options of _apply_case_modifications
     """
@@ -1513,7 +1514,7 @@ def execute_original_truth(original_folder: str, no_sqlite: bool = False, relax_
     file_prefix = f"MK-{'-'.join(identifier_parts)}-TruthOriginal"
 
     if no_overwrite and _existing_optimal(f"{file_prefix}.sqlite"):
-        return
+        return file_prefix
 
     lego = _build_original_reference_lego(cs, thermal_generator_relaxed)
     if no_investment:
