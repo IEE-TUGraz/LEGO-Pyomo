@@ -182,7 +182,7 @@ args = parser.parse_args()
 printer.information(f"Loading case study from '{args.caseStudyDirectory}'\n")
 start_time = time.time()
 cs = CaseStudy(args.caseStudyDirectory)
-#cs = cs.filter_timesteps('k00001','k01000')
+cs = cs.filter_timesteps('k00001','k001000')
 
 
 rh_length = cs.dGlobal_Parameters["pMovingWindowLength"]

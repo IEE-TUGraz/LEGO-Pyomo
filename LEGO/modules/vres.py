@@ -65,7 +65,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         for rp in model.rp:
             for k in model.k:
                 maximumProduction = base_cap * model.pCapacityFactors[rp, k, g]
-                model.vCurtailment[rp, k, g].setub(maximumProduction)
+                model.vCurtailment[rp, k, g].setub(0)
                 model.vGenP[rp, k, g].setub(maximumProduction)
 
     # NOTE: Return both first and second stage variables as a safety measure - only the first_stage_variables will actually be returned (rest will be removed by the decorator)
