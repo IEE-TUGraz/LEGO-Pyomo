@@ -108,6 +108,10 @@ SUB_CASE_KEYS = [
 GROUP_KEYS = SUB_CASE_KEYS[:10] + ['shift_tm', 'perturb_tm'] + SUB_CASE_KEYS[10:] + ['reference']
 
 ANALYSIS_TABLES = ['mk_metrics', 'mk_nonbinarity', 'mk_feasibility']
+# Checks of Markov.check_chronological_feasibility (mk_feasibility / mk_feasibility_violations)
+FEASIBILITY_CHECKS = ['fractional', 'logic', 'ramp_up', 'ramp_down', 'max_out_shutdown', 'min_up', 'min_down', 'min_up_rounded', 'min_down_rounded']
+# Relative tolerance (share of the storage energy capacity) above which a storage boundary jump counts as a violation
+STORAGE_BOUNDARY_TOL = 1e-3
 
 # Trailing path components that Markov.py appends to the dataset folder for each preprocessing step. They are
 # stripped from `case_study_directory` to recover the dataset name (e.g. 'RTS-GMLC').
@@ -318,6 +322,12 @@ def _load_file(path: str, full: bool, analysis: bool) -> tuple[dict, pd.DataFram
                     if df is not None and len(df) > 0:
                         for key, value in df.iloc[0].items():
                             entry.setdefault(key, value)  # Run parameters / solver statistics win (e.g. work_units)
+                # Mean violation magnitude per check over the violating (boundary day, unit) pairs (mk_feasibility only has the max)
+                violations = _read_table(conn, 'mk_feasibility_violations')
+                if violations is not None and len(violations) > 0:
+                    at_boundary = violations[pd.to_numeric(violations['day'], errors='coerce') >= 1]
+                    for check, part in at_boundary.groupby('check'):
+                        entry[f'feas_{check}_mean_residual'] = float(pd.to_numeric(part['max_residual'], errors='coerce').mean())
                 values = _read_table(conn, 'mk_nonbinary_values')
                 if values is not None:
                     values = values.assign(file=path)
@@ -343,6 +353,203 @@ def load_entries(folder: str, recursive: bool = False, full: bool = False, analy
 
 def _is_optimal(entry: dict) -> bool:
     return entry.get('termination_condition') == 'optimal'
+
+
+def _num(value) -> float | None:
+    """float(value), or None for missing / non-numeric / NaN values (analysis columns come back as NaN from SQLite)."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(value) else value
+
+
+########################################################################################################################
+# Chronological comparisons (no solves: laid out along the stored hindex)
+########################################################################################################################
+
+def _index_frame(conn, table: str, names: list[str]) -> pd.DataFrame | None:
+    """Table of an indexed Pyomo component with its index columns renamed to `names` (+ 'values'); None if the table
+    is missing or has a different number of index columns."""
+    df = _read_table(conn, table)
+    if df is None or df.empty:
+        return None
+    df = df.drop(columns=['index'], errors='ignore')
+    index_cols = [c for c in df.columns if c != 'values']
+    if len(index_cols) != len(names):
+        return None
+    return df.rename(columns=dict(zip(index_cols, names)))
+
+
+def _hindex(conn) -> pd.DataFrame | None:
+    """Chronology (p, rp, k) of a result file, sorted by p."""
+    hindex = _index_frame(conn, 'hindex', ['p', 'rp', 'k'])
+    return hindex.sort_values('p').reset_index(drop=True) if hindex is not None else None
+
+
+def _day_sequence(hindex: pd.DataFrame) -> list[str]:
+    """RP of every chronological period (one entry per RP length, e.g. per day)."""
+    return hindex['rp'].tolist()[::hindex['k'].nunique()]
+
+
+def tm_structure(day_rps: list[str]) -> dict:
+    """Structure of the transition matrix behind a chronology (circular, as CaseStudy.get_rpTransitionMatrices):
+    tm_off_diag_mass = share of period-to-period transitions that change the RP (exactly the transitions the cyclic
+    assumption gets wrong), tm_entropy_norm = entropy rate normalized by log(#RPs) (0 = deterministic, 1 = uniform)."""
+    rps = sorted(set(day_rps))
+    if len(rps) < 2:
+        return {}
+    pos = {rp: i for i, rp in enumerate(rps)}
+    counts = np.zeros((len(rps), len(rps)))
+    for prev, cur in zip(day_rps[-1:] + day_rps[:-1], day_rps):
+        counts[pos[prev], pos[cur]] += 1
+    rows = counts.sum(axis=1)
+    probs = np.divide(counts, rows[:, None], out=np.zeros_like(counts), where=rows[:, None] > 0)
+    entropy = -(probs * np.log(np.where(probs > 0, probs, 1.0))).sum(axis=1)
+    return {'tm_off_diag_mass': 1 - np.trace(counts) / counts.sum(),
+            'tm_entropy_norm': float((rows / counts.sum() * entropy).sum() / np.log(len(rps)))}
+
+
+def _per_unit(conn, table: str) -> pd.Series:
+    """{unit: value} of a unit-indexed parameter/variable (empty if missing)."""
+    df = _index_frame(conn, table, ['u'])
+    return df.set_index('u')['values'].astype(float) if df is not None else pd.Series(dtype=float)
+
+
+def _at_k(conn, table: str, k) -> pd.Series:
+    """{(rp, unit): value} of an (rp, k, unit)-indexed table at timestep k (empty if missing)."""
+    df = _index_frame(conn, table, ['rp', 'k', 'u'])
+    if df is None:
+        return pd.Series(dtype=float)
+    return df[df['k'] == k].set_index(['rp', 'u'])['values'].astype(float)
+
+
+def _storage_capacity(conn) -> pd.Series:
+    """Energy capacity per intra-day storage unit: pMaxReserve * (pExisUnits + vGenInvest)."""
+    units = _per_unit(conn, 'pMaxReserve')
+    return units * (_per_unit(conn, 'pExisUnits').reindex(units.index).fillna(0) + _per_unit(conn, 'vGenInvest').reindex(units.index).fillna(0))
+
+
+def storage_boundary_check(conn, hindex: pd.DataFrame, day_rps: list[str]) -> dict:
+    """Storage counterpart of Markov.check_chronological_feasibility, for RP models: at every chronological boundary
+    (period d-1 -> d) the storage level the first timestep of RP(d) starts from (recovered from its energy balance
+    eStIntraRes: L[k1] + discharge * w / effDis - charge * w * effCh - inflow + spillage) is compared with the level
+    RP(d-1) actually ends with. Cyclic implicitly starts from its own end level, Markov from the expected end level of
+    its predecessors, NoEnf from a free level. Deviations in % of the unit's energy capacity, per (boundary, unit)."""
+    level = _index_frame(conn, 'vStIntraRes', ['rp', 'k', 'u'])
+    if level is None or len(set(day_rps)) < 2:
+        return {}
+    ks = sorted(hindex['k'].unique())
+    k_first, k_last = ks[0], ks[-1]
+    start = level[level['k'] == k_first].set_index(['rp', 'u'])['values'].astype(float)
+    end = level[level['k'] == k_last].set_index(['rp', 'u'])['values'].astype(float)
+    units = start.index.get_level_values('u')
+    weight_k = _per_unit(conn, 'pWeight_k').get(k_first, 1.0)
+    discharge = _at_k(conn, 'vGenP', k_first).reindex(start.index).fillna(0).to_numpy()
+    charge = _at_k(conn, 'vConsump', k_first).reindex(start.index).fillna(0).to_numpy()
+    inflow = _at_k(conn, 'pStorageInflows', k_first).reindex(start.index).fillna(0).to_numpy()
+    spill = _at_k(conn, 'vStorageSpillage', k_first).reindex(start.index).fillna(0).to_numpy()
+    eff_dis = _per_unit(conn, 'pDisEffic').reindex(units).fillna(1).to_numpy()
+    eff_ch = _per_unit(conn, 'pChEffic').reindex(units).fillna(1).to_numpy()
+    implied_prev = start + discharge * weight_k / eff_dis - charge * weight_k * eff_ch - inflow + spill
+
+    capacity = _storage_capacity(conn)
+    capacity = capacity[capacity > 1e-9]
+    transitions = pd.Series(list(zip(day_rps[:-1], day_rps[1:]))).value_counts()  # (prev RP, RP) -> count
+    devs, weights = [], []
+    for (prev_rp, rp), count in transitions.items():
+        for unit, cap in capacity.items():
+            if (rp, unit) in implied_prev.index and (prev_rp, unit) in end.index:
+                devs.append(abs(implied_prev[(rp, unit)] - end[(prev_rp, unit)]) / cap * 100)
+                weights.append(count)
+    if not devs:
+        return {}
+    devs, weights = np.array(devs), np.array(weights, dtype=float)
+    return {'st_boundary_instances': int(weights.sum()),
+            'st_boundary_violation_pct': float(weights[devs > STORAGE_BOUNDARY_TOL * 100].sum() / weights.sum() * 100),
+            'st_boundary_mean_dev_pct': float((devs * weights).sum() / weights.sum()),
+            'st_boundary_max_dev_pct': float(devs.max())}
+
+
+def chronological_deviation(conn, hindex: pd.DataFrame, ref_conn) -> dict:
+    """Hour-by-hour deviation of a run from a reference run (both laid out along their own hindex, joined on the
+    period p): dispatch_dev_pct = sum |vGenP - vGenP_ref| / sum |vGenP_ref| (all generators incl. storage discharge),
+    storage_dev_pct = mean |level - level_ref| in % of the unit's energy capacity (reference fleet)."""
+    ref_hindex = _hindex(ref_conn)
+    if ref_hindex is None:
+        return {}
+    result = {}
+
+    def chronological(c, h, table):
+        df = _index_frame(c, table, ['rp', 'k', 'u'])
+        return h.merge(df, on=['rp', 'k'])[['p', 'u', 'values']] if df is not None else None
+
+    for table, key in [('vGenP', 'dispatch'), ('vStIntraRes', 'storage')]:
+        run, ref = chronological(conn, hindex, table), chronological(ref_conn, ref_hindex, table)
+        if run is None or ref is None:
+            continue
+        both = run.merge(ref, on=['p', 'u'], suffixes=('', '_ref'))
+        diff = (both['values'].astype(float) - both['values_ref'].astype(float)).abs()
+        if key == 'dispatch':
+            total = both['values_ref'].astype(float).abs().sum()
+            if total > 0:
+                result['dispatch_dev_pct'] = float(diff.sum() / total * 100)
+        else:
+            capacity = _storage_capacity(ref_conn)
+            cap = both['u'].map(capacity)
+            mask = cap > 1e-9
+            if mask.any():
+                result['storage_dev_pct'] = float((diff[mask] / cap[mask]).mean() * 100)
+    return result
+
+
+def _chronology_worker(path: str, ref_path: str | None) -> dict:
+    """Module-level (pickled for ProcessPoolExecutor): TM structure + storage boundary check of a run, and its
+    chronological deviation from ref_path (if given)."""
+    result = {}
+    try:
+        with closing(sqlite3.connect(path)) as conn:
+            hindex = _hindex(conn)
+            if hindex is None:
+                return result
+            day_rps = _day_sequence(hindex)
+            result.update(tm_structure(day_rps))
+            result.update(storage_boundary_check(conn, hindex, day_rps))
+            if ref_path is not None:
+                with closing(sqlite3.connect(ref_path)) as ref_conn:
+                    result.update(chronological_deviation(conn, hindex, ref_conn))
+    except Exception as e:
+        result['chronology_error'] = str(e)
+    return result
+
+
+def attach_chronology(entries: list[dict]) -> None:
+    """Add the chronological comparisons to the entries, in place: TM structure and storage boundary check for every
+    RP main/operational run, dispatch/storage deviation of operational runs from Truth-operational (same fleet), and the
+    TM structure of each (TM variant, sub-case) copied to all its entries (Truth, regret runs) for grouping."""
+    truth_files = {(tm_key(e), subcase_key(e)): e['file'] for e in entries
+                   if e.get('edge_handling') == 'Truth' and e['kind'] == 'operational' and e.get('reference') is None}
+    jobs = [e for e in entries if e['kind'] in ('main', 'operational') and e.get('edge_handling') not in ('Truth', 'TruthOriginal')]
+    if not jobs:
+        return
+    refs = [truth_files.get((tm_key(e), subcase_key(e))) if e['kind'] == 'operational' else None for e in jobs]
+    max_workers = min(len(jobs), os.cpu_count() or 4, 60)
+    printer.information(f"Chronological comparisons of {len(jobs)} run(s) with up to {max_workers} processes ...")
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        results = list(executor.map(_chronology_worker, [e['file'] for e in jobs], refs))
+    errors = 0
+    for e, result in zip(jobs, results):
+        errors += 'chronology_error' in result
+        e.update(result)
+    if errors:
+        printer.warning(f"Chronological comparison failed for {errors} run(s) (see 'chronology_error' in markov_runs.csv)")
+    structure = {}
+    for e in jobs:
+        if e.get('tm_off_diag_mass') is not None:
+            structure.setdefault((tm_key(e), subcase_key(e)), {k: e[k] for k in ('tm_off_diag_mass', 'tm_entropy_norm')})
+    for e in entries:
+        for key, value in structure.get((tm_key(e), subcase_key(e)), {}).items():
+            e.setdefault(key, value)
 
 
 def edge_sort_key(edge) -> int:
@@ -943,6 +1150,19 @@ OUTPUT_NAMES = {
     'regret_rel': 'compare_regret_relative.png',
     'operational_regret_abs': 'compare_operational_regret_absolute.png',
     'operational_regret_rel': 'compare_operational_regret_relative.png',
+    # Against the original full chronology (TruthOriginal): Truth's box = clustering error, the others = total error
+    'original_invest_regret_abs': 'compare_original_invest_regret_absolute.png',
+    'original_invest_regret_rel': 'compare_original_invest_regret_relative.png',
+    'original_regret_abs': 'compare_original_regret_absolute.png',
+    'original_regret_rel': 'compare_original_regret_relative.png',
+    # Operational fidelity of the operational runs vs Truth-operational (same fleet)
+    'opcost_operational_rel': 'compare_operating_cost_operational_relative.png',
+    'curtailment_operational_abs': 'compare_curtailment_operational_absolute.png',
+    'load_shedding_operational_abs': 'compare_load_shedding_operational_absolute.png',
+    'dispatch_operational': 'compare_dispatch_deviation_operational.png',
+    'storage_operational': 'compare_storage_deviation_operational.png',
+    # Chronological storage-boundary deviation of the investment runs
+    'storage_boundary_investment': 'compare_storage_boundary_investment.png',
 }
 
 
@@ -964,8 +1184,8 @@ def _iter_vs_truth(entries: list[dict], edges: list[str], edge_value):
                 continue
             for edge in edges:
                 ent = eh_map.get(edge)
-                if ent is not None and edge_value(ent) is not None:
-                    yield key, edge, edge_value(truth), edge_value(ent)
+                if ent is not None and _num(edge_value(ent)) is not None:
+                    yield key, edge, _num(edge_value(truth)), _num(edge_value(ent))
 
 
 def build_runtime_boxes(entries: list[dict], edges: list[str]) -> dict:
@@ -1001,15 +1221,26 @@ def build_deviation_boxes(entries: list[dict], mode: str, edges: list[str], var:
     return boxes
 
 
-def build_regret_boxes(entries: list[dict], kind: str, mode: str, edges: list[str]) -> dict:
-    """Regret (see attach_regret) of the regret runs of one kind (RP-copies reference only):
-    'absolute' -> objective - reference objective (M EUR), 'relative' -> in % of the reference objective."""
+def build_regret_boxes(entries: list[dict], kind: str, mode: str, edges: list[str], reference: str | None = None) -> dict:
+    """Regret (see attach_regret) of the regret runs of one kind: 'absolute' -> objective - reference objective
+    (M EUR), 'relative' -> in % of the reference objective. reference=None: against Truth (RP copies),
+    'original': the -original-* runs against TruthOriginal."""
     boxes = defaultdict(lambda: defaultdict(list))
     for e in entries:
-        if e['kind'] == kind and e.get('reference') is None and e.get('edge_handling') in edges:
+        if e['kind'] == kind and e.get('reference') == reference and e.get('edge_handling') in edges:
             value = e.get('regret_pct' if mode == 'relative' else 'regret')
             if value is not None:
                 boxes[tm_key(e)][e['edge_handling']].append(value)
+    return boxes
+
+
+def build_value_boxes(entries: list[dict], edges: list[str], key: str) -> dict:
+    """A per-run value (e.g. dispatch_dev_pct from attach_chronology) per (tm_key, edge)."""
+    boxes = defaultdict(lambda: defaultdict(list))
+    for e in entries:
+        value = _num(e.get(key))
+        if e.get('edge_handling') in edges and value is not None:
+            boxes[tm_key(e)][e['edge_handling']].append(value)
     return boxes
 
 
@@ -1105,11 +1336,12 @@ def render_plots(entries: list[dict], edges: list[str], out_dir: str, args, fnam
     main_entries, operational_entries = _of_kind(entries, 'main'), _of_kind(entries, 'operational')
     data_label = _data_label(main_entries + operational_entries)
 
-    def emit(boxes, title, ylabel, name_key, gap_fn=None, **kwargs):
+    def emit(boxes, title, ylabel, name_key, gap_fn=None, plot_edges=None, **kwargs):
         stem, ext = os.path.splitext(OUTPUT_NAMES[name_key])
         stem += fname_suffix
         title += title_suffix
-        for drawn_edges, name, twin_title in [(edges, stem, title), ([e for e in edges if e != 'NoEnf'], f"{stem}_noNoEnf", f"{title} (excl. NoEnf)")]:
+        plot_edges = plot_edges or edges
+        for drawn_edges, name, twin_title in [(plot_edges, stem, title), ([e for e in plot_edges if e != 'NoEnf'], f"{stem}_noNoEnf", f"{title} (excl. NoEnf)")]:
             make_boxplot_figure(boxes, twin_title, ylabel, os.path.join(out_dir, name + ext), args.no_show, drawn_edges,
                                 gap_band=gap_fn(drawn_edges) if gap_fn else None, data_label=data_label, **kwargs)
 
@@ -1138,6 +1370,29 @@ def render_plots(entries: list[dict], edges: list[str], out_dir: str, args, fnam
             gap_fn = (lambda eds, m=mode: invest_regret_gap_band(entries, m, eds)) if kind == 'invest_regret' else None
             emit(build_regret_boxes(entries, kind, mode, edges), title, ylabel, f'{kind}_{suffix}', gap_fn=gap_fn, ref_line=0, tight_y=True)
 
+    # Against the original full chronology: Truth (RP copies) = clustering error alone, the edge handlings = total error
+    original_plots = [('invest_regret', ['Truth'] + edges, "Invest-regret vs original full chronology", "Investment regret vs TruthOriginal [million EUR]",
+                       "Invest-regret over TruthOriginal objective [%]"),
+                      ('regret', edges, "Regret vs original full chronology", "Regret vs TruthOriginal [million EUR]", "Regret over TruthOriginal objective [%]")]
+    for kind, plot_edges, title, ylabel_abs, ylabel_rel in original_plots:
+        for mode, ylabel, suffix in [('absolute', ylabel_abs, 'abs'), ('relative', ylabel_rel, 'rel')]:
+            emit(build_regret_boxes(entries, kind, mode, plot_edges, reference='original'), title, ylabel, f'original_{kind}_{suffix}',
+                 plot_edges=plot_edges, ref_line=0, tight_y=True)
+
+    # Operational fidelity (operational runs share Truth's fleet, so they are compared with Truth-operational)
+    emit(build_deviation_boxes(operational_entries, 'relative', edges, var='operating_cost'), "Operating cost (model) vs Truth — Operational runs",
+         "Operating cost deviation from Truth [%]", 'opcost_operational_rel', ref_line=0, symmetric_y=True)
+    emit(build_deviation_boxes(operational_entries, 'absolute', edges, var='curtailment_pct'), "Renewable curtailment vs Truth — Operational runs",
+         "Curtailment share deviation from Truth [pp]", 'curtailment_operational_abs', ref_line=0, symmetric_y=True)
+    emit(build_deviation_boxes(operational_entries, 'absolute', edges, var='load_shedding_pct'), "Load shedding vs Truth — Operational runs",
+         "Load-shedding share deviation from Truth [pp]", 'load_shedding_operational_abs', ref_line=0, symmetric_y=True)
+    emit(build_value_boxes(operational_entries, edges, 'dispatch_dev_pct'), "Hourly dispatch deviation from Truth — Operational runs",
+         "Σ|vGenP − vGenP_Truth| / Σ vGenP_Truth [%]", 'dispatch_operational', nonneg_y=True)
+    emit(build_value_boxes(operational_entries, edges, 'storage_dev_pct'), "Hourly storage-level deviation from Truth — Operational runs",
+         "Mean |level − level_Truth| [% of capacity]", 'storage_operational', nonneg_y=True)
+    emit(build_value_boxes(main_entries, edges, 'st_boundary_mean_dev_pct'), "Storage level jump at chronological RP boundaries — Investment runs",
+         "Mean boundary jump [% of capacity]", 'storage_boundary_investment', nonneg_y=True)
+
 
 def _agg(vals: list[float] | None) -> dict | None:
     """mean / median / min / max / n of a box's values (None when empty)."""
@@ -1160,6 +1415,28 @@ def truth_objective_by_tm(entries: list[dict]) -> dict:
     return {key: _agg(vals) for key, vals in boxes.items()}
 
 
+# Columns of the "operational fidelity / full chronology" results table: name -> (header, unit)
+FIDELITY_COLUMNS = {
+    'opcost_dev': ('opcost_dev_mean_pct', '%'), 'curtail_dev': ('curtailment_dev_mean_pp', 'pp'), 'shed_dev': ('load_shedding_dev_mean_pp', 'pp'),
+    'dispatch_dev': ('dispatch_dev_mean_pct', '%'), 'storage_dev': ('storage_dev_mean_pct', '%'), 'st_boundary': ('storage_boundary_jump_mean_pct', '%'),
+    'orig_invest_regret': ('orig_invest_regret_mean_pct', '%'), 'orig_regret': ('orig_regret_mean_pct', '%'),
+}
+
+
+def build_fidelity_boxes(entries, main_entries, operational_entries, edges, original_edges) -> dict:
+    """Boxes behind the FIDELITY_COLUMNS (the same builders as the corresponding plots)."""
+    return {
+        'opcost_dev': build_deviation_boxes(operational_entries, 'relative', edges, var='operating_cost'),
+        'curtail_dev': build_deviation_boxes(operational_entries, 'absolute', edges, var='curtailment_pct'),
+        'shed_dev': build_deviation_boxes(operational_entries, 'absolute', edges, var='load_shedding_pct'),
+        'dispatch_dev': build_value_boxes(operational_entries, edges, 'dispatch_dev_pct'),
+        'storage_dev': build_value_boxes(operational_entries, edges, 'storage_dev_pct'),
+        'st_boundary': build_value_boxes(main_entries, edges, 'st_boundary_mean_dev_pct'),
+        'orig_invest_regret': build_regret_boxes(entries, 'invest_regret', 'relative', original_edges, reference='original'),
+        'orig_regret': build_regret_boxes(entries, 'regret', 'relative', edges, reference='original'),
+    }
+
+
 def build_table_records(entries: list[dict], edges: list[str]):
     """Aggregate the boxes behind the plots into per-(TM_variant, method) records - the same builders the figures use,
     so the numbers match the plots exactly. Returns (records, truth_main, truth_oper)."""
@@ -1172,10 +1449,13 @@ def build_table_records(entries: list[dict], edges: list[str]):
         'wu_invest': _aggregate_boxes(build_runtime_relative_boxes(main_entries, edges), edges),
         'invest_dev': _aggregate_boxes(build_deviation_boxes(main_entries, 'relative', edges), edges),
     }
+    original_edges = ['Truth'] + edges  # Truth vs TruthOriginal = clustering error alone
+    for name, boxes in build_fidelity_boxes(entries, main_entries, operational_entries, edges, original_edges).items():
+        metrics[name] = _aggregate_boxes(boxes, original_edges)
     tm_keys = {key for values in metrics.values() for key, _ in values}
     records = []
     for key in sorted(tm_keys, key=_tm_sort):
-        for edge in sorted(edges, key=edge_sort_key):
+        for edge in sorted(original_edges, key=edge_sort_key):
             rec = {'TM_variant': tm_variant_label(key), 'method': edge, **{name: values.get((key, edge)) for name, values in metrics.items()}}
             if any(rec[name] for name in metrics):
                 records.append(rec)
@@ -1197,7 +1477,8 @@ def render_results_markdown(records, truth_main, truth_oper, title_suffix="") ->
     headers = ["TM_variant", "method", "oper_dev_mean_pct", "oper_dev_median_pct", "oper_dev_min_pct", "oper_dev_max_pct",
                "invest_regret_mean_MEUR", "invest_regret_median_MEUR", "wu_oper_mean_pct", "wu_invest_mean_pct", "n_runs"]
     rows = []
-    for r in records:
+    edge_records = [r for r in records if r['method'] != 'Truth']  # Truth only has the TruthOriginal comparison
+    for r in edge_records:
         od, ir = r['oper_dev'], r['invest_regret']
         rows.append([r['TM_variant'], r['method'],
                      _f(od and od['mean']), _f(od and od['median']), _f(od and od['min']), _f(od and od['max']),
@@ -1213,13 +1494,23 @@ def render_results_markdown(records, truth_main, truth_oper, title_suffix="") ->
     dheaders = ["TM_variant", "method", "startup_dev_mean_pct", "startup_dev_median_pct", "invest_run_shutdown_dev_mean_pct",
                 "n_oper_dev", "n_startup", "n_regret", "n_wu_oper", "n_wu_invest"]
     drows = []
-    for r in records:
+    for r in edge_records:
         sd, idv = r['startup_dev'], r['invest_dev']
         drows.append([r['TM_variant'], r['method'], _f(sd and sd['mean']), _f(sd and sd['median']), _f(idv and idv['mean'])]
                      + [str(r[k]['n'] if r[k] else 0) for k in ['oper_dev', 'startup_dev', 'invest_regret', 'wu_oper', 'wu_invest']])
     out.append(_md_table(dheaders, drows))
     out.append("\nStart-ups equal shut-downs for Cyclic/Markov and differ for NoEnf. `invest_run_shutdown_dev_mean_pct` is the "
                "deviation on the regular (investment) runs - a fallback view when no `--operational` runs are present.\n")
+
+    out.append("## Operational fidelity and full chronology (means over sub-cases)\n")
+    frows = [[r['TM_variant'], r['method']] + [_f(r[name] and r[name]['mean'], "%.2f") for name in FIDELITY_COLUMNS] for r in records
+             if any(r[name] for name in FIDELITY_COLUMNS)]
+    out.append(_md_table(["TM_variant", "method"] + [header for header, _ in FIDELITY_COLUMNS.values()], frows))
+    out.append("\nOperational runs vs Truth-operational (same fleet): operating cost of the model in %, curtailment and load-shedding "
+               "shares in percentage points, hourly dispatch deviation in % of Truth's dispatch, hourly storage-level deviation in % "
+               "of the energy capacity. storage_boundary_jump: investment runs, mean storage-level jump at the chronological RP "
+               "boundaries in % of the capacity. orig_*: regret against the original full chronology (TruthOriginal) in % - the "
+               "Truth row is the clustering error alone, the edge handlings show the total error.\n")
 
     out.append("## Reference Truth objective per TM_variant [M EUR]\n")
     rrows = []
@@ -1235,6 +1526,7 @@ def write_results_csv(path, records):
             "startup_dev_mean_pct", "startup_dev_median_pct", "invest_regret_mean_MEUR", "invest_regret_median_MEUR",
             "invest_regret_min_MEUR", "invest_regret_max_MEUR", "wu_oper_mean_pct", "wu_invest_mean_pct",
             "invest_run_shutdown_dev_mean_pct", "n_oper_dev", "n_startup", "n_regret", "n_wu_oper", "n_wu_invest"]
+    cols += [header for header, _ in FIDELITY_COLUMNS.values()] + [f"n_{name}" for name in FIDELITY_COLUMNS]
 
     def g(agg, field):
         return "" if not agg else round(agg[field], 3)
@@ -1249,7 +1541,8 @@ def write_results_csv(path, records):
                         g(sd, 'mean'), g(sd, 'median'),
                         g(ir, 'mean'), g(ir, 'median'), g(ir, 'min'), g(ir, 'max'),
                         g(r['wu_oper'], 'mean'), g(r['wu_invest'], 'mean'), g(r['invest_dev'], 'mean')]
-                       + [r[k]['n'] if r[k] else 0 for k in ['oper_dev', 'startup_dev', 'invest_regret', 'wu_oper', 'wu_invest']])
+                       + [r[k]['n'] if r[k] else 0 for k in ['oper_dev', 'startup_dev', 'invest_regret', 'wu_oper', 'wu_invest']]
+                       + [g(r[name], 'mean') for name in FIDELITY_COLUMNS] + [r[name]['n'] if r[name] else 0 for name in FIDELITY_COLUMNS])
 
 
 def report_results_table(entries: list[dict], edges: list[str], out_dir: str, fname_suffix="", title_suffix=""):
@@ -1301,14 +1594,26 @@ SUMMARY_METRICS = ['num_vars', 'num_bin_vars', 'num_constrs', 'num_nonzeros', 't
                    'regret', 'regret_pct',
                    'nb_transitions_fractional_pct', 'nb_transitions_max_delta', 'nb_transitions_mean_delta_fractional',
                    'nb_all_window_fractional_pct', 'nb_all_max_delta',
-                   'feas_infeasible_pct', 'feas_infeasible_rounded_pct']
+                   'feas_infeasible_pct', 'feas_infeasible_rounded_pct',
+                   'tm_off_diag_mass', 'tm_entropy_norm', 'dispatch_dev_pct', 'storage_dev_pct',
+                   'st_boundary_violation_pct', 'st_boundary_mean_dev_pct', 'st_boundary_max_dev_pct']
+SUMMARY_METRICS += [f'feas_{check}_{suffix}' for check in FEASIBILITY_CHECKS for suffix in ('pct', 'mean_residual', 'max_residual')]
+# Panels of the scalability plot: (column, axis label)
+SCALABILITY_METRICS = [('num_vars', 'variables'), ('num_nonzeros', 'nonzeros'), ('tm_nonzero', 'nonzero TM entries'),
+                       ('solver_max_mem_gb', 'solver memory [GB]'), ('solver_runtime_s', 'solver time [s]'), ('work_units', 'work units')]
 
 
 def runs_dataframe(entries: list[dict]) -> pd.DataFrame:
-    """One row per run, with dataset and run kind ('@original' appended for the original-reference runs)."""
+    """One row per run, with dataset and run kind ('@original' appended for the original-reference runs) and the share
+    of chronological transition instances violating each feasibility check (feas_{check}_pct)."""
     runs = pd.DataFrame(entries)
     runs['dataset'] = runs['case_study_directory'].map(lambda d: _dataset_name(d) if d else None)
     runs['run_kind'] = runs['kind'] + np.where(runs['reference'] == 'original', '@original', '')
+    if 'feas_instances' in runs:
+        instances = pd.to_numeric(runs['feas_instances'], errors='coerce').replace(0, np.nan)
+        for check in FEASIBILITY_CHECKS:
+            if f'feas_{check}_instances' in runs:
+                runs[f'feas_{check}_pct'] = pd.to_numeric(runs[f'feas_{check}_instances'], errors='coerce') / instances * 100
     return runs
 
 
@@ -1410,6 +1715,121 @@ def plot_feasibility(runs: pd.DataFrame, output_dir: str) -> None:
         printer.information(f"Saved {path}")
 
 
+def plot_feasibility_checks(runs: pd.DataFrame, output_dir: str) -> None:
+    """Per dataset: % of chronological transition instances (boundary x unit) violating each check, per edge handling
+    (investment runs, mean over all runs). Mean/max violation magnitudes are in markov_summary.csv."""
+    import matplotlib.pyplot as plt
+    checks = [c for c in FEASIBILITY_CHECKS if f'feas_{c}_pct' in runs]
+    main = runs[runs['run_kind'] == 'main']
+    if not checks or main.empty:
+        printer.information("[skip] feasibility-check plots: no feasibility results found")
+        return
+    for dataset, ds_runs in main.groupby('dataset'):
+        edges = [e for e in EDGE_DISPLAY_ORDER if e in set(ds_runs['edge_handling']) and e != 'Truth']
+        if not edges:
+            continue
+        fig, ax = plt.subplots(figsize=(1.0 * len(checks) + 2, 3.4))
+        width = 0.8 / len(edges)
+        for offset, edge in enumerate(edges):
+            means = [pd.to_numeric(ds_runs.loc[ds_runs['edge_handling'] == edge, f'feas_{c}_pct'], errors='coerce').mean() for c in checks]
+            ax.bar(np.arange(len(checks)) + offset * width - 0.4 + width / 2, means, width=width * 0.9,
+                   color=EDGE_COLORS.get(edge, '#2a78d6'), label=EDGE_LABELS.get(edge, edge))
+        ax.set_xticks(np.arange(len(checks)))
+        ax.set_xticklabels([c.replace('_', ' ') for c in checks], rotation=30, ha='right', fontsize=8)
+        ax.set_ylabel("% of RP transitions violating", fontsize=9, color=TEXT_SECONDARY)
+        _style_axis(ax)
+        ax.legend(frameon=False, fontsize=8)
+        fig.tight_layout()
+        path = os.path.join(output_dir, f"feasibility_checks_{dataset}.png")
+        fig.savefig(path, dpi=200)
+        plt.close(fig)
+        printer.information(f"Saved {path}")
+
+
+def plot_scalability(runs: pd.DataFrame, output_dir: str) -> None:
+    """Per dataset: model size, transition-matrix nonzeros, memory, solver time and work units of the investment runs
+    over the number of RPs (mean over the other variants), one line per edge handling (Truth for reference)."""
+    import matplotlib.pyplot as plt
+    main = runs[(runs['run_kind'] == 'main') & runs['clusters'].notna()]
+    if main.empty:
+        printer.information("[skip] scalability plots: no clustered investment runs")
+        return
+    for dataset, ds_runs in main.groupby('dataset'):
+        panels = [(col, label) for col, label in SCALABILITY_METRICS if col in ds_runs and pd.to_numeric(ds_runs[col], errors='coerce').notna().any()]
+        if not panels:
+            continue
+        fig, axes = plt.subplots(1, len(panels), figsize=(3.0 * len(panels), 3.2), squeeze=False)
+        for ax, (col, label) in zip(axes[0], panels):
+            for edge in [e for e in EDGE_DISPLAY_ORDER if e in set(ds_runs['edge_handling'])]:
+                if edge == 'Truth' and col == 'tm_nonzero':
+                    continue  # Truth is a single-RP model
+                part = ds_runs[ds_runs['edge_handling'] == edge]
+                agg = pd.to_numeric(part[col], errors='coerce').groupby(part['clusters']).mean().dropna()
+                if not agg.empty:
+                    ax.plot(agg.index, agg.values, marker='o', markersize=4, linewidth=1.8, color=EDGE_COLORS.get(edge, '#2a78d6'),
+                            linestyle='--' if edge == 'Truth' else '-', label=EDGE_LABELS.get(edge, edge))
+            ax.set_xlabel("number of RPs", fontsize=9, color=TEXT_SECONDARY)
+            ax.set_title(label, fontsize=9)
+            _style_axis(ax)
+        axes[0][-1].legend(frameon=False, fontsize=7, loc='upper left', bbox_to_anchor=(1.01, 1))
+        fig.tight_layout()
+        path = os.path.join(output_dir, f"scalability_{dataset}.png")
+        fig.savefig(path, dpi=200)
+        plt.close(fig)
+        printer.information(f"Saved {path}")
+
+
+def _pairs_vs_truth(entries: list[dict], kind: str):
+    """(Truth entry, edge entry) of the same kind, TM variant and sub-case."""
+    grouped = defaultdict(dict)
+    for e in entries:
+        if e['kind'] == kind and e.get('reference') is None and e.get('edge_handling') is not None:
+            grouped[(tm_key(e), subcase_key(e))][e['edge_handling']] = e
+    for eh_map in grouped.values():
+        truth = eh_map.get('Truth')
+        if truth is not None:
+            for edge, e in eh_map.items():
+                if edge != 'Truth':
+                    yield truth, e
+
+
+def plot_offdiagonality(entries: list[dict], output_dir: str) -> None:
+    """Per dataset: approximation error over the off-diagonal mass of the transition matrix (one point per sub-case,
+    all TM variants): |vShutdown deviation| of the operational runs, invest-regret and operational-regret in %."""
+    import matplotlib.pyplot as plt
+    rows = []
+    for truth, e in _pairs_vs_truth(entries, 'operational'):
+        t, v = _num(truth.get('vShutdown')), _num(e.get('vShutdown'))
+        if t not in (None, 0) and v is not None:
+            rows.append((e, 'operational |vShutdown dev.| [%]', abs(v - t) / abs(t) * 100))
+    for e in entries:
+        if e['kind'] in ('invest_regret', 'operational_regret') and e.get('reference') is None and e.get('regret_pct') is not None:
+            rows.append((e, f"{e['kind'].replace('_', '-')} [%]", e['regret_pct']))
+    df = pd.DataFrame([{'dataset': _dataset_name(e.get('case_study_directory')), 'edge': e.get('edge_handling'),
+                        'x': _num(e.get('tm_off_diag_mass')), 'metric': metric, 'y': y} for e, metric, y in rows])
+    if df.empty or df['x'].isna().all():
+        printer.information("[skip] off-diagonality plots: no runs with transition-matrix structure (needs the chronological comparisons)")
+        return
+    df = df.dropna(subset=['x'])
+    for dataset, ds in df.groupby('dataset'):
+        metrics = sorted(ds['metric'].unique())
+        fig, axes = plt.subplots(1, len(metrics), figsize=(3.6 * len(metrics), 3.2), squeeze=False)
+        for ax, metric in zip(axes[0], metrics):
+            part = ds[ds['metric'] == metric]
+            for edge in [e for e in EDGE_DISPLAY_ORDER if e in set(part['edge'])]:
+                sub = part[part['edge'] == edge]
+                ax.scatter(sub['x'], sub['y'], s=12, alpha=0.7, color=EDGE_COLORS.get(edge, '#2a78d6'), label=EDGE_LABELS.get(edge, edge))
+            ax.set_xlabel("off-diagonal mass of the transition matrix", fontsize=9, color=TEXT_SECONDARY)
+            ax.set_title(metric, fontsize=9)
+            _style_axis(ax)
+        axes[0][-1].legend(frameon=False, fontsize=7, loc='upper left', bbox_to_anchor=(1.01, 1))
+        fig.tight_layout()
+        path = os.path.join(output_dir, f"offdiagonality_{dataset}.png")
+        fig.savefig(path, dpi=200)
+        plt.close(fig)
+        printer.information(f"Saved {path}")
+
+
 def run_summary(all_entries: list[dict], selected: list[dict], values: pd.DataFrame, args, out_dir: str) -> None:
     """markov_runs.csv: every run (incl. non-optimal and filtered-out ones); markov_summary.csv and plots: the
     selected runs (optimal unless --include-nonoptimal, --nrOfClusters / --tm)."""
@@ -1426,6 +1846,9 @@ def run_summary(all_entries: list[dict], selected: list[dict], values: pd.DataFr
     if not args.no_plots:
         plot_nonbinarity(runs, values, out_dir)
         plot_feasibility(runs, out_dir)
+        plot_feasibility_checks(runs, out_dir)
+        plot_scalability(runs, out_dir)
+        plot_offdiagonality(selected, out_dir)
 
 
 ########################################################################################################################
@@ -1464,6 +1887,8 @@ def main():
                         help="Only the selected (shift_tm, perturb_tm) combinations. Repeatable and/or comma-separated; each side a number, "
                              "'none' (unset) or '*' (any); 'base' = none:none. Examples: --tm none:0.2 --tm 1:none ; --tm \"base,1:*\"")
     common.add_argument("--no-show", action="store_true", help="Don't display figures (only save them)")
+    common.add_argument("--no-chronology", action="store_true", help="plots/summary: skip the chronological comparisons (TM structure, storage "
+                                                                      "boundary check, dispatch/storage deviation from Truth) - they read the large variable tables")
 
     parser = argparse.ArgumentParser(description="Evaluate the Markov edge-handling results (MK-*.sqlite files)", formatter_class=RichHelpFormatter)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1488,11 +1913,13 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     do_tables, do_plots, do_summary = (args.command in (c, "all") for c in ("tables", "plots", "summary"))
-    entries, values = load_entries(args.folder, recursive=args.recursive, full=do_tables, analysis=do_summary)
+    entries, values = load_entries(args.folder, recursive=args.recursive, full=do_tables, analysis=do_summary or do_plots)
     if not entries:
         printer.warning(f"No MK-*.sqlite files found in '{args.folder}'")
         return
     attach_regret(entries, include_nonoptimal=args.include_nonoptimal)
+    if (do_plots or do_summary) and not args.no_chronology:
+        attach_chronology(entries)
 
     if do_tables:
         run_tables([e for e in entries if _matches_filters(e, cluster_filter, tm_specs)], args)
