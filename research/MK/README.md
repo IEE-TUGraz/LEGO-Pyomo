@@ -205,7 +205,7 @@ python research/MK/cluster.py status experiment --list running --filter 'TX-123B
 python research/MK/cluster.py log experiment TX-123BT/sd0.5/c21/base/main/Truth
 python research/MK/cluster.py restart experiment --failed --mem-factor 1.5          # all failed tasks
 python research/MK/cluster.py restart experiment 'TX-123BT/sd0.5/c21/*' --time 3-00:00:00
-python research/MK/cluster.py prioritize experiment                    # re-apply the queue order (scontrol top)
+python research/MK/cluster.py prioritize experiment --nice-step 300    # change the queue-order nice of queued jobs
 python research/MK/cluster.py cancel experiment
 ```
 
@@ -220,11 +220,13 @@ regret, `iRgr` invest-regret, `oRgr` operational-regret, `OiRg` original-invest-
 codes: `Tr` Truth, `NE` NoEnf, `Cy` Cyclic, `Mk` Markov, `--` none. Full names: `squeue -o "%.18i %.40j %.8T %.10M"`.
 
 **Queue order**: `grid.datasets` order (RTS-GMLC, TX-123BT, NREL-118), then the runs of `low_priority` TM variants
-(own arrays ending in `-low`, e.g. `rtmainMk_main-Markov-RTS-GMLC-low`). `submit` and `restart` apply it with one
-`scontrol top` over all queued jobs; this only reorders your own jobs (same user, partition, account, QOS), not your
-position relative to other users. Needs `enable_user_top` in Slurm's `SchedulerParameters` (enabled on MUSICA;
-otherwise a warning and Slurm's default order). Check with `sprio -l -u $USER`; jobs that become eligible later gain
-age priority, so re-apply with `prioritize`.
+(own arrays ending in `-low`, e.g. `rtmainMk_main-Markov-RTS-GMLC-low`). Every job gets `sbatch --nice` = rank ×
+`[slurm] nice_step` (default 100): 0 / 100 / 200 for the datasets, 300 / 400 / 500 for their low-priority runs. Nice
+is fixed per job (also on `restart`); it acts like submitting the job nice / 30 hours later (MUSICA: age weight 10000
+over 14 days), against your own and other users' jobs. So it orders your jobs only among those that became eligible
+within that margin of each other; a larger step orders more strictly but delays the later ranks more against other
+users. Check with `squeue -u $USER -t PD -S -p -o "%.12i %.32j %.10Q %.6y %.20r"` (`%y` = nice). `prioritize
+--nice-step N` re-applies the nice of all queued jobs with a new step (stored for later restarts).
 
 **Status categories**: `done` (completed = optimal result file), `running`, `pending`, `blocked` (waits for a failed
 task, listed under it), `failed` (FAILED, OUT_OF_MEMORY, TIMEOUT, CANCELLED, …, with peak vs requested memory),
@@ -236,7 +238,7 @@ them. `--mem`/`--mem-factor`/`--cpus`/`--time` apply to the selected tasks only.
 delete a result file to recompute it.
 
 **Config** (see `experiments/experiment.toml`):
-- `[slurm]`: account, partition, QoS, optional `mail_user`/`mail_type` (leave them out of versioned configs and use
+- `[slurm]`: account, partition, QoS, optional `nice_step` (see Queue order), optional `mail_user`/`mail_type` (leave them out of versioned configs and use
   `$MK_MAIL_USER`), `repo` (repo path on the cluster), `setup` (environment lines).
 - `[markov]`: `args` for every solve; Gurobi node files (in the job's node-local `$TMPDIR`) from a fixed
   `node_file_start` (GB) or `node_file_start_fraction` × the job's memory, which follows `restart --mem`.

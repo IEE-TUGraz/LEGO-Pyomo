@@ -3,7 +3,7 @@
     python research/MK/cluster.py submit   research/MK/experiments/experiment.toml [--dry-run]
     python research/MK/cluster.py status   experiment [--list STATE] [--filter PATTERN]
     python research/MK/cluster.py restart  experiment [PATTERN ...] [--failed] [--mem 200G | --mem-factor 1.5] [--cpus N] [--time T]
-    python research/MK/cluster.py prioritize experiment
+    python research/MK/cluster.py prioritize experiment [--nice-step N]
     python research/MK/cluster.py log      experiment KEY
     python research/MK/cluster.py cancel   experiment
 
@@ -27,6 +27,7 @@ except ModuleNotFoundError:
 
 HERE = Path(__file__).resolve().parent
 RUNS_DIR = HERE / "runs"
+DEFAULT_NICE_STEP = 100  # [slurm] nice_step: sbatch --nice per rank (MUSICA age weight 10000 per 14 days = ~30 per hour)
 
 # Grid tasks in dependency order (a task only depends on tasks listed before it)
 GRID_TASKS = ["main", "operational", "regret", "invest-regret", "operational-regret", "original-invest-regret", "original-regret"]
@@ -198,7 +199,7 @@ def build_plan(cfg: dict) -> dict:
         # Low-priority tasks: lower-case dataset code (tells their arrays apart in squeue), ranked after all datasets
         code = ds_codes.get(dataset, "")
         jobname = group if dataset is None else f"{code.lower() if low else code}{TASK_CODES[task]}{EDGE_CODES.get(edge, edge and edge[:2])}_{group}"
-        task_rank = rank.get(dataset, len(rank)) + (len(rank) if low else 0)
+        task_rank = rank.get(dataset, 0) + (len(rank) if low else 0)  # evaluate (no dataset): 0
         plan[key] = {"key": key, "group": group, "jobname": jobname, "rank": task_rank, "index": index, "cmd": " ".join(cmd), "res": res, "deps": deps}
 
     for dataset in grid["datasets"]:
@@ -213,7 +214,7 @@ def build_plan(cfg: dict) -> dict:
                     _resources(cfg, "truth-original", name), [f"{prefix}/prepare"], name, "truth-original")
 
         # Grid points longest first: high cluster counts, then the TM variants in config order (base first). Low-priority
-        # TM variants form their own job arrays (scontrol top orders whole arrays) with their own index sequence.
+        # TM variants form their own job arrays (one --nice per array) with their own index sequence.
         points = sorted(((si, c, ti) for si, c, ti in itertools.product(range(len(stretch)), clusters, range(len(tms)))
                          if tms[ti][2] is None or stretch[si] in tms[ti][2]), key=lambda p: (-p[1], p[2], p[0]))
         for low in (False, True):
@@ -313,18 +314,17 @@ class Slurm:
         for i in range(0, len(job_ids), 200):
             subprocess.run(["scancel", *job_ids[i:i + 200]], check=False)
 
-    def top(self, job_ids: list[str]) -> None:
-        """scontrol top: order the own pending jobs (first = highest priority) by shifting priority among them only - the
-        position relative to other users is unchanged (needs SchedulerParameters=enable_user_top). One call, because
-        every call moves its jobs above all others."""
-        if not job_ids:
-            return
-        if self.dry_run:
-            print(f"  scontrol top {','.join(job_ids)}")
-            return
-        out = subprocess.run(["scontrol", "top", ",".join(job_ids)], capture_output=True, text=True)
-        if out.returncode != 0:
-            print(f"  warning: scontrol top failed ({(out.stderr or out.stdout).strip()}) - jobs keep Slurm's default order")
+    def renice(self, nice_jobs: dict[int, list[str]]) -> None:
+        """scontrol update Nice of queued jobs, {nice: [job id, ...]} (an array id covers the array's pending tasks)."""
+        for nice, job_ids in nice_jobs.items():
+            for i in range(0, len(job_ids), 200):
+                cmd = ["scontrol", "update", f"JobId={','.join(job_ids[i:i + 200])}", f"Nice={nice}"]
+                if self.dry_run:
+                    print("  " + " ".join(cmd))
+                    continue
+                out = subprocess.run(cmd, capture_output=True, text=True)
+                if out.returncode != 0:
+                    print(f"  warning: setting Nice={nice} failed ({(out.stderr or out.stdout).strip()})")
 
     @staticmethod
     def query(job_ids: set[str]) -> dict:
@@ -404,18 +404,34 @@ def current_job(task: dict) -> str | None:
     return task["attempts"][-1]["job"] if task["attempts"] else None
 
 
+def nice(task: dict, step: int) -> int:
+    """sbatch --nice of a task: rank (grid.datasets order, low-priority TM variants after all datasets) x nice_step. A positive
+    nice is the only way to order the own jobs without operator rights; it costs the same against other users' jobs."""
+    return task.get("rank", 0) * step
+
+
+def _nice_step(value) -> int:
+    step = int(value)
+    if step < 0:
+        sys.exit("nice_step must be >= 0 (a negative nice needs operator rights)")
+    return step
+
+
 def prioritize(state: dict, keys, slurm: "Slurm") -> None:
-    """scontrol top on the jobs of the given tasks, ordered by rank (grid.datasets order, low priority last), then plan order. Array
-    jobs are passed by their array id (scontrol top takes plain job ids; it covers the array's pending tasks)."""
-    order = {k: i for i, k in enumerate(state["tasks"])}
-    jobs = []
-    for key in sorted(keys, key=lambda k: (state["tasks"][k].get("rank", 0), order[k])):
+    """Re-apply the nice of the given (queued) tasks' jobs, e.g. after changing nice_step. Array jobs go in by array id."""
+    nice_jobs = {}
+    for key in keys:
         job = current_job(state["tasks"][key])
         job = job and job.split("_")[0]
+        jobs = nice_jobs.setdefault(nice(state["tasks"][key], state.get("nice_step", DEFAULT_NICE_STEP)), [])
         if job and job not in jobs:
             jobs.append(job)
-    print(f"Ordering {len(jobs)} job(s) / array(s) by priority (scontrol top)")
-    slurm.top(jobs)
+    if not nice_jobs:
+        print("No queued jobs")
+        return
+    print(f"Setting the nice of {sum(map(len, nice_jobs.values()))} queued job(s) / array(s): "
+          + ", ".join(f"{len(j)} x {n}" for n, j in sorted(nice_jobs.items())))
+    slurm.renice(nice_jobs)
 
 
 def classify(state: dict, info: dict) -> dict:
@@ -485,6 +501,7 @@ def cmd_submit(args) -> None:
     groups = group_tasks(plan)
 
     slurm_cfg = cfg["slurm"]
+    nice_step = _nice_step(slurm_cfg.get("nice_step", DEFAULT_NICE_STEP))
     # Mail address from the config or $MK_MAIL_USER (keeps it out of the repo); without one, no mails are requested
     mail_user = slurm_cfg.get("mail_user") or os.environ.get("MK_MAIL_USER", "")
     mail = f"#SBATCH --mail-type={slurm_cfg.get('mail_type', 'FAIL')}\n#SBATCH --mail-user={mail_user}\n" if mail_user else ""
@@ -501,7 +518,7 @@ def cmd_submit(args) -> None:
         Path(cfg["evaluate"]["output_dir"]).mkdir(parents=True, exist_ok=True)
 
     state = {"config": str(Path(args.config).resolve()), "created": _now(), "rundir": str(out_dir.resolve()),
-             "mail": bool(mail_user), "tasks": {k: {**t, "attempts": []} for k, t in plan.items()}, "groups": {}}
+             "mail": bool(mail_user), "nice_step": nice_step, "tasks": {k: {**t, "attempts": []} for k, t in plan.items()}, "groups": {}}
     slurm = Slurm(dry_run=args.dry_run)
     print(f"{len(plan)} tasks in {len(groups)} job arrays")
     for group, members in groups.items():
@@ -517,14 +534,13 @@ def cmd_submit(args) -> None:
                 dependency = re.sub(r"@([^:,]+)", lambda m: state["groups"][m.group(1)]["job"], dependency)
             sbatch_args = [f"--array={compress_indices([t['index'] for t in members])}", f"--output={out_dir / 'logs' / (group + '_%A_%a.out')}"]
         job = slurm.sbatch([f"--job-name={members[0]['jobname']}", f"--cpus-per-task={res['cpus']}", f"--mem={res['mem']}",
-                            f"--time={res['time']}", *sbatch_args, *([f"--dependency={dependency}"] if dependency else []), str(out_dir / "task.sbatch"), str(cmd_file)])
+                            f"--time={res['time']}", f"--nice={nice(members[0], nice_step)}", *sbatch_args, *([f"--dependency={dependency}"] if dependency else []), str(out_dir / "task.sbatch"), str(cmd_file)])
         state["groups"][group] = {"job": job, "cmdfile": str(cmd_file)}
         for t in members:
             task_job, log = (job, out_dir / "logs" / f"evaluate_{job}.out") if group == "evaluate" else \
                 (f"{job}_{t['index']}", out_dir / "logs" / f"{group}_{job}_{t['index']}.out")
             state["tasks"][t["key"]]["attempts"].append({"job": task_job, "log": str(log), "res": res, "time": _now()})
         save_state(out_dir, state)  # after every array, so a failed submission can be inspected / cancelled
-    prioritize(state, [k for k in plan if k != "evaluate"], slurm)
     print(f"State: {out_dir / 'state.json'}" + ("  (dry run: nothing submitted)" if args.dry_run else ""))
 
 
@@ -595,6 +611,7 @@ def cmd_restart(args) -> None:
               f"solves of their dataset (prefer --mem / --time)")
 
     slurm = Slurm(dry_run=args.dry_run)
+    nice_step = state.get("nice_step", DEFAULT_NICE_STEP)
     slurm.scancel([current_job(tasks[k]) for k in resubmit if status[k][0] in {PENDING, BLOCKED}])
     new_jobs = {}
     for key in resubmit:
@@ -619,7 +636,7 @@ def cmd_restart(args) -> None:
                 deps.append(current_job(tasks[dep]))
         group = task["group"]
         job = slurm.sbatch([f"--job-name={task.get('jobname', group)}", f"--cpus-per-task={res['cpus']}", f"--mem={res['mem']}",
-                            f"--time={res['time']}", f"--export=ALL,TASK_INDEX={task['index']}", f"--output={Path(state['rundir']) / 'logs' / (group + '_%j.out')}",
+                            f"--time={res['time']}", f"--nice={nice(task, nice_step)}", f"--export=ALL,TASK_INDEX={task['index']}", f"--output={Path(state['rundir']) / 'logs' / (group + '_%j.out')}",
                             *([f"--dependency=afterok:{':'.join(deps)}"] if deps else []),
                             str(Path(state["rundir"]) / "task.sbatch"), state["groups"][group]["cmdfile"]])
         new_jobs[key] = job
@@ -638,16 +655,18 @@ def cmd_restart(args) -> None:
                             *([f"--dependency=afterany:{':'.join(active)}"] if active else []),
                             str(Path(state["rundir"]) / "task.sbatch"), state["groups"]["evaluate"]["cmdfile"]])
         ev["attempts"].append({"job": job, "log": str(Path(state["rundir"]) / "logs" / f"evaluate_{job}.out"), "res": res, "time": _now()})
-    # New jobs start without the scontrol top boost of the queued ones: re-order everything still queued
-    prioritize(state, [k for k in tasks if k != "evaluate" and (k in new_jobs or status[k][0] == PENDING)], slurm)
     if not args.dry_run:
         save_state(rdir, state)
 
 
 def cmd_prioritize(args) -> None:
-    _, state = load_state(args.run)
+    rdir, state = load_state(args.run)
+    if args.nice_step is not None:
+        state["nice_step"] = _nice_step(args.nice_step)  # also used by later restarts
     status = classify(state, Slurm.query({current_job(t) for t in state["tasks"].values() if current_job(t)}))
     prioritize(state, [k for k in state["tasks"] if k != "evaluate" and status[k][0] == PENDING], Slurm(dry_run=args.dry_run))
+    if args.nice_step is not None and not args.dry_run:
+        save_state(rdir, state)
 
 
 def cmd_log(args) -> None:
@@ -697,9 +716,10 @@ def main():
     p.add_argument("--time", help="New time limit for the selected tasks, e.g. 3-00:00:00")
     p.add_argument("--dry-run", action="store_true", help="Print what would be cancelled / submitted")
     p.set_defaults(func=cmd_restart)
-    p = sub.add_parser("prioritize", help="Re-order the queued jobs (grid.datasets order, low-priority TM variants last) with scontrol top")
+    p = sub.add_parser("prioritize", help="Re-apply the nice (rank x nice_step) of the queued jobs, e.g. with a new --nice-step")
     p.add_argument("run", help="Run name or its TOML file")
-    p.add_argument("--dry-run", action="store_true", help="Print the scontrol call only")
+    p.add_argument("--nice-step", type=int, help="New nice per rank, stored for later restarts (default: the run's nice_step)")
+    p.add_argument("--dry-run", action="store_true", help="Print the scontrol calls only")
     p.set_defaults(func=cmd_prioritize)
     p = sub.add_parser("log", help="Attempts and log tail of one task")
     p.add_argument("run", help="Run name or its TOML file")
