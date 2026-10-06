@@ -1025,6 +1025,32 @@ def _add_push_markov_constraints(lego: LEGO, thermalGeneratorRelaxed: dict):
                         model.ePushMarkov[rp, k, t, i].deactivate()
 
 
+# Model dict key -> edge handling parameter value of the RP models ("Truth " is the full-hourly model)
+_EDGE_HANDLINGS = {"NoEnf.": "notEnforced", "Cyclic": "cyclic", "Markov": "markov", "Markov-Strict": "markov"}
+
+
+def _build_edge_lego(cs: CaseStudy, name: str, thermal_generator_relaxed: dict, no_investment: bool) -> LEGO:
+    """Build (not solve) the model of one edge handling from the RP case study: "Truth " = full-hourly model built from
+    the RP copies, otherwise a copy of cs with the edge handling set. Applies the UC relaxation, the Markov-Strict push
+    constraints and --no-investment - every model of a grid point is built through here, also in single --task runs."""
+    start_time = time.time()
+    if name == "Truth ":
+        edge_cs = cs.to_full_hourly_model(inplace=False)
+    else:
+        edge_cs = cs.copy()
+        for parameter in ["pReprPeriodEdgeHandlingUnitCommitment", "pReprPeriodEdgeHandlingRamping", "pReprPeriodEdgeHandlingIntraDayStorage"]:
+            edge_cs.dPower_Parameters[parameter] = _EDGE_HANDLINGS[name]
+    lego = LEGO(edge_cs)
+    lego.build_model()
+    _relax_unit_commitment(lego, thermal_generator_relaxed)
+    if name == "Markov-Strict":
+        _add_push_markov_constraints(lego, thermal_generator_relaxed)
+    if no_investment:
+        _fix_gen_invest(lego, {}, default=1)
+    printer.information(f"Building model for '{name}' took {time.time() - start_time:.2f} seconds")
+    return lego
+
+
 ########################################################################################################################
 # Experiment execution
 ########################################################################################################################
@@ -1047,6 +1073,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
                          perturb_tm: float | None = None,
                          cs: CaseStudy | None = None,
                          original_folder: str | None = None,
+                         task: str | None = None, edge: str | None = None,
                          tee: bool = True) -> typing.Tuple[typing.List[str], typing.List[str], typing.Dict[str, LEGO]]:
     ########################################################################################################################
     # Data input from case study
@@ -1066,7 +1093,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
     # Original full-chronological reference (--original-reference): only meaningful for the unperturbed
     # transition matrix, since --shift-tm/--perturb-tm resample a synthetic chronology
     cs_original = None
-    if original_folder is not None and (invest_regret or calculate_regret):
+    if original_folder is not None and (invest_regret or calculate_regret or (task or "").startswith("original-")):
         if shift_tm is not None or perturb_tm is not None:
             printer.warning("--original-reference is skipped for runs with --shift-tm/--perturb-tm (their chronology is resampled and does not match the original one)")
         else:
@@ -1097,66 +1124,38 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
 
     identifier = "-".join(identifier_parts)
 
-    tm_title_parts = []
-    if shift_tm is not None:
-        tm_title_parts.append(f"Diagonal shifted to the right by {shift_tm} steps")
-    if perturb_tm is not None:
-        tm_title_parts.append(f"Perturbed by {perturb_tm}")
-    Utilities.plot_transition_matrix(cs.rpTransitionMatrixAbsolute, title=", ".join(tm_title_parts), output=f"MK-{identifier}.png")
+    if task is None or (task == "main" and edge == "Markov"):  # --task: plot once per grid point, not from every parallel job
+        tm_title_parts = []
+        if shift_tm is not None:
+            tm_title_parts.append(f"Diagonal shifted to the right by {shift_tm} steps")
+        if perturb_tm is not None:
+            tm_title_parts.append(f"Perturbed by {perturb_tm}")
+        Utilities.plot_transition_matrix(cs.rpTransitionMatrixAbsolute, title=", ".join(tm_title_parts), output=f"MK-{identifier}.png")
 
     _cap_min_up_down_times(cs, len(cs.dPower_WeightsK.index))
     if cs_original is not None:  # Same cap as the RP models, so only the time series differ between the models
         _cap_min_up_down_times(cs_original, len(cs.dPower_WeightsK.index))
     thermalGeneratorRelaxed, count_relaxed = _select_relaxed_generators(cs, relax_percentage)  # After the cap, which affects the sort order
-
-    # Create varied case studies
-    start_time = time.time()
-    printer.information(f"Creating varied case studies")
-    edge_case_studies = {}
-    for name, edge_handling in [("NoEnf.", "notEnforced"), ("Cyclic", "cyclic"), ("Markov", "markov")] + ([("Markov-Strict", "markov")] if enable_strict_markov else []):
-        edge_case_studies[name] = cs.copy()
-        for parameter in ["pReprPeriodEdgeHandlingUnitCommitment", "pReprPeriodEdgeHandlingRamping", "pReprPeriodEdgeHandlingIntraDayStorage"]:
-            edge_case_studies[name].dPower_Parameters[parameter] = edge_handling
-    printer.information(f"Creating varied case studies took {time.time() - start_time:.2f} seconds")
-
-    # Create "truth" case study for comparison
-    if skip_truth:
-        printer.information(f"Skipping truth case study as requested")
-    else:
-        start_time = time.time()
-        printer.information(f"Creating truth case study (full-hourly)")
-        edge_case_studies = {"Truth ": cs.to_full_hourly_model(inplace=False), **edge_case_studies}
-        printer.information(f"Creating truth case study (full-hourly) took {time.time() - start_time:.2f} seconds")
-
-    start_time = time.time()
-    printer.information(f"Building the LEGO models for adjustments")  # Note this is actually faster (1.5-2x) than copying already built models to re-use them
-    lego_models = {name: LEGO(edge_cs) for name, edge_cs in edge_case_studies.items()}
-    for name, lego in lego_models.items():
-        _, build_time = lego.build_model()
-        printer.information(f"Building model for case study '{name}' took {build_time:.2f} seconds")
-    printer.information(f"Building the LEGO models took {time.time() - start_time:.2f} seconds overall")
-
     if count_relaxed == 0:
         printer.information(f"Not relaxing any unit commitment variables, all thermal generators stay binary")
     else:
-        start_time = time.time()
-        printer.information(f"Relaxing {relax_percentage * 100:.1f}% of unit commitment variables for thermal generators")
         printer.information(f"Relaxing {count_relaxed} thermal generator(s), keeping {len(thermalGeneratorRelaxed) - count_relaxed} binary: {[g for g, relaxed in thermalGeneratorRelaxed.items() if relaxed]}")
-        for lego in lego_models.values():
-            _relax_unit_commitment(lego, thermalGeneratorRelaxed)
-        printer.information(f"Relaxing {count_relaxed} thermal generators took {time.time() - start_time:.2f} seconds")
-
-    if enable_strict_markov:
-        _add_push_markov_constraints(lego_models["Markov-Strict"], thermalGeneratorRelaxed)
-
-    if no_investment:
-        for lego in lego_models.values():
-            _fix_gen_invest(lego, {}, default=1)
-        printer.information(f"Fixed vGenInvest to 1 for all generators in all models (--no-investment)")
 
     run_params = _build_run_params(case_study_path, clusters=clusters, relax_count=count_relaxed, filter_zone=filter_zone, limit_k=limitK,
                                    shift=shift, stretch_demand=stretch_demand, merge_generators=merge_generators, no_investment=no_investment,
                                    shift_tm=shift_tm, perturb_tm=perturb_tm, **modifications)
+
+    if task is not None:
+        out_prefix = execute_task(task, edge, cs, identifier, run_params, thermalGeneratorRelaxed, no_investment, no_sqlite, no_overwrite, tee,
+                                  cs_original=cs_original)
+        return [f"{out_prefix}.sqlite"], [f"{edge} {task}"], {}
+
+    start_time = time.time()
+    printer.information(f"Building the LEGO models")  # Note building is actually faster (1.5-2x) than copying already built models to re-use them
+    edge_names = ([] if skip_truth else ["Truth "]) + ["NoEnf.", "Cyclic", "Markov"] + (["Markov-Strict"] if enable_strict_markov else [])
+    lego_models = {name: _build_edge_lego(cs, name, thermalGeneratorRelaxed, no_investment) for name in edge_names}
+    printer.information(f"Building the LEGO models took {time.time() - start_time:.2f} seconds overall")
+
     sqlite_files, sqlite_labels, lego_models = execute_case_study(lego_models, identifier, no_sqlite, calculate_regret, skip_truth, invest_regret, run_params, no_overwrite, operational=operational, operational_regret=operational_regret, cs=cs, thermal_generator_relaxed=thermalGeneratorRelaxed, tee=tee)
 
     if cs_original is not None:
@@ -1558,7 +1557,8 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
          threads: int | None = None,
          network: str | None = None, commit_consumption: float = 1.0, startup_consumption: float = 1.0,
          shift_tm: int | None = None, perturb_tm: float | None = None,
-         prepare_only: bool = False, original_reference: bool = False, original_reference_only: bool = False):
+         prepare_only: bool = False, original_reference: bool = False, original_reference_only: bool = False,
+         task: str | None = None, edge: str | None = None):
     ew = ExcelWriter()
 
     # --clusters accepts a single number or a comma-separated list (e.g. '3,5,7,10,14,18')
@@ -1698,7 +1698,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
             if original_reference_only:
                 # Solve only the original full-chronological model of the (preprocessed) folder - independent of the
                 # number of RPs, so run this once per folder before the RP runs that use --original-reference
-                execute_original_truth(folder, no_sqlite=no_sqlite, relax_percentage=relax_percentage, no_investment=no_investment,
+                out_prefix = execute_original_truth(folder, no_sqlite=no_sqlite, relax_percentage=relax_percentage, no_investment=no_investment,
                                        no_overwrite=no_overwrite, filter_zone=filter_zone, limit_k=limitK, shift=shift,
                                        stretch_demand=stretch_demand, merge_generators=merge_generators,
                                        rmip=rmip, no_crossover=no_crossover, force_barrier=force_barrier, mip_gap=mip_gap, work_limit=work_limit,
@@ -1726,7 +1726,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
 
                 printer.information(f"Loading case study from '{cluster_folder}'")
 
-                execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret,
+                sqlite_files, _, _ = execute_case_studies(cluster_folder, no_sqlite, calculate_regret, relax_percentage, skip_truth, enable_strict_markov, invest_regret,
                                      no_investment, rmip, no_crossover, force_barrier, mip_gap, work_limit,
                                      node_file_start=node_file_start, node_file_dir=node_file_dir, threads=threads,
                                      filter_zone=filter_zone, limitK=limitK,
@@ -1735,10 +1735,13 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                                      operational_regret=operational_regret, network=network,
                                      commit_consumption=commit_consumption, startup_consumption=startup_consumption,
                                      shift_tm=shift_tm, perturb_tm=perturb_tm,
-                                     original_folder=folder if original_reference and cluster > 1 else None)
+                                     original_folder=folder if (original_reference or (task or "").startswith("original-")) and cluster > 1 else None,
+                                     task=task, edge=edge)
+                if task is not None:
+                    _require_optimal_file(sqlite_files[0], f"--task {task} --edge {edge}")
         except Exception as e:
             printer.error(f"Exception while executing case study '{locals().get('cluster_folder', folder)}': {e}")  # locals-hack to always get correct folder-name
-            if debug:
+            if debug or task is not None:
                 raise e
             else:
                 printer.console.print_exception()
