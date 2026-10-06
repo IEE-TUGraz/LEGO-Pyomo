@@ -770,15 +770,22 @@ def _edge_main_decisions(lego: LEGO, file_prefix: str, run_params: dict | None, 
         if not lego.has_solution:
             return None, None, None
         return {g: model.vGenInvest[g].value for g in model.vGenInvest}, (model if need_commit else None), "in-memory model"
+    return _main_decisions_from_file(file_prefix, run_params, normalized, model if need_commit else None)
+
+
+def _main_decisions_from_file(file_prefix: str, run_params: dict | None, normalized: str,
+                              commit_model: pyo.Model | None) -> typing.Tuple[dict | None, pyo.Model | None, str | None]:
+    """File part of _edge_main_decisions: '{file_prefix}.sqlite', else the sibling --no-overwrite skipped for. vCommit
+    is loaded into commit_model if given (None = vGenInvest only, no model needed)."""
     source = f"{file_prefix}.sqlite" if os.path.exists(f"{file_prefix}.sqlite") else None
     if source is None and run_params is not None:
         siblings = _find_sibling_runs(file_prefix, {**run_params, "edge_handling": normalized})
         _, _, source = _should_skip_smart(run_params.get('work_limit'), siblings)
     if source is None:
         return None, None, None
-    if need_commit:
-        _load_commit(model, source)
-    return _read_gen_invest(source), (model if need_commit else None), f"'{source}'"
+    if commit_model is not None:
+        _load_commit(commit_model, source)
+    return _read_gen_invest(source), commit_model, f"'{source}'"
 
 
 ########################################################################################################################
