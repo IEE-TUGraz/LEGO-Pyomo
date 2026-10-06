@@ -1,0 +1,58 @@
+# Pilot for experiment.toml: measures the peak memory (and runtime) of every solve kind per dataset, to calibrate the
+# [resources.*] tables of experiment.toml. One grid point per dataset (78 jobs) at the most memory-hungry settings:
+#   clusters = 28 (largest RP models; the full-year models do not depend on the cluster count), tm = base (the only
+#   TM with the original-* runs), all edges and tasks, plus the Original Truth.
+# Model options ([markov] args, datasets) must stay identical to experiment.toml: the full run then reuses these results
+# via --no-overwrite. Submit the full run only after the pilot has finished (both would write the same files).
+#
+#   python research/MK/cluster.py submit research/MK/experiments/pilot.toml
+#   python research/MK/cluster.py status pilot --list done      # 'mem' column = peak RSS / requested memory
+#
+# Then set [resources.*] in experiment.toml to ~1.3x the peak per dataset and class (see README, "Pilot before the full run").
+
+name = "pilot"
+
+[slurm]
+account = "p201450"
+partition = "zen4_0768"
+qos = "zen4_0768"
+repo = "$DATA/git/LEGO-Pyomo"
+setup = """
+module purge
+# Gurobi license only: gurobipy comes from the conda env (the Gurobi module would put a Python 3.13 gurobipy on PYTHONPATH)
+export GRB_LICENSE_FILE=/home/fa95534/eessi/versions/2023.06/software/linux/x86_64/amd/zen4/software/Gurobi/13.0.1-GCCcore-14.3.0/gurobi.lic
+module load Miniforge3
+eval "$(conda shell.bash hook)"
+conda activate LEGO-Pyomo_env
+"""
+
+[markov]
+args = ["--network", "TP", "--mip-gap", "0.003"]   # same as experiment.toml
+node_file_start_fraction = 0.5   # same as experiment.toml
+
+[grid]
+datasets = ["data/RTS-GMLC", "data/TX-123BT", "data/NREL-118"]
+stretch_demand = [1.0]
+clusters = [28]
+tm = ["base"]
+edges = ["NoEnf", "Cyclic", "Markov"]
+tasks = ["main", "operational", "regret", "invest-regret", "operational-regret",
+         "original-invest-regret", "original-regret"]
+truth_original = true
+
+# Generous on purpose: the pilot measures the peak, an OOM would only measure the limit. cpus must match experiment.toml
+# (memory and work units depend on the thread count).
+[resources.prepare]
+default = { cpus = 4, mem = "32G", time = "06:00:00" }
+
+[resources.truth-original]
+default = { cpus = 8, mem = "256G", time = "3-00:00:00" }
+"TX-123BT" = { cpus = 12, mem = "480G" }
+
+[resources.rp]
+default = { cpus = 8, mem = "64G", time = "3-00:00:00" }
+"TX-123BT" = { cpus = 12, mem = "128G" }
+
+[resources.full]
+default = { cpus = 8, mem = "128G", time = "3-00:00:00" }
+"TX-123BT" = { cpus = 12, mem = "256G" }

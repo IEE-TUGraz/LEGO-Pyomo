@@ -103,6 +103,8 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 | `--prepare-only`         | off            | Only create the preprocessed input folders (limitK, stretch demand, clusters, …) and exit without solving   |
 | `--original-reference`   | off            | Also evaluate each model's decisions in the **original** (unclustered) full-chronological model — see "Original reference" below. Requires `--invest-regret` and/or `--calculate-regret` |
 | `--original-reference-only` | off         | Only solve the original full-chronological model of the (preprocessed) folder (`MK-…-TruthOriginal.sqlite`) and exit |
+| `--task`                 | —              | Run exactly **one** solve of a grid point (one `--clusters` value): `main`, `operational`, `regret`, `invest-regret`, `operational-regret`, `original-regret`, `original-invest-regret` or `truth-original` (= `--original-reference-only`). Inputs from earlier solves are read from their result files; exits non-zero unless the output is optimal. Used by `cluster.py` — see "Cluster runs" |
+| `--edge`                 | —              | Edge handling of the `--task` solve: `Truth`, `NoEnf`, `Cyclic`, `Markov`, `Markov-Strict` |
 
 
 **Output naming**: `MK-{identifier}-{edgeHandling}.sqlite`. Regret files append `-regret`, `-invest-regret`, or
@@ -171,18 +173,99 @@ in `run_parameters`. The original model's own optimum is solved once per folder 
 length in the original model as well, so only the time series differ. Skipped (with a warning) for `--shift-tm` /
 `--perturb-tm`, whose chronology is resampled and has no original counterpart.
 
-### Revision runs (`jobs-revision.txt`)
+### `cluster.py` — Cluster runs (Slurm, one job per solve)
 
-All runs for the revision: RTS-GMLC, NREL-118 and TX-123BT × 3/5/7/10/14/18 RPs × demand variability
-(100/50/70/90%) × transition matrix (original, shifted by 1, shifted by 2). Stages must run in order:
+`cluster.py` expands the grid of a TOML experiment file into one Slurm job per solve, submitted as job arrays with
+dependencies: every model is solved once, and each fixed-decision run starts as soon as its decision source has finished.
+`experiments/experiment.toml` holds all runs of the paper: RTS-GMLC, TX-123BT, NREL-118 × 3/5/7/14/21/28 RPs × demand
+variability 100/50/70/90 % × transition matrix base / shifted by 1 / shifted by 2, plus a random TM (100 % demand only,
+queued last).
 
-0. `--prepare-only` jobs — create all input folders (parallel jobs with `--reuse-inputfiles` would otherwise write the
-   same folders concurrently).
-1. `--original-reference-only` jobs — one original full-chronological solve per dataset and demand variability.
-2. RP jobs — independent of each other and of stage 1 (can run in parallel).
-3. Evaluation (`EvaluateMarkov.py all`).
+```
+prepare (dataset, demand)               --prepare-only: clustered / demand-stretched input folders, once
+ ├─ truth-original (dataset, demand)    Original Truth (raw data)
+ └─ per grid point (dataset, demand, clusters, TM):
+     ├─ main/Truth                      Adapted Truth (full year from RP copies)
+     │   ├─ operational/<edge>          RP model / Truth with the Truth investment
+     │   │   └─ operational-regret/<edge>   (also needs main/Truth)
+     │   └─ original-invest-regret/Truth    (base TM only)
+     └─ main/<edge>                     NoEnf, Cyclic, Markov (RP models)
+         ├─ regret/<edge>, invest-regret/<edge>
+         └─ original-regret/<edge>, original-invest-regret/<edge>   (base TM only)
+evaluate                                after all jobs have ended (successful or not)
+```
 
-`--node-file-dir $TMPDIR/gurobi-nodes` assumes a Linux cluster with node-local `$TMPDIR`.
+```bash
+# on the login node, from the repo root (Python >= 3.11, standard library only)
+export MK_MAIL_USER=you@example.org   # optional Slurm mails (arrays: mail_type, default FAIL; evaluation: END,FAIL)
+python research/MK/cluster.py submit research/MK/experiments/experiment.toml --dry-run   # writes runs/<name>-dryrun/
+python research/MK/cluster.py submit research/MK/experiments/experiment.toml
+python research/MK/cluster.py status experiment                        # counts per task kind, failed/blocked/unknown tasks
+python research/MK/cluster.py status experiment --list running --filter 'TX-123BT/*'
+python research/MK/cluster.py log experiment TX-123BT/sd0.5/c21/base/main/Truth
+python research/MK/cluster.py restart experiment --failed --mem-factor 1.5          # all failed tasks
+python research/MK/cluster.py restart experiment 'TX-123BT/sd0.5/c21/*' --time 3-00:00:00
+python research/MK/cluster.py prioritize experiment                    # re-apply the queue order (scontrol top)
+python research/MK/cluster.py cancel experiment
+```
+
+**Task keys**: `{dataset}/sd{demand}/c{clusters}/{tm}/{task}/{edge}` (e.g. `TX-123BT/sd0.5/c21/shiftTM1/regret/Markov`),
+`{dataset}/sd{demand}/prepare`, `{dataset}/sd{demand}/truth-original` and `evaluate`. `restart`, `log` and `--filter`
+take glob patterns.
+
+**Job names** start with an 8-character code, because `squeue` shows only 8 characters: dataset (2, first two letters
+of the folder name; lower case for low-priority runs) + task (4) + edge (2), then `_` and the array name, e.g.
+`TXmainMk_main-Markov-TX-123BT`. Task codes: `prep` prepare, `trOr` truth-original, `main`, `oper` operational, `rgrt`
+regret, `iRgr` invest-regret, `oRgr` operational-regret, `OiRg` original-invest-regret, `ORgr` original-regret. Edge
+codes: `Tr` Truth, `NE` NoEnf, `Cy` Cyclic, `Mk` Markov, `--` none. Full names: `squeue -o "%.18i %.40j %.8T %.10M"`.
+
+**Queue order**: `grid.datasets` order (RTS-GMLC, TX-123BT, NREL-118), then the runs of `low_priority` TM variants
+(own arrays ending in `-low`, e.g. `rtmainMk_main-Markov-RTS-GMLC-low`). `submit` and `restart` apply it with one
+`scontrol top` over all queued jobs; this only reorders your own jobs (same user, partition, account, QOS), not your
+position relative to other users. Needs `enable_user_top` in Slurm's `SchedulerParameters` (enabled on MUSICA;
+otherwise a warning and Slurm's default order). Check with `sprio -l -u $USER`; jobs that become eligible later gain
+age priority, so re-apply with `prioritize`.
+
+**Status categories**: `done` (completed = optimal result file), `running`, `pending`, `blocked` (waits for a failed
+task, listed under it), `failed` (FAILED, OUT_OF_MEMORY, TIMEOUT, CANCELLED, …, with peak vs requested memory),
+`unknown` (no Slurm record).
+
+**Restart** resubmits the selected tasks (`--failed` and/or patterns; queued ones only with `--include-pending`) as
+single jobs, plus all unfinished downstream tasks (their old jobs are cancelled), and re-queues the evaluation behind
+them. `--mem`/`--mem-factor`/`--cpus`/`--time` apply to the selected tasks only. Finished tasks are never resubmitted;
+delete a result file to recompute it.
+
+**Config** (see `experiments/experiment.toml`):
+- `[slurm]`: account, partition, QoS, optional `mail_user`/`mail_type` (leave them out of versioned configs and use
+  `$MK_MAIL_USER`), `repo` (repo path on the cluster), `setup` (environment lines).
+- `[markov]`: `args` for every solve; Gurobi node files (in the job's node-local `$TMPDIR`) from a fixed
+  `node_file_start` (GB) or `node_file_start_fraction` × the job's memory, which follows `restart --mem`.
+  `--threads` is always the allocated core count.
+- `[grid]`: `datasets`, `stretch_demand`, `clusters`, `edges`, `tasks`, `truth_original`, and `tm` entries `base` /
+  `shift:N` / `perturb:R`, or an inline table `{ spec = "perturb:1.0", stretch_demand = [1.0], low_priority = true }`
+  (only these demand levels / queued last).
+- `[resources.<class>]`: `cpus`, `mem`, `time` in a `default` table, overridden per dataset folder name. Classes:
+  `prepare`, `rp` (main/operational of the RP models), `full` (all full-year solves), `truth-original` (falls back to
+  `full`), `evaluate`. All solves of a dataset need the same `cpus` (comparable work units / solver times): `submit`
+  refuses other configs, `restart --cpus` warns.
+- `[evaluate]`: `args`, `output_dir`.
+
+Run state, command files and logs go to `research/MK/runs/<name>/` (not versioned).
+
+**Pilot before the full run**: the resources in `experiment.toml` are guesses. `experiments/pilot.toml` runs one grid
+point per dataset (100 % demand, 28 clusters = largest RP models, base TM, all edges and tasks, Original Truth; 78 jobs)
+with generous memory. The full run reuses its results via `--no-overwrite` (same model options), so submit it only
+after the pilot has finished.
+
+```bash
+python research/MK/cluster.py submit research/MK/experiments/pilot.toml
+python research/MK/cluster.py status pilot --list done     # 'mem' column = peak RSS / requested memory
+seff <jobid>                                                # per job, incl. CPU efficiency
+```
+
+Then set `mem` of `[resources.rp]`, `[resources.full]` and `[resources.truth-original]` per dataset to about 1.3× the
+largest peak of the class; `restart --mem-factor` covers outliers. Set time limits from the `elapsed` column with a
+larger margin (MIP solve times vary more between demand levels and TMs than memory does).
 
 ### `EvaluateMarkov.py` — Result evaluation
 
@@ -216,6 +299,7 @@ python research/MK/EvaluateMarkov.py all results/ --no-show --separateClusters
 | `--nrOfClusters`        | all            | all          | Comma-separated cluster counts; only runs whose `clusters` run parameter is in the list (e.g. `3,5,7`). Unclustered runs (incl. `TruthOriginal`) are dropped when given |
 | `--tm`                  | all            | all          | Select `(shift_tm, perturb_tm)` combinations. Repeatable and/or comma-separated specs `SHIFT:PERTURB`, each side a number, `none` (parameter unset) or `*` (any); `base` = `none:none` |
 | `--no-show`             | all            | off          | Don't display figures (only save them) |
+| `--no-chronology`       | plots, summary | off          | Skip the chronological comparisons (see below) - they read the large variable tables |
 | `--plot`                | tables         | off          | Unit-commitment plot of each group's main runs |
 | `--case-study-folder`   | tables         | —            | Case study folder for the plot (fallback if the `.sqlite` has no `hindex`) |
 | `--number-of-hours`     | tables         | 144          | Hours shown in the plot |
@@ -248,7 +332,7 @@ Boxplot PNGs comparing the edge handlings (NoEnf, Cyclic, Markov — plus Markov
 Truth. Each figure has one subplot per `(shift_tm, perturb_tm)` combination (shared y-axis, ordered base, perturbTM,
 shiftTM, shiftTM+perturbTM, …), and within each subplot one box per edge handling. Every box aggregates over the
 **sub-cases** sharing that TM combination — the other run parameters that vary (`clusters`, `stretch_demand`, …).
-Truth is the reference, never a box. There are **18 logical plots**, each emitted twice — with all edge handlings and
+Truth is the reference, never a box. There are **28 logical plots**, each emitted twice — with all edge handlings and
 with NoEnf excluded (`_noNoEnf` suffix), since NoEnf's large deviations often compress the scale:
 
 | Base filename                                          | Content                                                          |
@@ -261,6 +345,23 @@ with NoEnf excluded (`_noNoEnf` suffix), since NoEnf's large deviations often co
 | `compare_invest_regret_{absolute,relative}`            | Invest-regret over the Truth-main objective, with MIP-gap band   |
 | `compare_regret_{absolute,relative}`                   | Regret (investment + commitment fixed) over the Truth-main objective |
 | `compare_operational_regret_{absolute,relative}`       | Operational-regret over the Truth-operational objective          |
+| `compare_original_invest_regret_{absolute,relative}`   | Invest-regret against the **original full chronology** (`TruthOriginal`), incl. a Truth box: Truth = clustering error alone, edge handlings = total error |
+| `compare_original_regret_{absolute,relative}`          | Regret (investment + commitment fixed) against `TruthOriginal`   |
+| `compare_operating_cost_operational_relative`          | Operating cost of the model vs Truth-operational [%]             |
+| `compare_curtailment_operational_absolute`             | Renewable-curtailment share vs Truth-operational [pp]            |
+| `compare_load_shedding_operational_absolute`           | Load-shedding share vs Truth-operational [pp]                    |
+| `compare_dispatch_deviation_operational`               | Hourly dispatch deviation from Truth-operational, Σ\|Δ vGenP\| / Σ vGenP_Truth [%] |
+| `compare_storage_deviation_operational`                | Hourly storage-level deviation from Truth-operational [% of energy capacity] |
+| `compare_storage_boundary_investment`                  | Storage-level jump at the chronological RP boundaries of the investment runs [% of energy capacity] |
+
+**Chronological comparisons** (`plots` and `summary`, skipped with `--no-chronology`), laid out along the stored
+`hindex` without solving anything: the **transition-matrix structure** of every grid point (`tm_off_diag_mass` = share
+of period-to-period transitions that change the RP, i.e. where the cyclic assumption is wrong; `tm_entropy_norm` =
+entropy rate / log(#RPs)); the **storage boundary check** of the RP runs (at every chronological boundary, the level
+the first timestep of an RP starts from - recovered from its energy balance - against the level the predecessor
+period actually ends with; `st_boundary_violation_pct` = share of (boundary, unit) instances above 0.1 % of the
+capacity, `st_boundary_{mean,max}_dev_pct`); and the hour-by-hour **dispatch / storage-level deviation** of the
+operational runs from Truth-operational (same fleet: `dispatch_dev_pct`, `storage_dev_pct`).
 
 "Operational" plots use the `--operational` runs (vGenInvest fixed to Truth's investment) and their Truth-operational
 reference; "investment" plots use the regular main runs. The regret plots' y-axis reaches only as far below 0 as
@@ -281,7 +382,9 @@ objectives differ between sub-cases), `±mip_gap * 100 %` on the relative plot (
 | `wu_invest_mean_pct`   | `compare_workunits_investment_relative`    | investment work units as % of Truth-main (Gurobi only) |
 
 A diagnostics table adds the start-up deviation (differs from shut-downs for NoEnf, equal for Cyclic/Markov) and the
-per-metric run counts, and a reference table the mean Truth objective per `TM_variant`. For the
+per-metric run counts, a reference table the mean Truth objective per `TM_variant`, and an **operational fidelity /
+full chronology** table the means behind the new plots (operating cost, curtailment, load shedding, dispatch and
+storage deviation, storage boundary jump, regret against `TruthOriginal` - with a Truth row for the clustering error). For the
 `Original/Shift1/Shift2` × `{3,5,7}` grid, pass e.g. `--nrOfClusters 3,5,7 --tm base --tm 1:none --tm 2:none`.
 
 #### `summary`
@@ -290,4 +393,9 @@ Collects the per-run analysis tables (see above) into `markov_runs.csv` (one row
 non-optimal ones — with run parameters, solver statistics, all metrics and the regret) and `markov_summary.csv` (mean
 over the variants per dataset × number of RPs × edge handling × run kind; run kinds of original-reference runs get an
 `@original` suffix), and plots per dataset the distribution of how non-binary the Markov RP transitions are
-(`nonbinarity_{dataset}.png`) and the share of infeasible transitions (`feasibility_{dataset}.png`).
+(`nonbinarity_{dataset}.png`) and the share of infeasible transitions (`feasibility_{dataset}.png`). Further plots per
+dataset: the share of transitions violating each feasibility check (`feasibility_checks_{dataset}.png`; mean/max
+violation per check as `feas_{check}_{pct,mean_residual,max_residual}` in the CSVs), model size, nonzero
+transition-matrix entries, solver memory, solver time and work units over the number of RPs (`scalability_{dataset}.png`),
+and the operational vShutdown deviation, invest-regret and operational-regret over the off-diagonal mass of the
+transition matrix (`offdiagonality_{dataset}.png`, one point per sub-case and TM variant).
