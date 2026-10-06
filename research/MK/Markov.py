@@ -1530,6 +1530,90 @@ def execute_original_truth(original_folder: str, no_sqlite: bool = False, relax_
                                edge_handling="TruthOriginal", reference="original", min_time_cap=min_time_cap)
     printer.information(f"\n{'=' * 60}\nTruthOriginal ({original_folder})\n{'=' * 60}")
     _solve_and_write(lego, file_prefix, no_sqlite, params, tee, "TruthOriginal")
+    return file_prefix
+
+
+########################################################################################################################
+# Single-solve tasks (--task / --edge), used by the cluster submitter (cluster.py)
+########################################################################################################################
+
+TASKS = ["main", "operational", "regret", "invest-regret", "operational-regret", "original-regret", "original-invest-regret", "truth-original"]
+EDGES = {"Truth": "Truth ", "NoEnf": "NoEnf.", "Cyclic": "Cyclic", "Markov": "Markov", "Markov-Strict": "Markov-Strict"}  # CLI name -> model dict key
+
+
+def _require_optimal_file(sqlite_file: str, what: str) -> None:
+    """--task inputs come from earlier jobs: fail loudly (non-zero exit) instead of silently skipping."""
+    tc = _termination_condition(sqlite_file)
+    if tc != 'optimal':
+        raise RuntimeError(f"{what}: '{sqlite_file}' is {'missing' if tc is None else f'not optimal ({tc})'}")
+
+
+def execute_task(task: str, edge: str, cs: CaseStudy, identifier: str, run_params: dict, thermal_generator_relaxed: dict,
+                 no_investment: bool, no_sqlite: bool, no_overwrite: bool, tee: bool, cs_original: CaseStudy | None = None) -> str:
+    """Run exactly one solve of a grid point (--task/--edge) and return its output file prefix.
+
+    Same models, decisions and output files as the all-in-one run, but every input that the all-in-one run keeps in memory
+    is read from the result file of the job that produced it (the Truth investment from 'MK-{id}-Truth.sqlite', the main
+    decisions from 'MK-{id}-{edge}.sqlite', the operational vCommit from '...-operational.sqlite'). Only the models this
+    solve needs are built, and full-year models are solved in place (no copy). --no-overwrite checks only the exact
+    output file (no sibling scan: the submitter never varies work_limit).
+    """
+    key = EDGES[edge]
+    main_prefix = f"MK-{identifier}-{edge}"
+    variant = task.removeprefix("original-")
+    out_prefix = {"main": main_prefix}.get(task, f"{main_prefix}-{task}")
+    if no_overwrite and _existing_optimal(f"{out_prefix}.sqlite", task):
+        return out_prefix
+    if edge == "Truth" and task in ("regret", "invest-regret", "operational-regret", "original-regret"):
+        raise ValueError(f"--task {task} is not defined for the Truth edge handling (its regret is degenerate)")
+    edge_params = {**run_params, "edge_handling": edge}
+    label = f"{edge} {task}"
+    printer.information(f"\n{'=' * 60}\n{label}\n{'=' * 60}")
+
+    if task == "main":
+        _solve_and_write(_build_edge_lego(cs, key, thermal_generator_relaxed, no_investment), out_prefix, no_sqlite, edge_params, tee, label)
+
+    elif task in ("operational", "operational-regret"):
+        truth_file = f"MK-{identifier}-Truth.sqlite"
+        _require_optimal_file(truth_file, "Truth investment for the operational runs")
+        invest = {g: 1 if v > _OPERATIONAL_INVEST_THRESHOLD else 0 for g, v in _read_gen_invest(truth_file).items()}
+        printer.information(f"Using Truth investment from '{truth_file}': {sum(invest.values())} of {len(invest)} generators invested")
+        op_params = {**edge_params, "run_type": task}
+        edge_lego = _build_edge_lego(cs, key, thermal_generator_relaxed, no_investment)
+        if task == "operational":
+            _fix_gen_invest(edge_lego, invest, default=0)
+            _solve_and_write(edge_lego, out_prefix, no_sqlite, op_params, tee, label)
+        else:
+            op_file = f"{main_prefix}-operational.sqlite"
+            if not os.path.exists(op_file):
+                raise RuntimeError(f"Operational vCommit for operational-regret: '{op_file}' is missing")
+            _load_commit(edge_lego.model, op_file)
+            truth_lego = _build_edge_lego(cs, "Truth ", thermal_generator_relaxed, no_investment)
+            _solve_fixed_decisions(truth_lego, out_prefix, invest, 0, edge_lego.model, edge_lego.cs, run_params, op_params, no_sqlite, tee,
+                                   label, copy_base=False)
+
+    elif variant in ("regret", "invest-regret"):
+        fix_commit = variant == "regret"
+        edge_lego = _build_edge_lego(cs, key, thermal_generator_relaxed, no_investment) if fix_commit else None
+        gen_invest, commit_model, source = _main_decisions_from_file(main_prefix, run_params, edge, edge_lego.model if fix_commit else None)
+        if gen_invest is None:
+            raise RuntimeError(f"Main-run decisions for {label}: '{main_prefix}.sqlite' is missing")
+        printer.information(f"Decisions from {source}")
+        edge_cs = edge_lego.cs if edge_lego is not None else cs
+        if task.startswith("original-"):
+            if cs_original is None:
+                raise RuntimeError(f"{label} needs the original (unclustered) case study - only for clustered runs without --shift-tm/--perturb-tm")
+            base_lego = _build_original_reference_lego(cs_original, thermal_generator_relaxed)
+            params = {**edge_params, "run_type": variant, "reference": "original"}
+            _solve_fixed_decisions(base_lego, out_prefix, gen_invest, 1, commit_model, edge_cs, run_params, params, no_sqlite, tee, label,
+                                   tm_cs=cs, copy_base=False)
+        else:
+            base_lego = _build_edge_lego(cs, "Truth ", thermal_generator_relaxed, no_investment)
+            _solve_fixed_decisions(base_lego, out_prefix, gen_invest, 1, commit_model, edge_cs, run_params, {**edge_params, "run_type": variant},
+                                   no_sqlite, tee, label, copy_base=False)
+    else:
+        raise ValueError(f"Unknown --task '{task}'")
+    return out_prefix
 
 
 def copy_files_non_recursive(src_folder: str, dst_folder: str):
@@ -1567,6 +1651,25 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
         raise ValueError("--cluster-steps cannot be combined with a list of --clusters")
     if len(cluster_list) == 1:
         cluster_list = list(range(cluster_list[0], cluster_list[0] + cluster_steps * cluster_stepsize + 1, cluster_stepsize))
+
+    # --task: exactly one solve; must fail with a non-zero exit code (the cluster submitter relies on it)
+    if task is not None:
+        selection_flags = dict(calculate_regret=calculate_regret, invest_regret=invest_regret, operational=operational, operational_regret=operational_regret,
+                               original_reference=original_reference, original_reference_only=original_reference_only, skip_truth=skip_truth,
+                               prepare_only=prepare_only, no_sqlite=no_sqlite)
+        if any(selection_flags.values()):
+            raise ValueError(f"--task cannot be combined with {[f'--{k.replace('_', '-')}' for k, v in selection_flags.items() if v]}")
+        if "," in caseStudyFolder:
+            raise ValueError("--task runs exactly one solve: give a single case study folder")
+        if task == "truth-original":
+            original_reference_only = True
+        else:
+            if edge is None:
+                raise ValueError(f"--task {task} requires --edge")
+            if len(cluster_list) != 1 or cluster_list[0] <= 1:
+                raise ValueError(f"--task {task} requires exactly one --clusters value > 1")
+            if edge == "Markov-Strict" and not enable_strict_markov:
+                raise ValueError("--edge Markov-Strict requires --enable-strict-markov")
 
     if original_reference and not (invest_regret or calculate_regret):
         raise ValueError("--original-reference requires --invest-regret and/or --calculate-regret (it evaluates their decisions in the original model)")
@@ -1705,6 +1808,8 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                                        node_file_start=node_file_start, node_file_dir=node_file_dir, threads=threads, network=network,
                                        commit_consumption=commit_consumption, startup_consumption=startup_consumption, scale_vres=scale_vres,
                                        scale_invest_cost=scale_invest_cost, thermal_invest_only=thermal_invest_only)
+                if task is not None:
+                    _require_optimal_file(f"{out_prefix}.sqlite", "--task truth-original")
                 continue
 
             for cluster in cluster_list:
@@ -1792,6 +1897,8 @@ if __name__ == "__main__":
     parser.add_argument("--prepare-only", action="store_true", help="Only create the preprocessed input folders (e.g. clusters, stretched demand) and exit without solving. Run this before starting parallel jobs that use --reuse-inputfiles, so they do not write the same folders concurrently")
     parser.add_argument("--original-reference", action="store_true", help="Additionally evaluate each model's decisions in the ORIGINAL (unclustered) full-chronological model: '-original-invest-regret' (with --invest-regret, incl. Truth) and '-original-regret' (with --calculate-regret). Only for runs without --shift-tm/--perturb-tm")
     parser.add_argument("--original-reference-only", action="store_true", help="Only solve the original full-chronological model of the (preprocessed) folder ('MK-...-TruthOriginal.sqlite') and exit. Independent of --clusters, so one run serves all RP counts")
+    parser.add_argument("--task", type=str, default=None, choices=TASKS, help="Run exactly ONE solve of a grid point (one --clusters value) instead of the whole experiment; inputs from earlier solves (Truth investment, main-run decisions, operational vCommit) are read from their result files. Exits non-zero unless the output is optimal. Used by cluster.py; 'truth-original' = --original-reference-only")
+    parser.add_argument("--edge", type=str, default=None, choices=list(EDGES), help="Edge handling of the --task solve")
     args = parser.parse_args()
 
     main(**vars(args))
