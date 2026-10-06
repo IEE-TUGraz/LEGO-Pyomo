@@ -1,6 +1,6 @@
 echo "Illustrative case"
 python research/MK/Markov.py data/markov
-python research/MK/EvaluateMarkov.py --plot
+python research/MK/EvaluateMarkov.py tables --plot
 
 echo "Realistic case with 3 clusters"
 echo "Warning: Case with 3 clusters and 100% demand-variability runs out-of-memory on our machine (2TB RAM and 6 Markov runs in parallel)"
@@ -47,10 +47,10 @@ python research/MK/Markov.py data/RTS-GMLC --reuse-inputfiles --no-overwrite --d
 python research/MK/Markov.py data/RTS-GMLC --reuse-inputfiles --no-overwrite --debug --threads 10 --node-file-start 100 --node-file-dir E:\tmp\gurobi-nodes --clusters 7 --network TP --mip-gap 0.003 --invest-regret --operational --stretch-demand 0.9 --shift-tm 2
 
 echo "Creation of box-plots for comparison of results"
-python research\MK\CompareMarkov.py --no-show
+python research\MK\EvaluateMarkov.py plots --no-show
 
-echo "Evaluation of non-binarity"
-python research\MK\NonBinarityMarkov.py
+echo "Evaluation of non-binarity (analysis tables written by Markov.py)"
+python research\MK\EvaluateMarkov.py summary
 
 echo "Optional: For random transition matrices (i.e., perturbation = 100%)"
 echo "Optional: If you want to create plots for those as well, just move the calls from above to the end of this file"
