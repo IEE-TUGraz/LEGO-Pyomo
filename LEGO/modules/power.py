@@ -128,6 +128,9 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     first_stage_variables += [model.vLineInvest]
 
     model.vGenInvest = pyo.Var(model.g, doc="Integer generation investment", bounds=lambda model, g: (0, model.pMaxInvest[g] * model.pEnabInv[g]), domain=pyo.NonNegativeIntegers)
+    for g in model.g:
+        if model.pMaxInvest[g] * model.pEnabInv[g] == 0:
+            model.vGenInvest[g].fix(0)  # Fix investment of generators to zero if investment is not possible to avoid error after solve
     first_stage_variables += [model.vGenInvest]
 
     model.vPNS = pyo.Var(model.rp, model.k, model.i, doc='Slack variable power not served', bounds=lambda model, rp, k, i: (0, model.pDemandP[rp, k, i]))
