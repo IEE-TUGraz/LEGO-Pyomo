@@ -210,8 +210,27 @@ python research/MK/cluster.py cancel experiment
 ```
 
 **Task keys**: `{dataset}/sd{demand}/c{clusters}/{tm}/{task}/{edge}` (e.g. `TX-123BT/sd0.5/c21/shiftTM1/regret/Markov`),
-`{dataset}/sd{demand}/prepare`, `{dataset}/sd{demand}/truth-original` and `evaluate`. `restart`, `log` and `--filter`
-take glob patterns.
+`{dataset}/sd{demand}/prepare`, `{dataset}/sd{demand}/truth-original` and `evaluate`. `restart`, `log`, `local` and
+`--filter` take glob patterns.
+
+**Local runs** (no Slurm, e.g. on a laptop to test tasks before submitting): `local` builds the same commands from the
+config (file or name in `experiments/`) and runs the matching tasks in dependency order, from the repo root with the
+current Python. Results go to the usual places, so a later cluster run reuses them via `--no-overwrite` (and vice versa).
+
+```bash
+python research/MK/cluster.py local experiment '*/prepare' -j 12 --keep-going    # all prepare jobs in parallel
+python research/MK/cluster.py local pilot TX-123BT/sd1/prepare                   # one task, output to the console
+python research/MK/cluster.py local pilot 'TX-123BT/sd1/c28/base/regret/Markov' --with-deps --dry-run
+```
+
+`-j/--jobs N` runs up to N tasks at once, each as soon as its dependencies have finished; output then always goes to
+log files (`--log-dir`, default `runs/<name>-local/logs/`). All prepare jobs are independent and write disjoint folders,
+so they can run fully in parallel (~3 GB RAM each). Mind the memory with solves: full-year models need tens of GB each.
+`--with-deps` adds all upstream tasks (finished ones skip quickly via `--no-overwrite`). Without `--keep-going`, a
+failure stops starting new tasks (running ones finish); with it, only the tasks depending on the failure are skipped.
+Gurobi threads per task = the task's `cpus`, at most CPU count / jobs (`--threads`); `node_file_start_fraction` refers to
+the task's `mem`, at most RAM / jobs (`--mem`). The exit code is 1 if a task failed. For long local solves, run at low priority (PowerShell: `(Get-Process -Id $PID).PriorityClass = 'Idle'` first; cmd:
+prefix the command with `start /low /b /wait`, and quote patterns with `"` instead of `'`).
 
 **Job names** start with an 8-character code, because `squeue` shows only 8 characters: dataset (2, first two letters
 of the folder name; lower case for low-priority runs) + task (4) + edge (2), then `_` and the array name, e.g.

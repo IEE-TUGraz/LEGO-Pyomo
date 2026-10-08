@@ -6,18 +6,22 @@
     python research/MK/cluster.py prioritize experiment [--nice-step N]
     python research/MK/cluster.py log      experiment KEY
     python research/MK/cluster.py cancel   experiment
+    python research/MK/cluster.py local    experiment PATTERN ... [--jobs N] [--with-deps] [--keep-going] [--log-dir DIR] [--dry-run]
 
-Run from the repo root on the login node. Standard library only (Python >= 3.11 for tomllib).
+Run from the repo root on the login node (`local`: on any machine, with the conda env active). Standard library only (Python >= 3.11 for tomllib).
 """
 import argparse
+import concurrent.futures
 import datetime
 import fnmatch
 import itertools
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 try:
@@ -685,6 +689,137 @@ def cmd_log(args) -> None:
         print("(log does not exist yet)")
 
 
+def _load_config(name_or_config: str) -> dict:
+    """TOML file, or a run name resolved to experiments/<name>.toml."""
+    path = Path(name_or_config)
+    if not path.is_file():
+        path = HERE / "experiments" / f"{name_or_config}.toml"
+    if not path.is_file():
+        sys.exit(f"No config '{name_or_config}' (give a TOML file or the name of one in {HERE / 'experiments'})")
+    return tomllib.loads(path.read_text())
+
+
+def _machine_mem_mb() -> float | None:
+    """Physical memory of this machine in MB (None if unknown)."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong), ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong), ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong), ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            status = MemoryStatus(dwLength=ctypes.sizeof(MemoryStatus))
+            return ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)) and status.ullTotalPhys / 1024 ** 2 or None
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024 ** 2
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _local_cmd(task: dict, threads: int, mem_mb: float, node_dir: Path, node_file_start_fraction) -> list[str]:
+    """The task's command with the job-script placeholders filled in for a local run (python = this interpreter)."""
+    cmd = task["cmd"].replace("@THREADS@", str(threads)).replace("@NODEDIR@", str(node_dir))
+    if "@NODEFILESTART@" in cmd:  # same rule as the job script: fraction x the (local) memory
+        cmd = cmd.replace("@NODEFILESTART@", f"{mem_mb / 1024 * float(node_file_start_fraction):.1f}")
+    args = cmd.split(" ")
+    return [sys.executable, *args[1:]] if args[0] == "python" else args
+
+
+def cmd_local(args) -> None:
+    """Run tasks of a config on this machine in dependency order (up to --jobs at once), without Slurm or run state."""
+    if args.jobs < 1:
+        sys.exit("--jobs must be >= 1")
+    cfg = _load_config(args.config)
+    plan = build_plan(cfg)
+    selected = {k for k in plan if any(fnmatch.fnmatch(k, p) for p in args.patterns)}
+    if not selected:
+        sys.exit(f"No task matches {args.patterns} (task keys look like 'TX-123BT/sd1/prepare', see README)")
+    if args.with_deps:
+        stack = list(selected)
+        while stack:
+            for dep in plan[stack.pop()]["deps"]:
+                if dep not in selected:
+                    selected.add(dep)
+                    stack.append(dep)
+    keys = [k for k in plan if k in selected]  # plan order = dependency order
+    fraction = cfg.get("markov", {}).get("node_file_start_fraction")
+    machine_mem = _machine_mem_mb()
+    if args.mem and _mem_mb(args.mem.upper().removesuffix("B")) is None:
+        sys.exit(f"--mem '{args.mem}': use e.g. 16G or 16000M")
+    repo = HERE.parent.parent
+    # Parallel output would interleave on the console: --jobs > 1 always logs to files
+    log_dir = Path(args.log_dir) if args.log_dir else (RUNS_DIR / f"{cfg['name']}-local" / "logs" if args.jobs > 1 else None)
+    if log_dir and not args.dry_run:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    # Parallel slots share the machine: split the cores and the memory (node files) between them
+    cpu_share = max(1, (os.cpu_count() or 1) // args.jobs)
+    mem_share = machine_mem / args.jobs if machine_mem else float("inf")
+
+    def prepare(i, key):
+        task = plan[key]
+        threads = args.threads or min(task["res"]["cpus"], cpu_share)
+        mem_mb = _mem_mb(args.mem.upper().removesuffix("B")) if args.mem else \
+            min(_mem_mb(task["res"]["mem"].upper().removesuffix("B")), mem_share)
+        node_dir = Path(tempfile.gettempdir()) / f"gurobi-nodes-local-{os.getpid()}-{i}"
+        log = log_dir / (key.replace("/", "_") + ".log") if log_dir else None
+        return _local_cmd(task, threads, mem_mb, node_dir, fraction), node_dir, log
+
+    def run(cmd, node_dir, log) -> int:
+        try:
+            if log:
+                with open(log, "w", encoding="utf-8", errors="replace") as f:
+                    return subprocess.run(cmd, cwd=repo, stdout=f, stderr=subprocess.STDOUT).returncode
+            return subprocess.run(cmd, cwd=repo).returncode
+        finally:
+            shutil.rmtree(node_dir, ignore_errors=True)
+
+    print(f"{len(keys)} task(s) to run locally" + (f", up to {args.jobs} at once" if args.jobs > 1 else "")
+          + (f", logs in {log_dir}" if log_dir else "") + ("  (dry run)" if args.dry_run else ""))
+    if args.dry_run:
+        for i, key in enumerate(keys, 1):
+            print(f"[{i}/{len(keys)}] {key}\n    " + " ".join(prepare(i, key)[0]))
+        return
+
+    # Dependencies outside the selection count as satisfied (e.g. finished earlier); plan order = dependency order,
+    # so one pass over `pending` also propagates skips down a chain
+    done, failed, skipped, pending, running = [], [], [], list(keys), {}
+    number = {key: i for i, key in enumerate(keys, 1)}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        while pending or running:
+            if not failed or args.keep_going:
+                for key in list(pending):
+                    deps = [d for d in plan[key]["deps"] if d in selected]
+                    bad = [d for d in deps if d in failed or d in skipped]
+                    if bad:
+                        print(f"[{number[key]}/{len(keys)}] {key}: skipped (depends on failed {bad})")
+                        skipped.append(key)
+                        pending.remove(key)
+                    elif len(running) < args.jobs and all(d in done for d in deps):
+                        cmd, node_dir, log = prepare(number[key], key)
+                        print(f"[{number[key]}/{len(keys)}] {key} started" + (f"  -> {log}" if log else ""))
+                        if args.jobs == 1:
+                            print("    " + " ".join(cmd))
+                        running[pool.submit(run, cmd, node_dir, log)] = (key, datetime.datetime.now())
+                        pending.remove(key)
+            if not running:
+                break  # stopped after a failure (without --keep-going)
+            finished, _ = concurrent.futures.wait(running, return_when=concurrent.futures.FIRST_COMPLETED)
+            for future in finished:
+                key, start = running.pop(future)
+                elapsed = str(datetime.datetime.now() - start).split(".")[0]
+                rc = future.result()
+                (done if rc == 0 else failed).append(key)
+                print(f"[{number[key]}/{len(keys)}] {key} " + ("done" if rc == 0 else f"FAILED (exit {rc})") + f" after {elapsed}")
+                if rc != 0 and not args.keep_going and running:
+                    print(f"    waiting for {len(running)} running task(s), starting no new ones (--keep-going to continue)")
+
+    print(f"\n{len(done)} done, {len(failed)} failed, {len(keys) - len(done) - len(failed)} not run")
+    for key in failed:
+        print(f"  FAILED {key}" + (f"  (log: {log_dir / (key.replace('/', '_') + '.log')})" if log_dir else ""))
+    if failed:
+        sys.exit(1)
+
+
 def cmd_cancel(args) -> None:
     _, state = load_state(args.run)
     jobs = sorted({g["job"] for g in state["groups"].values()} |
@@ -726,6 +861,18 @@ def main():
     p.add_argument("key", help="Task key (glob allowed if it matches exactly one task)")
     p.add_argument("-n", "--lines", type=int, default=40)
     p.set_defaults(func=cmd_log)
+    p = sub.add_parser("local", help="Run tasks on this machine without Slurm (sequentially, in dependency order)")
+    p.add_argument("config", help="TOML experiment file or its name, e.g. pilot")
+    p.add_argument("patterns", nargs="+", help="Glob patterns of task keys, e.g. 'TX-123BT/sd1/prepare' or '*/prepare'")
+    p.add_argument("--with-deps", action="store_true", help="Also run the tasks the selected ones depend on (finished ones are skipped by --no-overwrite)")
+    p.add_argument("-j", "--jobs", type=int, default=1, help="Run up to N tasks at once, each as soon as its dependencies have finished (default 1)")
+    p.add_argument("--threads", type=int, help="Gurobi threads per task (default: the task's cpus, at most CPU count / jobs)")
+    p.add_argument("--mem", help="Memory per task for node_file_start_fraction, e.g. 16G (default: the task's mem, at most RAM / jobs)")
+    p.add_argument("--keep-going", action="store_true", help="Continue after a failure (tasks depending on it are skipped)")
+    p.add_argument("--log-dir", help="Write each task's output to <log-dir>/<key>.log instead of the console "
+                                     "(with --jobs > 1 always, default runs/<name>-local/logs/)")
+    p.add_argument("--dry-run", action="store_true", help="Print the commands only")
+    p.set_defaults(func=cmd_local)
     p = sub.add_parser("cancel", help="Cancel all jobs of a run")
     p.add_argument("run", help="Run name or its TOML file")
     p.set_defaults(func=cmd_cancel)
