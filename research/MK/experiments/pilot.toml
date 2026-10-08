@@ -28,7 +28,9 @@ conda activate LEGO-Pyomo_env
 
 [markov]
 args = ["--network", "TP", "--mip-gap", "0.003"]   # same as experiment.toml
-node_file_start_fraction = 0.5   # same as experiment.toml
+# NodefileStart (GB) per dataset, the same for all its solves (it affects the runtime); node files go to node-local $TMPDIR.
+# Must stay below the smallest solve mem of the dataset. Keep pilot.toml and experiment.toml identical.
+node_file_start = { default = 8, "TX-123BT" = 16 }
 
 [grid]
 datasets = ["data/RTS-GMLC", "data/TX-123BT", "data/NREL-118"]

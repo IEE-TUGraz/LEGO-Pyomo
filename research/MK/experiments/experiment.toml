@@ -1,0 +1,79 @@
+# Runs for the Markov paper.
+# Submit from the repo root on MUSICA:  python research/MK/cluster.py submit research/MK/experiments/experiment.toml
+# Every solve is its own Slurm job; see research/MK/README.md (section "Cluster runs") for the task graph and commands.
+
+name = "experiment"   # run state and logs go to research/MK/runs/<name>/
+
+[slurm]
+account = "p201450"
+partition = "zen4_0768"
+qos = "zen4_0768"
+repo = "$DATA/git/LEGO-Pyomo"          # repo on the cluster; all commands run from here
+setup = """
+module purge
+# Gurobi license only: gurobipy comes from the conda env (the Gurobi module would put a Python 3.13 gurobipy on PYTHONPATH)
+export GRB_LICENSE_FILE=/home/fa95534/eessi/versions/2023.06/software/linux/x86_64/amd/zen4/software/Gurobi/13.0.1-GCCcore-14.3.0/gurobi.lic
+module load Miniforge3
+eval "$(conda shell.bash hook)"
+conda activate LEGO-Pyomo_env
+"""
+
+[markov]
+args = ["--network", "TP", "--mip-gap", "0.003"]   # model options of every solve (no whitespace inside an argument)
+# NodefileStart (GB) per dataset, the same for all its solves (it affects the runtime); node files go to node-local $TMPDIR.
+# Must stay below the smallest solve mem of the dataset. Keep pilot.toml and experiment.toml identical.
+node_file_start = { default = 8, "TX-123BT" = 16 }
+
+[grid]
+datasets = ["data/RTS-GMLC", "data/TX-123BT", "data/NREL-118"]   # = scheduling preference among your own jobs ([slurm] nice_step)
+stretch_demand = [1.0, 0.5, 0.7, 0.9]
+clusters = [3, 5, 7, 14, 21, 28]
+# 'perturb:1.0' = random transition matrix (optional runs): only without demand stretching, queued after all other runs
+tm = ["base", "shift:1", "shift:2", { spec = "perturb:1.0", stretch_demand = [1.0], low_priority = true }]
+edges = ["NoEnf", "Cyclic", "Markov"]                # Truth is added automatically where it applies
+tasks = ["main", "operational", "regret", "invest-regret", "operational-regret",
+         "original-invest-regret", "original-regret"]   # original-* only for tm = base
+truth_original = true                                    # one Original Truth per dataset and demand variability
+
+# Resources per job. Classes: prepare, evaluate, truth-original (falls back to full),
+# rp   = main/operational runs of NoEnf/Cyclic/Markov (RP models),
+# full = all full-year solves (Truth main/operational, all regret variants, original-*).
+# A dataset entry (folder name) overrides 'default'. GUESSES - calibrate with the pilot (see README).
+# All solves of a dataset (rp, full, truth-original) must use the same cpus, so that work units and solver times are
+# comparable between edge handlings and Truth - cluster.py refuses configs that violate this. Memory may differ.
+[resources.prepare]
+default = { cpus = 4, mem = "32G", time = "06:00:00" }
+
+[resources.evaluate]
+default = { cpus = 32, mem = "128G", time = "12:00:00" }
+
+[resources.truth-original]
+default = { cpus = 8, mem = "128G", time = "3-00:00:00" }
+"TX-123BT" = { cpus = 12, mem = "240G" }
+
+[resources.rp]
+default = { cpus = 8, mem = "16G", time = "3-00:00:00" }
+"TX-123BT" = { cpus = 12, mem = "32G" }
+
+[resources.full]
+default = { cpus = 8, mem = "48G", time = "3-00:00:00" }
+"NREL-118" = { mem = "64G" }
+"TX-123BT" = { cpus = 12, mem = "128G" }
+
+# Task pool (cluster.py worker): memory / runtime estimates start from [resources.*] and improve with every measured
+# attempt of this run and of seed_runs (Slurm runs: `cluster.py resources pilot --save` writes runs/pilot/measurements.json)
+[pool]
+seed_runs = ["pilot"]
+cores = 192            # zen4_0768 node: 2x AMD EPYC 9654 = 192 physical cores (384 hardware threads)
+mem = "740G"           # of 770000 MB per node (sinfo RealMemory); the rest stays for the OS
+mem_fraction = 0.9     # share of `mem` that tasks are packed into (margin for estimation errors)
+walltime = "3-00:00:00"  # max of the zen4_0768 QoS
+chain_after_hours = 24   # then the job submits its successor (if tasks remain), which queues while this one runs
+workers = 3            # worker chains started by `cluster.py submit-workers` (more can be added at any time)
+idle_hours = 3         # a worker without anything to run waits this long before it exits
+rank_offset_hours = 12 # soft dataset order: each grid.datasets position counts as 12 h less critical path (low_priority TMs stay last)
+mail_type = "BEGIN,END,FAIL"   # worker job mails (address: $MK_MAIL_USER); per-task jobs use [slurm] mail_type
+
+[evaluate]
+args = ["all", "--no-show", "--separateClusters"]
+output_dir = "results/experiment"

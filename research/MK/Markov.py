@@ -1520,6 +1520,7 @@ def execute_original_truth(original_folder: str, no_sqlite: bool = False, relax_
     file_prefix = f"MK-{'-'.join(identifier_parts)}-TruthOriginal"
 
     if no_overwrite and _existing_optimal(f"{file_prefix}.sqlite"):
+        _print_noop_marker(f"'{file_prefix}.sqlite' already optimal")
         return file_prefix
 
     lego = _build_original_reference_lego(cs, thermal_generator_relaxed)
@@ -1563,6 +1564,7 @@ def execute_task(task: str, edge: str, cs: CaseStudy, identifier: str, run_param
     variant = task.removeprefix("original-")
     out_prefix = {"main": main_prefix}.get(task, f"{main_prefix}-{task}")
     if no_overwrite and _existing_optimal(f"{out_prefix}.sqlite", task):
+        _print_noop_marker(f"'{out_prefix}.sqlite' already optimal")
         return out_prefix
     if edge == "Truth" and task in ("regret", "invest-regret", "operational-regret", "original-regret"):
         raise ValueError(f"--task {task} is not defined for the Truth edge handling (its regret is degenerate)")
@@ -1616,7 +1618,18 @@ def execute_task(task: str, edge: str, cs: CaseStudy, identifier: str, run_param
     return out_prefix
 
 
+_prepared_folders = 0  # preprocessing folders created in this process (0 in a --prepare-only run = nothing to do)
+
+
+def _print_noop_marker(reason: str) -> None:
+    """Tell cluster.py's pool worker that this process did no real work, so its memory / runtime must not be used as a
+    measurement (pool.NOOP_MARKER - keep the text in sync)."""
+    print(f"MK-NOOP: {reason}", flush=True)
+
+
 def copy_files_non_recursive(src_folder: str, dst_folder: str):
+    global _prepared_folders
+    _prepared_folders += 1
     if not os.path.exists(dst_folder):
         os.makedirs(dst_folder)
 
@@ -1852,6 +1865,8 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                 printer.console.print_exception()
                 printer.error(f"Continuing with next case study")
 
+    if prepare_only and _prepared_folders == 0:
+        _print_noop_marker("all preprocessing folders already existed (--reuse-inputfiles)")
     printer.success("Done")
 
 

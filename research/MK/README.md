@@ -223,13 +223,15 @@ python research/MK/cluster.py local pilot TX-123BT/sd1/prepare                  
 python research/MK/cluster.py local pilot 'TX-123BT/sd1/c28/base/regret/Markov' --with-deps --dry-run
 ```
 
-`-j/--jobs N` runs up to N tasks at once, each as soon as its dependencies have finished; output then always goes to
-log files (`--log-dir`, default `runs/<name>-local/logs/`). All prepare jobs are independent and write disjoint folders,
-so they can run fully in parallel (~3 GB RAM each). Mind the memory with solves: full-year models need tens of GB each.
-`--with-deps` adds all upstream tasks (finished ones skip quickly via `--no-overwrite`). Without `--keep-going`, a
-failure stops starting new tasks (running ones finish); with it, only the tasks depending on the failure are skipped.
-Gurobi threads per task = the task's `cpus`, at most CPU count / jobs (`--threads`); `node_file_start_fraction` refers to
-the task's `mem`, at most RAM / jobs (`--mem`). The exit code is 1 if a task failed. For long local solves, run at low priority (PowerShell: `(Get-Process -Id $PID).PriorityClass = 'Idle'` first; cmd:
+`local` is the pool worker (see "Task pool" below) with a throw-away pool: `-j/--jobs N` runs up to N tasks at once,
+each as soon as its dependencies have finished; output then always goes to log files `<key>.<attempt>.log` (`--log-dir`,
+default `runs/<name>-local/logs/`). Memory packing is off (`-j` is the concurrency; the TOML memory is sized for Slurm),
+but the memory guard still stops the newest task if the machine runs out of memory. All prepare jobs are independent and
+write disjoint folders, so they can run fully in parallel (~3 GB RAM each). Mind the memory with solves: full-year
+models need tens of GB each. `--with-deps` adds all upstream tasks (finished ones skip quickly via `--no-overwrite`).
+Without `--keep-going`, a failure stops starting new tasks (running ones finish); with it, only the tasks depending on
+the failure are skipped. Gurobi threads per task = the task's `cpus`, at most CPU count / jobs (`--threads`). The exit
+code is 1 if a task failed. For long local solves, run at low priority (PowerShell: `(Get-Process -Id $PID).PriorityClass = 'Idle'` first; cmd:
 prefix the command with `start /low /b /wait`, and quote patterns with `"` instead of `'`).
 
 **Job names** start with an 8-character code, because `squeue` shows only 8 characters: dataset (2, first two letters
@@ -259,9 +261,17 @@ delete a result file to recompute it.
 **Config** (see `experiments/experiment.toml`):
 - `[slurm]`: account, partition, QoS, optional `nice_step` (see Queue order), optional `mail_user`/`mail_type` (leave them out of versioned configs and use
   `$MK_MAIL_USER`), `repo` (repo path on the cluster), `setup` (environment lines).
-- `[markov]`: `args` for every solve; Gurobi node files (in the job's node-local `$TMPDIR`) from a fixed
-  `node_file_start` (GB) or `node_file_start_fraction` × the job's memory, which follows `restart --mem`.
-  `--threads` is always the allocated core count.
+- `[markov]`: `args` for every solve; `node_file_start`: Gurobi `NodefileStart` in GB, one number or a table per dataset
+  (`{ default = 8, "TX-123BT" = 16 }`), identical for all solves of a dataset because it affects the runtime. It limits
+  only the B&B tree in memory (not the model): once the tree is larger, Gurobi compresses nodes and writes them to the
+  node-local `$TMPDIR`. Keep pilot and full run identical. `--threads` is always the allocated core count.
+- `[slurm] disk_min_free_gb` (default 50): every job logs its node-file peak and the free space of the node-file disk
+  (`Node files: peak … MB, min free disk … MB` at the end of the log) and warns below this.
+- `[pool]` (task pool only): `seed_runs` (runs whose measurements seed the estimates, e.g. `["pilot"]`), `cores` and
+  `mem` per worker node (required by `submit-workers`), `walltime` (72 h), `chain_after_hours` (24), `workers` (3),
+  `mem_fraction` (share of `mem` that is packed, 0.9), `idle_hours` (3), `mem_safety` (1.2), `time_safety` (1.5),
+  `disk_min_free_gb` (50), `rank_offset_hours` (soft dataset order, see Task pool; absent = strict), `mail_type` for the worker jobs (default: `[slurm] mail_type`; address from `[slurm] mail_user` /
+  `$MK_MAIL_USER`, written into `worker.sbatch` at `submit-workers` - edit that file to change it for later successors).
 - `[grid]`: `datasets`, `stretch_demand`, `clusters`, `edges`, `tasks`, `truth_original`, and `tm` entries `base` /
   `shift:N` / `perturb:R`, or an inline table `{ spec = "perturb:1.0", stretch_demand = [1.0], low_priority = true }`
   (only these demand levels / queued last).
@@ -273,6 +283,61 @@ delete a result file to recompute it.
 
 Run state, command files and logs go to `research/MK/runs/<name>/` (not versioned).
 
+**Task pool** (alternative to one Slurm job per task, sized for whole nodes as MUSICA prefers): `worker` runs the
+tasks of a config on the machine it is started on, packing them by **estimated memory** and **cores**, and pulls them
+from a shared pool in `runs/<name>/pool/`. Any number of workers (one per node) can work on the same pool at once; each
+task runs exactly once. A task starts when its dependencies are done, it fits (sum of `max(estimate, current RSS)` of the
+running tasks + its estimate ≤ `mem_fraction` × memory; enough cores), and - if its runtime is known from measurements -
+it finishes before the worker's walltime. Priority: the longest chain of dependent tasks (critical path, from the
+runtime estimates) minus `[pool] rank_offset_hours` (12) per position in `grid.datasets` - so RTS-GMLC goes first among
+equal chains, but a TX-123BT task whose chain is more than 12 h longer goes before it. Without `rank_offset_hours` the
+order is strict (all ready tasks of the first dataset first). Ties: largest memory first. If the top task waits too long
+(30 min), smaller tasks stop jumping ahead of it. `low_priority` TM variants (the random TM) only use spare capacity:
+they start once every ready normal task has been placed; once started they run to the end like any other task (they are
+never stopped to make room), but the memory guard evicts low-priority tasks first. Tasks never use more Gurobi threads
+in total than the worker's cores.
+
+```bash
+python research/MK/cluster.py resources pilot --save                # pilot measurements -> seed of the estimates
+python research/MK/cluster.py submit-workers experiment --estimate-only   # remaining work, days for 1/2/3/5/10 chains
+python research/MK/cluster.py submit-workers experiment --dry-run   # job script + sbatch calls
+python research/MK/cluster.py submit-workers experiment             # [pool] workers chains (default 3); repeat to add more
+python research/MK/cluster.py cancel experiment                     # all worker jobs incl. queued successors
+python research/MK/cluster.py worker experiment                     # by hand; on a Slurm node: until the job ends
+python research/MK/cluster.py worker experiment 'TX-123BT/*' --mem 700G --cores 192 --hours 72
+python research/MK/cluster.py status experiment                     # pool mode: counts, workers, retried attempts
+python research/MK/cluster.py resources experiment                  # from the pool's measurements
+python research/MK/cluster.py restart experiment --failed           # failed tasks become runnable again
+```
+
+- **Estimates** come from measurements (peak RSS, runtime) of this run and of `[pool] seed_runs`, most specific first:
+  the same task, the same task/edge/RP count, the same task/edge, the resource class (memory only); else the TOML
+  `[resources.*]`. Value = largest measurement × `mem_safety` / `time_safety`. They are recomputed continuously, so
+  later tasks start with better estimates. Seed a pool with a Slurm run's measurements via `resources <run> --save`
+  (`runs/<run>/measurements.json`). Runs that had nothing to do (output existed, folders reused; `Markov.py` prints
+  `MK-NOOP`) are not measurements.
+- **Memory guard**: no per-task memory limits. If free memory gets short (or the tasks use more than the worker's
+  `--mem`), the most recently started task is stopped and retried later with its peak as lower bound (never the only
+  running task). Same for the walltime: shortly before the end, running tasks are stopped and retried by another worker.
+- **Idle**: a worker without anything to run waits up to `idle_hours` for tasks to become ready (e.g. while another
+  worker runs a Truth solve), and exits at once only when nothing is left.
+- **Node files** go to `--node-dir` (default `$TMPDIR`); the worker records each task's node-file peak and pauses new
+  tasks while the disk has less than `disk_min_free_gb` free.
+- **Whole-node jobs and chaining** (`submit-workers`): each job takes a full node (`--exclusive --mem=0`, `[pool]
+  walltime`, default 72 h) and runs one worker with `[pool] cores`/`mem` (MUSICA: 192 / `740G`). After
+  `chain_after_hours` (24) it submits the same script again if tasks remain, so the successor waits in the queue while
+  it still runs (with ~2 days queue time it starts about when its predecessor ends; if it starts earlier, both share the
+  work). A chain ends by itself when no tasks are left at that point. This needs `sbatch` on compute nodes; a failed
+  submission is logged as `ERROR` in `runs/<name>/pool/jobs/worker_<job>.out` and retried every 10 min. Tasks longer
+  than the walltime can never finish (Gurobi cannot resume) - keep `walltime` at the QoS maximum.
+- **How many chains**: `--estimate-only` sums the estimated memory × runtime (and cores × runtime) of the open tasks
+  per node and prints the days for 1-10 chains, bounded below by the longest dependency chain. Before measurements
+  exist, the TOML `time` (a limit, not a runtime) makes this a wild upper bound - seed with the pilot first. Start
+  with a few chains and add more with another `submit-workers --workers N` once the estimate is based on
+  measurements; `evaluate` runs automatically after all other tasks.
+- Per-attempt logs: `runs/<name>/pool/logs/<key>.<attempt>.log`. A dead worker's tasks are retried after 10 min without
+  heartbeat.
+
 **Pilot before the full run**: the resources in `experiment.toml` are guesses. `experiments/pilot.toml` runs one grid
 point per dataset (100 % demand, 28 clusters = largest RP models, base TM, all edges and tasks, Original Truth; 78 jobs)
 with generous memory. The full run reuses its results via `--no-overwrite` (same model options), so submit it only
@@ -280,13 +345,18 @@ after the pilot has finished.
 
 ```bash
 python research/MK/cluster.py submit research/MK/experiments/pilot.toml
-python research/MK/cluster.py status pilot --list done     # 'mem' column = peak RSS / requested memory
+python research/MK/cluster.py resources pilot              # max peak / elapsed per dataset and class, suggested values
+python research/MK/cluster.py status pilot --list done     # per task: 'mem' column = peak RSS / requested memory
 seff <jobid>                                                # per job, incl. CPU efficiency
 ```
 
-Then set `mem` of `[resources.rp]`, `[resources.full]` and `[resources.truth-original]` per dataset to about 1.3× the
-largest peak of the class; `restart --mem-factor` covers outliers. Set time limits from the `elapsed` column with a
-larger margin (MIP solve times vary more between demand levels and TMs than memory does).
+`resources` groups the finished tasks by dataset and `[resources.*]` class (`prepare`, `truth-original`, `rp`, `full`)
+and suggests `mem` = 1.3× the largest peak and `time` = 2× the longest run (at least 30 min; `--mem-factor`,
+`--time-factor`, `--min-time`), naming the tasks behind both maxima. `--save` writes the measurements to
+`runs/<run>/measurements.json`, the seed for pool runs (`[pool] seed_runs`). Tasks that hit `OUT_OF_MEMORY`/`TIMEOUT` are listed
+with the limit they exceeded (the class needs more than that). Copy the values per dataset into the full experiment's
+TOML; `restart --mem-factor` covers outliers. Keep a larger margin on time: MIP solve times vary more between demand
+levels and TMs than memory does, and the pilot covers only its grid points.
 
 ### `EvaluateMarkov.py` — Result evaluation
 
