@@ -66,7 +66,7 @@ CATEGORIES = [DONE, RUNNING, PENDING, BLOCKED, FAILED, UNKNOWN]
 _FAILED_STATES = {"FAILED", "OUT_OF_MEMORY", "TIMEOUT", "CANCELLED", "NODE_FAIL", "PREEMPTED", "BOOT_FAIL", "DEADLINE"}
 _RUNNING_STATES = {"RUNNING", "COMPLETING", "CONFIGURING", "SUSPENDED", "REQUEUED", "RESIZING"}
 
-DEFAULT_DISK_MIN_FREE_GB = 50  # [slurm] / [pool] disk_min_free_gb: warn when the node-file disk has less free space
+DEFAULT_DISK_MIN_FREE_GB = 10  # [slurm] / [pool] disk_min_free_gb: warn (pool: start no new tasks) below this free space
 
 # Whole-node worker job of the task pool (submit-workers); the worker submits its successor itself (chaining)
 WORKER_SBATCH_TEMPLATE = """#!/bin/bash

@@ -49,7 +49,8 @@ class MK:
 
     def use(self, plan: dict, name: str = "fake", **pool_cfg) -> dict:
         """Make cluster.build_plan / _load_config return this plan and a minimal config."""
-        cfg = {"name": name, "pool": pool_cfg}
+        # No disk threshold by default: the machine's temp disk may be small (MUSICA login node: 22 GB free /tmp)
+        cfg = {"name": name, "pool": {"disk_min_free_gb": 0, **pool_cfg}}
         self.monkeypatch.setattr(cluster, "build_plan", lambda cfg_: plan)
         self.monkeypatch.setattr(cluster, "_load_config", lambda _: (self.tmp / f"{name}.toml", cfg))
         return cfg
@@ -63,7 +64,7 @@ class MK:
         for key in low:
             specs[key]["low"] = True
         logs = []
-        kw = {"cores": 8, "mem_mb": 4000, "idle_s": 1, "poll_s": 0.3, **kw}
+        kw = {"cores": 8, "mem_mb": 4000, "idle_s": 1, "poll_s": 0.3, "node_base": self.tmp / "nodes", **kw}
         return cluster.make_worker(cfg, specs, store, out=logs.append, **kw), logs
 
     @staticmethod

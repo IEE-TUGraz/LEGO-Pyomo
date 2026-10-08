@@ -330,7 +330,7 @@ class Worker:
     def __init__(self, specs: dict, store: Store, estimator: Estimator, *, cwd: Path, cores: int, mem_mb: float,
                  mem_fraction: float = 0.9, mem_packing: bool = True, end_time: float | None = None, idle_s: float = 3 * 3600,
                  max_tasks: int | None = None, thread_cap: int | None = None, keep_going: bool = True, console: bool = False,
-                 node_base: Path | None = None, disk_min_free_mb: float = 50 * 1024, seed_records=(), poll_s: float = 15,
+                 node_base: Path | None = None, disk_min_free_mb: float = 10 * 1024, seed_records=(), poll_s: float = 15,
                  guard_available_fraction: float = 0.04, guard_rss_fraction: float = 0.97, evict_grace_s: float = 60,
                  interrupt_margin_s: float = 600, reserve_after_s: float = 1800, rank_offset_s: float | None = None,
                  chain_after_s: float | None = None,
@@ -341,6 +341,7 @@ class Worker:
         self.mem_packing, self.end_time, self.idle_s = mem_packing, end_time, idle_s
         self.max_tasks, self.thread_cap, self.keep_going, self.console = max_tasks, thread_cap, keep_going, console
         self.node_base = Path(node_base or os.environ.get("TMPDIR") or tempfile.gettempdir())
+        self.node_base.mkdir(parents=True, exist_ok=True)  # the free-space check needs an existing directory
         self.disk_min_free_mb, self.poll_s = disk_min_free_mb, poll_s
         self.guard_available_fraction, self.guard_rss_fraction, self.evict_grace_s = guard_available_fraction, guard_rss_fraction, evict_grace_s
         self.interrupt_margin_s, self.reserve_after_s, self.rank_offset_s = interrupt_margin_s, reserve_after_s, rank_offset_s
@@ -456,6 +457,12 @@ class Worker:
             elif run["stop"] and time.time() - run["stop"][1] > 30:
                 _kill(run["proc"])
         return finished
+
+    def disk_free_gb(self) -> str:
+        try:
+            return f"{shutil.disk_usage(self.node_base).free / 1024 ** 3:.0f}"
+        except OSError:
+            return "?"
 
     def check_disk(self) -> bool:
         """Node-file usage per task and free disk; False (= start nothing new) while free space is below the minimum."""
@@ -593,6 +600,7 @@ class Worker:
         """Main loop; returns 0 if nothing failed in this worker, 1 otherwise."""
         self.log(f"worker {self.id}: {self.cores} cores, {self.mem_mb / 1024:.0f} GB ({self.pack_mb / 1024:.0f} GB for packing"
                  + ("" if self.mem_packing else ", memory packing off") + f"), {len(self.specs)} task(s) selected, node files in {self.node_base}"
+                 + f" ({self.disk_free_gb()} GB free; new tasks pause below {self.disk_min_free_mb / 1024:g} GB)"
                  + (f", ends {datetime.datetime.fromtimestamp(self.end_time).isoformat(timespec='minutes')}" if self.end_time else ""))
         info = {"host": socket.gethostname(), "pid": os.getpid(), "slurm_job": os.environ.get("SLURM_JOB_ID"), "cores": self.cores,
                 "mem_mb": self.mem_mb, "started": _now(), "end_time": self.end_time}

@@ -267,12 +267,12 @@ delete a result file to recompute it.
   (`{ default = 8, "TX-123BT" = 16 }`), identical for all solves of a dataset because it affects the runtime. It limits
   only the B&B tree in memory (not the model): once the tree is larger, Gurobi compresses nodes and writes them to the
   node-local `$TMPDIR`. Keep pilot and full run identical. `--threads` is always the allocated core count.
-- `[slurm] disk_min_free_gb` (default 50): every job logs its node-file peak and the free space of the node-file disk
+- `[slurm] disk_min_free_gb` (default 10): every job logs its node-file peak and the free space of the node-file disk
   (`Node files: peak … MB, min free disk … MB` at the end of the log) and warns below this.
 - `[pool]` (task pool only): `seed_runs` (runs whose measurements seed the estimates, e.g. `["pilot"]`), `cores` and
   `mem` per worker node (required by `submit-workers`), `walltime` (72 h), `chain_after_hours` (24), `workers` (3),
   `mem_fraction` (share of `mem` that is packed, 0.9), `idle_hours` (3), `mem_safety` (1.2), `time_safety` (1.5),
-  `disk_min_free_gb` (50), `rank_offset_hours` (soft dataset order, see Task pool; absent = strict), `mail_type` for the worker jobs (default: `[slurm] mail_type`; address from `[slurm] mail_user` /
+  `disk_min_free_gb` (10), `rank_offset_hours` (soft dataset order, see Task pool; absent = strict), `mail_type` for the worker jobs (default: `[slurm] mail_type`; address from `[slurm] mail_user` /
   `$MK_MAIL_USER`, written into `worker.sbatch` at `submit-workers` - edit that file to change it for later successors).
 - `[grid]`: `datasets`, `stretch_demand`, `clusters`, `edges`, `tasks`, `truth_original`, and `tm` entries `base` /
   `shift:N` / `perturb:R`, or an inline table `{ spec = "perturb:1.0", stretch_demand = [1.0], low_priority = true }`
@@ -324,7 +324,8 @@ python research/MK/cluster.py restart experiment --failed           # failed tas
 - **Idle**: a worker without anything to run waits up to `idle_hours` for tasks to become ready (e.g. while another
   worker runs a Truth solve), and exits at once only when nothing is left.
 - **Node files** go to `--node-dir` (default `$TMPDIR`); the worker records each task's node-file peak and pauses new
-  tasks while the disk has less than `disk_min_free_gb` free.
+  tasks while the disk has less than `disk_min_free_gb` free. The first log line of a worker shows the node-file
+  directory and its free space - it must be the node-local NVMe (`$TMPDIR` in a job), not a small `/tmp`.
 - **Whole-node jobs and chaining** (`submit-workers`): each job takes a full node (`--exclusive --mem=0`, `[pool]
   walltime`, default 72 h) and runs one worker with `[pool] cores`/`mem` (MUSICA: 192 / `740G`). After
   `chain_after_hours` (24) it submits the same script again if tasks remain, so the successor waits in the queue while

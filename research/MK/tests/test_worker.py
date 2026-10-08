@@ -40,8 +40,9 @@ def test_two_workers_share_a_pool_and_evict_a_task_that_outgrows_its_estimate(mk
     assert sorted(done) == sorted(plan)  # every task done exactly once
     evicted = [r for r in results if r["outcome"] == pool.EVICTED]
     assert [r["key"].split("/")[-1] for r in evicted] == ["GROW"]
-    grow_starts = [line for _, logs in workers for line in logs if " start " in line and "GROW" in line]
-    assert "(prior)" in grow_starts[0] and "(prior)" not in grow_starts[-1]  # retried with a measured estimate
+    grow_starts = {int(line.split("(attempt ")[1].split(",")[0]): line  # either worker may have started an attempt
+                   for _, logs in workers for line in logs if " start " in line and "GROW" in line}
+    assert "(prior)" in grow_starts[1] and "(prior)" not in grow_starts[max(grow_starts)]  # retried with a measured estimate
 
     capsys.readouterr()
     mk.cli("status", "fake")
