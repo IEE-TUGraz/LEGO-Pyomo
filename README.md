@@ -50,7 +50,9 @@ python InOutModule/Caller.py jobs.txt --spawn 4   # 4 parallel workers
 
 ### Testing
 ```bash
-pytest                                                            # all tests
+pytest                                                            # all tests (incl. research/MK/tests, ~1 min extra)
+pytest tests                                                      # core LEGO tests only
+pytest research/MK/tests                                          # MK cluster tooling (cluster.py / pool.py)
 pytest tests/test_examples.py                                     # specific file
 pytest tests/test_examples.py::test_comparisonAgainstMPS          # specific test
 ```

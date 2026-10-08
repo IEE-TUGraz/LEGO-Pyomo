@@ -33,6 +33,7 @@ Non-obvious I/O patterns (CaseStudy read order, ExcelReader version checks, SQLi
 - Use `@LEGOUtilities.safetyCheck_addConstraints([dep_fn])` on `add_constraints()` to enforce module execution order
 - Models can be exported to MPS: `model.write("model.mps", io_options={'labeler': NameLabeler()})`
 - Tests compare against archived MPS files in `tests/data/mps-archive/` — not relevant when working on research scripts (research scripts do not alter the core LEGO model)
+- `research/MK/tests` holds pytest tests of the MK cluster tooling (`cluster.py`/`pool.py`, fake tasks, ~1 min); a plain `pytest` in the root collects them too
 
 ### SQLite Run Parameters
 

@@ -173,10 +173,12 @@ in `run_parameters`. The original model's own optimum is solved once per folder 
 length in the original model as well, so only the time series differ. Skipped (with a warning) for `--shift-tm` /
 `--perturb-tm`, whose chronology is resampled and has no original counterpart.
 
-### `cluster.py` — Cluster runs (Slurm, one job per solve)
+### `cluster.py` — Cluster runs (Slurm)
 
-`cluster.py` expands the grid of a TOML experiment file into one Slurm job per solve, submitted as job arrays with
-dependencies: every model is solved once, and each fixed-decision run starts as soon as its decision source has finished.
+`cluster.py` expands the grid of a TOML experiment file into one task per solve with dependencies: every model is solved
+once, and each fixed-decision run starts as soon as its decision source has finished. The tasks run either as one Slurm
+job each (`submit`, job arrays with dependencies) or in a **task pool** on whole nodes (`submit-workers`, see "Task
+pool" below) - the mode used on MUSICA, which prefers full-node jobs.
 `experiments/experiment.toml` holds all runs of the paper: RTS-GMLC, TX-123BT, NREL-118 × 3/5/7/14/21/28 RPs × demand
 variability 100/50/70/90 % × transition matrix base / shifted by 1 / shifted by 2, plus a random TM (100 % demand only,
 queued last).
@@ -338,7 +340,8 @@ python research/MK/cluster.py restart experiment --failed           # failed tas
 - Per-attempt logs: `runs/<name>/pool/logs/<key>.<attempt>.log`. A dead worker's tasks are retried after 10 min without
   heartbeat.
 
-**Pilot before the full run**: the resources in `experiment.toml` are guesses. `experiments/pilot.toml` runs one grid
+**Pilot before the full run** (per-task mode; optional for the task pool, which learns its estimates while it runs
+and can be seeded with a pilot via `[pool] seed_runs`): the resources in `experiment.toml` are guesses. `experiments/pilot.toml` runs one grid
 point per dataset (100 % demand, 28 clusters = largest RP models, base TM, all edges and tasks, Original Truth; 78 jobs)
 with generous memory. The full run reuses its results via `--no-overwrite` (same model options), so submit it only
 after the pilot has finished.
@@ -357,6 +360,13 @@ and suggests `mem` = 1.3× the largest peak and `time` = 2× the longest run (at
 with the limit they exceeded (the class needs more than that). Copy the values per dataset into the full experiment's
 TOML; `restart --mem-factor` covers outliers. Keep a larger margin on time: MIP solve times vary more between demand
 levels and TMs than memory does, and the pilot covers only its grid points.
+
+**Tests** of `cluster.py` / `pool.py` (fake tasks that sleep, allocate memory and exit with a given code - no Gurobi,
+no Slurm, about 1 min):
+
+```bash
+pytest research/MK/tests
+```
 
 ### `EvaluateMarkov.py` — Result evaluation
 
