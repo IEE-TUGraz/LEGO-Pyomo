@@ -27,7 +27,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     # Parameters
     model.pCurtailmentPV = pyo.Param( initialize=0.4,doc="Curtailment limit for PV generators")
     model.pCurtailmentWind = pyo.Param( initialize=0.15,doc="Curtailment limit for Wind generators")
-    model.pCurtailmentWindEnergy = pyo.Param(initialize=1, doc="Max. yearly curtailed energy of each wind generator as share of its available energy (ElWG)")
+    model.pCurtailmentWindEnergy = pyo.Param(initialize=0.01, doc="Max. yearly curtailed energy of each wind generator as share of its available energy (ElWG)")
 
     LEGO.addToParameter(model, "pOMVarCost", cs.dPower_VRES['OMVarCost'])
     LEGO.addToParameter(model, "pEnabInv", cs.dPower_VRES['EnableInvest'])
