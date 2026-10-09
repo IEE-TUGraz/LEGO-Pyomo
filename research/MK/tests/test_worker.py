@@ -92,7 +92,7 @@ def test_idle_worker_waits_for_a_task_another_worker_runs(mk):
 
 
 def test_noop_runs_are_not_measurements(mk):
-    plan = dict([mk.task("N/sd1/c3/base/main/A", 0.3, noop=True, mem="5G")])
+    plan = dict([mk.task("N/sd1/c3/base/main/A", 0.3, noop=True, mem="3G")])  # a prior far above the measurement, below the RAM
     cfg = mk.use(plan)
     store = mk.store()
     w, logs = mk.worker(cfg, plan, store)
@@ -255,11 +255,12 @@ def test_tasks_needing_more_cpus_than_cores_are_never_started(mk):
 
 
 def test_tasks_estimated_above_the_ram_are_never_started(mk):
-    plan = dict([mk.task("T/sd1/c3/base/main/HUGE", 0.3, mem="2G"), mk.task("T/sd1/c3/base/main/SMALL", 0.3)])
+    # other datasets: SMALL's measurement would otherwise lower HUGE's estimate (shared levels) and let it start
+    plan = dict([mk.task("H/sd1/c3/base/main/HUGE", 0.3, mem="2G"), mk.task("S/sd1/c3/base/main/SMALL", 0.3)])
     cfg = mk.use(plan)
     store = mk.store()
     w, logs = mk.worker(cfg, plan, store, mem_mb=1000)
     w.run()
     snap = store.snapshot(plan)
-    assert snap["T/sd1/c3/base/main/SMALL"][0] == pool.DONE and snap["T/sd1/c3/base/main/HUGE"][0] == pool.NEW
-    assert sum("skipping T/sd1/c3/base/main/HUGE" in line for line in logs) == 1
+    assert snap["S/sd1/c3/base/main/SMALL"][0] == pool.DONE and snap["H/sd1/c3/base/main/HUGE"][0] == pool.NEW
+    assert sum("skipping H/sd1/c3/base/main/HUGE" in line for line in logs) == 1
