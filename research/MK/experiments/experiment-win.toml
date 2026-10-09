@@ -1,0 +1,62 @@
+# Runs for the Markov paper on the Windows servers. A separate site: its results are never mixed with MUSICA's
+# (experiment.toml), so solver settings and threads are sized for these machines. Only one hardware type per run (solver
+# times / work units of different CPUs are not comparable). One worker per server, started by hand (see README,
+# "Windows servers"):
+#   python research/MK/cluster.py worker experiment-win --detach --node-dir <large local disk>
+#   python research/MK/cluster.py status experiment-win          # / stop / restart, from any server
+
+name = "experiment-win"   # pool and logs go to research/MK/runs/<name>/ in the repo clone on the network drive
+
+[markov]
+args = ["--network", "TP", "--mip-gap", "0.003"]   # model options: identical to experiment.toml
+# NodefileStart (GB): as on MUSICA - the B&B tree goes to node files early (--node-dir on a fast local SSD); the same for
+# all solves of a dataset (it affects the runtime).
+node_file_start = { default = 8, "TX-123BT" = 16 }
+
+[grid]
+datasets = ["data/RTS-GMLC", "data/TX-123BT", "data/NREL-118"]   # = scheduling preference (as in experiment.toml)
+stretch_demand = [1.0, 0.5, 0.7, 0.9]
+clusters = [3, 5, 7, 14, 21, 28]
+# 'perturb:1.0' = random transition matrix (optional runs): only without demand stretching, queued after all other runs
+tm = ["base", "shift:1", "shift:2", { spec = "perturb:1.0", stretch_demand = [1.0], low_priority = true }]
+edges = ["NoEnf", "Cyclic", "Markov"]                # Truth is added automatically where it applies
+tasks = ["main", "operational", "regret", "invest-regret", "operational-regret",
+         "original-invest-regret", "original-regret"]   # original-* only for tm = base
+truth_original = true                                    # one Original Truth per dataset and demand variability
+
+# Resources per task: prior estimates of the task pool (memory / runtime improve with every measured attempt).
+# cpus: the same for all solves of a dataset (comparable work units); a worker never starts a task with more cpus than
+# its cores. Memory is the bottleneck for the full-year solves. A worker never starts a task whose estimate exceeds its
+# RAM, so mem must stay below the RAM for every task that should run here (estimates above the packing share run
+# alone). TX-123BT's full-year solves and Original Truths are capped just below the RAM so they are tried (alone): if
+# they run out of memory, stop scheduling TX-123BT.
+[resources.prepare]
+default = { cpus = 4, mem = "32G", time = "06:00:00" }
+
+[resources.evaluate]
+default = { cpus = 16, mem = "100G", time = "12:00:00" }
+
+[resources.truth-original]
+default = { cpus = 8, mem = "100G", time = "3-00:00:00" }
+"TX-123BT" = { mem = "120G" }   # MUSICA: 240G - capped below the RAM
+
+[resources.rp]
+default = { cpus = 8, mem = "16G", time = "3-00:00:00" }
+"TX-123BT" = { mem = "32G" }
+
+[resources.full]
+default = { cpus = 8, mem = "48G", time = "3-00:00:00" }
+"NREL-118" = { mem = "64G" }
+"TX-123BT" = { mem = "120G" }   # MUSICA: 128G - capped below the RAM
+
+# Task pool. cores / mem are not needed (only for submit-workers on Slurm): each worker takes its machine's physical cores
+# and RAM (--cores / --mem to override).
+[pool]
+seed_runs = ["pilot"]  # memory estimates from MUSICA's pilot, if runs/pilot/measurements.json is copied to the share
+mem_fraction = 0.9     # share of the RAM that tasks are packed into
+idle_hours = 3         # a worker without anything to run waits this long before it exits
+rank_offset_hours = 12 # soft dataset order, as in experiment.toml
+
+[evaluate]
+args = ["all", "--no-show", "--separateClusters"]
+output_dir = "results/experiment-win"

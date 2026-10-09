@@ -10,6 +10,7 @@ Store layout (all files immutable once written, except the worker heartbeats):
     resets/<task>.<n>     attempt n failed, but may be retried (cluster.py restart)
     workers/<id>.json     heartbeat (rewritten every HEARTBEAT_S)
     jobs/<slurm id>.json  submitted worker jobs (submit-workers, chained successors)
+    stop/<target>.json    stop request (cluster.py stop) for the workers of a host / one worker / all that started before it
     logs/<task>.<n>.log   output of attempt n
 A task's state follows from its highest attempt: no claim -> new; result done/failed -> done/failed (failed + reset ->
 retry); evicted/interrupted -> retry; claim without result -> running while its worker's heartbeat is fresh, else retry.
@@ -116,6 +117,82 @@ def process_rss_mb(proc: subprocess.Popen) -> tuple[float | None, float | None]:
         return None, None
 
 
+def physical_cores() -> int | None:
+    """Physical cores of this Windows machine (os.cpu_count() counts hyperthreads); None elsewhere / if unknown."""
+    if sys.platform != "win32":
+        return None
+    try:
+        kernel32 = ctypes.windll.kernel32
+        size = ctypes.c_ulong(0)
+        kernel32.GetLogicalProcessorInformationEx(0, None, ctypes.byref(size))  # RelationProcessorCore: query the size
+        buf = ctypes.create_string_buffer(size.value)
+        if not kernel32.GetLogicalProcessorInformationEx(0, buf, ctypes.byref(size)):
+            return None
+        count, offset = 0, 0
+        while offset < size.value:  # variable-size records: DWORD Relationship, DWORD Size, ...
+            count += 1
+            offset += ctypes.c_ulong.from_buffer(buf, offset + 4).value or size.value
+        return count or None
+    except (OSError, AttributeError, ValueError):
+        return None
+
+
+def pid_alive(pid: int) -> bool:
+    """Whether a process with this id runs on this machine (a reused id counts as alive: callers fall back to timeouts)."""
+    if sys.platform == "win32":
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5  # access denied: exists (other user); invalid parameter: no such process
+        try:
+            code = ctypes.c_ulong()
+            return bool(kernel32.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # e.g. EPERM: exists, owned by someone else
+    return True
+
+
+class _JobObjectLimits(ctypes.Structure):
+    """JOBOBJECT_EXTENDED_LIMIT_INFORMATION (only LimitFlags is set; the rest stays zero)."""
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64), ("LimitFlags", ctypes.c_ulong),
+                ("MinimumWorkingSetSize", ctypes.c_size_t), ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", ctypes.c_ulong),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", ctypes.c_ulong), ("SchedulingClass", ctypes.c_ulong),
+                ("IoCounters", ctypes.c_ulonglong * 6), ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+
+def _kill_on_close_job():
+    """Windows job object whose processes are killed when the worker's handle closes - i.e. when the worker dies (closed
+    window, Task Manager, reboot). Without it, orphaned tasks would keep running while another worker retries them
+    (POSIX: Slurm kills the job's cgroup). None if unavailable."""
+    if sys.platform != "win32":
+        return None
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+        job = kernel32.CreateJobObjectW(None, None)
+        limits = _JobObjectLimits(LimitFlags=0x2000)  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if job and kernel32.SetInformationJobObject(ctypes.c_void_p(job), 9, ctypes.byref(limits), ctypes.sizeof(limits)):  # ExtendedLimitInformation
+            return job
+    except (OSError, AttributeError):
+        pass
+    return None
+
+
+def _assign_to_job(job, proc: subprocess.Popen) -> bool:
+    try:
+        return bool(ctypes.windll.kernel32.AssignProcessToJobObject(ctypes.c_void_p(job), ctypes.c_void_p(int(proc._handle))))
+    except (OSError, AttributeError):
+        return False
+
+
 def _dir_size_mb(path: Path) -> float:
     total = 0
     for root, _, files in os.walk(path):
@@ -166,7 +243,7 @@ class Store:
     def __init__(self, root: Path, log_dir: Path | None = None):
         self.root = Path(root)
         self.log_dir = Path(log_dir) if log_dir else self.root / "logs"
-        for sub in ("claims", "results", "resets", "workers", "jobs"):
+        for sub in ("claims", "results", "resets", "workers", "jobs", "stop"):
             (self.root / sub).mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self._results = {}  # file name -> record (results are immutable: read each once)
@@ -218,6 +295,38 @@ class Store:
             except (OSError, ValueError):
                 pass
         return out
+
+    def request_stop(self, target: str, now: bool) -> None:
+        """Stop request for the workers that started before it: target = 'all', a host name or a worker id. Drain (finish
+        the running tasks, start no new ones) or, with now, interrupt the running tasks (they are retried)."""
+        _write_json_atomic(self.root / "stop" / f"{target.lower()}.json", {"target": target, "now": now, "time": time.time(), "requested": _now()})
+
+    def stop_request(self, worker: str, host: str, started: float) -> dict | None:
+        """The newest stop request that applies to this worker (requested after it started), else None."""
+        found = None
+        for target in ("all", host.lower(), worker.lower()):
+            try:
+                req = json.loads((self.root / "stop" / f"{target}.json").read_text())
+            except (OSError, ValueError):
+                continue
+            if req.get("time", 0) > started and (found is None or req["time"] > found["time"]):
+                found = req
+        return found
+
+    def mark_dead_workers(self, host: str) -> list[str]:
+        """Mark this host's workers whose process no longer exists as exited (e.g. after a crash or reboot), so their
+        claims are retried at once instead of after STALE_S."""
+        dead = []
+        for wid, info in self.workers().items():
+            if info.get("exited") or info.get("host", "").lower() != host.lower() or not info.get("pid"):
+                continue
+            if not pid_alive(int(info["pid"])):
+                try:
+                    _write_json_atomic(self.root / "workers" / f"{wid}.json", {**info, "exited": _now(), "exit_reason": "process gone"})
+                    dead.append(wid)
+                except OSError:
+                    pass
+        return dead
 
     def results(self) -> list[dict]:
         """All result records (new files are read once and cached)."""
@@ -334,8 +443,9 @@ class Worker:
                  guard_available_fraction: float = 0.04, guard_rss_fraction: float = 0.97, evict_grace_s: float = 60,
                  interrupt_margin_s: float = 600, reserve_after_s: float = 1800, rank_offset_s: float | None = None,
                  chain_after_s: float | None = None,
-                 chain=None, chain_retry_s: float = 600, out=print):
+                 chain=None, chain_retry_s: float = 600, info: dict | None = None, out=print):
         self.specs, self.store, self.est = specs, store, estimator
+        self.info = info or {}  # extra heartbeat fields (e.g. the worker's log file)
         self.cwd, self.cores, self.mem_mb = cwd, cores, mem_mb
         self.pack_mb = mem_fraction * mem_mb
         self.mem_packing, self.end_time, self.idle_s = mem_packing, end_time, idle_s
@@ -351,7 +461,12 @@ class Worker:
         self.chained, self.last_chain_try = None, 0.0
         self.out = out
         job = os.environ.get("SLURM_JOB_ID")
-        self.id = f"{socket.gethostname()}-{('j' + job) if job else 'local'}-{os.getpid()}"
+        self.host = socket.gethostname()
+        self.id = f"{self.host}-{('j' + job) if job else 'local'}-{os.getpid()}"
+        self.job_object = _kill_on_close_job()  # Windows: tasks die with the worker
+        self.stopping = None  # the stop request being followed (cluster.py stop)
+        self.too_large = set()  # tasks needing more cpus than this worker's cores (logged once, never started here)
+        self.too_big = set()  # unattempted tasks whose memory estimate exceeds the RAM (logged once; re-checked as estimates change)
         self.running = {}  # key -> {proc, attempt, start, est, cpus, peak_mb, rss_mb, node_dir, node_peak_mb, log, stop}
         self.children = {}
         for key, spec in specs.items():
@@ -400,12 +515,18 @@ class Worker:
         node_dir.mkdir(parents=True, exist_ok=True)
         cmd = [a.replace("@THREADS@", str(self.threads(key))).replace("@NODEDIR@", str(node_dir)) for a in spec["cmd"]]
         log = None if self.console else self.store.log_path(key, attempt)
-        kwargs = {"start_new_session": True} if sys.platform != "win32" else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
         handle = open(log, "w", encoding="utf-8", errors="replace") if log else None
+        # Windows: no console window per task when logging to a file (the worker may run without a desktop, e.g. as a
+        # scheduled task); stdin from NUL so no task inherits an invalid console handle
+        kwargs = {"start_new_session": True} if sys.platform != "win32" else \
+            {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | (subprocess.CREATE_NO_WINDOW if handle else 0)}
         if handle:
             handle.write(f"# task {key}, attempt {attempt}, worker {self.id}, {_now()}\n# estimate: {est}\n# {' '.join(cmd)}\n")
             handle.flush()
-        proc = subprocess.Popen(cmd, cwd=self.cwd, stdout=handle, stderr=subprocess.STDOUT if handle else None, **kwargs)
+        proc = subprocess.Popen(cmd, cwd=self.cwd, stdin=subprocess.DEVNULL if handle else None, stdout=handle,
+                                stderr=subprocess.STDOUT if handle else None, **kwargs)
+        if self.job_object and not _assign_to_job(self.job_object, proc):
+            self.log(f"warning: {key} could not be tied to the worker's lifetime (job object) - kill it by hand if the worker dies")
         self.running[key] = {"proc": proc, "attempt": attempt, "start": time.time(), "est": est, "cpus": self.threads(key),
                              "peak_mb": 0.0, "rss_mb": 0.0, "node_dir": node_dir, "node_peak_mb": 0.0, "log": log, "handle": handle,
                              "stop": None}
@@ -553,14 +674,27 @@ class Worker:
                 break
             if low and waiting_normal is not None:
                 break  # low-priority tasks come last in `ready`: none of them while a normal task waits for space
+            if self.specs[key]["cpus"] > self.cores and not self.thread_cap:
+                if key not in self.too_large:  # never with fewer threads (work units / solver times would not be comparable)
+                    self.too_large.add(key)
+                    self.log(f"skipping {key}: needs {self.specs[key]['cpus']} cpus, this worker has {self.cores} cores - left to other workers")
+                continue
             est = self.estimates[key]
+            # Above the RAM it would only swap / run out of memory here. Only before the first attempt: an evicted task's
+            # estimate is a scaled-up lower bound, so its retry still runs alone
+            if self.mem_packing and est["mem_mb"] > self.mem_mb and snap[key][1] == 0:
+                if key not in self.too_big:
+                    self.too_big.add(key)
+                    self.log(f"skipping {key}: estimated at {est['mem_mb'] / 1024:.1f} GB, this machine has {self.mem_mb / 1024:.0f} GB "
+                             f"- left to other workers")
+                continue
             remaining_s = None if self.end_time is None else self.end_time - self.interrupt_margin_s - time.time()
             if remaining_s is not None and est["time_src"] != "prior" and est["time_s"] > remaining_s:
                 continue  # measured runtime does not fit into the rest of this job; another worker will take it
             fits_cores = cores_used + self.threads(key) <= self.cores
             fits_mem = not self.mem_packing or reserved + est["mem_mb"] <= self.pack_mb
-            alone = not self.running  # a task bigger than the machine still runs, alone
-            if (fits_cores and fits_mem) or alone:
+            alone = not self.running  # a task above the packing share (but within the RAM) still runs, alone
+            if fits_cores and (fits_mem or alone):
                 if not self.store.claim(key, snap[key][1] + 1, self.id):
                     continue  # another worker took it
                 if alone and not fits_mem:
@@ -578,9 +712,22 @@ class Worker:
                     break  # the top task has waited too long: keep the freed resources for it instead of backfilling
         return started
 
+    def check_stop(self, started: float) -> None:
+        """Follow a stop request (cluster.py stop): drain = start nothing new; now = also interrupt the running tasks."""
+        req = self.store.stop_request(self.id, self.host, started)
+        if req is None or (self.stopping is not None and self.stopping["time"] >= req["time"]):
+            return
+        self.stopping = req
+        if req.get("now"):
+            self.log(f"stop requested ({req.get('requested')}): interrupting {len(self.running)} running task(s), they will be retried")
+            for key in list(self.running):
+                self.stop(key, INTERRUPTED, "stop requested - will be retried by another worker")
+        else:
+            self.log(f"stop requested ({req.get('requested')}): starting no new tasks, exiting after the {len(self.running)} running one(s)")
+
     def maybe_chain(self, started: float, remaining: int) -> None:
         """Submit the successor job once, chain_after_s after the start, if tasks remain."""
-        if (self.chain is None or self.chain_after_s is None or self.chained or remaining == 0
+        if (self.chain is None or self.chain_after_s is None or self.chained or remaining == 0 or self.stopping
                 or time.time() - started < self.chain_after_s or time.time() - self.last_chain_try < self.chain_retry_s):
             return
         self.last_chain_try = time.time()
@@ -602,17 +749,19 @@ class Worker:
                  + ("" if self.mem_packing else ", memory packing off") + f"), {len(self.specs)} task(s) selected, node files in {self.node_base}"
                  + f" ({self.disk_free_gb()} GB free; new tasks pause below {self.disk_min_free_mb / 1024:g} GB)"
                  + (f", ends {datetime.datetime.fromtimestamp(self.end_time).isoformat(timespec='minutes')}" if self.end_time else ""))
-        info = {"host": socket.gethostname(), "pid": os.getpid(), "slurm_job": os.environ.get("SLURM_JOB_ID"), "cores": self.cores,
-                "mem_mb": self.mem_mb, "started": _now(), "end_time": self.end_time}
-        last_beat = last_full = 0.0
         started = time.time()
+        info = {"host": self.host, "pid": os.getpid(), "slurm_job": os.environ.get("SLURM_JOB_ID"), "cores": self.cores,
+                "mem_mb": self.mem_mb, "started": _now(), "started_ts": started, "end_time": self.end_time, **self.info}
+        for wid in self.store.mark_dead_workers(self.host):
+            self.log(f"worker {wid} on this host is gone (crash / reboot) - its tasks are retried now")
+        last_beat = last_full = 0.0
         idle_since = None
         snap = {}
         try:
             while True:
                 now = time.time()
                 if now - last_beat > HEARTBEAT_S:
-                    self.store.beat(self.id, {**info, "running": sorted(self.running)})
+                    self.store.beat(self.id, {**info, "running": sorted(self.running), "stopping": bool(self.stopping)})
                     last_beat = now
                 finished = self.poll()
                 if self.guard_walltime():
@@ -622,14 +771,18 @@ class Worker:
                     continue
                 if finished or now - last_full > self.poll_s:
                     last_full = now
+                    self.check_stop(started)
                     self.guard_memory()
                     disk_ok = self.check_disk()
                     self.refresh_estimates()
                     snap = self.store.snapshot(self.specs)
-                    if disk_ok:
+                    if disk_ok and not self.stopping:
                         self.admit(snap)
                     ready, remaining = self.ready(snap)
                     self.maybe_chain(started, remaining)
+                    if self.stopping and not self.running:
+                        self.log("stopped on request")
+                        break
                     if self.running:
                         idle_since = None
                     elif remaining == 0 or (self.any_failed and not self.keep_going):

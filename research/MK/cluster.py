@@ -9,10 +9,12 @@
     python research/MK/cluster.py log      experiment KEY
     python research/MK/cluster.py cancel   experiment
     python research/MK/cluster.py submit-workers experiment [--workers N] [--estimate-only] [--dry-run]
-    python research/MK/cluster.py worker   experiment [PATTERN ...] [--cores N] [--mem 700G] [--hours H]
+    python research/MK/cluster.py worker   experiment [PATTERN ...] [--cores N] [--mem 700G] [--hours H] [--log] [--detach]
+    python research/MK/cluster.py stop     experiment [--host NAME ...] [--now]
     python research/MK/cluster.py local    experiment PATTERN ... [--jobs N] [--with-deps] [--keep-going] [--log-dir DIR] [--dry-run]
 
-Run from the repo root on the login node (`local`: on any machine, with the conda env active). Standard library only (Python >= 3.11 for tomllib).
+Run from the repo root on the login node (`local`, `worker` on the Windows servers: on any machine
+with the conda env active). Standard library only (Python >= 3.11 for tomllib).
 """
 import argparse
 import datetime
@@ -24,6 +26,7 @@ import re
 import subprocess
 import sys
 import shutil
+import socket
 import tempfile
 import time
 from pathlib import Path
@@ -981,6 +984,26 @@ def cmd_worker(args) -> None:
     mem_mb = _parse_mem_arg(args.mem, "--mem") or total
     if mem_mb is None:
         sys.exit("Cannot determine this machine's memory - pass --mem")
+    # Default: all cores - physical ones on Windows (os.cpu_count counts hyperthreads; [pool] cores on MUSICA is physical too)
+    cores = args.cores or pool.physical_cores() or os.cpu_count() or 1
+    # Never fewer threads than configured: work units / solver times are compared between the solves of a dataset
+    too_large = sorted({f"{plan[k]['res']['cpus']} ({k.split('/')[0]})" for k in keys if plan[k]["res"]["cpus"] > cores})
+    if too_large:
+        print(f"WARNING: this worker has {cores} cores - tasks configured for {', '.join(too_large)} cpus are left to other workers")
+    # Likewise tasks whose memory estimate exceeds the RAM (checked again by the worker as measurements change the estimates)
+    too_big = sorted({f"{plan[k]['res']['mem']} ({k.split('/')[0]})" for k in keys
+                      if (_mem_mb(plan[k]["res"]["mem"].upper().removesuffix("B")) or 0) > mem_mb})
+    if too_big:
+        print(f"WARNING: this machine has {mem_mb / 1024:.0f} GB - tasks configured for {', '.join(too_big)} are left to other workers "
+              f"(unless measurements lower their estimate)")
+    if args.detach:
+        return _detach_worker()
+    log_file = None
+    if args.log:  # worker output to a file in the pool (no Slurm job log), also echoed to the console while there is one
+        log_file = store.root / "worker-logs" / f"{socket.gethostname()}-{datetime.datetime.now():%Y%m%d-%H%M%S}-{os.getpid()}.log"
+        log_file.parent.mkdir(exist_ok=True)
+        sys.stdout = sys.stderr = _Tee(open(log_file, "a", encoding="utf-8", buffering=1), sys.__stdout__)
+        print(f"{_now()} worker log: {log_file}")
     end_time = time.time() + args.hours * 3600 if args.hours else _slurm_end_time()
     idle_h = args.idle_hours if args.idle_hours is not None else float(cfg.get("pool", {}).get("idle_hours", DEFAULT_IDLE_HOURS))
     chain = None
@@ -990,10 +1013,49 @@ def cmd_worker(args) -> None:
             if job:
                 store.add_job(job, {"submitted_by": os.environ.get("SLURM_JOB_ID") or "local", "script": args.chain_script})
             return job
-    worker = make_worker(cfg, pool_specs(plan, keys), store, cores=args.cores or os.cpu_count() or 1, mem_mb=mem_mb,
+    worker = make_worker(cfg, pool_specs(plan, keys), store, cores=cores, mem_mb=mem_mb,
                          end_time=end_time, idle_s=idle_h * 3600, max_tasks=args.max_tasks, node_base=args.node_dir,
-                         chain_after_s=args.chain_after_hours * 3600 if args.chain_script else None, chain=chain)
+                         chain_after_s=args.chain_after_hours * 3600 if args.chain_script else None, chain=chain,
+                         info={"log": str(log_file)} if log_file else None)
     sys.exit(worker.run())
+
+
+def _detach_worker() -> None:
+    """Start this worker command again as a background process without console (+ --log) and return: it keeps running
+    when the terminal is closed or the Remote Desktop session is disconnected (not when signing out)."""
+    argv = [a for a in sys.argv[1:] if a != "--detach"]
+    cmd = [sys.executable, str(Path(__file__).resolve()), *argv, *([] if "--log" in argv else ["--log"])]
+    kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if sys.platform == "win32":
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        try:  # leave the terminal's job object (if any), which would kill the worker with the terminal
+            proc = subprocess.Popen(cmd, creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB, **kwargs)
+        except OSError:
+            proc = subprocess.Popen(cmd, creationflags=flags, **kwargs)
+    else:
+        proc = subprocess.Popen(cmd, start_new_session=True, **kwargs)
+    print(f"Worker started in the background (pid {proc.pid}); log: {RUNS_DIR}/<name>/pool/worker-logs/{socket.gethostname()}-*-{proc.pid}.log\n"
+          f"Stop it with: cluster.py stop <run> --host {socket.gethostname()} [--now]")
+
+
+class _Tee:
+    """Text stream writing to a log file and, as long as it works, to the console (a scheduled task may have none)."""
+
+    def __init__(self, log, console):
+        self.log, self.console = log, console
+
+    def write(self, text: str) -> int:
+        self.log.write(text)
+        if self.console is not None:
+            try:
+                self.console.write(text)
+                self.console.flush()
+            except (OSError, ValueError):
+                self.console = None
+        return len(text)
+
+    def flush(self) -> None:
+        self.log.flush()
 
 
 def _sbatch_from_job(script: str) -> str | None:
@@ -1147,6 +1209,8 @@ def load_pool(run: str) -> tuple[Path, "pool.Store", dict, dict] | None:
     if (rdir / "state.json").exists() or not meta.exists():
         return None
     config = json.loads(meta.read_text())["config"]
+    if not Path(config).is_file():  # e.g. the pool was created on another machine / via another path to the share
+        config = rdir.name
     _, cfg = _load_config(config)
     return rdir, pool.Store(rdir / "pool"), cfg, build_plan(cfg)
 
@@ -1195,7 +1259,7 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict) -> None:
     print(f"\nWORKERS ({len(workers)})")
     for wid, w in sorted(workers.items(), key=lambda x: x[1].get("started", "")):
         alive = not w.get("exited") and now - w.get("beat", 0) < pool.STALE_S
-        state = "active" if alive else ("exited " + w["exited"] if w.get("exited") else "lost (no heartbeat)")
+        state = ("stopping" if w.get("stopping") else "active") if alive else ("exited " + w["exited"] if w.get("exited") else "lost (no heartbeat)")
         size = f"{w['cores']} cores, {w['mem_mb'] / 1024:.0f} GB, started {w.get('started')}" if w.get("cores") else ""
         print(f"  {wid:<40} {state:<28} {len(w.get('running', [])):>3} running  {size}")
     jobs = store.jobs()
@@ -1257,10 +1321,33 @@ def cmd_pool_restart(args, store: "pool.Store", plan: dict) -> None:
             store.reset(key, status[key][1]["attempt"])
 
 
+def cmd_stop(args) -> None:
+    """Ask the pool's workers (all, or those of --host / --worker) to stop: drain, or with --now interrupt their tasks."""
+    pool_run = load_pool(args.run)
+    if not pool_run:
+        sys.exit(f"'{args.run}' is not a task-pool run (per-task Slurm runs: cluster.py cancel)")
+    store = pool_run[1]
+    targets = [*args.host, *args.worker] or ["all"]
+    now = time.time()
+    active = {wid: w for wid, w in store.workers().items() if not w.get("exited") and now - w.get("beat", 0) < pool.STALE_S}
+    for target in targets:
+        hit = [wid for wid, w in active.items() if target == "all" or target.lower() in (wid.lower(), w.get("host", "").lower())]
+        print(f"{target}: {len(hit)} active worker(s)" + (f" ({', '.join(sorted(hit))})" if hit else " - the request still applies "
+              "to matching workers that started before it"))
+        if not args.dry_run:
+            store.request_stop(target, args.now)
+    print(("Running tasks are interrupted now and retried by other workers." if args.now else
+           "The workers start no new tasks and exit once their running tasks have finished.")
+          + " Workers started later are not affected. Check with: cluster.py status " + args.run + ("  (dry run)" if args.dry_run else ""))
+
+
 def cmd_cancel(args) -> None:
     pool_run = load_pool(args.run)
     if pool_run:  # all worker jobs incl. queued successors; running tasks are retried by later workers
         jobs = sorted(pool_run[1].jobs())
+        if not jobs or not shutil.which("scancel"):
+            sys.exit("No Slurm worker jobs to cancel here - stop workers started by hand (Windows servers) with "
+                     f"`cluster.py stop {pool_run[2]['name']}` [--now]")
         print(f"Cancelling {len(jobs)} worker job(s) (finished ones are ignored by scancel)")
         Slurm().scancel(jobs)
         return
@@ -1325,7 +1412,7 @@ def main():
     p = sub.add_parser("worker", help="Run the shared task pool of a config on this machine (packs tasks by memory estimate and cores)")
     p.add_argument("config", help="TOML experiment file or its name, e.g. experiment")
     p.add_argument("patterns", nargs="*", help="Only these tasks (glob patterns; default: all). Dependencies outside the selection count as done")
-    p.add_argument("--cores", type=int, help="Cores to use (default: all CPUs of this machine)")
+    p.add_argument("--cores", type=int, help="Cores to use (default: all CPUs of this machine; on Windows its physical cores)")
     p.add_argument("--mem", help="Memory to use, e.g. 700G (default: this machine's RAM); [pool] mem_fraction of it is packed")
     p.add_argument("--hours", type=float, help="Walltime of this worker (default: the Slurm job's end, else unlimited)")
     p.add_argument("--idle-hours", type=float, help=f"Exit after this long without anything to run (default: [pool] idle_hours or {DEFAULT_IDLE_HOURS:g})")
@@ -1333,7 +1420,17 @@ def main():
     p.add_argument("--node-dir", help="Base directory for Gurobi node files (default: $TMPDIR, else the system temp dir)")
     p.add_argument("--chain-script", help="sbatch this script once --chain-after-hours have passed, if tasks remain (set by submit-workers)")
     p.add_argument("--chain-after-hours", type=float, default=24, help="When to submit the successor (default 24)")
+    p.add_argument("--log", action="store_true", help="Also write the worker's output to runs/<name>/pool/worker-logs/")
+    p.add_argument("--detach", action="store_true", help="Run in the background (implies --log): survives closing the terminal / "
+                                                         "disconnecting Remote Desktop, not signing out")
     p.set_defaults(func=cmd_worker)
+    p = sub.add_parser("stop", help="Task pool: ask workers to stop - start no new tasks and exit after the running ones (--now: interrupt them)")
+    p.add_argument("run", help="Run name or its TOML file")
+    p.add_argument("--host", action="append", default=[], help="Only the workers on this machine (repeatable; default: all workers)")
+    p.add_argument("--worker", action="append", default=[], help="Only this worker id (as shown by status; repeatable)")
+    p.add_argument("--now", action="store_true", help="Interrupt the running tasks (they are retried by other / later workers)")
+    p.add_argument("--dry-run", action="store_true", help="Only show the matching workers")
+    p.set_defaults(func=cmd_stop)
     p = sub.add_parser("submit-workers", help="Submit whole-node worker jobs for the task pool; each submits its successor after [pool] chain_after_hours")
     p.add_argument("config", help="TOML experiment file or its name, e.g. experiment")
     p.add_argument("--workers", type=int, help="Number of worker chains (default: [pool] workers or 3); can be repeated later to add more")

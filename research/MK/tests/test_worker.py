@@ -210,3 +210,56 @@ def test_memory_guard_evicts_low_priority_tasks_first(mk):
     evicted = {r["key"].split("/")[-1] for r in store.results() if r["outcome"] == pool.EVICTED}
     assert evicted == {"L"}  # N was started later, but L is low priority
     assert all(s[0] == pool.DONE for s in store.snapshot(plan).values())
+
+
+def test_stop_request_drains_or_interrupts_only_workers_started_before_it(mk):
+    plan = dict([mk.task("S/sd1/c3/base/main/A", 2), mk.task("S/sd1/c3/base/main/B", 2, cpus=8)])
+    cfg = mk.use(plan)
+    store = mk.store()
+    pool._write_json_atomic(store.root / "meta.json", {"config": "x"})
+    w, logs = mk.worker(cfg, plan, store, idle_s=30)
+    threading.Timer(0.8, lambda: mk.cli("stop", "fake", "--host", w.host)).start()  # drain: A finishes, B never starts
+    w.run()
+    snap = store.snapshot(plan)
+    assert snap["S/sd1/c3/base/main/A"][0] == pool.DONE and snap["S/sd1/c3/base/main/B"][0] == pool.NEW
+    assert any("stopped on request" in line for line in logs)
+
+    w, logs = mk.worker(cfg, plan, store, idle_s=30)  # started after the request: not affected; --now interrupts B
+    threading.Timer(1.0, lambda: mk.cli("stop", "fake", "--now")).start()
+    w.run()
+    snap = store.snapshot(plan)
+    assert snap["S/sd1/c3/base/main/B"][0] == pool.RETRY and snap["S/sd1/c3/base/main/B"][2]["outcome"] == pool.INTERRUPTED
+
+
+def test_workers_of_this_host_whose_process_is_gone_are_retried_at_once(mk):
+    plan = dict([mk.task("R/sd1/c3/base/main/A", 0.3)])
+    cfg = mk.use(plan)
+    store = mk.store()
+    w, logs = mk.worker(cfg, plan, store)
+    store.claim("R/sd1/c3/base/main/A", 1, "crashed")
+    pool._write_json_atomic(store.root / "workers" / "crashed.json", {"host": w.host, "pid": 4_000_000, "beat": time.time()})
+    w.run()
+    assert store.snapshot(plan)["R/sd1/c3/base/main/A"][:2] == (pool.DONE, 2)
+    assert store.workers()["crashed"]["exit_reason"] == "process gone"
+
+
+def test_tasks_needing_more_cpus_than_cores_are_never_started(mk):
+    plan = dict([mk.task("T/sd1/c3/base/main/BIG", 0.3, cpus=16), mk.task("T/sd1/c3/base/main/SMALL", 0.3, cpus=2)])
+    cfg = mk.use(plan)
+    store = mk.store()
+    w, logs = mk.worker(cfg, plan, store)  # 8 cores
+    w.run()
+    snap = store.snapshot(plan)
+    assert snap["T/sd1/c3/base/main/SMALL"][0] == pool.DONE and snap["T/sd1/c3/base/main/BIG"][0] == pool.NEW
+    assert sum("skipping T/sd1/c3/base/main/BIG" in line for line in logs) == 1
+
+
+def test_tasks_estimated_above_the_ram_are_never_started(mk):
+    plan = dict([mk.task("T/sd1/c3/base/main/HUGE", 0.3, mem="2G"), mk.task("T/sd1/c3/base/main/SMALL", 0.3)])
+    cfg = mk.use(plan)
+    store = mk.store()
+    w, logs = mk.worker(cfg, plan, store, mem_mb=1000)
+    w.run()
+    snap = store.snapshot(plan)
+    assert snap["T/sd1/c3/base/main/SMALL"][0] == pool.DONE and snap["T/sd1/c3/base/main/HUGE"][0] == pool.NEW
+    assert sum("skipping T/sd1/c3/base/main/HUGE" in line for line in logs) == 1

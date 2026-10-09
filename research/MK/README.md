@@ -339,7 +339,51 @@ python research/MK/cluster.py restart experiment --failed           # failed tas
   with a few chains and add more with another `submit-workers --workers N` once the estimate is based on
   measurements; `evaluate` runs automatically after all other tasks.
 - Per-attempt logs: `runs/<name>/pool/logs/<key>.<attempt>.log`. A dead worker's tasks are retried after 10 min without
-  heartbeat.
+  heartbeat - at once if a new worker starts on the same machine and finds the old worker's process gone.
+- **Stopping workers** started by hand (no Slurm job to cancel): `cluster.py stop <run> [--host NAME ...] [--now]`.
+  Default: the workers start no new tasks and exit once their running tasks have finished; `--now` interrupts the
+  running tasks (retried by other / later workers). Only workers that started before the request are affected.
+
+**Windows servers** (a separate site from MUSICA - results of the two sites are never mixed):
+the same task pool, one worker per server, started by hand over Remote Desktop. All workers of a pool must see the same
+files - pool, input data and the `MK-*.sqlite` results, which `Markov.py` writes into the repo root - so the servers
+share **one clone of the repo on the network drive**; each server needs its own conda env and Gurobi license.
+Config: `experiments/experiment-win.toml` - same grid and model options as `experiment.toml`, with `cpus`, memory
+and `node_file_start` sized for the servers. Gurobi node files belong on a fast local disk (`--node-dir`; the network
+drive works but is slow). Use **one hardware type per pool**: solver times and work units of different CPUs are not
+comparable, so other servers need their own config (own `name`) and datasets. The memory of TX-123BT's full-year
+solves and Original Truths is capped just below the servers' RAM, so they are tried, each alone on its server. If they
+run out of memory, stop scheduling the dataset, e.g. restart the workers with task patterns
+(`worker experiment-win "RTS-GMLC/*" "NREL-118/*" ...`).
+
+1. Clone the repo onto the share and create the conda env on every server (`environment.yml`).
+2. On each server, in a terminal with the env active, from the repo on the share:
+
+```bash
+python research/MK/cluster.py worker experiment-win --detach --node-dir D:/gurobi-nodes
+```
+
+3. Control all workers from any one server (or any machine with the share):
+
+```bash
+python research/MK/cluster.py status experiment-win                 # counts, workers per server (active / stopping / exited)
+python research/MK/cluster.py stop experiment-win                   # all workers: no new tasks, exit after the running ones
+python research/MK/cluster.py stop experiment-win --host SERVER2 --now   # one server, interrupt its tasks (retried elsewhere)
+python research/MK/cluster.py restart experiment-win --failed       # failed tasks become runnable again for all workers
+```
+
+`--detach` starts the worker in the background (normal CPU priority) and returns; its output goes to
+`runs/<name>/pool/worker-logs/<server>-<time>-<pid>.log` (`--log` does the same for a worker in the foreground). It keeps
+running when the terminal is closed or the Remote Desktop session is *disconnected* - **signing out ends it**, and so
+does a reboot (Windows Updates): start it again afterwards; a new worker on the same server retries the tasks of the
+previous one at once. If the worker dies, Windows also ends its tasks (job object), so no orphaned solve keeps writing
+a result file that another worker retries. Other options as for any worker: `--cores` (default: all **physical** cores),
+`--mem` (default: all RAM; `[pool] mem_fraction` of it is packed), `--node-dir` (Gurobi node files - a large local disk;
+default `%TEMP%`), `--idle-hours`, `--max-tasks`, task patterns. A worker never starts a task whose `cpus` exceed its
+cores (fewer threads would make work units and solver times incomparable), nor a not-yet-attempted task whose memory
+estimate exceeds its RAM (it would only swap; estimates between `mem_fraction` x RAM and the RAM run alone): it logs
+`skipping ...` and leaves the task to the other workers. The memory check uses the current estimate, so a measurement
+(also from `seed_runs`) can lift or impose it; an evicted task's retry is never skipped.
 
 **Pilot before the full run** (per-task mode; optional for the task pool, which learns its estimates while it runs
 and can be seeded with a pilot via `[pool] seed_runs`): the resources in `experiment.toml` are guesses. `experiments/pilot.toml` runs one grid
