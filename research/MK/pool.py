@@ -7,12 +7,12 @@ interrupted attempt of this and the seed runs. Standard library only; independen
 Store layout (all files immutable once written, except the worker heartbeats):
     claims/<task>.<n>     attempt n of a task, created with O_EXCL (exactly one worker wins); content: worker id
     results/<task>.<n>.json   outcome of attempt n (done / failed / evicted / interrupted) + measurements
-    resets/<task>.<n>     attempt n failed, but may be retried (cluster.py restart)
+    resets/<task>.<n>     attempt n failed (or: an evaluate that ran too early is done), but may be retried (cluster.py restart)
     workers/<id>.json     heartbeat (rewritten every HEARTBEAT_S)
     jobs/<slurm id>.json  submitted worker jobs (submit-workers, chained successors)
     stop/<target>.json    stop request (cluster.py stop) for the workers of a host / one worker / all that started before it
     logs/<task>.<n>.log   output of attempt n
-A task's state follows from its highest attempt: no claim -> new; result done/failed -> done/failed (failed + reset ->
+A task's state follows from its highest attempt: no claim -> new; result done/failed -> done/failed (+ reset ->
 retry); evicted/interrupted -> retry; claim without result -> running while its worker's heartbeat is fresh, else retry.
 """
 import ctypes
@@ -365,7 +365,7 @@ class Store:
                 alive = worker in workers and now - workers[worker].get("beat", 0) < STALE_S and not workers[worker].get("exited")
                 out[key] = (RUNNING, n, {"worker": worker}) if alive or not worker else (RETRY, n, {"worker": worker, "stale": True})
             elif result["outcome"] == DONE:
-                out[key] = (DONE, n, result)
+                out[key] = (RETRY if f"{_safe(key)}.{n}" in resets else DONE, n, result)
             elif result["outcome"] == FAILED:
                 out[key] = (RETRY if f"{_safe(key)}.{n}" in resets else FAILED, n, result)
             else:

@@ -997,7 +997,7 @@ def cmd_worker(args) -> None:
         print(f"WARNING: this machine has {mem_mb / 1024:.0f} GB - tasks configured for {', '.join(too_big)} are left to other workers "
               f"(unless measurements lower their estimate)")
     if args.detach:
-        return _detach_worker()
+        return _detach_worker(cfg["name"], store.root / "worker-logs")
     log_file = None
     if args.log:  # worker output to a file in the pool (no Slurm job log), also echoed to the console while there is one
         log_file = store.root / "worker-logs" / f"{socket.gethostname()}-{datetime.datetime.now():%Y%m%d-%H%M%S}-{os.getpid()}.log"
@@ -1020,7 +1020,7 @@ def cmd_worker(args) -> None:
     sys.exit(worker.run())
 
 
-def _detach_worker() -> None:
+def _detach_worker(run: str, log_dir: Path) -> None:
     """Start this worker command again as a background process without console (+ --log) and return: it keeps running
     when the terminal is closed or the Remote Desktop session is disconnected (not when signing out)."""
     argv = [a for a in sys.argv[1:] if a != "--detach"]
@@ -1034,8 +1034,9 @@ def _detach_worker() -> None:
             proc = subprocess.Popen(cmd, creationflags=flags, **kwargs)
     else:
         proc = subprocess.Popen(cmd, start_new_session=True, **kwargs)
-    print(f"Worker started in the background (pid {proc.pid}); log: {RUNS_DIR}/<name>/pool/worker-logs/{socket.gethostname()}-*-{proc.pid}.log\n"
-          f"Stop it with: cluster.py stop <run> --host {socket.gethostname()} [--now]")
+    host = socket.gethostname()
+    print(f"Worker started in the background (pid {proc.pid}); log: {log_dir / f'{host}-*-{proc.pid}.log'}\n"
+          f"Check it with: cluster.py status {run}\nStop it with:  cluster.py stop {run} --host {host} [--now]")
 
 
 class _Tee:
@@ -1304,7 +1305,7 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict) -> None:
             print(f"  {k:<55} attempt {info['attempt']:<3} {elapsed:>9} {peak:<16} {extra}"
                   + (f"\n      log: {info['log']}" if info.get("log") else ""))
     if not args.list:
-        print("\nRetry failed tasks (and unblock the tasks waiting for them): cluster.py restart <run> --failed")
+        print(f"\nRetry failed tasks (and unblock the tasks waiting for them): cluster.py restart {args.run} --failed")
 
 
 def cmd_pool_restart(args, store: "pool.Store", plan: dict) -> None:
@@ -1319,6 +1320,11 @@ def cmd_pool_restart(args, store: "pool.Store", plan: dict) -> None:
         print(f"  {key}")
         if not args.dry_run:
             store.reset(key, status[key][1]["attempt"])
+    # evaluate runs once nothing else is left - also when everything failed: run it again after the retried tasks
+    if status.get("evaluate", (None,))[0] == DONE:
+        print("  evaluate (done before - runs again at the end)")
+        if not args.dry_run:
+            store.reset("evaluate", status["evaluate"][1]["attempt"])
 
 
 def cmd_stop(args) -> None:
