@@ -790,8 +790,8 @@ class Worker:
                     disk_ok = self.check_disk()
                     self.refresh_estimates()
                     snap = self.store.snapshot(self.specs)
-                    if disk_ok and not self.stopping:
-                        self.admit(snap)
+                    if disk_ok and not self.stopping and self.admit(snap) or finished:
+                        last_beat = 0.0  # status shows started / finished tasks at once, not up to HEARTBEAT_S later
                     ready, remaining = self.ready(snap)
                     self.maybe_chain(started, remaining)
                     if self.stopping and not self.running:
