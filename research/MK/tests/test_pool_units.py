@@ -66,3 +66,13 @@ def test_soft_priority_order(tmp_path):
     assert sorted(specs, key=w.priority) == ["B", "A", "C", "L"]
     w.rank_offset_s = None  # strict: rank first
     assert sorted(specs, key=w.priority) == ["A", "B", "C", "L"]
+
+
+def test_lower_bounds_never_lower_the_prior():
+    """A task that crashes after seconds (failed, tiny peak) keeps its prior; a completed run may go below it."""
+    f, d = "T/sd1/c28/base/main/Markov", "U/sd1/c28/base/main/Markov"
+    est = _estimator([f, d])
+    est.add({"key": f, "outcome": pool.FAILED, "peak_rss_mb": 200, "elapsed_s": 3, "attempt": 1})
+    est.add({"key": d, "outcome": pool.DONE, "peak_rss_mb": 200, "elapsed_s": 3, "attempt": 1})
+    assert est.estimate(f)["mem_mb"] == 1000 and est.estimate(f)["mem_src"] == "prior"
+    assert est.estimate(d)["mem_mb"] == 200 * 1.2 and est.estimate(d)["mem_src"] == d

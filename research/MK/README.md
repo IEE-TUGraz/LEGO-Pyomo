@@ -314,7 +314,8 @@ python research/MK/cluster.py restart experiment --failed           # failed tas
 
 - **Estimates** come from measurements (peak RSS, runtime) of this run and of `[pool] seed_runs`, most specific first:
   the same task, the same task/edge/RP count, the same task/edge, the resource class (memory only); else the TOML
-  `[resources.*]`. Value = largest measurement × `mem_safety` / `time_safety`. They are recomputed continuously, so
+  `[resources.*]`. Value = largest measurement × `mem_safety` / `time_safety`. Failed, evicted and interrupted
+  attempts are lower bounds: they can raise an estimate above the TOML value, but only completed runs lower it. They are recomputed continuously, so
   later tasks start with better estimates. Seed a pool with a Slurm run's measurements via `resources <run> --save`
   (`runs/<run>/measurements.json`). Runs that had nothing to do (output existed, folders reused; `Markov.py` prints
   `MK-NOOP`) are not measurements.

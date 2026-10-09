@@ -388,6 +388,7 @@ class Estimator:
         self.specs, self.levels, self.time_level = specs, levels, time_level
         self.mem_safety, self.time_safety, self.lb = mem_safety, time_safety, lower_bound_factor
         self.mem, self.time = {}, {}  # level -> max observed (already lower-bound-scaled)
+        self.mem_done, self.time_done = set(), set()  # levels with a completed measurement (else only lower bounds)
         self.seen = set()
 
     def add(self, record: dict) -> None:
@@ -410,18 +411,31 @@ class Estimator:
         for level in self.levels(record["key"]):
             if mem:
                 self.mem[level] = max(self.mem.get(level, 0), mem)
+                if outcome == DONE:
+                    self.mem_done.add(level)
             if time_ and self.time_level(level):
                 self.time[level] = max(self.time.get(level, 0), time_)
+                if outcome == DONE:
+                    self.time_done.add(level)
 
     def estimate(self, key: str) -> dict:
-        """{mem_mb, mem_src, time_s, time_src}; src = the level the value comes from, or 'prior'."""
+        """{mem_mb, mem_src, time_s, time_src}; src = the level the value comes from, or 'prior'. A level with only lower
+        bounds (failed / evicted / interrupted) never goes below the prior: a task that crashes after seconds says
+        nothing about its need."""
         spec = self.specs[key]
         out = {"mem_mb": spec["prior_mem_mb"], "mem_src": "prior", "time_s": spec["prior_time_s"], "time_src": "prior"}
+        mem_found = time_found = False
         for level in self.levels(key):
-            if level in self.mem and out["mem_src"] == "prior":
-                out["mem_mb"], out["mem_src"] = self.mem[level] * self.mem_safety, level
-            if level in self.time and out["time_src"] == "prior":
-                out["time_s"], out["time_src"] = self.time[level] * self.time_safety, level
+            if level in self.mem and not mem_found:
+                mem_found = True
+                value = self.mem[level] * self.mem_safety
+                if level in self.mem_done or value > out["mem_mb"]:
+                    out["mem_mb"], out["mem_src"] = value, level
+            if level in self.time and not time_found:
+                time_found = True
+                value = self.time[level] * self.time_safety
+                if level in self.time_done or value > out["time_s"]:
+                    out["time_s"], out["time_src"] = value, level
         return out
 
 
