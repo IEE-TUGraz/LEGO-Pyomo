@@ -35,11 +35,14 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
     LEGO.addToParameter(model, 'pMaxGenQ', cs.dPower_VRES['Qmax'])
     LEGO.addToParameter(model, 'pMinGenQ', cs.dPower_VRES['Qmin'])
 
-    dCapacityFactor = cs.dPower_VRESProfiles["value"]
+    # Power_VRESProfiles and Power_Inflows are optional files (None if missing), but every VRES generator needs one of them
+    profile_gens = set(cs.dPower_VRESProfiles.index.get_level_values("g")) if cs.dPower_VRESProfiles is not None else set()
+    inflow_gens = set(cs.dPower_Inflows.index.get_level_values("g")) if cs.dPower_Inflows is not None else set()
+    dCapacityFactor = cs.dPower_VRESProfiles["value"] if cs.dPower_VRESProfiles is not None else pd.Series(dtype=float)
     ror_with_spillage = []  # List of ror generators that have spillage (i.e., inflow > maximum production)
     for g in model.vresGenerators:
-        if g in cs.dPower_Inflows.index.get_level_values("g"):
-            if g in cs.dPower_VRESProfiles.index.get_level_values("g"):
+        if g in inflow_gens:
+            if g in profile_gens:
                 raise ValueError(f"Generator '{g}' has both VRES profiles and inflows defined - please provide only one of them.")
 
             capacityFactors = cs.dPower_Inflows.loc[(slice(None), slice(None), g), 'value'] / model.pMaxProd[g]
@@ -47,7 +50,7 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
                 capacityFactors.loc[(slice(None), slice(None), g)] = capacityFactors.loc[(slice(None), slice(None), g)].clip(upper=1.0)  # If inflows exceed maximum production, forced spillage occurs and we need to clip the values
                 ror_with_spillage.append(g)
             dCapacityFactor = pd.concat([dCapacityFactor, capacityFactors], axis=0)
-        elif g not in cs.dPower_VRESProfiles.index.get_level_values("g"):
+        elif g not in profile_gens:
             raise ValueError(f"Generator '{g}' does not have VRES profiles or inflows defined - please provide one of them.")
 
     if len(ror_with_spillage):

@@ -68,6 +68,8 @@ Handles wind, solar, and run-of-river hydro generators.
 
 **Constraints**: `vGenP + vCurtailment = capacity * capacityFactor` — available production must be used or curtailed. Auto-clips inflows exceeding max production.
 
+Capacity factors come from `dPower_VRESProfiles` or, for run-of-river, `dPower_Inflows` / `pMaxProd`. Both tables are optional (`None` if the file is missing); a generator in both, or in neither, raises a `ValueError`. `storage.py` treats a missing `dPower_Inflows` as zero inflow.
+
 ### storage.py — Energy Storage
 
 Handles batteries, pumped hydro, and long-duration energy storage (LDES).
