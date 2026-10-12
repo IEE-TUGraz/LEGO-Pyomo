@@ -7,6 +7,7 @@
     python research/MK/cluster.py prioritize experiment [--nice-step N]
     python research/MK/cluster.py resources experiment [--mem-factor 1.3] [--time-factor 2]
     python research/MK/cluster.py log      experiment KEY
+    python research/MK/cluster.py attempts experiment [PATTERN ...] [--outcome evicted|failed|interrupted|done]
     python research/MK/cluster.py cancel   experiment
     python research/MK/cluster.py submit-workers experiment [--workers N] [--estimate-only] [--dry-run]
     python research/MK/cluster.py worker   experiment [PATTERN ...] [--cores N] [--mem 700G] [--hours H] [--log] [--detach]
@@ -1337,6 +1338,33 @@ def cmd_pool_log(args, store: "pool.Store", plan: dict) -> None:
         print(f"(log {log} does not exist)")
 
 
+def cmd_attempts(args) -> None:
+    """Task pool: one line per recorded attempt (default: all that did not finish - evicted / failed / interrupted)."""
+    pool_run = load_pool(args.run)
+    if not pool_run:
+        sys.exit(f"'{args.run}' is not a pool run (attempts lists the results of a task pool)")
+    store = pool_run[1]
+    outcomes = set(args.outcome or [pool.EVICTED, pool.FAILED, pool.INTERRUPTED])
+    patterns = args.patterns or ["*"]
+    records = [r for r in store.results() if r.get("outcome") in outcomes and any(fnmatch.fnmatch(r.get("key", ""), p) for p in patterns)]
+    order = [pool.EVICTED, pool.FAILED, pool.INTERRUPTED, pool.DONE]
+    records.sort(key=lambda r: (order.index(r["outcome"]) if r["outcome"] in order else len(order), r["key"], r.get("attempt") or 0))
+    if not records:
+        sys.exit(f"No {'/'.join(sorted(outcomes))} attempts" + (f" matching {patterns}" if args.patterns else ""))
+    width = max(len(r["key"]) for r in records)
+    head = f"{'outcome':<11} {'task':<{width}} {'#':>2}  {'peak':>6} {'estimate':>8} {'elapsed':>11} {'rc':>4}  {'host':<16} start"
+    print(head)
+    print("-" * len(head))
+    for r in records:
+        est = (r.get("estimate") or {}).get("mem_mb")
+        print(f"{r['outcome']:<11} {r['key']:<{width}} {r.get('attempt') or '':>2}  "
+              f"{_fmt_mem(r['peak_rss_mb']) if r.get('peak_rss_mb') else '?':>6} {_fmt_mem(est) if est else '?':>8} "
+              f"{_fmt_time(r['elapsed_s']) if r.get('elapsed_s') is not None else '?':>11} {r['rc'] if r.get('rc') is not None else '':>4}  "
+              f"{r.get('host') or '?':<16} {r.get('start') or '?'}")
+    counts = {o: sum(r["outcome"] == o for r in records) for o in order if any(r["outcome"] == o for r in records)}
+    print(f"\n{len(records)} attempt(s): " + ", ".join(f"{n} {o}" for o, n in counts.items()))
+
+
 def cmd_pool_restart(args, store: "pool.Store", plan: dict) -> None:
     if args.mem or args.mem_factor or args.cpus or args.time or args.include_pending:
         print("note: --mem/--mem-factor/--cpus/--time/--include-pending do not apply to pool runs (estimates are automatic)")
@@ -1433,6 +1461,12 @@ def main():
     p.add_argument("key", help="Task key (glob allowed if it matches exactly one task)")
     p.add_argument("-n", "--lines", type=int, default=40)
     p.set_defaults(func=cmd_log)
+    p = sub.add_parser("attempts", help="Task pool: one line per attempt (peak memory, estimate, runtime, host) - default: evicted / failed / interrupted")
+    p.add_argument("run", help="Run name or its TOML file")
+    p.add_argument("patterns", nargs="*", help="Only these tasks (glob patterns, e.g. 'RTS-GMLC/*'; default: all)")
+    p.add_argument("--outcome", action="append", choices=["evicted", "failed", "interrupted", "done"],
+                   help="Only attempts with this outcome (repeatable; default: evicted, failed, interrupted)")
+    p.set_defaults(func=cmd_attempts)
     p = sub.add_parser("local", help="Run tasks on this machine without Slurm (sequentially, in dependency order)")
     p.add_argument("config", help="TOML experiment file or its name, e.g. pilot")
     p.add_argument("patterns", nargs="+", help="Glob patterns of task keys, e.g. 'TX-123BT/sd1/prepare' or '*/prepare'")

@@ -349,28 +349,32 @@ python research/MK/cluster.py restart experiment --failed           # failed tas
 the same task pool, one worker per server, started by hand over Remote Desktop. All workers of a pool must see the same
 files - pool, input data and the `MK-*.sqlite` results, which `Markov.py` writes into the repo root - so the servers
 share **one clone of the repo on the network drive**; each server needs its own conda env and Gurobi license.
-Config: `experiments/experiment-win.toml` - same grid and model options as `experiment.toml`, with `cpus`, memory
-and `node_file_start` sized for the servers. Gurobi node files belong on a fast local disk (`--node-dir`; the network
+Config: `experiments/experiment-win-gap0.5.toml` - same grid and model options as `experiment.toml` except a MIP gap
+of 0.5 % instead of 0.3 % (RTS-GMLC's full-year Truths do not reach 0.3 %), with `cpus`, memory and `node_file_start`
+sized for the servers. It replaces `experiment-win.toml` (0.3 %, kept to read its pool). The gap is part of the result
+file names (`mipGap0.005`), so the two runs' results never overwrite each other. Gurobi node files belong on a fast local disk (`--node-dir`; the network
 drive works but is slow). Use **one hardware type per pool**: solver times and work units of different CPUs are not
 comparable, so other servers need their own config (own `name`) and datasets. The memory of TX-123BT's full-year
 solves and Original Truths is capped just below the servers' RAM, so they are tried, each alone on its server. If they
 run out of memory, stop scheduling the dataset, e.g. restart the workers with task patterns
-(`worker experiment-win "RTS-GMLC/*" "NREL-118/*" ...`).
+(`worker experiment-win-gap0.5 "RTS-GMLC/*" "NREL-118/*" ...`).
 
 1. Clone the repo onto the share and create the conda env on every server (`environment.yml`).
 2. On each server, in a terminal with the env active, from the repo on the share:
 
 ```bash
-python research/MK/cluster.py worker experiment-win --detach --node-dir D:/gurobi-nodes
+python research/MK/cluster.py worker experiment-win-gap0.5 --detach --node-dir D:/gurobi-nodes
 ```
 
 3. Control all workers from any one server (or any machine with the share):
 
 ```bash
-python research/MK/cluster.py status experiment-win                 # counts, workers per server (active / stopping / exited)
-python research/MK/cluster.py stop experiment-win                   # all workers: no new tasks, exit after the running ones
-python research/MK/cluster.py stop experiment-win --host SERVER2 --now   # one server, interrupt its tasks (retried elsewhere)
-python research/MK/cluster.py restart experiment-win --failed       # failed tasks become runnable again for all workers
+python research/MK/cluster.py status experiment-win-gap0.5                 # counts, workers per server (active / stopping / exited)
+python research/MK/cluster.py log experiment-win-gap0.5 RTS-GMLC/sd0.5/c28/base/main/Truth -n 80   # attempts + tail of the latest log
+python research/MK/cluster.py attempts experiment-win-gap0.5 "RTS-GMLC/*"   # evicted / failed / interrupted attempts: peak, estimate, runtime, server (--outcome done for finished ones)
+python research/MK/cluster.py stop experiment-win-gap0.5                   # all workers: no new tasks, exit after the running ones
+python research/MK/cluster.py stop experiment-win-gap0.5 --host SERVER2 --now   # one server, interrupt its tasks (retried elsewhere)
+python research/MK/cluster.py restart experiment-win-gap0.5 --failed       # failed tasks become runnable again for all workers
 ```
 
 `--detach` starts the worker in the background (normal CPU priority) and returns; its output goes to

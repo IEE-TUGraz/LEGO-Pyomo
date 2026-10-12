@@ -1,3 +1,4 @@
+# SUPERSEDED by experiment-win-gap0.5.toml (MIP gap 0.3 % was not reachable for RTS-GMLC); kept to read its pool.
 # Runs for the Markov paper on the Windows servers. A separate site: its results are never mixed with MUSICA's
 # (experiment.toml), so solver settings and threads are sized for these machines. Only one hardware type per run (solver
 # times / work units of different CPUs are not comparable). One worker per server, started by hand (see README,
