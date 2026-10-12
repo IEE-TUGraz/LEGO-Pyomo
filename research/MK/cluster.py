@@ -852,6 +852,9 @@ def cmd_prioritize(args) -> None:
 
 
 def cmd_log(args) -> None:
+    pool_run = load_pool(args.run)
+    if pool_run:
+        return cmd_pool_log(args, pool_run[1], pool_run[3])
     _, state = load_state(args.run)
     matches = [k for k in state["tasks"] if fnmatch.fnmatch(k, args.key)]
     if len(matches) != 1:
@@ -1306,6 +1309,32 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict) -> None:
                   + (f"\n      log: {info['log']}" if info.get("log") else ""))
     if not args.list:
         print(f"\nRetry failed tasks (and unblock the tasks waiting for them): cluster.py restart {args.run} --failed")
+
+
+def cmd_pool_log(args, store: "pool.Store", plan: dict) -> None:
+    matches = [k for k in plan if fnmatch.fnmatch(k, args.key)]
+    if len(matches) != 1:
+        sys.exit(f"'{args.key}' matches {len(matches)} tasks" + (f": {matches[:10]}" if matches else ""))
+    key = matches[0]
+    state, attempt, _ = store.snapshot([key])[key]
+    if attempt == 0:
+        sys.exit(f"{key}: not attempted yet ({state})")
+    records = {r["attempt"]: r for r in store.results() if r.get("key") == key}
+    for n in range(1, attempt + 1):
+        r = records.get(n)
+        if r is None:
+            print(f"attempt {n}: no result (running, or its worker died)")
+            continue
+        peak = f", peak {r['peak_rss_mb'] / 1024:.1f} GB" if r.get("peak_rss_mb") else ""
+        elapsed = f", {datetime.timedelta(seconds=int(r['elapsed_s']))}" if r.get("elapsed_s") is not None else ""
+        rc = f", exit {r['rc']}" if r.get("rc") is not None else ""
+        print(f"attempt {n}: {r['outcome']} on {r.get('worker', '?')}{elapsed}{peak}{rc}")
+    log = store.log_path(key, attempt)
+    if log.exists():
+        print(f"\n--- last {args.lines} lines of {log} ---")
+        print("\n".join(log.read_text(errors="replace").splitlines()[-args.lines:]))
+    else:
+        print(f"(log {log} does not exist)")
 
 
 def cmd_pool_restart(args, store: "pool.Store", plan: dict) -> None:
