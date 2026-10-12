@@ -1,6 +1,8 @@
 """Fast unit tests without subprocesses: store, estimator, priority order, estimate levels."""
 import time
 
+import pytest
+
 import cluster
 import pool
 
@@ -95,3 +97,23 @@ def test_own_completed_runs_take_precedence_and_preemptions_are_memory_minima():
     seeded.add({"key": t2, "outcome": pool.PREEMPTED, "peak_rss_mb": 7000, "elapsed_s": 5, "attempt": 1})
     assert seeded.estimate(t3)["mem_mb"] == 7000  # seed's completed run raised by the own preemption's peak (unscaled)
     assert seeded.estimate(t2)["time_s"] == 100 * 1.5  # a preemption says nothing about the runtime: the sibling's
+
+
+def test_weighted_priority_order(tmp_path):
+    """Critical path x dataset weight: a 10x lower weighted task goes first only with a more than 10x longer chain;
+    low-priority tasks always last; [pool] dataset_weights is validated and excludes rank_offset_hours."""
+    specs = {k: {"rank": 0, "dataset_rank": 0, "low": k.endswith("L"), "deps": [], "cpus": 1, "prior_mem_mb": 1, "prior_time_s": 1}
+             for k in ("R/a", "T/b", "T/c", "N/d", "R/L")}
+    weights = {"R/a": 100, "T/b": 10, "T/c": 10, "N/d": 1, "R/L": 100}
+    w = pool.Worker(specs, pool.Store(tmp_path), pool.Estimator(specs, lambda k: [k]), cwd=tmp_path, cores=1, mem_mb=1,
+                    weights=weights, rank_offset_s=12 * 3600, out=lambda m: None)
+    w.critical = {"R/a": 10, "T/b": 101, "T/c": 99, "N/d": 980, "R/L": 999}
+    w.estimates = {k: {"mem_mb": 1} for k in specs}
+    assert sorted(specs, key=w.priority) == ["T/b", "R/a", "T/c", "N/d", "R/L"]  # weights win over rank_offset_s
+
+    cfg = {"name": "x", "grid": {"datasets": ["data/R", "data/T"]}, "pool": {"dataset_weights": {"R": 10}}}
+    worker = cluster.make_worker(cfg, specs, pool.Store(tmp_path / "p"), cores=1, mem_mb=1, node_base=tmp_path)
+    assert worker.weights == {"R/a": 10, "T/b": 1, "T/c": 1, "N/d": 1, "R/L": 10}  # unlisted datasets: 1
+    for bad in ({"dataset_weights": {"X": 2}}, {"dataset_weights": {"R": 0}}, {"dataset_weights": {"R": 2}, "rank_offset_hours": 12}):
+        with pytest.raises(SystemExit):
+            cluster.make_worker({**cfg, "pool": bad}, specs, pool.Store(tmp_path / "p"), cores=1, mem_mb=1, node_base=tmp_path)

@@ -57,7 +57,9 @@ seed_runs = ["pilot", "experiment-win"]  # memory estimates: MUSICA's pilot (if 
                                          # share) and the 0.3 % run on these servers (its failed attempts are not used)
 mem_fraction = 0.9     # share of the RAM that tasks are packed into
 idle_hours = 3         # a worker without anything to run waits this long before it exits
-rank_offset_hours = 12 # soft dataset order, as in experiment.toml
+# Dataset order: priority = remaining chain of dependent tasks (critical path) x weight, so a TX-123BT task goes before
+# an RTS-GMLC task only if its chain is more than 10x longer (NREL-118 vs TX-123BT likewise; random TM stays last)
+dataset_weights = { "RTS-GMLC" = 100, "TX-123BT" = 10, "NREL-118" = 1 }
 
 [evaluate]
 args = ["all", "--no-show", "--separateClusters"]

@@ -272,7 +272,8 @@ delete a result file to recompute it.
 - `[pool]` (task pool only): `seed_runs` (runs whose measurements seed the estimates, e.g. `["pilot"]`), `cores` and
   `mem` per worker node (required by `submit-workers`), `walltime` (72 h), `chain_after_hours` (24), `workers` (3),
   `mem_fraction` (share of `mem` that is packed, 0.9), `idle_hours` (3), `mem_safety` (1.2), `time_safety` (1.5),
-  `disk_min_free_gb` (10), `rank_offset_hours` (soft dataset order, see Task pool; absent = strict), `mail_type` for the worker jobs (default: `[slurm] mail_type`; address from `[slurm] mail_user` /
+  `disk_min_free_gb` (10), `rank_offset_hours` (soft dataset order, see Task pool; absent = strict), `dataset_weights` (weighted dataset order,
+  e.g. `{ "RTS-GMLC" = 100, "TX-123BT" = 10 }`, unlisted datasets 1; excludes `rank_offset_hours`), `mail_type` for the worker jobs (default: `[slurm] mail_type`; address from `[slurm] mail_user` /
   `$MK_MAIL_USER`, written into `worker.sbatch` at `submit-workers` - edit that file to change it for later successors).
 - `[grid]`: `datasets`, `stretch_demand`, `clusters`, `edges`, `tasks`, `truth_original`, and `tm` entries `base` /
   `shift:N` / `perturb:R`, or an inline table `{ spec = "perturb:1.0", stretch_demand = [1.0], low_priority = true }`
@@ -293,7 +294,11 @@ running tasks + its estimate ≤ `mem_fraction` × memory; enough cores), and - 
 it finishes before the worker's walltime. Priority: the longest chain of dependent tasks (critical path, from the
 runtime estimates) minus `[pool] rank_offset_hours` (12) per position in `grid.datasets` - so RTS-GMLC goes first among
 equal chains, but a TX-123BT task whose chain is more than 12 h longer goes before it. Without `rank_offset_hours` the
-order is strict (all ready tasks of the first dataset first). Ties: largest memory first. If the top task waits too long
+order is strict (all ready tasks of the first dataset first). With `[pool] dataset_weights` instead, the priority is
+the critical path × the dataset's weight: with weights 100 / 10 / 1 (the Windows servers), a TX-123BT task goes before
+an RTS-GMLC task only if its remaining chain is more than 10× longer. Chains start from the TOML `time` values (often
+the same walltime for all datasets, so the weights alone decide) and become measured runtimes as tasks finish - a
+dataset whose tasks turn out short then loses ground to one still estimated long. Ties: largest memory first. If the top task waits too long
 (30 min), smaller tasks stop jumping ahead of it. `low_priority` TM variants (the random TM) only use spare capacity:
 they start once every ready normal task has been placed; once started they run to the end like any other task (they are
 never stopped to make room), but the memory guard stops low-priority tasks first. Tasks never use more Gurobi threads

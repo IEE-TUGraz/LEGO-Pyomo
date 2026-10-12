@@ -961,7 +961,17 @@ def make_worker(cfg: dict, specs: dict, store: "pool.Store", *, cores: int, mem_
                                time_safety=float(pcfg.get("time_safety", 1.5)), time_level=lambda level: "/class:" not in level)
     kwargs.setdefault("mem_fraction", float(pcfg.get("mem_fraction", 0.9)))
     kwargs.setdefault("disk_min_free_mb", float(pcfg.get("disk_min_free_gb", DEFAULT_DISK_MIN_FREE_GB)) * 1024)
-    if pcfg.get("rank_offset_hours") is not None:  # soft dataset order; absent = strict (grid.datasets order first)
+    weights = pcfg.get("dataset_weights")
+    if weights is not None:  # weighted dataset order: critical path x weight (unlisted datasets: 1)
+        if pcfg.get("rank_offset_hours") is not None:
+            sys.exit("[pool]: set either dataset_weights or rank_offset_hours, not both")
+        names = {Path(d).name for d in cfg.get("grid", {}).get("datasets", [])}
+        unknown = sorted(set(weights) - names)
+        if unknown or any(float(w) <= 0 for w in weights.values()):
+            sys.exit(f"[pool] dataset_weights: weights must be > 0 and keys dataset folder names of grid.datasets {sorted(names)}"
+                     + (f" (unknown: {unknown})" if unknown else ""))
+        kwargs.setdefault("weights", {key: float(weights.get(key.split("/")[0], 1)) for key in specs})
+    elif pcfg.get("rank_offset_hours") is not None:  # soft dataset order; absent = strict (grid.datasets order first)
         kwargs.setdefault("rank_offset_s", float(pcfg["rank_offset_hours"]) * 3600)
     return pool.Worker(specs, store, estimator, cwd=HERE.parent.parent, cores=cores, mem_mb=mem_mb, seed_records=seed_records(cfg), **kwargs)
 

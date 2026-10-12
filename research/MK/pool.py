@@ -470,6 +470,7 @@ class Worker:
                  node_base: Path | None = None, disk_min_free_mb: float = 10 * 1024, seed_records=(), poll_s: float = 15,
                  guard_available_fraction: float = 0.04, guard_rss_fraction: float = 0.97, evict_grace_s: float = 60,
                  interrupt_margin_s: float = 600, reserve_after_s: float = 1800, rank_offset_s: float | None = None,
+                 weights: dict | None = None,
                  chain_after_s: float | None = None,
                  chain=None, chain_retry_s: float = 600, info: dict | None = None, out=print):
         self.specs, self.store, self.est = specs, store, estimator
@@ -483,6 +484,7 @@ class Worker:
         self.disk_min_free_mb, self.poll_s = disk_min_free_mb, poll_s
         self.guard_available_fraction, self.guard_rss_fraction, self.evict_grace_s = guard_available_fraction, guard_rss_fraction, evict_grace_s
         self.interrupt_margin_s, self.reserve_after_s, self.rank_offset_s = interrupt_margin_s, reserve_after_s, rank_offset_s
+        self.weights = weights  # {key: weight} (weighted order; takes precedence over rank_offset_s) or None
         # Chaining: once, chain_after_s after the start, call chain() (submits a successor job, returns its id or None)
         # if tasks remain; retried every chain_retry_s until it succeeds
         self.chain_after_s, self.chain, self.chain_retry_s = chain_after_s, chain, chain_retry_s
@@ -525,8 +527,12 @@ class Worker:
     def priority(self, key: str) -> tuple:
         """Sort key of a ready task (smaller = first). Strict (rank_offset_s None): rank, then the longest chain of
         dependent tasks (critical path), then memory. Soft: low-priority tasks still last; otherwise the critical path
-        minus dataset_rank x rank_offset_s, so a later dataset's task goes first if its chain is that much longer."""
+        minus dataset_rank x rank_offset_s, so a later dataset's task goes first if its chain is that much longer.
+        Weighted (weights set): low-priority tasks still last; otherwise the critical path x the task's weight, so a task
+        of a dataset weighted 10x lower goes first only if its chain is more than 10x longer."""
         spec = self.specs[key]
+        if self.weights is not None:
+            return spec.get("low", False), -self.critical.get(key, 0) * self.weights.get(key, 1.0), -self.estimates[key]["mem_mb"]
         if self.rank_offset_s is None:
             return spec["rank"], -self.critical.get(key, 0), -self.estimates[key]["mem_mb"]
         return (spec.get("low", False), -(self.critical.get(key, 0) - spec.get("dataset_rank", spec["rank"]) * self.rank_offset_s),
