@@ -2,18 +2,18 @@
 
 Workers (one per node, or one on a laptop) pull tasks from a pool in runs/<name>/pool/ and pack them onto their machine by
 estimated memory and cores. Estimates start from the TOML resources and improve with every finished, evicted or
-interrupted attempt of this and the seed runs. Standard library only; independent of cluster.py (which builds the specs).
+interrupted attempt of this and the seed runs (this pool's completed runs take precedence over the seed runs'). Standard library only; independent of cluster.py (which builds the specs).
 
 Store layout (all files immutable once written, except the worker heartbeats):
     claims/<task>.<n>     attempt n of a task, created with O_EXCL (exactly one worker wins); content: worker id
-    results/<task>.<n>.json   outcome of attempt n (done / failed / evicted / interrupted) + measurements
+    results/<task>.<n>.json   outcome of attempt n (done / failed / evicted / preempted / interrupted) + measurements
     resets/<task>.<n>     attempt n failed (or: an evaluate that ran too early is done), but may be retried (cluster.py restart)
     workers/<id>.json     heartbeat (rewritten every HEARTBEAT_S)
     jobs/<slurm id>.json  submitted worker jobs (submit-workers, chained successors)
     stop/<target>.json    stop request (cluster.py stop) for the workers of a host / one worker / all that started before it
     logs/<task>.<n>.log   output of attempt n
 A task's state follows from its highest attempt: no claim -> new; result done/failed -> done/failed (+ reset ->
-retry); evicted/interrupted -> retry; claim without result -> running while its worker's heartbeat is fresh, else retry.
+retry); evicted/preempted/interrupted -> retry; claim without result -> running while its worker's heartbeat is fresh, else retry.
 """
 import ctypes
 import datetime
@@ -32,6 +32,7 @@ NOOP_MARKER = "MK-NOOP:"  # printed by Markov.py when a task had nothing to do (
 HEARTBEAT_S = 30
 STALE_S = 600  # a worker without heartbeat for this long is dead; its claims are retried
 DONE, FAILED, EVICTED, INTERRUPTED = "done", "failed", "evicted", "interrupted"
+PREEMPTED = "preempted"  # stopped by the memory guard to make room for another task (it stayed within its own estimate)
 NEW, RUNNING, RETRY = "new", "running", "retry"
 
 
@@ -379,16 +380,19 @@ class Store:
 
 class Estimator:
     """Memory / runtime per task from measurements, falling back through `levels(key)` (most specific first) to the
-    prior (TOML resources). A measured value counts as max over all attempts at a level, times a safety factor; evictions
-    and interruptions are lower bounds (scaled up once more). Runtimes use only the levels `time_level(level)` accepts:
-    they vary too much across a coarse level (one slow task would make all of them look too long for a job's rest)."""
+    prior (TOML resources), times a safety factor. Per level: the max of this pool's completed runs if there are any
+    (they may lower what the seed runs or other tasks' lower bounds say), else the max of the seed runs' completed runs
+    (raised by this pool's lower bounds), else the largest lower bound. Lower bounds: failed attempts (peak), evictions
+    (scaled up once more), preemptions (peak, no runtime), interruptions (runtime scaled up). Seed records carry a
+    `source` (cluster.seed_records), this pool's do not. Runtimes use only the levels `time_level(level)` accepts: they
+    vary too much across a coarse level (one slow task would make all of them look too long for a job's rest)."""
 
     def __init__(self, specs: dict, levels, mem_safety: float = 1.2, time_safety: float = 1.5, lower_bound_factor: float = 1.25,
                  time_level=lambda level: True):
         self.specs, self.levels, self.time_level = specs, levels, time_level
         self.mem_safety, self.time_safety, self.lb = mem_safety, time_safety, lower_bound_factor
-        self.mem, self.time = {}, {}  # level -> max observed (already lower-bound-scaled)
-        self.mem_done, self.time_done = set(), set()  # levels with a completed measurement (else only lower bounds)
+        # level -> {(origin, kind): max observed (lower bounds already scaled)}; origin own / seed, kind done / lb
+        self.mem, self.time = {}, {}
         self.seen = set()
 
     def add(self, record: dict) -> None:
@@ -398,6 +402,7 @@ class Estimator:
             return
         self.seen.add(ident)
         outcome, peak, elapsed = record["outcome"], record.get("peak_rss_mb"), record.get("elapsed_s")
+        slot = ("seed" if "source" in record else "own", "done" if outcome == DONE else "lb")
         mem = time_ = None
         if outcome == DONE:
             mem, time_ = peak, elapsed
@@ -405,22 +410,31 @@ class Estimator:
             mem = peak  # whatever it used is a lower bound; the runtime of a failure says nothing
         elif outcome == EVICTED or outcome == "oom":  # the need is above what it reached (an OOM: above the limit)
             mem = max(peak or 0, record.get("limit_mb") or 0) * self.lb or None
+        elif outcome == PREEMPTED:
+            mem = peak  # made room for another task: it needs at least what it reached; its runtime says nothing
         elif outcome == INTERRUPTED or outcome == "timeout":
             mem = peak
             time_ = max(elapsed or 0, record.get("limit_s") or 0) * self.lb or None
         for level in self.levels(record["key"]):
             if mem:
-                self.mem[level] = max(self.mem.get(level, 0), mem)
-                if outcome == DONE:
-                    self.mem_done.add(level)
+                values = self.mem.setdefault(level, {})
+                values[slot] = max(values.get(slot, 0), mem)
             if time_ and self.time_level(level):
-                self.time[level] = max(self.time.get(level, 0), time_)
-                if outcome == DONE:
-                    self.time_done.add(level)
+                values = self.time.setdefault(level, {})
+                values[slot] = max(values.get(slot, 0), time_)
+
+    @staticmethod
+    def _pick(values: dict) -> tuple[float, bool]:
+        """(value, measured = may go below the prior) of one level, see the class docstring."""
+        if ("own", "done") in values:
+            return values[("own", "done")], True
+        if ("seed", "done") in values:
+            return max(values[("seed", "done")], values.get(("own", "lb"), 0)), True
+        return max(values.values()), False
 
     def estimate(self, key: str) -> dict:
         """{mem_mb, mem_src, time_s, time_src}; src = the level the value comes from, or 'prior'. A level with only lower
-        bounds (failed / evicted / interrupted) never goes below the prior: a task that crashes after seconds says
+        bounds (failed / evicted / preempted / interrupted) never goes below the prior: a task that crashes after seconds says
         nothing about its need."""
         spec = self.specs[key]
         out = {"mem_mb": spec["prior_mem_mb"], "mem_src": "prior", "time_s": spec["prior_time_s"], "time_src": "prior"}
@@ -428,14 +442,14 @@ class Estimator:
         for level in self.levels(key):
             if level in self.mem and not mem_found:
                 mem_found = True
-                value = self.mem[level] * self.mem_safety
-                if level in self.mem_done or value > out["mem_mb"]:
-                    out["mem_mb"], out["mem_src"] = value, level
+                value, measured = self._pick(self.mem[level])
+                if measured or value * self.mem_safety > out["mem_mb"]:
+                    out["mem_mb"], out["mem_src"] = value * self.mem_safety, level
             if level in self.time and not time_found:
                 time_found = True
-                value = self.time[level] * self.time_safety
-                if level in self.time_done or value > out["time_s"]:
-                    out["time_s"], out["time_src"] = value, level
+                value, measured = self._pick(self.time[level])
+                if measured or value * self.time_safety > out["time_s"]:
+                    out["time_s"], out["time_src"] = value * self.time_safety, level
         return out
 
 
@@ -494,7 +508,7 @@ class Worker:
         self.last_evict = 0.0
         self.last_disk_warning = 0.0
         self.any_failed = False
-        self.counts = {DONE: 0, FAILED: 0, EVICTED: 0, INTERRUPTED: 0}
+        self.counts = {DONE: 0, FAILED: 0, EVICTED: 0, PREEMPTED: 0, INTERRUPTED: 0}
 
     def log(self, msg: str) -> None:
         self.out(f"{_now()} {msg}")
@@ -617,8 +631,10 @@ class Worker:
         return True
 
     def guard_memory(self) -> None:
-        """Evict the most recently started low-priority task, else the most recently started task, when memory runs out
-        (never the only running task)."""
+        """When memory runs out, stop one task: the most recently started low-priority one, else the most recently started
+        one (least work lost) except the one using the most memory (it may really need it; the others make room). A task beyond its
+        own estimate is evicted (retried with a higher estimate), any other one preempted (retried; its peak is a
+        minimum, its runtime is not used)."""
         active = [k for k, r in self.running.items() if r["stop"] is None]
         if len(active) < 2 or time.time() - self.last_evict < self.evict_grace_s:
             return
@@ -627,11 +643,18 @@ class Worker:
         low_system = available is not None and total and available < self.guard_available_fraction * total
         over_capacity = used > self.guard_rss_fraction * self.mem_mb
         if low_system or over_capacity:
-            lows = [k for k in active if self.specs[k].get("low")]  # low-priority tasks go first, then the newest one
-            newest = max(lows or active, key=lambda k: self.running[k]["start"])
+            largest = max(active, key=lambda k: self.running[k]["rss_mb"])
+            lows = [k for k in active if self.specs[k].get("low")]  # low-priority tasks go first (even the largest one)
+            victim = max(lows or [k for k in active if k != largest], key=lambda k: self.running[k]["start"])
+            run = self.running[victim]
             why = (f"only {available / 1024:.1f} GB of {total / 1024:.0f} GB available" if low_system
                    else f"tasks use {used / 1024:.1f} GB of {self.mem_mb / 1024:.0f} GB")
-            self.stop(newest, EVICTED, f"{why} - most recently started task, will be retried with a higher estimate")
+            if run["rss_mb"] > run["est"]["mem_mb"]:
+                self.stop(victim, EVICTED, f"{why}, it uses {run['rss_mb'] / 1024:.1f} GB > its estimate "
+                                           f"{run['est']['mem_mb'] / 1024:.1f} GB - will be retried with a higher estimate")
+            else:
+                self.stop(victim, PREEMPTED, f"{why} - makes room for {largest} ({self.running[largest]['rss_mb'] / 1024:.1f} GB), "
+                                             f"will be retried")
             self.last_evict = time.time()
 
     def guard_walltime(self) -> bool:
@@ -669,12 +692,16 @@ class Worker:
         """Start ready tasks that fit (cores, memory estimate, walltime); returns the number started.
 
         Low-priority tasks (low_priority TM variants) only use spare capacity: they start once every ready normal task
-        is placed. A started task is never stopped to make room (only the memory guard and the walltime stop tasks)."""
+        is placed. A started task is never stopped to make room (only the memory guard and the walltime stop tasks).
+        A running task reserves its estimate (or more, if it already uses more) - except one estimated above the packing
+        share, which only reserves its peak so far: smaller tasks fill the rest, and the memory guard preempts them if
+        it really grows that large."""
         if self.any_failed and not self.keep_going:
             return 0
         ready, _ = self.ready(snap)
         started = 0
-        reserved = sum(max(r["est"]["mem_mb"], r["rss_mb"] * 1.1) for r in self.running.values())
+        reserved = sum(r["peak_mb"] * 1.1 if r["est"]["mem_mb"] > self.pack_mb else max(r["est"]["mem_mb"], r["rss_mb"] * 1.1)
+                       for r in self.running.values())
         cores_used = sum(r["cpus"] for r in self.running.values())
         head = ready[0] if ready else None
         if head != self.head_blocked[0]:

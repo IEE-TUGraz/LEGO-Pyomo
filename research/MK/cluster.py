@@ -7,7 +7,7 @@
     python research/MK/cluster.py prioritize experiment [--nice-step N]
     python research/MK/cluster.py resources experiment [--mem-factor 1.3] [--time-factor 2]
     python research/MK/cluster.py log      experiment KEY
-    python research/MK/cluster.py attempts experiment [PATTERN ...] [--outcome evicted|failed|interrupted|done]
+    python research/MK/cluster.py attempts experiment [PATTERN ...] [--outcome evicted|preempted|failed|interrupted|done]
     python research/MK/cluster.py cancel   experiment
     python research/MK/cluster.py submit-workers experiment [--workers N] [--estimate-only] [--dry-run]
     python research/MK/cluster.py worker   experiment [PATTERN ...] [--cores N] [--mem 700G] [--hours H] [--log] [--detach]
@@ -786,13 +786,15 @@ def cmd_resources(args) -> None:
                 group(record["key"])["done"].append((record["key"], record.get("peak_rss_mb"), record.get("elapsed_s"), requested))
             elif record["outcome"] == pool.EVICTED:
                 group(record["key"])["limit"].append((record["key"], "evicted", _fmt_mem(record.get("peak_rss_mb") or 0)))
+            elif record["outcome"] == pool.PREEMPTED:
+                group(record["key"])["limit"].append((record["key"], "preempted", _fmt_mem(record.get("peak_rss_mb") or 0)))
             elif record["outcome"] == pool.INTERRUPTED:
                 group(record["key"])["limit"].append((record["key"], "interrupted", _fmt_time(record.get("elapsed_s") or 0)))
         for key, (cat, _) in status.items():
             if cat in (PENDING, RUNNING, BLOCKED):
                 group(key)["open"] += 1
-        print("Source: pool results ('requested' = the estimate the attempt started with; evicted = memory ran out, "
-              "interrupted = walltime ended)")
+        print("Source: pool results ('requested' = the estimate the attempt started with; evicted = beyond its memory estimate, "
+              "preempted = made room for another task, interrupted = walltime ended)")
     else:
         rdir, state = load_state(args.run)
         status = classify(state, Slurm.query({current_job(t) for t in state["tasks"].values() if current_job(t)}))
@@ -929,14 +931,15 @@ def select_keys(plan: dict, patterns: list[str], with_deps: bool = False) -> lis
 
 def seed_records(cfg: dict) -> list[dict]:
     """Measurements of this run and of [pool] seed_runs: runs/<run>/measurements.json (Slurm runs, `resources --save`)
-    and runs/<run>/pool/results/ (pool runs)."""
+    and runs/<run>/pool/results/ (pool runs). Failed attempts of another pool are skipped: they usually failed for a reason
+    fixed since (a bug, an unreachable MIP gap), so their peak is no lower bound for this run."""
     records = []
     for run in dict.fromkeys([cfg["name"], *cfg.get("pool", {}).get("seed_runs", [])]):
         rdir = RUNS_DIR / run
         if (rdir / "measurements.json").exists():
             records += [{**r, "source": f"slurm:{run}"} for r in json.loads((rdir / "measurements.json").read_text())]
         if (rdir / "pool" / "results").is_dir() and run != cfg["name"]:  # the own pool is read by the worker itself
-            records += [{**r, "source": f"pool:{run}"} for r in pool.Store(rdir / "pool").results()]
+            records += [{**r, "source": f"pool:{run}"} for r in pool.Store(rdir / "pool").results() if r.get("outcome") != pool.FAILED]
     return records
 
 
@@ -1275,9 +1278,10 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict) -> None:
               f"{sum(a[1] == 'PENDING' for a in active)} queued")
         for job, st, reason, start in active:
             print(f"  {job:<12} {st:<10} {reason if st == 'PENDING' else '':<20} {'expected start ' + start if st == 'PENDING' and start != 'N/A' else ''}")
-    retries = [r for r in store.results() if r["outcome"] in (pool.EVICTED, pool.INTERRUPTED)]
+    retries = [r for r in store.results() if r["outcome"] in (pool.EVICTED, pool.PREEMPTED, pool.INTERRUPTED)]
     if retries:
-        print(f"\nRETRIED ATTEMPTS: {sum(r['outcome'] == pool.EVICTED for r in retries)} evicted (memory), "
+        print(f"\nRETRIED ATTEMPTS: {sum(r['outcome'] == pool.EVICTED for r in retries)} evicted (beyond their memory estimate), "
+              f"{sum(r['outcome'] == pool.PREEMPTED for r in retries)} preempted (made room for another task), "
               f"{sum(r['outcome'] == pool.INTERRUPTED for r in retries)} interrupted (walltime / worker stopped)")
     shown = [args.list] if args.list else [FAILED, BLOCKED]
     for cat in shown:
@@ -1339,15 +1343,15 @@ def cmd_pool_log(args, store: "pool.Store", plan: dict) -> None:
 
 
 def cmd_attempts(args) -> None:
-    """Task pool: one line per recorded attempt (default: all that did not finish - evicted / failed / interrupted)."""
+    """Task pool: one line per recorded attempt (default: all that did not finish - evicted / preempted / failed / interrupted)."""
     pool_run = load_pool(args.run)
     if not pool_run:
         sys.exit(f"'{args.run}' is not a pool run (attempts lists the results of a task pool)")
     store = pool_run[1]
-    outcomes = set(args.outcome or [pool.EVICTED, pool.FAILED, pool.INTERRUPTED])
+    outcomes = set(args.outcome or [pool.EVICTED, pool.PREEMPTED, pool.FAILED, pool.INTERRUPTED])
     patterns = args.patterns or ["*"]
     records = [r for r in store.results() if r.get("outcome") in outcomes and any(fnmatch.fnmatch(r.get("key", ""), p) for p in patterns)]
-    order = [pool.EVICTED, pool.FAILED, pool.INTERRUPTED, pool.DONE]
+    order = [pool.EVICTED, pool.PREEMPTED, pool.FAILED, pool.INTERRUPTED, pool.DONE]
     records.sort(key=lambda r: (order.index(r["outcome"]) if r["outcome"] in order else len(order), r["key"], r.get("attempt") or 0))
     if not records:
         sys.exit(f"No {'/'.join(sorted(outcomes))} attempts" + (f" matching {patterns}" if args.patterns else ""))
@@ -1461,11 +1465,11 @@ def main():
     p.add_argument("key", help="Task key (glob allowed if it matches exactly one task)")
     p.add_argument("-n", "--lines", type=int, default=40)
     p.set_defaults(func=cmd_log)
-    p = sub.add_parser("attempts", help="Task pool: one line per attempt (peak memory, estimate, runtime, host) - default: evicted / failed / interrupted")
+    p = sub.add_parser("attempts", help="Task pool: one line per attempt (peak memory, estimate, runtime, host) - default: evicted / preempted / failed / interrupted")
     p.add_argument("run", help="Run name or its TOML file")
     p.add_argument("patterns", nargs="*", help="Only these tasks (glob patterns, e.g. 'RTS-GMLC/*'; default: all)")
-    p.add_argument("--outcome", action="append", choices=["evicted", "failed", "interrupted", "done"],
-                   help="Only attempts with this outcome (repeatable; default: evicted, failed, interrupted)")
+    p.add_argument("--outcome", action="append", choices=["evicted", "preempted", "failed", "interrupted", "done"],
+                   help="Only attempts with this outcome (repeatable; default: evicted, preempted, failed, interrupted)")
     p.set_defaults(func=cmd_attempts)
     p = sub.add_parser("local", help="Run tasks on this machine without Slurm (sequentially, in dependency order)")
     p.add_argument("config", help="TOML experiment file or its name, e.g. pilot")

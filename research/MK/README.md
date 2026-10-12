@@ -296,8 +296,13 @@ equal chains, but a TX-123BT task whose chain is more than 12 h longer goes befo
 order is strict (all ready tasks of the first dataset first). Ties: largest memory first. If the top task waits too long
 (30 min), smaller tasks stop jumping ahead of it. `low_priority` TM variants (the random TM) only use spare capacity:
 they start once every ready normal task has been placed; once started they run to the end like any other task (they are
-never stopped to make room), but the memory guard evicts low-priority tasks first. Tasks never use more Gurobi threads
-in total than the worker's cores.
+never stopped to make room), but the memory guard stops low-priority tasks first. Tasks never use more Gurobi threads
+in total than the worker's cores. A task estimated above the packing share (`mem_fraction` x RAM) starts only on an
+empty machine, but then reserves only the memory it actually used so far: smaller tasks fill the rest. **Memory guard**:
+when the RAM runs out, it stops one task: low-priority tasks first, then the most recently started one - but never the
+one using the most memory. A stopped task that used more than its own estimate is **evicted** (retried with a higher
+estimate), any other one is **preempted** (it only made room: retried, its peak counts as a minimum, its runtime is not
+used).
 
 ```bash
 python research/MK/cluster.py resources pilot --save                # pilot measurements -> seed of the estimates
@@ -314,8 +319,11 @@ python research/MK/cluster.py restart experiment --failed           # failed tas
 
 - **Estimates** come from measurements (peak RSS, runtime) of this run and of `[pool] seed_runs`, most specific first:
   the same task, the same task/edge/RP count, the same task/edge, the resource class (memory only); else the TOML
-  `[resources.*]`. Value = largest measurement × `mem_safety` / `time_safety`. Failed, evicted and interrupted
-  attempts are lower bounds: they can raise an estimate above the TOML value, but only completed runs lower it. They are recomputed continuously, so
+  `[resources.*]`. Value = largest measurement × `mem_safety` / `time_safety`. Failed, evicted, preempted and
+  interrupted attempts are lower bounds: they can raise an estimate above the TOML value, but only completed runs lower
+  it. Completed runs of this pool take precedence over the seed runs and over other tasks' lower bounds, so measurements
+  can lower an estimate that a seed run set (if a task then needs more, the memory guard makes room for it). Failed
+  attempts of a seed run are ignored - they usually failed for a reason fixed since. They are recomputed continuously, so
   later tasks start with better estimates. Seed a pool with a Slurm run's measurements via `resources <run> --save`
   (`runs/<run>/measurements.json`). Runs that had nothing to do (output existed, folders reused; `Markov.py` prints
   `MK-NOOP`) are not measurements.
@@ -371,7 +379,7 @@ python research/MK/cluster.py worker experiment-win-gap0.5 --detach --node-dir D
 ```bash
 python research/MK/cluster.py status experiment-win-gap0.5                 # counts, workers per server (active / stopping / exited)
 python research/MK/cluster.py log experiment-win-gap0.5 RTS-GMLC/sd0.5/c28/base/main/Truth -n 80   # attempts + tail of the latest log
-python research/MK/cluster.py attempts experiment-win-gap0.5 "RTS-GMLC/*"   # evicted / failed / interrupted attempts: peak, estimate, runtime, server (--outcome done for finished ones)
+python research/MK/cluster.py attempts experiment-win-gap0.5 "RTS-GMLC/*"   # evicted / preempted / failed / interrupted attempts: peak, estimate, runtime, server (--outcome done for finished ones)
 python research/MK/cluster.py stop experiment-win-gap0.5                   # all workers: no new tasks, exit after the running ones
 python research/MK/cluster.py stop experiment-win-gap0.5 --host SERVER2 --now   # one server, interrupt its tasks (retried elsewhere)
 python research/MK/cluster.py restart experiment-win-gap0.5 --failed       # failed tasks become runnable again for all workers
@@ -388,7 +396,7 @@ default `%TEMP%`), `--idle-hours`, `--max-tasks`, task patterns. A worker never 
 cores (fewer threads would make work units and solver times incomparable), nor a not-yet-attempted task whose memory
 estimate exceeds its RAM (it would only swap; estimates between `mem_fraction` x RAM and the RAM run alone): it logs
 `skipping ...` and leaves the task to the other workers. The memory check uses the current estimate, so a measurement
-(also from `seed_runs`) can lift or impose it; an evicted task's retry is never skipped.
+(also from `seed_runs`) can lift or impose it; an evicted or preempted task's retry is never skipped.
 
 **Pilot before the full run** (per-task mode; optional for the task pool, which learns its estimates while it runs
 and can be seeded with a pilot via `[pool] seed_runs`): the resources in `experiment.toml` are guesses. `experiments/pilot.toml` runs one grid

@@ -76,3 +76,22 @@ def test_lower_bounds_never_lower_the_prior():
     est.add({"key": d, "outcome": pool.DONE, "peak_rss_mb": 200, "elapsed_s": 3, "attempt": 1})
     assert est.estimate(f)["mem_mb"] == 1000 and est.estimate(f)["mem_src"] == "prior"
     assert est.estimate(d)["mem_mb"] == 200 * 1.2 and est.estimate(d)["mem_src"] == d
+
+
+def test_own_completed_runs_take_precedence_and_preemptions_are_memory_minima():
+    """Own completed runs lower what a seed run's lower bound (or another task's) says; a seed's completed run is raised
+    by own lower bounds; a preemption is an unscaled memory minimum without runtime."""
+    t1, t2, t3 = "R/sd1/c28/base/main/Truth", "R/sd0.5/c28/base/main/Truth", "R/sd0.7/c28/base/main/Truth"
+    est = _estimator([t1, t2, t3], mem_safety=1.0)
+    est.add({"key": t1, "outcome": pool.EVICTED, "peak_rss_mb": 8000, "source": "pool:old", "attempt": 1})
+    assert est.estimate(t3)["mem_mb"] == 8000 * 1.25  # only the seed's lower bound
+    est.add({"key": t1, "outcome": pool.DONE, "peak_rss_mb": 6000, "elapsed_s": 100, "attempt": 1})
+    est.add({"key": t2, "outcome": pool.EVICTED, "peak_rss_mb": 9000, "attempt": 1})
+    assert est.estimate(t3)["mem_mb"] == 6000  # own completed run wins over the seed's and t2's lower bounds
+    assert est.estimate(t2)["mem_mb"] == 9000 * 1.25  # t2 keeps its own lower bound
+
+    seeded = _estimator([t1, t2, t3], mem_safety=1.0)
+    seeded.add({"key": t1, "outcome": pool.DONE, "peak_rss_mb": 5000, "elapsed_s": 100, "source": "pool:old", "attempt": 1})
+    seeded.add({"key": t2, "outcome": pool.PREEMPTED, "peak_rss_mb": 7000, "elapsed_s": 5, "attempt": 1})
+    assert seeded.estimate(t3)["mem_mb"] == 7000  # seed's completed run raised by the own preemption's peak (unscaled)
+    assert seeded.estimate(t2)["time_s"] == 100 * 1.5  # a preemption says nothing about the runtime: the sibling's

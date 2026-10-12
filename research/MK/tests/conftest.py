@@ -69,11 +69,11 @@ class MK:
 
     @staticmethod
     def events(logs) -> list[tuple[str, str]]:
-        """(event, last key part) for start / done / failed / evicted / interrupted log lines."""
+        """(event, last key part) for start / done / failed / evicted / preempted / interrupted log lines."""
         out = []
         for line in logs:
             parts = line.split(" ")
-            if len(parts) > 2 and parts[1] in ("start", "done", "failed", "evicted", "interrupted") and not parts[2].endswith(":"):
+            if len(parts) > 2 and parts[1] in ("start", "done", "failed", "evicted", "preempted", "interrupted") and not parts[2].endswith(":"):
                 out.append((parts[1], parts[2].split("/")[-1]))
         return out
 

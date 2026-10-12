@@ -19,10 +19,10 @@ def test_local_runs_in_parallel_respects_deps_and_skips_after_failure(mk):
     assert {"A__main.1.log", "B__main.1.log"} <= set(logs)
 
 
-def test_two_workers_share_a_pool_and_evict_a_task_that_outgrows_its_estimate(mk, capsys):
-    """Each task runs exactly once across both workers; the growing task is evicted, retried with a measured estimate
-    and then runs alone."""
-    plan = dict([mk.task(f"D/sd1/c3/base/main/E{i}", 3, mb=60, mem="120M") for i in range(6)]
+def test_two_workers_share_a_pool_and_preempt_tasks_for_one_that_outgrows_its_estimate(mk, capsys):
+    """Each task runs exactly once across both workers; the growing task uses the most memory, so the guard preempts the
+    smaller ones next to it (retried later) instead of the growing task, which finishes in its first attempt."""
+    plan = dict([mk.task(f"D/sd1/c3/base/main/E{i}", 8, mb=60, mem="120M") for i in range(6)]
                 + [mk.task("D/sd1/c3/base/regret/GROW", 4, mb=50, mb_end=700, mem="120M")])
     cfg = mk.use(plan)
     store = mk.store()
@@ -38,19 +38,37 @@ def test_two_workers_share_a_pool_and_evict_a_task_that_outgrows_its_estimate(mk
     results = store.results()
     done = [r["key"] for r in results if r["outcome"] == pool.DONE]
     assert sorted(done) == sorted(plan)  # every task done exactly once
-    evicted = [r for r in results if r["outcome"] == pool.EVICTED]
-    assert [r["key"].split("/")[-1] for r in evicted] == ["GROW"]
-    grow_starts = {int(line.split("(attempt ")[1].split(",")[0]): line  # either worker may have started an attempt
-                   for _, logs in workers for line in logs if " start " in line and "GROW" in line}
-    assert "(prior)" in grow_starts[1] and "(prior)" not in grow_starts[max(grow_starts)]  # retried with a measured estimate
+    assert not [r for r in results if r["outcome"] == pool.EVICTED]
+    preempted = [r["key"].split("/")[-1] for r in results if r["outcome"] == pool.PREEMPTED]
+    assert preempted and all(k.startswith("E") for k in preempted)
+    assert [r["attempt"] for r in results if r["key"].endswith("/GROW")] == [1]  # never stopped
 
     capsys.readouterr()
     mk.cli("status", "fake")
     out = capsys.readouterr().out
-    assert "WORKERS (2)" in out and "1 evicted" in out
+    assert "WORKERS (2)" in out and f"{len(preempted)} preempted" in out
     mk.cli("resources", "fake")
     out = capsys.readouterr().out
-    assert "evicted at" in out and "Source: pool results" in out
+    assert "preempted at" in out and "Source: pool results" in out
+
+
+def test_memory_guard_evicts_a_task_beyond_its_own_estimate(mk):
+    """BIG stays within its estimate and uses the most memory; GROW (estimated far too low) pushes the machine over
+    the limit: it is evicted, retried with a measured estimate and then waits for BIG to finish."""
+    plan = dict([mk.task("D/sd1/c3/base/main/BIG", 12, mb=400, mem="480M"),
+                 mk.task("D/sd1/c3/base/main/GROW", 6, mb=50, mb_end=390, mem="120M")])
+    cfg = mk.use(plan)
+    store = mk.store()
+    w, logs = mk.worker(cfg, plan, store, mem_mb=700, evict_grace_s=1)
+    w.run()
+    results = store.results()
+    assert sorted(r["key"].split("/")[-1] for r in results if r["outcome"] == pool.DONE) == ["BIG", "GROW"]
+    assert [r["key"].split("/")[-1] for r in results if r["outcome"] == pool.EVICTED] == ["GROW"]
+    assert not [r for r in results if r["outcome"] == pool.PREEMPTED]
+    grow_starts = [line for line in logs if " start " in line and "GROW" in line]
+    assert "(prior)" in grow_starts[0] and "(prior)" not in grow_starts[-1]  # retried with a measured estimate
+    ev = mk.events(logs)
+    assert ev.index(("done", "BIG")) < ev.index(("done", "GROW"))  # the retry did not fit next to BIG
 
 
 def test_stale_claim_failure_restart_walltime_interrupt(mk):

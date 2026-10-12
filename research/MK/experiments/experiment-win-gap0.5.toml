@@ -53,8 +53,8 @@ default = { cpus = 8, mem = "48G", time = "3-00:00:00" }
 # Task pool. cores / mem are not needed (only for submit-workers on Slurm): each worker takes its machine's physical cores
 # and RAM (--cores / --mem to override).
 [pool]
-seed_runs = ["pilot"]  # memory estimates from MUSICA's pilot, if runs/pilot/measurements.json is copied to the share.
-                       # Not "experiment-win": its failed 0.3 % Truth (116 GB) would block the RTS-GMLC full-year solves
+seed_runs = ["pilot", "experiment-win"]  # memory estimates: MUSICA's pilot (if runs/pilot/measurements.json is copied to the
+                                         # share) and the 0.3 % run on these servers (its failed attempts are not used)
 mem_fraction = 0.9     # share of the RAM that tasks are packed into
 idle_hours = 3         # a worker without anything to run waits this long before it exits
 rank_offset_hours = 12 # soft dataset order, as in experiment.toml
