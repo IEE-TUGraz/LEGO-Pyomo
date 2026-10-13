@@ -1465,6 +1465,10 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict) -> None:
                 plan_note += ("  code: no handover (worker predates it - restart it to run the current code)" if "code" not in w
                               else f"  code: {w['code']} (outdated - hands over within a minute)")
         print(f"  {wid:<40} {state:<28} {len(w.get('running', [])):>3} running  {size}{plan_note}")
+    stale_view = store.stale_view(socket.gethostname(), now)
+    if stale_view:
+        print(f"  note: {stale_view[0]} - this machine probably reads an outdated copy of the pool (e.g. after standby);"
+              " check from another machine before restarting anything")
     jobs = store.jobs()
     if jobs and shutil.which("squeue"):  # queued / running worker jobs (chained successors included)
         out = subprocess.run(["squeue", "-h", "-j", ",".join(sorted(jobs)), "-o", "%i|%T|%r|%S"], capture_output=True, text=True).stdout

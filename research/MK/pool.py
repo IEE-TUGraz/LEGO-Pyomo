@@ -31,6 +31,10 @@ from pathlib import Path
 NOOP_MARKER = "MK-NOOP:"  # printed by Markov.py when a task had nothing to do (output existed): not a measurement
 HEARTBEAT_S = 30
 STALE_S = 600  # a worker without heartbeat for this long is dead; its claims are retried
+# The last live workers on other hosts going silent together (last beats within STALE_VIEW_SPREAD_S of each other) means
+# this machine more likely reads an outdated copy of the store (seen on Windows after standby) than that they all died:
+# their claims are never retried from here (Store.stale_view) - if they really died, that needs manual intervention
+STALE_VIEW_SPREAD_S = 3 * HEARTBEAT_S
 DONE, FAILED, EVICTED, INTERRUPTED = "done", "failed", "evicted", "interrupted"
 PREEMPTED = "preempted"  # stopped by the memory guard to make room for another task (it stayed within its own estimate)
 NEW, RUNNING, RETRY = "new", "running", "retry"
@@ -377,9 +381,27 @@ class Store:
                     pass  # being written (atomic replace makes this rare); read next time
         return list(self._results.values())
 
-    def snapshot(self, keys, now: float | None = None) -> dict:
+    def stale_view(self, host: str, now: float | None = None) -> tuple[str, set[str]] | None:
+        """(description, worker ids) if this host's view of the store looks frozen, else None: no non-exited worker on
+        another host is fresh, and at least two of them went silent (STALE_S) within STALE_VIEW_SPREAD_S of the last
+        beat seen. Workers that went silent earlier died before the freeze and are not held. No time limit: a real
+        simultaneous death of all of them is released by hand (the workers marked exited). Workers on this host are no
+        evidence: they read through the same (possibly outdated) view."""
+        now = time.time() if now is None else now
+        beats = {wid: w["beat"] for wid, w in self.workers().items()
+                 if not w.get("exited") and "beat" in w and w.get("host", "").lower() != host.lower()}
+        if not beats or now - max(beats.values()) < STALE_S:
+            return None
+        last = max(beats.values())
+        held = {wid for wid, b in beats.items() if last - b <= STALE_VIEW_SPREAD_S}
+        if len(held) < 2:
+            return None
+        return f"the last {len(held)} live workers on other hosts went silent together {(now - last) / 60:.0f} min ago", held
+
+    def snapshot(self, keys, now: float | None = None, hold: set[str] = frozenset()) -> dict:
         """{key: (state, attempt, info)}: state NEW/RUNNING/RETRY/DONE/FAILED; attempt = highest claimed attempt (0 = none);
-        info = the result record, or {'worker': id} for RUNNING."""
+        info = the result record, or {'worker': id} for RUNNING. hold: the worker ids of stale_view() (a worker whose
+        view looks frozen) - their stale claims stay RUNNING ({'unverified': True}), not retried."""
         now = time.time() if now is None else now
         claims = {}
         for name in os.listdir(self.root / "claims"):
@@ -401,8 +423,14 @@ class Store:
                     worker = (self.root / "claims" / f"{_safe(key)}.{n}").read_text().strip()
                 except OSError:
                     worker = ""
-                alive = worker in workers and now - workers[worker].get("beat", 0) < STALE_S and not workers[worker].get("exited")
-                out[key] = (RUNNING, n, {"worker": worker}) if alive or not worker else (RETRY, n, {"worker": worker, "stale": True})
+                w = workers.get(worker)
+                alive = w is not None and now - w.get("beat", 0) < STALE_S and not w.get("exited")
+                if alive or not worker:
+                    out[key] = (RUNNING, n, {"worker": worker})
+                elif worker in hold and not w.get("exited"):
+                    out[key] = (RUNNING, n, {"worker": worker, "unverified": True})
+                else:
+                    out[key] = (RETRY, n, {"worker": worker, "stale": True})
             elif result["outcome"] == DONE:
                 out[key] = (RETRY if f"{_safe(key)}.{n}" in resets else DONE, n, result)
             elif result["outcome"] == FAILED:
@@ -561,6 +589,7 @@ class Worker:
         self.head_blocked = (None, 0.0)
         self.last_evict = 0.0
         self.last_disk_warning = 0.0
+        self.stale_view = None  # Store.stale_view() of the last poll: (note, worker ids whose claims are not retried)
         self.any_failed = False
         self.counts = {DONE: 0, FAILED: 0, EVICTED: 0, PREEMPTED: 0, INTERRUPTED: 0}
 
@@ -726,6 +755,16 @@ class Worker:
         """Heartbeat field `tasks`: what another worker on this machine needs to account for them (refresh_foreign)."""
         return {k: {"pid": r["proc"].pid, "cpus": r["cpus"], "est_mb": round(r["est"]["mem_mb"], 1), "peak_mb": round(r["peak_mb"], 1),
                     "rss_mb": round(r["rss_mb"], 1), "start": r["start"], "opp": r["opp"]} for k, r in self.running.items()}
+
+    def check_stale_view(self) -> None:
+        """Update self.stale_view (Store.stale_view), logging when this machine's view of the pool freezes / recovers."""
+        view = self.store.stale_view(self.host)
+        if view and not self.stale_view:
+            self.log(f"warning: {view[0]} - this machine probably reads an outdated copy of the pool (e.g. after standby);"
+                     " their tasks are not retried until their heartbeats come through again (or they are marked exited)")
+        elif self.stale_view and not view:
+            self.log("heartbeats of other hosts come through again (or the silent workers were marked exited) - retrying stale claims normally")
+        self.stale_view = view
 
     def refresh_foreign(self) -> None:
         """Tasks of the other live workers on this machine (outside Slurm only) from their heartbeats,
@@ -1079,7 +1118,8 @@ class Worker:
                     self.guard_memory()
                     disk_ok = self.check_disk()
                     self.refresh_estimates()
-                    snap = self.store.snapshot(self.specs)
+                    self.check_stale_view()
+                    snap = self.store.snapshot(self.specs, hold=self.stale_view[1] if self.stale_view else frozenset())
                     if disk_ok and not self.stopping and self.admit(snap) or finished:
                         last_beat = 0.0  # status shows started / finished tasks at once, not up to HEARTBEAT_S later
                     ready, remaining = self.ready(snap)

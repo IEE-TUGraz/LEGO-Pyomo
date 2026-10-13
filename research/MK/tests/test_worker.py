@@ -74,6 +74,29 @@ def test_memory_guard_evicts_a_task_beyond_its_own_estimate(mk):
     assert ev.index(("done", "BIG")) < ev.index(("done", "GROW"))  # the retry did not fit next to BIG
 
 
+def test_frozen_view_does_not_retry_claims_of_other_hosts(mk):
+    """All workers on another host went silent together (this machine reads an outdated pool): their claim is not
+    retried; once their silence is spread out (real deaths), it is."""
+    plan = dict([mk.task("G/sd1/c3/base/main/HELD", 0.5), mk.task("G/sd1/c3/base/main/FREE", 0.5)])
+    cfg = mk.use(plan)
+    store = mk.store()
+    pool._write_json_atomic(store.root / "meta.json", {"config": "x"})
+    store.claim("G/sd1/c3/base/main/HELD", 1, "remote1")
+    for wid, age in (("remote1", 2 * pool.STALE_S), ("remote2", 2 * pool.STALE_S + 10)):
+        pool._write_json_atomic(store.root / "workers" / f"{wid}.json", {"host": "otherhost", "beat": time.time() - age})
+    w, logs = mk.worker(cfg, plan, store)
+    w.run()
+    snap = store.snapshot(plan)
+    assert snap["G/sd1/c3/base/main/FREE"][0] == pool.DONE
+    assert snap["G/sd1/c3/base/main/HELD"][:2] == (pool.RETRY, 1)  # never started here
+    assert any("went silent together" in line for line in logs)
+
+    pool._write_json_atomic(store.root / "workers" / "remote2.json", {"host": "otherhost", "beat": time.time() - 3600})
+    w, _ = mk.worker(cfg, plan, store)
+    w.run()
+    assert store.snapshot(plan)["G/sd1/c3/base/main/HELD"][:2] == (pool.DONE, 2)
+
+
 def test_stale_claim_failure_restart_walltime_interrupt(mk):
     plan = dict([mk.task("F/sd1/c3/base/main/OK", 0.5), mk.task("F/sd1/c3/base/main/BAD", 0.5, rc=3),
                  mk.task("F/sd1/c3/base/regret/AFTERBAD", 0.5, deps=["F/sd1/c3/base/main/BAD"]), mk.task("F/sd1/c3/base/main/LONG", 6)])

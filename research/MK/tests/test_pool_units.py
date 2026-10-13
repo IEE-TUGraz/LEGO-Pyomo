@@ -28,6 +28,40 @@ def test_claim_is_exclusive_and_states_follow_highest_attempt(tmp_path):
     assert store.snapshot(keys)["c"][0] == pool.RETRY
 
 
+def test_stale_view_holds_claims_of_the_workers_that_went_silent_together(tmp_path):
+    store = pool.Store(tmp_path)
+    now = time.time()
+
+    def beat(wid, host, age, **kw):
+        pool._write_json_atomic(store.root / "workers" / f"{wid}.json", {"host": host, "beat": now - age, **kw})
+
+    beat("r1", "remote", 2 * pool.STALE_S)
+    beat("r2", "REMOTE", 2 * pool.STALE_S + 20)
+    beat("me", "laptop", 5)  # own host: reads through the same view, no evidence
+    beat("old", "remote", 2 * pool.STALE_S + 3600)  # died an hour before the others: really dead
+    beat("gone", "remote", 2 * pool.STALE_S, exited="x")
+    beat("me-dead", "laptop", 2 * pool.STALE_S)
+    store.claim("a", 1, "r1")
+    store.claim("b", 1, "me-dead")
+    store.claim("c", 1, "old")
+    keys = ["a", "b", "c"]
+    note, held = store.stale_view("laptop", now)
+    assert "last 2 live workers on other hosts went silent together" in note and held == {"r1", "r2"}
+    assert store.stale_view("remote", now) is None  # seen from the remote host: only one other host's worker
+    assert store.snapshot(keys, now)["a"][0] == pool.RETRY  # status / no hold: unchanged
+    snap = store.snapshot(keys, now, hold=held)
+    assert snap["a"][0] == pool.RUNNING and snap["a"][2]["unverified"]
+    assert snap["b"][0] == pool.RETRY and snap["c"][0] == pool.RETRY  # same host / died earlier: retried as usual
+    assert store.stale_view("laptop", now + 30 * 86400)[1] == held  # no time limit: released by hand
+
+    beat("r2", "remote", 2 * pool.STALE_S + pool.STALE_VIEW_SPREAD_S + 10)  # silent at different times: real deaths
+    assert store.stale_view("laptop", now) is None
+    beat("r2", "remote", 10)  # one other host still beats: the view is fine
+    assert store.stale_view("laptop", now) is None
+    beat("r2", "remote", 2 * pool.STALE_S, exited="marked by hand")
+    assert store.stale_view("laptop", now) is None  # manual release: mark the silent workers exited
+
+
 def _estimator(keys, **kw):
     specs = {k: {"prior_mem_mb": 1000, "prior_time_s": 3600} for k in keys}
     return pool.Estimator(specs, cluster.estimate_levels, time_level=lambda level: "/class:" not in level, **kw)

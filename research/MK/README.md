@@ -375,6 +375,13 @@ python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dep
   measurements; `evaluate` runs automatically after all other tasks.
 - Per-attempt logs: `runs/<name>/pool/logs/<key>.<attempt>.log`. A dead worker's tasks are retried after 10 min without
   heartbeat - at once if a new worker starts on the same machine and finds the old worker's process gone.
+  Exception: if the last live workers on other machines all went silent at the same moment, the machine looking at
+  the pool more likely reads an outdated copy of the share (seen on a Windows laptop after standby: `status` showed
+  every other worker as "lost" while they were running fine). Its worker then logs a warning and never retries their
+  tasks, and `status` prints a note - check from another machine before restarting anything. Reconnecting the
+  network drive (or a reboot) fixes the view. If those workers really died together (e.g. a power cut), release
+  their tasks by hand: start a worker on each of their machines (it marks the old workers' gone processes as exited),
+  or add `"exited": "<reason>"` to their `pool/workers/<id>.json`.
 - **Stopping workers** started by hand (no Slurm job to cancel): `cluster.py stop <run> [--host NAME ...] [--now]`.
   Default: the workers start no new tasks and exit once their running tasks have finished; `--now` interrupts the
   running tasks (retried by other / later workers). Only workers that started before the request are affected.
