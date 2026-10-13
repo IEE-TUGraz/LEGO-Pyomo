@@ -1453,10 +1453,12 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict) -> None:
                  else ("exited " + w["exited"] if w.get("exited") else "lost (no heartbeat)"))
         size = f"{w['cores']} cores, {w['mem_mb'] / 1024:.0f} GB, started {w.get('started')}" if w.get("cores") else ""
         plan_note = ""
-        if alive:  # workers reload a changed config within about a minute; older workers cannot
+        # Workers reload a changed config within about a minute and hand over changed code; older workers cannot. Not
+        # shown for stopping / draining workers: they start nothing new anyway
+        if alive and not w.get("stopping"):
             plan_note = ("  plan: not reloadable (worker predates plan reload - restart it to pick up config changes)" if "plan" not in w
                          else "" if w["plan"] == current else f"  plan: {w['plan']} (outdated - reloads within a minute)")
-            if not w.get("handover") and not w.get("slurm_job") and w.get("code") != code:  # code handover (workers outside Slurm)
+            if not w.get("slurm_job") and w.get("code") != code:  # code handover (workers outside Slurm)
                 plan_note += ("  code: no handover (worker predates it - restart it to run the current code)" if "code" not in w
                               else f"  code: {w['code']} (outdated - hands over within a minute)")
         print(f"  {wid:<40} {state:<28} {len(w.get('running', [])):>3} running  {size}{plan_note}")

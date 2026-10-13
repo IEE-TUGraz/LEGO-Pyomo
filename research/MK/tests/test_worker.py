@@ -330,7 +330,8 @@ def test_opportunistic_starts_off(mk):
 
 def test_tasks_of_another_worker_on_this_machine_count_as_occupied(mk):
     """A (draining) worker of another process on this host runs a task estimated at 800 MB on 6 cores: A (300 MB) waits
-    until that process is gone instead of being packed as if the machine were empty."""
+    until that process is gone instead of being packed as if the machine were empty - and the waiting worker does not
+    exit as idle meanwhile (idle_s is shorter than the other worker's task)."""
     plan = dict([mk.task("X/sd1/c3/base/main/A", 0.5, mem="300M")])
     cfg = mk.use(plan)
     store = mk.store()
@@ -338,7 +339,7 @@ def test_tasks_of_another_worker_on_this_machine_count_as_occupied(mk):
     store.beat("other-worker", {"host": socket.gethostname(), "pid": other.pid, "slurm_job": None,
                                 "tasks": {"Y/sd1/c3/base/main/F": {"pid": other.pid, "cpus": 6, "est_mb": 800, "peak_mb": 0,
                                                                    "rss_mb": 0, "start": time.time(), "opp": False}}})
-    w, logs = mk.worker(cfg, plan, store, mem_mb=1000, idle_s=30)
+    w, logs = mk.worker(cfg, plan, store, mem_mb=1000, idle_s=1)
     w.run()
     other.wait()
     counted = [i for i, line in enumerate(logs) if "other workers on this machine run 1 task(s)" in line]

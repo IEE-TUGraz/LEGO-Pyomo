@@ -390,7 +390,9 @@ python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dep
   the same command-line options (in the background, logging to `pool/worker-logs/`; `--hours` becomes the remaining
   time) and **drains**: it starts nothing new and exits once its own tasks have finished - no running solve is
   stopped. Meanwhile the successor counts the old worker's tasks (cores, memory estimates, actual memory) as occupied,
-  so the server is not overpacked. `status` shows the old worker as `draining (handed over)` and flags workers that
+  so the server is not overpacked. If they leave no room, the successor waits for them - it fills only what their
+  actual memory use leaves free (opportunistic starts) and does not exit as idle while another worker on the server
+  still runs tasks. `status` shows the old worker as `draining (handed over)` and flags workers that
   run outdated code. A change that does not run (e.g. saved halfway through an edit) is logged and ignored until the
   files change again; workers started before this feature cannot hand over - restart them once. The check only
   confirms that the new code loads and builds the plan: after a code change, check with `status` (or the successor's

@@ -1085,6 +1085,10 @@ class Worker:
                     elif remaining == 0 or (self.any_failed and not self.keep_going):
                         self.log("nothing left to run" if remaining == 0 else "stopping after a failure (keep_going off)")
                         break
+                    elif self.foreign:
+                        # Other workers on this machine (e.g. one draining after a handover) hold cores / memory that
+                        # free up when their tasks end: not idle - exiting now could leave the machine without a worker
+                        idle_since = None
                     else:
                         idle_since = idle_since or now
                         if now - idle_since > self.idle_s:
