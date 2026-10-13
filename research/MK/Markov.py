@@ -938,6 +938,21 @@ def _build_run_params(case_study_path: str, clusters: int, relax_count: int, fil
     )
 
 
+def _drop_zero_capacity_vres(cs: CaseStudy) -> None:
+    """Remove VRES units with MaxProd <= 0 (TX-123BT has three wind units without capacity). They can never produce, but
+    their InvestCostEUR (per unit, scaled by MaxProd) is 0, so vGenInvest appears in no constraint and the objective:
+    Pyomo never passes it to the solver, and evaluating the objective after an optimal solve fails on its missing value."""
+    zero = cs.dPower_VRES.index[cs.dPower_VRES["MaxProd"] <= 0]
+    if len(zero) == 0:
+        return
+    printer.warning(f"Removing {len(zero)} VRES unit(s) with MaxProd <= 0: {', '.join(map(str, zero))}")
+    cs.dPower_VRES = cs.dPower_VRES.drop(index=zero)
+    for name in ("dPower_VRESProfiles", "dPower_Inflows"):
+        df = getattr(cs, name, None)
+        if df is not None and "g" in df.index.names:
+            setattr(cs, name, df[~df.index.get_level_values("g").isin(zero)])
+
+
 def _cap_min_up_down_times(cs: CaseStudy, cap: int) -> None:
     """Cap MinUpTime/MinDownTime to `cap` timesteps (the RP length), as the RP models cannot represent longer times.
     Values below 1 (e.g. 0 = no minimum time in TX-123BT) are raised to 1, which means the same but is what the
@@ -1139,8 +1154,10 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
         Utilities.plot_transition_matrix(cs.rpTransitionMatrixAbsolute, title=", ".join(tm_title_parts), output=f"MK-{identifier}.png")
 
     _cap_min_up_down_times(cs, len(cs.dPower_WeightsK.index))
+    _drop_zero_capacity_vres(cs)
     if cs_original is not None:  # Same cap as the RP models, so only the time series differ between the models
         _cap_min_up_down_times(cs_original, len(cs.dPower_WeightsK.index))
+        _drop_zero_capacity_vres(cs_original)
     thermalGeneratorRelaxed, count_relaxed = _select_relaxed_generators(cs, relax_percentage)  # After the cap, which affects the sort order
     if count_relaxed == 0:
         printer.information(f"Not relaxing any unit commitment variables, all thermal generators stay binary")
@@ -1520,6 +1537,7 @@ def execute_original_truth(original_folder: str, no_sqlite: bool = False, relax_
     cs = CaseStudy(original_folder, clip_method="none", clip_value=0)
     identifier_parts = [_data_identifier(original_folder)] + _apply_case_modifications([cs], **modifications)
     _cap_min_up_down_times(cs, min_time_cap)
+    _drop_zero_capacity_vres(cs)
     thermal_generator_relaxed, count_relaxed = _select_relaxed_generators(cs, relax_percentage)  # After the cap, as in the RP runs
     if count_relaxed > 0:
         identifier_parts.append(f"relaxed{count_relaxed}")
