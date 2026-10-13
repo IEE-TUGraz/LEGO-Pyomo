@@ -408,8 +408,8 @@ RTS-GMLC's full-year Truths do not reach 0.3 %) and the same grid, except that t
 matrices run for RTS-GMLC only, with `cpus`, memory and `node_file_start` sized for the servers. It replaces
 `experiment-win.toml` (0.3 %, kept to read its pool; the MUSICA `pilot` also ran at 0.3 %). The gap is part of the
 result file names (`mipGap0.005`), so results of the two gaps never overwrite each other. Gurobi node files belong on a fast local disk (`--node-dir`; the network
-drive works but is slow). Use **one hardware type per pool**: solver times and work units of different CPUs are not
-comparable, so other servers need their own config (own `name`) and datasets. The memory of TX-123BT's full-year
+drive works but is slow).  Work units are
+comparable across machines that pass `check_workunits.py` (see below). The memory of TX-123BT's full-year
 solves and Original Truths is capped just below the servers' RAM, so they are tried, each alone on its server. If they
 run out of memory, stop scheduling the dataset: remove it from `grid.datasets` and `[pool] dataset_weights` (the running workers pick that up, see
 "Adding / removing runs while workers run" above). The shifted and random TMs run only for RTS-GMLC (`datasets` of
@@ -473,6 +473,36 @@ no Slurm, about 1 min):
 ```bash
 pytest research/MK/tests
 ```
+
+### `experiments/workunitChecks/check_workunits.py` — Are work units of a new machine comparable?
+
+Run once on every new type of workstation / server (CPU model, Gurobi version) before its results are mixed with
+others. It solves 9 RTS-GMLC `main` tasks (5 to 28 clusters; Cyclic, Markov and NoEnf; TM unshifted, shifted by 1
+and 2; all demand stretches; B&B trees up to ~7000 nodes; 8 threads; ~20 min) one after another and compares them with
+`workunit_reference.json`:
+
+```bash
+python research/MK/experiments/workunitChecks/check_workunits.py            # from the repo root, in the conda env; machine otherwise idle
+python research/MK/experiments/workunitChecks/check_workunits.py --keep     # keep the Markov.py logs and result files (temp folder)
+python research/MK/experiments/workunitChecks/check_workunits.py --cases sd1-c5-base-NoEnf,sd1-c7-base-Cyclic   # only some cases (names: --help / error message)
+```
+
+- **ELIGIBLE**: work units, B&B node counts and objectives are identical to the reference, i.e. Gurobi takes the same
+  solution path - work units of this machine can be compared with the reference machines'.
+- **NOT ELIGIBLE**: a different solution path (or a different Gurobi version). Work units are then not comparable.
+  Likely causes: another Gurobi version, another instruction set (e.g. AVX-512 vs AVX2).
+- **Input data differs**: the clustered folders differ from the reference (different clustering or data version) -
+  the result is not conclusive. Needs `data/RTS-GMLC/[stretchDemand{0.5,0.7,0.9}/]{5,7,14,28} clusters/` (copy them,
+  or create them with `Markov.py --prepare-only`; `--data` points to another RTS-GMLC folder).
+
+Several machines can run the check at the same time from one shared clone (e.g. the network drive): each copies its
+inputs into its own local temp folder and writes nothing to the clone (except `--write-reference`).
+
+The seconds per work unit are printed too: they compare raw speed, but only if both machines ran the cases alone.
+Solver *times* of the experiment runs are not comparable across machines anyway (several tasks per machine compete
+for memory bandwidth). After changes to the model code, regenerate the reference on a reference machine with
+`--write-reference` (the work units change with the model); with `--cases` it replaces only those cases in the
+existing reference (e.g. after adding a case).
 
 ### `EvaluateMarkov.py` — Result evaluation
 

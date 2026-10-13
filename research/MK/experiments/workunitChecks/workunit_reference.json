@@ -1,0 +1,69 @@
+{
+ "created": "2026-10-13",
+ "gurobi": "13.0.0",
+ "cases": {
+  "sd0.9-c5-base-Markov": {
+   "input_hash": "e1530003b2c4124329fe00c3789517028046159457fce6f36758aac443992575",
+   "work_units": 6.546186995096541,
+   "nodes": 1,
+   "objective": 1739.5533,
+   "solver_s": 13.52
+  },
+  "sd1-c5-base-NoEnf": {
+   "input_hash": "08ef20d291ca3e212039246dc476aa22952ac7750aa9e76db0bbe7883bbb83d4",
+   "work_units": 8.359949990613845,
+   "nodes": 61,
+   "objective": 1495.2681,
+   "solver_s": 15.86
+  },
+  "sd0.5-c5-shiftTM1-Markov": {
+   "input_hash": "8a8ae412077ac7acbf803d47d9554e64a0b0749f5609c658e3eaad98426f95d4",
+   "work_units": 39.5286192006353,
+   "nodes": 496,
+   "objective": 1770.8799,
+   "solver_s": 39.27
+  },
+  "sd1-c7-base-Cyclic": {
+   "input_hash": "ecf87345303cfc8c2e393037aa1cd70d40541efef9661ce5050b76098ec58472",
+   "work_units": 35.693198380688386,
+   "nodes": 415,
+   "objective": 1772.2212,
+   "solver_s": 40.15
+  },
+  "sd0.5-c14-shiftTM2-Cyclic": {
+   "input_hash": "64fa6e9a130c47371db99bdd1f66e72ac21a2f47df44072734cbb4472edc9fb1",
+   "work_units": 39.016656457894904,
+   "nodes": 160,
+   "objective": 1565.6232,
+   "solver_s": 54.52
+  },
+  "sd0.9-c28-base-Cyclic": {
+   "input_hash": "d17b78a154545ef1d84c6981a2d30de63a0fd5b52ad45346d011b2428b27d1cc",
+   "work_units": 95.64609802739821,
+   "nodes": 151,
+   "objective": 1562.4972,
+   "solver_s": 196.24
+  },
+  "sd0.7-c7-base-NoEnf": {
+   "input_hash": "11c873414e26bccce4abf1eb6a38c6340c4efcdfbbb120acaaca4ff405c4fbea",
+   "work_units": 154.19982851915464,
+   "nodes": 5021,
+   "objective": 1500.7774,
+   "solver_s": 137.0
+  },
+  "sd0.7-c14-shiftTM2-NoEnf": {
+   "input_hash": "eb862afdac40070fbdd14c80e686083228cd7010763c46069c3c8ae38c968e67",
+   "work_units": 211.09549862023331,
+   "nodes": 7373,
+   "objective": 1388.919,
+   "solver_s": 277.24
+  },
+  "sd1-c14-base-Markov": {
+   "input_hash": "74605368b5b1a7e3cfc144e6c6808f42a54e1cd5d4c1ed3038e66be0b698bead",
+   "work_units": 422.89031563665503,
+   "nodes": 2262,
+   "objective": 1542.8502,
+   "solver_s": 503.56
+  }
+ }
+}
