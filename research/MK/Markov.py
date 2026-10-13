@@ -939,7 +939,13 @@ def _build_run_params(case_study_path: str, clusters: int, relax_count: int, fil
 
 
 def _cap_min_up_down_times(cs: CaseStudy, cap: int) -> None:
-    """Cap MinUpTime/MinDownTime to `cap` timesteps (the RP length), as the RP models cannot represent longer times."""
+    """Cap MinUpTime/MinDownTime to `cap` timesteps (the RP length), as the RP models cannot represent longer times.
+    Values below 1 (e.g. 0 = no minimum time in TX-123BT) are raised to 1, which means the same but is what the
+    thermalGen module accepts."""
+    if any(cs.dPower_ThermalGen["MinUpTime"] < 1) or any(cs.dPower_ThermalGen["MinDownTime"] < 1):
+        printer.warning("Some thermal generators have MinUpTime or MinDownTime below 1 - setting it to 1 (no minimum time)")
+        cs.dPower_ThermalGen["MinUpTime"] = cs.dPower_ThermalGen["MinUpTime"].clip(lower=1)
+        cs.dPower_ThermalGen["MinDownTime"] = cs.dPower_ThermalGen["MinDownTime"].clip(lower=1)
     if any(cs.dPower_ThermalGen["MinUpTime"] > cap) or any(cs.dPower_ThermalGen["MinDownTime"] > cap):
         printer.warning(f"Some thermal generators have MinUpTime or MinDownTime greater than {cap} - capping it to that number")
         cs.dPower_ThermalGen["MinUpTime"] = cs.dPower_ThermalGen["MinUpTime"].clip(upper=cap)
