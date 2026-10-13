@@ -1,5 +1,5 @@
 # Runs for the Markov paper on the Windows servers. A separate site: its results are never mixed with MUSICA's
-# (experiment.toml), so solver settings and threads are sized for these machines. MIP gap 0.5 % (experiment.toml: 0.3 %):
+# (experiment.toml), so solver settings and threads are sized for these machines. MIP gap 0.5 % (as experiment.toml):
 # RTS-GMLC's full-year Truths do not reach 0.3 % (the bound stalls at ~0.38 % until Gurobi runs out of memory). Only one hardware type per run (solver
 # times / work units of different CPUs are not comparable). One worker per server, started by hand (see README,
 # "Windows servers"):

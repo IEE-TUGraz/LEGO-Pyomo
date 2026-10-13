@@ -9,7 +9,7 @@
 name = "experiment-win"   # pool and logs go to research/MK/runs/<name>/ in the repo clone on the network drive
 
 [markov]
-args = ["--network", "TP", "--mip-gap", "0.003"]   # model options: identical to experiment.toml
+args = ["--network", "TP", "--mip-gap", "0.003"]   # model options: as experiment.toml at the time (now 0.005)
 # NodefileStart (GB): as on MUSICA - the B&B tree goes to node files early (--node-dir on a fast local SSD); the same for
 # all solves of a dataset (it affects the runtime).
 node_file_start = { default = 8, "TX-123BT" = 16 }

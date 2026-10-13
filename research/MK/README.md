@@ -401,10 +401,11 @@ python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dep
 the same task pool, one worker per server, started by hand over Remote Desktop. All workers of a pool must see the same
 files - pool, input data and the `MK-*.sqlite` results, which `Markov.py` writes into the repo root - so the servers
 share **one clone of the repo on the network drive**; each server needs its own conda env and Gurobi license.
-Config: `experiments/experiment-win-gap0.5.toml` - same grid and model options as `experiment.toml` except a MIP gap
-of 0.5 % instead of 0.3 % (RTS-GMLC's full-year Truths do not reach 0.3 %), with `cpus`, memory and `node_file_start`
-sized for the servers. It replaces `experiment-win.toml` (0.3 %, kept to read its pool). The gap is part of the result
-file names (`mipGap0.005`), so the two runs' results never overwrite each other. Gurobi node files belong on a fast local disk (`--node-dir`; the network
+Config: `experiments/experiment-win-gap0.5.toml` - same model options as `experiment.toml` (both a MIP gap of 0.5 %:
+RTS-GMLC's full-year Truths do not reach 0.3 %) and the same grid, except that the shifted and random transition
+matrices run for RTS-GMLC only, with `cpus`, memory and `node_file_start` sized for the servers. It replaces
+`experiment-win.toml` (0.3 %, kept to read its pool; the MUSICA `pilot` also ran at 0.3 %). The gap is part of the
+result file names (`mipGap0.005`), so results of the two gaps never overwrite each other. Gurobi node files belong on a fast local disk (`--node-dir`; the network
 drive works but is slow). Use **one hardware type per pool**: solver times and work units of different CPUs are not
 comparable, so other servers need their own config (own `name`) and datasets. The memory of TX-123BT's full-year
 solves and Original Truths is capped just below the servers' RAM, so they are tried, each alone on its server. If they
