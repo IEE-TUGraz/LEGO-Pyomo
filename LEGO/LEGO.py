@@ -197,6 +197,10 @@ class LEGO:
                             self.solver_attributes[attr] = getattr(optimizer._solver_model, attr)
                         except Exception:
                             pass
+                    try:
+                        self.solver_attributes['Threads'] = optimizer._solver_model.Params.Threads  # 0 = automatic
+                    except Exception:
+                        pass
                 else:
                     optimizer = pyo.SolverFactory(solver_name)
                     # Apply solver options. MIPGap has a HiGHS equivalent (mip_rel_gap); the other

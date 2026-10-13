@@ -131,26 +131,6 @@ def _delta(values: np.ndarray) -> np.ndarray:
     return np.abs(values - np.round(values))
 
 
-def process_memory_gb() -> tuple[float | None, float | None]:
-    """(current RSS, peak RSS) of this process in GB. Peak is the lifetime high-water mark of the process."""
-    rss = peak = None
-    try:
-        import psutil
-        mem = psutil.Process().memory_info()
-        rss = mem.rss / 1024 ** 3
-        if getattr(mem, 'peak_wset', None) is not None:  # Windows
-            peak = mem.peak_wset / 1024 ** 3
-    except Exception:
-        pass
-    if peak is None:
-        try:
-            import resource  # Linux: ru_maxrss in kB
-            peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024 ** 2
-        except Exception:
-            pass
-    return rss, peak
-
-
 def compute_run_metrics(lego, tm_cs=None) -> dict:
     """Model size, transition matrix size, memory, timings, cost split, curtailment and load shedding.
 
@@ -183,7 +163,7 @@ def compute_run_metrics(lego, tm_cs=None) -> dict:
 
     # Memory and timings
     metrics['solver_max_mem_gb'] = solver_attributes.get('MaxMemUsed')
-    rss, peak = process_memory_gb()
+    rss, peak = SQLiteWriter.process_memory_gb()
     metrics['process_rss_gb'] = rss
     metrics['process_peak_rss_gb'] = peak
     metrics['solver_runtime_s'] = solver_attributes.get('Runtime')
