@@ -277,7 +277,8 @@ delete a result file to recompute it.
   `$MK_MAIL_USER`, written into `worker.sbatch` at `submit-workers` - edit that file to change it for later successors).
 - `[grid]`: `datasets`, `stretch_demand`, `clusters`, `edges`, `tasks`, `truth_original`, and `tm` entries `base` /
   `shift:N` / `perturb:R`, or an inline table `{ spec = "perturb:1.0", stretch_demand = [1.0], low_priority = true }`
-  (only these demand levels / queued last).
+  (only these demand levels / queued last); `datasets = ["data/RTS-GMLC", ...]` restricts a TM variant to these
+  datasets (e.g. shifted TMs only for RTS-GMLC).
 - `[resources.<class>]`: `cpus`, `mem`, `time` in a `default` table, overridden per dataset folder name. Classes:
   `prepare`, `rp` (main/operational of the RP models), `full` (all full-year solves), `truth-original` (falls back to
   `full`), `evaluate`. All solves of a dataset need the same `cpus` (comparable work units / solver times): `submit`
@@ -320,7 +321,17 @@ python research/MK/cluster.py worker experiment 'TX-123BT/*' --mem 700G --cores 
 python research/MK/cluster.py status experiment                     # pool mode: counts, workers, retried attempts
 python research/MK/cluster.py resources experiment                  # from the pool's measurements
 python research/MK/cluster.py restart experiment --failed           # failed tasks become runnable again
+python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dependents --dry-run   # re-run done tasks
 ```
+
+- **Restarting individual tasks** while workers run: `restart <run> <patterns>` makes the matching *failed and done*
+  tasks runnable again; the running workers pick them up (no worker restart). A done task is re-run without
+  `--no-overwrite` (which would skip it, as its output exists) - `prepare` also without `--reuse-inputfiles`, so it
+  rebuilds its folders. Done tasks that depend on the restarted ones keep their results unless `--with-dependents`
+  (then they re-run too, after their dependencies); tasks that are pending, blocked or running are left alone, and
+  `restart` warns about running tasks that depend on restarted ones (they use the old outputs - a prepare re-run
+  rewrites folders they read; wait for them or stop them first). `--dry-run` lists the selection. Workers started
+  before this feature re-run done tasks *with* `--no-overwrite` (so they skip) - restart them first.
 
 - **Estimates** come from measurements (peak RSS, runtime) of this run and of `[pool] seed_runs`, most specific first:
   the same task, the same task/edge/RP count, the same task/edge, the resource class (memory only); else the TOML
@@ -357,6 +368,15 @@ python research/MK/cluster.py restart experiment --failed           # failed tas
 - **Stopping workers** started by hand (no Slurm job to cancel): `cluster.py stop <run> [--host NAME ...] [--now]`.
   Default: the workers start no new tasks and exit once their running tasks have finished; `--now` interrupts the
   running tasks (retried by other / later workers). Only workers that started before the request are affected.
+- **Adding / removing runs while workers run**: edit the config (`[grid]`, `[resources.*]`, `[markov] args`,
+  `[pool] dataset_weights`) - no restart needed. Every worker checks the config file and `cluster.py` once a minute
+  and, if either changed, rebuilds the task plan: new tasks become runnable, removed tasks are no longer started
+  (removed tasks that are already running finish normally; their results stay in the pool), changed commands /
+  resources apply to the next attempt. `status` prints the config's plan id and flags workers that still run another
+  one; a config that does not parse (e.g. saved halfway through an edit) is logged in the worker log and ignored until
+  the file changes again. Not reloaded (restart the worker): the run `name`, other `[pool]` settings, the worker's
+  command-line options and changes to `pool.py`. Workers started before this feature cannot reload - restart them once.
+  If `evaluate` already ran, it does not run again for added tasks (run `EvaluateMarkov.py` by hand).
 
 **Windows servers** (a separate site from MUSICA - results of the two sites are never mixed):
 the same task pool, one worker per server, started by hand over Remote Desktop. All workers of a pool must see the same
@@ -369,8 +389,9 @@ file names (`mipGap0.005`), so the two runs' results never overwrite each other.
 drive works but is slow). Use **one hardware type per pool**: solver times and work units of different CPUs are not
 comparable, so other servers need their own config (own `name`) and datasets. The memory of TX-123BT's full-year
 solves and Original Truths is capped just below the servers' RAM, so they are tried, each alone on its server. If they
-run out of memory, stop scheduling the dataset, e.g. restart the workers with task patterns
-(`worker experiment-win-gap0.5 "RTS-GMLC/*" "NREL-118/*" ...`).
+run out of memory, stop scheduling the dataset: remove it from `grid.datasets` and `[pool] dataset_weights` (the running workers pick that up, see
+"Adding / removing runs while workers run" above). The shifted and random TMs run only for RTS-GMLC (`datasets` of
+the `shift:N` / `perturb:R` entries).
 
 1. Clone the repo onto the share and create the conda env on every server (`environment.yml`).
 2. On each server, in a terminal with the env active, from the repo on the share:

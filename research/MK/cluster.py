@@ -20,6 +20,7 @@ with the conda env active). Standard library only (Python >= 3.11 for tomllib).
 import argparse
 import datetime
 import fnmatch
+import hashlib
 import itertools
 import json
 import os
@@ -66,6 +67,8 @@ EDGE_CODES = {"Truth": "Tr", "NoEnf": "NE", "Cyclic": "Cy", "Markov": "Mk", None
 
 # Slurm state -> category shown by `status`
 DONE, RUNNING, PENDING, BLOCKED, FAILED, UNKNOWN = "done", "running", "pending", "blocked", "failed", "unknown"
+# Task pool: arguments a manual re-run of a done task (restart) leaves out, otherwise it would skip (output exists)
+RERUN_DROP_ARGS = {"task": ["--no-overwrite"], "prepare": ["--no-overwrite", "--reuse-inputfiles"]}
 CATEGORIES = [DONE, RUNNING, PENDING, BLOCKED, FAILED, UNKNOWN]
 _FAILED_STATES = {"FAILED", "OUT_OF_MEMORY", "TIMEOUT", "CANCELLED", "NODE_FAIL", "PREEMPTED", "BOOT_FAIL", "DEADLINE"}
 _RUNNING_STATES = {"RUNNING", "COMPLETING", "CONFIGURING", "SUSPENDED", "REQUEUED", "RESIZING"}
@@ -167,16 +170,19 @@ def _tm_variant(spec: str) -> tuple[str, list[str]]:
     raise ValueError(f"Unknown tm variant '{spec}' (use 'base', 'shift:N' or 'perturb:R')")
 
 
-def _tm_entry(entry) -> tuple[str, list[str], set[float] | None, bool]:
-    """grid.tm entry: 'spec' or {spec, stretch_demand = [...] (only these demand levels), low_priority = bool}
-    -> (label, Markov.py arguments, allowed stretch_demand values or None = all, low priority)."""
+def _tm_entry(entry) -> tuple[str, list[str], set[float] | None, bool, set[str] | None]:
+    """grid.tm entry: 'spec' or {spec, stretch_demand = [...] (only these demand levels), low_priority = bool,
+    datasets = [...] (only these datasets)} -> (label, Markov.py arguments, allowed stretch_demand values or None = all,
+    low priority, allowed dataset folder names or None = all)."""
     if isinstance(entry, str):
-        return *_tm_variant(entry), None, False
-    unknown = set(entry) - {"spec", "stretch_demand", "low_priority"}
+        return *_tm_variant(entry), None, False, None
+    unknown = set(entry) - {"spec", "stretch_demand", "low_priority", "datasets"}
     if unknown or "spec" not in entry:
-        raise ValueError(f"grid.tm entry {entry}: needs 'spec', optional 'stretch_demand' and 'low_priority' (unknown: {sorted(unknown)})")
+        raise ValueError(f"grid.tm entry {entry}: needs 'spec', optional 'stretch_demand', 'low_priority' and 'datasets' "
+                         f"(unknown: {sorted(unknown)})")
     sds = {float(s) for s in entry["stretch_demand"]} if "stretch_demand" in entry else None
-    return *_tm_variant(entry["spec"]), sds, bool(entry.get("low_priority", False))
+    names = {Path(d).name for d in entry["datasets"]} if "datasets" in entry else None
+    return *_tm_variant(entry["spec"]), sds, bool(entry.get("low_priority", False)), names
 
 
 def _resources(cfg: dict, res_class: str, dataset: str) -> dict:
@@ -231,9 +237,12 @@ def build_plan(cfg: dict) -> dict:
     edges = grid["edges"]
     tms = [_tm_entry(t) for t in grid["tm"]]
     stretch = [float(s) for s in grid.get("stretch_demand", [1.0])]
-    for label, _, sds, _ in tms:
+    dataset_names = {Path(d).name for d in grid["datasets"]}
+    for label, _, sds, _, names in tms:
         if sds is not None and not sds <= set(stretch):
             raise ValueError(f"grid.tm '{label}': stretch_demand {sorted(sds - set(stretch))} not in grid.stretch_demand")
+        if names is not None and not names <= dataset_names:
+            raise ValueError(f"grid.tm '{label}': datasets {sorted(names - dataset_names)} not in grid.datasets")
     clusters = [int(c) for c in grid["clusters"]]
 
     if "node_file_start_fraction" in markov:
@@ -280,10 +289,11 @@ def build_plan(cfg: dict) -> dict:
         # Grid points longest first: high cluster counts, then the TM variants in config order (base first). Low-priority
         # TM variants form their own job arrays (one --nice per array) with their own index sequence.
         points = sorted(((si, c, ti) for si, c, ti in itertools.product(range(len(stretch)), clusters, range(len(tms)))
-                         if tms[ti][2] is None or stretch[si] in tms[ti][2]), key=lambda p: (-p[1], p[2], p[0]))
+                         if (tms[ti][2] is None or stretch[si] in tms[ti][2]) and (tms[ti][4] is None or name in tms[ti][4])),
+                        key=lambda p: (-p[1], p[2], p[0]))
         for low in (False, True):
             for gi, (si, c, ti) in enumerate([p for p in points if tms[p[2]][3] == low], 1):
-                sd, (tm_label, tm_args, _, _) = stretch[si], tms[ti]
+                sd, (tm_label, tm_args, _, _, _) = stretch[si], tms[ti]
                 prefix = f"{name}/sd{sd:g}/c{c}/{tm_label}"
                 for task in tasks:
                     if task in ORIGINAL_TASKS and tm_label != "base":
@@ -667,6 +677,8 @@ def cmd_restart(args) -> None:
     pool_run = load_pool(args.run)
     if pool_run:
         return cmd_pool_restart(args, pool_run[1], pool_run[3])
+    if args.with_dependents:
+        print("note: --with-dependents applies to pool runs only")
     rdir, state = load_state(args.run)
     tasks = state["tasks"]
     status = classify(state, Slurm.query({current_job(t) for t in tasks.values() if current_job(t)}))
@@ -955,22 +967,44 @@ def _slurm_end_time() -> float | None:
         return None
 
 
+def _dataset_weights(cfg: dict) -> dict | None:
+    """[pool] dataset_weights validated: {dataset folder name: weight} (unlisted datasets: 1), or None if not set."""
+    pcfg = cfg.get("pool", {})
+    weights = pcfg.get("dataset_weights")
+    if weights is None:
+        return None
+    if pcfg.get("rank_offset_hours") is not None:
+        raise ValueError("[pool]: set either dataset_weights or rank_offset_hours, not both")
+    names = {Path(d).name for d in cfg.get("grid", {}).get("datasets", [])}
+    unknown = sorted(set(weights) - names)
+    if unknown or any(float(w) <= 0 for w in weights.values()):
+        raise ValueError(f"[pool] dataset_weights: weights must be > 0 and keys dataset folder names of grid.datasets {sorted(names)}"
+                         + (f" (unknown: {unknown})" if unknown else ""))
+    return {name: float(w) for name, w in weights.items()}
+
+
+def _key_weights(dataset_weights: dict, specs: dict) -> dict:
+    return {key: dataset_weights.get(key.split("/")[0], 1.0) for key in specs}
+
+
+def plan_hash(plan: dict) -> str:
+    """Short fingerprint of a plan (task keys, commands, resources, deps, ranks): workers report the one they run, so
+    `status` can tell which of them have picked up a changed config."""
+    return hashlib.sha1(json.dumps(plan, sort_keys=True).encode()).hexdigest()[:10]
+
+
 def make_worker(cfg: dict, specs: dict, store: "pool.Store", *, cores: int, mem_mb: float, **kwargs) -> "pool.Worker":
     pcfg = cfg.get("pool", {})
     estimator = pool.Estimator(specs, estimate_levels, mem_safety=float(pcfg.get("mem_safety", 1.2)),
                                time_safety=float(pcfg.get("time_safety", 1.5)), time_level=lambda level: "/class:" not in level)
     kwargs.setdefault("mem_fraction", float(pcfg.get("mem_fraction", 0.9)))
     kwargs.setdefault("disk_min_free_mb", float(pcfg.get("disk_min_free_gb", DEFAULT_DISK_MIN_FREE_GB)) * 1024)
-    weights = pcfg.get("dataset_weights")
+    try:
+        weights = _dataset_weights(cfg)
+    except ValueError as e:
+        sys.exit(str(e))
     if weights is not None:  # weighted dataset order: critical path x weight (unlisted datasets: 1)
-        if pcfg.get("rank_offset_hours") is not None:
-            sys.exit("[pool]: set either dataset_weights or rank_offset_hours, not both")
-        names = {Path(d).name for d in cfg.get("grid", {}).get("datasets", [])}
-        unknown = sorted(set(weights) - names)
-        if unknown or any(float(w) <= 0 for w in weights.values()):
-            sys.exit(f"[pool] dataset_weights: weights must be > 0 and keys dataset folder names of grid.datasets {sorted(names)}"
-                     + (f" (unknown: {unknown})" if unknown else ""))
-        kwargs.setdefault("weights", {key: float(weights.get(key.split("/")[0], 1)) for key in specs})
+        kwargs.setdefault("weights", _key_weights(weights, specs))
     elif pcfg.get("rank_offset_hours") is not None:  # soft dataset order; absent = strict (grid.datasets order first)
         kwargs.setdefault("rank_offset_s", float(pcfg["rank_offset_hours"]) * 3600)
     return pool.Worker(specs, store, estimator, cwd=HERE.parent.parent, cores=cores, mem_mb=mem_mb, seed_records=seed_records(cfg), **kwargs)
@@ -1033,8 +1067,67 @@ def cmd_worker(args) -> None:
     worker = make_worker(cfg, pool_specs(plan, keys), store, cores=cores, mem_mb=mem_mb,
                          end_time=end_time, idle_s=idle_h * 3600, max_tasks=args.max_tasks, node_base=args.node_dir,
                          chain_after_s=args.chain_after_hours * 3600 if args.chain_script else None, chain=chain,
-                         info={"log": str(log_file)} if log_file else None)
+                         info={"log": str(log_file)} if log_file else None,
+                         reload=_plan_reloader(config_path, cfg["name"], args.patterns or ["*"], plan_hash(plan)), plan_id=plan_hash(plan))
     sys.exit(worker.run())
+
+
+def _plan_reloader(config_path: Path, name: str, patterns: list[str], current: str):
+    """Worker.reload callback: when the config or cluster.py changed on disk, rebuild the plan in a fresh interpreter
+    (`plan-json`, so changes to build_plan itself are picked up too) and return {specs, weights, plan_id} if the plan
+    differs from the one the worker runs; None otherwise. An invalid config (e.g. saved halfway through an edit) is
+    logged and the worker keeps its plan until the files change again."""
+    watched = [config_path, Path(__file__).resolve()]
+    state = {"mtimes": None, "plan_id": current}
+
+    def mtimes():
+        try:
+            return [p.stat().st_mtime for p in watched]
+        except OSError:
+            return None
+
+    state["mtimes"] = mtimes()
+
+    def reload():
+        now = mtimes()
+        if now is None or now == state["mtimes"]:
+            return None
+        state["mtimes"] = now
+        try:
+            out = subprocess.run([sys.executable, str(Path(__file__).resolve()), "plan-json", str(config_path)],
+                                 capture_output=True, text=True, timeout=600)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print(f"{_now()} WARNING: config / cluster.py changed, but the plan could not be rebuilt ({e!r}) - keeping the current plan", flush=True)
+            return None
+        if out.returncode != 0:
+            tail = " | ".join((out.stderr or out.stdout).strip().splitlines()[-3:])
+            print(f"{_now()} WARNING: config / cluster.py changed, but the new plan is invalid - keeping the current plan: {tail}", flush=True)
+            return None
+        data = json.loads(out.stdout)
+        if data["plan_id"] == state["plan_id"]:
+            return None
+        if data["name"] != name:
+            print(f"{_now()} WARNING: the config's name changed to '{data['name']}' - a worker stays with its pool '{name}'; "
+                  f"keeping the current plan (start new workers for the new pool)", flush=True)
+            return None
+        plan = data["plan"]
+        keys = [k for k in plan if any(fnmatch.fnmatch(k, p) for p in patterns)]
+        if not keys:
+            print(f"{_now()} WARNING: no task of the new plan matches this worker's patterns {patterns} - keeping the current plan", flush=True)
+            return None
+        specs = pool_specs(plan, keys)
+        state["plan_id"] = data["plan_id"]
+        weights = data["dataset_weights"]
+        return {"specs": specs, "weights": _key_weights(weights, specs) if weights is not None else None, "plan_id": data["plan_id"]}
+
+    return reload
+
+
+def cmd_plan_json(args) -> None:
+    """Print the plan of a config as JSON (used by running workers to reload a changed config)."""
+    _, cfg = _load_config(args.config)
+    plan = build_plan(cfg)
+    json.dump({"name": cfg["name"], "plan_id": plan_hash(plan), "plan": plan, "dataset_weights": _dataset_weights(cfg)}, sys.stdout)
 
 
 def _detach_worker(run: str, log_dir: Path) -> None:
@@ -1274,12 +1367,17 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict) -> None:
     _print_counts(status)
     now = time.time()
     workers = store.workers()
-    print(f"\nWORKERS ({len(workers)})")
+    current = plan_hash(plan)
+    print(f"\nWORKERS ({len(workers)})  - plan of the config: {current}")
     for wid, w in sorted(workers.items(), key=lambda x: x[1].get("started", "")):
         alive = not w.get("exited") and now - w.get("beat", 0) < pool.STALE_S
         state = ("stopping" if w.get("stopping") else "active") if alive else ("exited " + w["exited"] if w.get("exited") else "lost (no heartbeat)")
         size = f"{w['cores']} cores, {w['mem_mb'] / 1024:.0f} GB, started {w.get('started')}" if w.get("cores") else ""
-        print(f"  {wid:<40} {state:<28} {len(w.get('running', [])):>3} running  {size}")
+        plan_note = ""
+        if alive:  # workers reload a changed config within about a minute; older workers cannot
+            plan_note = ("  plan: not reloadable (worker predates plan reload - restart it to pick up config changes)" if "plan" not in w
+                         else "" if w["plan"] == current else f"  plan: {w['plan']} (outdated - reloads within a minute)")
+        print(f"  {wid:<40} {state:<28} {len(w.get('running', [])):>3} running  {size}{plan_note}")
     jobs = store.jobs()
     if jobs and shutil.which("squeue"):  # queued / running worker jobs (chained successors included)
         out = subprocess.run(["squeue", "-h", "-j", ",".join(sorted(jobs)), "-o", "%i|%T|%r|%S"], capture_output=True, text=True).stdout
@@ -1383,14 +1481,55 @@ def cmd_pool_restart(args, store: "pool.Store", plan: dict) -> None:
     if args.mem or args.mem_factor or args.cpus or args.time or args.include_pending:
         print("note: --mem/--mem-factor/--cpus/--time/--include-pending do not apply to pool runs (estimates are automatic)")
     status = pool_status(plan, store)
-    selected = [k for k, (cat, _) in status.items() if cat == FAILED and (args.failed or any(fnmatch.fnmatch(k, p) for p in args.patterns))]
-    if not selected:
-        sys.exit("Nothing to restart (only failed tasks can be retried; running workers pick them up again)")
-    print(f"Retrying {len(selected)} failed task(s)" + ("  (dry run)" if args.dry_run else ""))
-    for key in selected:
-        print(f"  {key}")
-        if not args.dry_run:
-            store.reset(key, status[key][1]["attempt"])
+    matched = {k for k in plan if any(fnmatch.fnmatch(k, p) for p in args.patterns)}
+    if args.patterns and not matched:
+        sys.exit(f"No task of the plan matches {args.patterns} (task keys look like 'TX-123BT/sd1/c28/base/main/Truth', see status --list)")
+    failed = [k for k, (cat, _) in status.items() if cat == FAILED and (args.failed or k in matched)]
+    done = [k for k, (cat, _) in status.items() if cat == DONE and k in matched and k != "evaluate"]
+    if args.with_dependents:  # finished tasks downstream of the selected ones re-run too (they used the old outputs)
+        kids = {}
+        for key, task in plan.items():
+            for dep in task["deps"]:
+                kids.setdefault(dep, []).append(key)
+        stack, seen = failed + done, set(failed + done)
+        while stack:
+            for kid in kids.get(stack.pop(), []):
+                if kid not in seen:
+                    seen.add(kid)
+                    stack.append(kid)
+                    if status[kid][0] == DONE:
+                        done.append(kid)
+    skipped = sorted(k for k in matched if status[k][0] not in (FAILED, DONE))
+    if skipped:
+        print(f"Not restarted - {len(skipped)} matching task(s) are not finished (running, pending or blocked; they run anyway):")
+        for key in skipped[:20]:
+            print(f"  {key} ({status[key][0]})")
+        if len(skipped) > 20:
+            print(f"  ... and {len(skipped) - 20} more")
+    if not failed and not done:
+        sys.exit("Nothing to restart (failed and done tasks can be restarted; running workers pick them up)")
+    suffix = "  (dry run)" if args.dry_run else ""
+    if failed:
+        print(f"Retrying {len(failed)} failed task(s){suffix}")
+        for key in failed:
+            print(f"  {key}")
+            if not args.dry_run:
+                store.reset(key, status[key][1]["attempt"])
+    if done:
+        print(f"Re-running {len(done)} done task(s) without --no-overwrite (prepare: also without --reuse-inputfiles, so its "
+              f"folders are rebuilt){suffix}")
+        for key in done:
+            print(f"  {key}")
+            if not args.dry_run:
+                store.reset(key, status[key][1]["attempt"], RERUN_DROP_ARGS["prepare" if key.endswith("/prepare") else "task"])
+        if not args.with_dependents:
+            downstream = sum(status[k][0] == DONE for k in plan if set(plan[k]["deps"]) & set(done))
+            if downstream:
+                print(f"  note: {downstream} done task(s) depend directly on these and keep their results - add --with-dependents to re-run them too")
+    running_kids = sorted(k for k in plan if status[k][0] == RUNNING and set(plan[k]["deps"]) & set(failed + done))
+    if running_kids:
+        print(f"  WARNING: {len(running_kids)} running task(s) depend on restarted ones and use their old outputs, e.g. {running_kids[0]}"
+              + (" - a prepare re-run rewrites the input folders they read" if any(k.endswith("/prepare") for k in done) else ""))
     # evaluate runs once nothing else is left - also when everything failed: run it again after the retried tasks
     if status.get("evaluate", (None,))[0] == DONE:
         print("  evaluate (done before - runs again at the end)")
@@ -1447,10 +1586,13 @@ def main():
     p.add_argument("--list", choices=CATEGORIES, help="List all tasks in this state instead")
     p.add_argument("--filter", help="Only list tasks matching this glob pattern, e.g. 'TX-123BT/*'")
     p.set_defaults(func=cmd_status)
-    p = sub.add_parser("restart", help="Resubmit failed tasks (and everything waiting for them)")
+    p = sub.add_parser("restart", help="Resubmit failed tasks (and everything waiting for them); task pool: also re-run done tasks "
+                                       "matching the patterns (running workers pick them up)")
     p.add_argument("run", help="Run name or its TOML file")
     p.add_argument("patterns", nargs="*", default=[], help="Glob patterns of task keys, e.g. 'TX-123BT/sd0.5/c21/base/main/Truth' or 'TX-123BT/*/regret/*'")
     p.add_argument("--failed", action="store_true", help="Select all failed tasks")
+    p.add_argument("--with-dependents", action="store_true", help="Task pool: also re-run the done tasks that depend on the "
+                                                                    "selected ones (they used the old outputs)")
     p.add_argument("--include-pending", action="store_true", help="Also resubmit matching tasks that are still queued (e.g. to change their resources)")
     p.add_argument("--mem", help="New memory for the selected tasks, e.g. 200G")
     p.add_argument("--mem-factor", type=float, help="Scale the memory of the selected tasks, e.g. 1.5")
@@ -1523,6 +1665,9 @@ def main():
     p = sub.add_parser("cancel", help="Cancel all jobs of a run")
     p.add_argument("run", help="Run name or its TOML file")
     p.set_defaults(func=cmd_cancel)
+    p = sub.add_parser("plan-json", help="Print the task plan of a config as JSON (used by running workers to reload a changed config)")
+    p.add_argument("config", help="TOML experiment file or its name")
+    p.set_defaults(func=cmd_plan_json)
     args = parser.parse_args()
     if args.command == "restart" and not (args.failed or args.patterns):
         parser.error("restart needs --failed and/or task patterns")

@@ -262,8 +262,17 @@ class Store:
     def write_result(self, key: str, attempt: int, record: dict) -> None:
         _write_json_atomic(self.root / "results" / f"{_safe(key)}.{attempt}.json", {"key": key, "attempt": attempt, **record})
 
-    def reset(self, key: str, attempt: int) -> None:
-        (self.root / "resets" / f"{_safe(key)}.{attempt}").write_text(_now())
+    def reset(self, key: str, attempt: int, drop_args: list[str] | None = None) -> None:
+        """Make attempt n retryable. drop_args: command-line arguments the next attempt runs without (e.g. a re-run of
+        a done task without --no-overwrite, which would otherwise skip it)."""
+        _write_json_atomic(self.root / "resets" / f"{_safe(key)}.{attempt}", {"time": _now(), "drop_args": drop_args or []})
+
+    def drop_args(self, key: str, attempt: int) -> list[str]:
+        """The drop_args of the reset of attempt n ([] if none; old resets hold a plain timestamp)."""
+        try:
+            return list(json.loads((self.root / "resets" / f"{_safe(key)}.{attempt}").read_text()).get("drop_args", []))
+        except (OSError, ValueError, AttributeError):
+            return []
 
     def log_path(self, key: str, attempt: int) -> Path:
         return self.log_dir / f"{_safe(key)}.{attempt}.log"
@@ -462,6 +471,8 @@ class Worker:
 
     specs: {key: {cmd: [argv], deps: [key], cpus, prior_mem_mb, prior_time_s, rank}} in dependency order (deps first).
     Selection: only these keys are run; dependencies outside the specs count as satisfied.
+    reload: optional callback, called every reload_s: returns None (no change) or {specs, weights, plan_id} - the new
+    task set (see update_specs), so tasks can be added / removed while the worker runs.
     """
 
     def __init__(self, specs: dict, store: Store, estimator: Estimator, *, cwd: Path, cores: int, mem_mb: float,
@@ -472,8 +483,9 @@ class Worker:
                  interrupt_margin_s: float = 600, reserve_after_s: float = 1800, rank_offset_s: float | None = None,
                  weights: dict | None = None,
                  chain_after_s: float | None = None,
-                 chain=None, chain_retry_s: float = 600, info: dict | None = None, out=print):
-        self.specs, self.store, self.est = specs, store, estimator
+                 chain=None, chain_retry_s: float = 600, info: dict | None = None, reload=None, reload_s: float = 60,
+                 plan_id: str | None = None, out=print):
+        self.store, self.est = store, estimator
         self.info = info or {}  # extra heartbeat fields (e.g. the worker's log file)
         self.cwd, self.cores, self.mem_mb = cwd, cores, mem_mb
         self.pack_mb = mem_fraction * mem_mb
@@ -498,11 +510,8 @@ class Worker:
         self.too_large = set()  # tasks needing more cpus than this worker's cores (logged once, never started here)
         self.too_big = set()  # unattempted tasks whose memory estimate exceeds the RAM (logged once; re-checked as estimates change)
         self.running = {}  # key -> {proc, attempt, start, est, cpus, peak_mb, rss_mb, node_dir, node_peak_mb, log, stop}
-        self.children = {}
-        for key, spec in specs.items():
-            for dep in spec["deps"]:
-                if dep in specs:
-                    self.children.setdefault(dep, []).append(key)
+        self.reload, self.reload_s, self.plan_id = reload, reload_s, plan_id
+        self._set_specs(specs)
         for record in seed_records:
             self.est.add(record)
         self.estimates, self.critical = {}, {}
@@ -514,6 +523,33 @@ class Worker:
 
     def log(self, msg: str) -> None:
         self.out(f"{_now()} {msg}")
+
+    # -- task set -------------------------------------------------------------------------------------------------------
+    def _set_specs(self, specs: dict) -> None:
+        self.specs = specs
+        self.est.specs = specs
+        self.children = {}
+        for key, spec in specs.items():
+            for dep in spec["deps"]:
+                if dep in specs:
+                    self.children.setdefault(dep, []).append(key)
+
+    def update_specs(self, specs: dict, weights: dict | None = None, plan_id: str | None = None) -> None:
+        """Switch to a new task set (a changed config): added tasks become schedulable, removed ones are no longer
+        started. A removed task that runs here keeps running to its end (its result is recorded as usual) and is
+        dropped when it finishes ('retired'). Changed specs (command, resources, deps) apply to the next attempt."""
+        old = self.specs
+        added = [k for k in specs if k not in old]
+        removed = [k for k in old if k not in specs and not old[k].get("retired")]
+        changed = [k for k in specs if k in old and specs[k] != old[k]]
+        retired = {k: {**old[k], "retired": True} for k in self.running if k not in specs}
+        self._set_specs({**specs, **retired})  # retired last: nothing in the new plan depends on them
+        self.weights = weights
+        self.plan_id = plan_id
+        self.head_blocked = (None, 0.0)
+        self.refresh_estimates()
+        self.log(f"plan reloaded ({plan_id}): {len(added)} task(s) added, {len(removed)} removed, {len(changed)} changed, "
+                 f"{len(specs)} selected" + (f"; {len(retired)} removed task(s) still running here, they finish normally" if retired else ""))
 
     # -- estimates and priorities ---------------------------------------------------------------------------------------
     def refresh_estimates(self) -> None:
@@ -548,6 +584,9 @@ class Worker:
         node_dir = self.node_base / f"gurobi-nodes-{self.id}-{_safe(key)}-{attempt}"
         node_dir.mkdir(parents=True, exist_ok=True)
         cmd = [a.replace("@THREADS@", str(self.threads(key))).replace("@NODEDIR@", str(node_dir)) for a in spec["cmd"]]
+        dropped = self.store.drop_args(key, attempt - 1) if attempt > 1 else []
+        if dropped:  # manual re-run of a done task (cluster.py restart)
+            cmd = [a for a in cmd if a not in dropped]
         log = None if self.console else self.store.log_path(key, attempt)
         handle = open(log, "w", encoding="utf-8", errors="replace") if log else None
         # Windows: no console window per task when logging to a file (the worker may run without a desktop, e.g. as a
@@ -566,7 +605,7 @@ class Worker:
                              "stop": None}
         src = "" if est["mem_src"] != "prior" else " (prior)"
         self.log(f"start {key} (attempt {attempt}, {self.threads(key)} threads, est. {est['mem_mb'] / 1024:.1f} GB{src}, "
-                 f"{est['time_s'] / 3600:.1f} h)" + (f" -> {log}" if log else ""))
+                 f"{est['time_s'] / 3600:.1f} h)" + (f", re-run without {' '.join(dropped)}" if dropped else "") + (f" -> {log}" if log else ""))
 
     def stop(self, key: str, outcome: str, reason: str) -> None:
         """Evict / interrupt a running task: TERM now, KILL after 30 s (checked in poll)."""
@@ -596,6 +635,10 @@ class Worker:
         peak = f", peak {run['peak_mb'] / 1024:.1f} GB" if run["peak_mb"] else ""
         peak += " (nothing to do - not used as a measurement)" if noop else ""
         self.log(f"{outcome} {key} after {datetime.timedelta(seconds=int(elapsed))}" + (f" (exit {rc})" if outcome == FAILED else "") + peak)
+        if self.specs[key].get("retired"):  # removed from the plan while it ran: not started again
+            self._set_specs({k: s for k, s in self.specs.items() if k != key})
+            self.estimates.pop(key, None)
+            self.critical.pop(key, None)
 
     def poll(self) -> bool:
         """Sample memory / node files, kill tasks that ignore TERM, collect finished ones. True if one finished."""
@@ -677,8 +720,10 @@ class Worker:
         A spec with `after_all` (evaluate) becomes ready once every other task is done, failed or blocked."""
         blocked, ready, remaining, last = set(), [], 0, []
         for key, spec in self.specs.items():  # dependency order: blocked parents are known before their children
+            if spec.get("retired"):  # removed from the plan, only finishing here
+                continue
             state = snap[key][0]
-            deps = [d for d in spec["deps"] if d in self.specs]
+            deps = [d for d in spec["deps"] if d in self.specs and not self.specs[d].get("retired")]
             if state in (DONE,):
                 continue
             if state == FAILED or any(d in blocked for d in deps):
@@ -790,25 +835,43 @@ class Worker:
             self.log(f"ERROR: could not submit the successor job - retrying in {self.chain_retry_s / 60:.0f} min "
                      f"(without it, this worker chain ends with this job)")
 
+    def maybe_reload(self) -> None:
+        """Ask the reload callback for a changed task set; a failing callback must not stop the running tasks."""
+        try:
+            new = self.reload()
+        except Exception as e:  # noqa: BLE001
+            self.log(f"WARNING: reloading the plan raised {e!r} - keeping the current plan")
+            return
+        if new:
+            self.update_specs(new["specs"], new.get("weights"), new.get("plan_id"))
+
     def run(self) -> int:
         """Main loop; returns 0 if nothing failed in this worker, 1 otherwise."""
         self.log(f"worker {self.id}: {self.cores} cores, {self.mem_mb / 1024:.0f} GB ({self.pack_mb / 1024:.0f} GB for packing"
                  + ("" if self.mem_packing else ", memory packing off") + f"), {len(self.specs)} task(s) selected, node files in {self.node_base}"
                  + f" ({self.disk_free_gb()} GB free; new tasks pause below {self.disk_min_free_mb / 1024:g} GB)"
-                 + (f", ends {datetime.datetime.fromtimestamp(self.end_time).isoformat(timespec='minutes')}" if self.end_time else ""))
+                 + (f", ends {datetime.datetime.fromtimestamp(self.end_time).isoformat(timespec='minutes')}" if self.end_time else "")
+                 + (f", plan {self.plan_id} (reloaded when the config changes)" if self.reload else ""))
         started = time.time()
         info = {"host": self.host, "pid": os.getpid(), "slurm_job": os.environ.get("SLURM_JOB_ID"), "cores": self.cores,
                 "mem_mb": self.mem_mb, "started": _now(), "started_ts": started, "end_time": self.end_time, **self.info}
         for wid in self.store.mark_dead_workers(self.host):
             self.log(f"worker {wid} on this host is gone (crash / reboot) - its tasks are retried now")
         last_beat = last_full = 0.0
+        last_reload = time.time()
         idle_since = None
         snap = {}
         try:
             while True:
                 now = time.time()
+                if self.reload and now - last_reload > self.reload_s:
+                    last_reload = now
+                    self.maybe_reload()
                 if now - last_beat > HEARTBEAT_S:
-                    self.store.beat(self.id, {**info, "running": sorted(self.running), "stopping": bool(self.stopping)})
+                    beat = {**info, "running": sorted(self.running), "stopping": bool(self.stopping)}
+                    if self.reload:  # status compares it with the config's current plan
+                        beat["plan"] = self.plan_id
+                    self.store.beat(self.id, beat)
                     last_beat = now
                 finished = self.poll()
                 if self.guard_walltime():
