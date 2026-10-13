@@ -100,14 +100,43 @@ def machine_memory_mb() -> tuple[float | None, float | None]:
 
 def process_rss_mb(proc: subprocess.Popen) -> tuple[float | None, float | None]:
     """(current, peak) resident memory of a child process in MB (Linux VmRSS/VmHWM, Windows working set)."""
+    if sys.platform == "win32":
+        return _rss_windows(int(proc._handle))
+    return _rss_linux(proc.pid)
+
+
+def pid_rss_mb(pid: int) -> tuple[float | None, float | None]:
+    """(current, peak) resident memory in MB of any process of this machine by id (another worker's task)."""
+    if sys.platform != "win32":
+        return _rss_linux(pid)
     try:
-        if sys.platform == "win32":
-            counters = _ProcessMemoryCounters(cb=ctypes.sizeof(_ProcessMemoryCounters))
-            if ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.c_void_p(int(proc._handle)), ctypes.byref(counters), counters.cb):
-                return counters.WorkingSetSize / 1024 ** 2, counters.PeakWorkingSetSize / 1024 ** 2
-            return None, None
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(0x1000 | 0x0010, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ
+    except (OSError, AttributeError):
+        return None, None
+    if not handle:
+        return None, None
+    try:
+        return _rss_windows(handle)
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+def _rss_windows(handle: int) -> tuple[float | None, float | None]:
+    try:
+        counters = _ProcessMemoryCounters(cb=ctypes.sizeof(_ProcessMemoryCounters))
+        if ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.c_void_p(handle), ctypes.byref(counters), counters.cb):
+            return counters.WorkingSetSize / 1024 ** 2, counters.PeakWorkingSetSize / 1024 ** 2
+        return None, None
+    except (OSError, AttributeError, ValueError):
+        return None, None
+
+
+def _rss_linux(pid: int) -> tuple[float | None, float | None]:
+    try:
         rss = hwm = None
-        with open(f"/proc/{proc.pid}/status") as f:
+        with open(f"/proc/{pid}/status") as f:
             for line in f:
                 if line.startswith("VmRSS:"):
                     rss = float(line.split()[1]) / 1024
@@ -481,9 +510,9 @@ class Worker:
                  node_base: Path | None = None, disk_min_free_mb: float = 10 * 1024, seed_records=(), poll_s: float = 15,
                  guard_available_fraction: float = 0.04, guard_rss_fraction: float = 0.97, evict_grace_s: float = 60,
                  interrupt_margin_s: float = 600, reserve_after_s: float = 1800, rank_offset_s: float | None = None,
-                 weights: dict | None = None,
+                 weights: dict | None = None, opportunistic: bool = True, opportunistic_after_s: float = 600,
                  chain_after_s: float | None = None,
-                 chain=None, chain_retry_s: float = 600, info: dict | None = None, reload=None, reload_s: float = 60,
+                 chain=None, chain_retry_s: float = 600, info: dict | None = None, reload=None, reload_s: float = 60, handover=None,
                  plan_id: str | None = None, out=print):
         self.store, self.est = store, estimator
         self.info = info or {}  # extra heartbeat fields (e.g. the worker's log file)
@@ -497,6 +526,9 @@ class Worker:
         self.guard_available_fraction, self.guard_rss_fraction, self.evict_grace_s = guard_available_fraction, guard_rss_fraction, evict_grace_s
         self.interrupt_margin_s, self.reserve_after_s, self.rank_offset_s = interrupt_margin_s, reserve_after_s, rank_offset_s
         self.weights = weights  # {key: weight} (weighted order; takes precedence over rank_offset_s) or None
+        # Opportunistic starts (see admit), only with memory packing. A firm task counts its full reservation as in use
+        # for its first opportunistic_after_s (fast early growth), then only its peak so far
+        self.opportunistic, self.opportunistic_after_s = opportunistic and mem_packing, opportunistic_after_s
         # Chaining: once, chain_after_s after the start, call chain() (submits a successor job, returns its id or None)
         # if tasks remain; retried every chain_retry_s until it succeeds
         self.chain_after_s, self.chain, self.chain_retry_s = chain_after_s, chain, chain_retry_s
@@ -509,8 +541,14 @@ class Worker:
         self.stopping = None  # the stop request being followed (cluster.py stop)
         self.too_large = set()  # tasks needing more cpus than this worker's cores (logged once, never started here)
         self.too_big = set()  # unattempted tasks whose memory estimate exceeds the RAM (logged once; re-checked as estimates change)
-        self.running = {}  # key -> {proc, attempt, start, est, cpus, peak_mb, rss_mb, node_dir, node_peak_mb, log, stop}
+        self.running = {}  # key -> {proc, attempt, start, est, cpus, peak_mb, rss_mb, node_dir, node_peak_mb, log, stop, opp, opp_start}
         self.reload, self.reload_s, self.plan_id = reload, reload_s, plan_id
+        # Code handover: called every reload_s; starts a successor running the changed code and returns its description
+        # (then this worker drains), or None
+        self.handover = handover
+        # Tasks of other live workers on this machine (e.g. one draining after a handover), shaped like `running`
+        # entries: they occupy cores and memory here (see refresh_foreign)
+        self.foreign, self.foreign_peaks = {}, {}
         self._set_specs(specs)
         for record in seed_records:
             self.est.add(record)
@@ -579,7 +617,7 @@ class Worker:
         return min(cpus, self.thread_cap) if self.thread_cap else cpus
 
     # -- task lifecycle -------------------------------------------------------------------------------------------------
-    def start(self, key: str, attempt: int) -> None:
+    def start(self, key: str, attempt: int, opp: bool = False) -> None:
         spec, est = self.specs[key], self.estimates[key]
         node_dir = self.node_base / f"gurobi-nodes-{self.id}-{_safe(key)}-{attempt}"
         node_dir.mkdir(parents=True, exist_ok=True)
@@ -602,9 +640,9 @@ class Worker:
             self.log(f"warning: {key} could not be tied to the worker's lifetime (job object) - kill it by hand if the worker dies")
         self.running[key] = {"proc": proc, "attempt": attempt, "start": time.time(), "est": est, "cpus": self.threads(key),
                              "peak_mb": 0.0, "rss_mb": 0.0, "node_dir": node_dir, "node_peak_mb": 0.0, "log": log, "handle": handle,
-                             "stop": None}
+                             "stop": None, "opp": opp, "opp_start": opp}
         src = "" if est["mem_src"] != "prior" else " (prior)"
-        self.log(f"start {key} (attempt {attempt}, {self.threads(key)} threads, est. {est['mem_mb'] / 1024:.1f} GB{src}, "
+        self.log(f"start {key} (" + ("opportunistic, " if opp else "") + f"attempt {attempt}, {self.threads(key)} threads, est. {est['mem_mb'] / 1024:.1f} GB{src}, "
                  f"{est['time_s'] / 3600:.1f} h)" + (f", re-run without {' '.join(dropped)}" if dropped else "") + (f" -> {log}" if log else ""))
 
     def stop(self, key: str, outcome: str, reason: str) -> None:
@@ -626,7 +664,7 @@ class Worker:
         record = {"outcome": outcome, "noop": noop, "rc": rc, "elapsed_s": round(elapsed, 1), "peak_rss_mb": round(run["peak_mb"], 1) or None,
                   "node_files_peak_mb": round(run["node_peak_mb"], 1), "threads": run["cpus"], "worker": self.id,
                   "host": socket.gethostname(), "start": datetime.datetime.fromtimestamp(run["start"]).isoformat(timespec="seconds"),
-                  "end": _now(), "estimate": run["est"], "log": str(run["log"]) if run["log"] else None}
+                  "end": _now(), "estimate": run["est"], "opportunistic": run["opp_start"], "log": str(run["log"]) if run["log"] else None}
         self.store.write_result(key, run["attempt"], record)
         self.est.add({"key": key, "attempt": run["attempt"], **record})
         self.counts[outcome] += 1
@@ -679,22 +717,98 @@ class Worker:
             return False
         return True
 
-    def guard_memory(self) -> None:
-        """When memory runs out, stop one task: the most recently started low-priority one, else the most recently started
-        one (least work lost) except the one using the most memory (it may really need it; the others make room). A task beyond its
-        own estimate is evicted (retried with a higher estimate), any other one preempted (retried; its peak is a
-        minimum, its runtime is not used)."""
+    def task_details(self) -> dict:
+        """Heartbeat field `tasks`: what another worker on this machine needs to account for them (refresh_foreign)."""
+        return {k: {"pid": r["proc"].pid, "cpus": r["cpus"], "est_mb": round(r["est"]["mem_mb"], 1), "peak_mb": round(r["peak_mb"], 1),
+                    "rss_mb": round(r["rss_mb"], 1), "start": r["start"], "opp": r["opp"]} for k, r in self.running.items()}
+
+    def refresh_foreign(self) -> None:
+        """Tasks of the other live workers on this machine (outside Slurm only) from their heartbeats,
+        memory sampled here by pid (heartbeats are up to HEARTBEAT_S old). Workers in this process are skipped: they only
+        exist in tests, where they stand for separate machines. Heartbeats without task details (workers predating them)
+        count each task with this worker's estimate, as just started."""
+        if os.environ.get("SLURM_JOB_ID"):
+            return  # a Slurm job has one worker (successors are new jobs with their own allocation)
+        foreign, now = {}, time.time()
+        for wid, w in self.store.workers().items():
+            if (wid == self.id or w.get("exited") or now - w.get("beat", 0) > STALE_S or not w.get("pid") or w.get("pid") == os.getpid()
+                    or w.get("host", "").lower() != self.host.lower() or w.get("slurm_job") or not pid_alive(int(w["pid"]))):
+                continue
+            for key, t in (w.get("tasks") or {k: {} for k in w.get("running", [])}).items():
+                fid = f"{wid}/{key}"
+                rss, hwm = pid_rss_mb(int(t["pid"])) if t.get("pid") else (None, None)
+                if t.get("pid") and rss is None and not pid_alive(int(t["pid"])):
+                    continue  # finished since the heartbeat
+                est = t.get("est_mb") or (self.estimates[key]["mem_mb"] if key in self.estimates else 0.0)
+                foreign[fid] = {"est": {"mem_mb": est}, "cpus": t.get("cpus") or (self.threads(key) if key in self.specs else 1),
+                                "peak_mb": max(self.foreign_peaks.get(fid, 0.0), t.get("peak_mb") or 0.0, hwm or rss or 0.0),
+                                "rss_mb": rss if rss is not None else t.get("rss_mb") or 0.0, "start": t.get("start") or now,
+                                "opp": bool(t.get("opp")), "stop": None}
+        if len(foreign) != len(self.foreign):
+            self.log(f"other workers on this machine run {len(foreign)} task(s) - counted as occupied here"
+                     + (f" ({sum(r['cpus'] for r in foreign.values())} threads, est. {sum(r['est']['mem_mb'] for r in foreign.values()) / 1024:.1f} GB)" if foreign else ""))
+        self.foreign = foreign
+        self.foreign_peaks = {fid: r["peak_mb"] for fid, r in foreign.items()}
+
+    def _reservation(self, run: dict) -> float:
+        """Memory a firm task holds for admission: its estimate, or more if it already uses more."""
+        return max(run["est"]["mem_mb"], run["rss_mb"] * 1.1)
+
+    def _in_use(self, run: dict) -> float:
+        """Memory a task counts as actually using (opportunistic admission and guard): an opportunistic task its estimate
+        (or its peak, if higher), a firm one its peak so far - after an initial opportunistic_after_s with its full
+        reservation. Peaks only grow, so a stopped opportunistic task is not restarted into the same gap."""
+        if run["opp"]:
+            return max(run["est"]["mem_mb"], run["peak_mb"] * 1.1)
+        if time.time() - run["start"] < self.opportunistic_after_s:
+            return max(self._reservation(run), run["peak_mb"] * 1.1)
+        return run["peak_mb"] * 1.1
+
+    def guard_opportunistic(self) -> None:
+        """Stop the newest opportunistic tasks while the memory in use (`_in_use`) exceeds the packing share, i.e. while
+        the firm tasks grow into the gap the opportunistic ones were started in. Runs every second (cheap: uses the RSS
+        sampled by poll), so the firm tasks keep the headroom up to the RAM."""
         active = [k for k, r in self.running.items() if r["stop"] is None]
-        if len(active) < 2 or time.time() - self.last_evict < self.evict_grace_s:
+        opps = sorted((k for k in active if self.running[k]["opp"]), key=lambda k: self.running[k]["start"], reverse=True)
+        if not opps:
+            return
+        in_use = sum(self._in_use(self.running[k]) for k in active) + sum(self._in_use(r) for r in self.foreign.values())
+        for victim in opps:
+            if in_use <= self.pack_mb:
+                break
+            run = self.running[victim]
+            why = f"tasks need {in_use / 1024:.1f} GB of {self.pack_mb / 1024:.1f} GB usable (opportunistic start)"
+            if run["rss_mb"] > run["est"]["mem_mb"]:
+                self.stop(victim, EVICTED, f"{why}, it uses {run['rss_mb'] / 1024:.1f} GB > its estimate "
+                                           f"{run['est']['mem_mb'] / 1024:.1f} GB - will be retried with a higher estimate")
+            else:
+                self.stop(victim, PREEMPTED, f"{why} - makes room for the firm tasks, will be retried")
+            in_use -= self._in_use(run)
+
+    def guard_memory(self) -> None:
+        """When memory runs out, stop one task: the most recently started opportunistic one, else the most recently started
+        low-priority one, else the most recently started one (least work lost) except the one using the most memory (it may
+        really need it; the others make room). A task beyond its
+        own estimate is evicted (retried with a higher estimate), any other one preempted (retried; its peak is a
+        minimum, its runtime is not used). Tasks of other workers on this machine count for the memory used and as the
+        largest one, but only own tasks are stopped (the other worker's guard handles its own)."""
+        active = [k for k, r in self.running.items() if r["stop"] is None]
+        tasks = {**{k: self.running[k] for k in active}, **self.foreign}
+        if not active or len(tasks) < 2 or time.time() - self.last_evict < self.evict_grace_s:
             return
         total, available = machine_memory_mb()
-        used = sum(self.running[k]["rss_mb"] for k in active)
+        used = sum(r["rss_mb"] for r in tasks.values())
         low_system = available is not None and total and available < self.guard_available_fraction * total
         over_capacity = used > self.guard_rss_fraction * self.mem_mb
         if low_system or over_capacity:
-            largest = max(active, key=lambda k: self.running[k]["rss_mb"])
-            lows = [k for k in active if self.specs[k].get("low")]  # low-priority tasks go first (even the largest one)
-            victim = max(lows or [k for k in active if k != largest], key=lambda k: self.running[k]["start"])
+            largest = max(tasks, key=lambda k: tasks[k]["rss_mb"])
+            # opportunistic, then low-priority tasks go first (even the largest one)
+            opps = [k for k in active if self.running[k]["opp"]]
+            lows = [k for k in active if self.specs[k].get("low")]
+            candidates = opps or lows or [k for k in active if k != largest]
+            if not candidates:  # the only own task is the largest one: the other worker has to make room
+                return
+            victim = max(candidates, key=lambda k: self.running[k]["start"])
             run = self.running[victim]
             why = (f"only {available / 1024:.1f} GB of {total / 1024:.0f} GB available" if low_system
                    else f"tasks use {used / 1024:.1f} GB of {self.mem_mb / 1024:.0f} GB")
@@ -702,7 +816,7 @@ class Worker:
                 self.stop(victim, EVICTED, f"{why}, it uses {run['rss_mb'] / 1024:.1f} GB > its estimate "
                                            f"{run['est']['mem_mb'] / 1024:.1f} GB - will be retried with a higher estimate")
             else:
-                self.stop(victim, PREEMPTED, f"{why} - makes room for {largest} ({self.running[largest]['rss_mb'] / 1024:.1f} GB), "
+                self.stop(victim, PREEMPTED, f"{why} - makes room for {largest} ({tasks[largest]['rss_mb'] / 1024:.1f} GB), "
                                              f"will be retried")
             self.last_evict = time.time()
 
@@ -743,29 +857,37 @@ class Worker:
         """Start ready tasks that fit (cores, memory estimate, walltime); returns the number started.
 
         Low-priority tasks (low_priority TM variants) only use spare capacity: they start once every ready normal task
-        is placed. A started task is never stopped to make room (only the memory guard and the walltime stop tasks).
-        A running task reserves its estimate (or more, if it already uses more) - except one estimated above the packing
-        share, which only reserves its peak so far: smaller tasks fill the rest, and the memory guard preempts them if
-        it really grows that large."""
+        is placed. A started task is never stopped to make room (only the memory guards and the walltime stop tasks).
+        A running firm task reserves its estimate (or more, if it already uses more); a task estimated above the packing
+        share starts only when no other firm task runs.
+
+        Opportunistic starts: a ready task that does not fit by these reservations may still start if it fits next to
+        the memory the running tasks actually use (`_in_use`: firm tasks their peak so far) - e.g. next to a large task
+        that has not grown to its estimate yet, whose idle cores would otherwise wait. Opportunistic tasks are ignored by
+        the firm reservations (they never keep a firm task from starting), go shortest-estimate first (best chance to
+        finish), never take the cores of a top task in head-of-line reservation, are stopped first when the firm tasks
+        grow into their gap (`guard_opportunistic`) and become firm once their estimate fits (not during a reservation)."""
         if self.any_failed and not self.keep_going:
             return 0
         ready, _ = self.ready(snap)
         started = 0
-        reserved = sum(r["peak_mb"] * 1.1 if r["est"]["mem_mb"] > self.pack_mb else max(r["est"]["mem_mb"], r["rss_mb"] * 1.1)
-                       for r in self.running.values())
-        cores_used = sum(r["cpus"] for r in self.running.values())
+        occupied = [*self.running.values(), *self.foreign.values()]  # other workers' tasks on this machine count too
+        firm = [r for r in occupied if not r["opp"]]
+        reserved = sum(self._reservation(r) for r in firm)
+        in_use = sum(self._in_use(r) for r in occupied)
+        cores_used = sum(r["cpus"] for r in occupied)
         head = ready[0] if ready else None
         if head != self.head_blocked[0]:
             self.head_blocked = (head, time.time())
         waiting_normal = None  # the first ready normal-priority task that did not fit
+        reserving = False  # head-of-line reservation: the top task has waited too long, no firm backfilling
+        candidates = []  # tasks that may run here but did not start firmly: opportunistic candidates
         for key in ready:
             low = self.specs[key].get("low", False)
             if self.max_tasks and len(self.running) >= self.max_tasks:
                 if not low and waiting_normal is None:
                     waiting_normal = key
                 break
-            if low and waiting_normal is not None:
-                break  # low-priority tasks come last in `ready`: none of them while a normal task waits for space
             if self.specs[key]["cpus"] > self.cores and not self.thread_cap:
                 if key not in self.too_large:  # never with fewer threads (work units / solver times would not be comparable)
                     self.too_large.add(key)
@@ -783,26 +905,65 @@ class Worker:
             remaining_s = None if self.end_time is None else self.end_time - self.interrupt_margin_s - time.time()
             if remaining_s is not None and est["time_src"] != "prior" and est["time_s"] > remaining_s:
                 continue  # measured runtime does not fit into the rest of this job; another worker will take it
+            if reserving or (low and waiting_normal is not None):
+                # the top task waits too long (keep the freed resources for it) / low-priority tasks come last in
+                # `ready`: none of them while a normal task waits for space - but both may still start opportunistically
+                candidates.append(key)
+                continue
             fits_cores = cores_used + self.threads(key) <= self.cores
             fits_mem = not self.mem_packing or reserved + est["mem_mb"] <= self.pack_mb
-            alone = not self.running  # a task above the packing share (but within the RAM) still runs, alone
+            alone = not firm  # a task above the packing share (but within the RAM) still runs, without other firm tasks
             if fits_cores and (fits_mem or alone):
                 if not self.store.claim(key, snap[key][1] + 1, self.id):
                     continue  # another worker took it
                 if alone and not fits_mem:
                     self.log(f"note: {key} is estimated at {est['mem_mb'] / 1024:.1f} GB > {self.pack_mb / 1024:.1f} GB usable - running it alone")
                 self.start(key, snap[key][1] + 1)
+                firm.append(self.running[key])
                 reserved += est["mem_mb"]
+                in_use += est["mem_mb"]
                 cores_used += self.threads(key)
                 started += 1
                 if key == head:
                     self.head_blocked = (None, 0.0)
             else:
+                candidates.append(key)
                 if not low and waiting_normal is None:
                     waiting_normal = key
                 if key == head and time.time() - self.head_blocked[1] > self.reserve_after_s:
-                    break  # the top task has waited too long: keep the freed resources for it instead of backfilling
+                    reserving = True
+        if self.opportunistic:
+            started += self._admit_opportunistic(snap, candidates, in_use, cores_used, head if reserving else None)
+            if not reserving:
+                self._promote(reserved)
         return started
+
+    def _admit_opportunistic(self, snap: dict, candidates: list[str], in_use: float, cores_used: int, head: str | None) -> int:
+        """Start candidates that fit next to the memory in use (see admit); `head` = the top task in reservation, whose
+        cores stay free."""
+        started = 0
+        keep_cores = self.threads(head) if head else 0
+        for key in sorted(candidates, key=lambda k: (self.specs[k].get("low", False), self.estimates[k]["time_s"])):
+            if self.max_tasks and len(self.running) >= self.max_tasks:
+                break
+            est = self.estimates[key]["mem_mb"]
+            if est > self.pack_mb or cores_used + self.threads(key) + keep_cores > self.cores or in_use + est > self.pack_mb:
+                continue
+            if not self.store.claim(key, snap[key][1] + 1, self.id):
+                continue
+            self.start(key, snap[key][1] + 1, opp=True)
+            in_use += est
+            cores_used += self.threads(key)
+            started += 1
+        return started
+
+    def _promote(self, reserved: float) -> None:
+        """Opportunistic tasks become firm (oldest first) once their reservation fits next to the firm ones."""
+        for key, run in sorted(self.running.items(), key=lambda kr: kr[1]["start"]):
+            if run["opp"] and run["stop"] is None and reserved + self._reservation(run) <= self.pack_mb:
+                run["opp"] = False
+                reserved += self._reservation(run)
+                self.log(f"firm {key}: its estimate fits now - no longer stopped first")
 
     def check_stop(self, started: float) -> None:
         """Follow a stop request (cluster.py stop): drain = start nothing new; now = also interrupt the running tasks."""
@@ -845,10 +1006,27 @@ class Worker:
         if new:
             self.update_specs(new["specs"], new.get("weights"), new.get("plan_id"))
 
+    def maybe_handover(self) -> bool:
+        """Ask the handover callback whether the code changed and a successor took over; if so, drain (start nothing new,
+        exit after the own tasks - the successor counts them as occupied, see refresh_foreign). True if handed over."""
+        if not self.handover or self.stopping:
+            return False
+        try:
+            successor = self.handover()
+        except Exception as e:  # noqa: BLE001
+            self.log(f"WARNING: the code handover raised {e!r} - this worker keeps going")
+            return False
+        if not successor:
+            return False
+        self.stopping = {"time": time.time(), "requested": f"code handover to {successor}", "handover": successor}
+        self.log(f"code changed: handed over to a new worker ({successor}) - starting no new tasks, exiting after the "
+                 f"{len(self.running)} running one(s)")
+        return True
+
     def run(self) -> int:
         """Main loop; returns 0 if nothing failed in this worker, 1 otherwise."""
         self.log(f"worker {self.id}: {self.cores} cores, {self.mem_mb / 1024:.0f} GB ({self.pack_mb / 1024:.0f} GB for packing"
-                 + ("" if self.mem_packing else ", memory packing off") + f"), {len(self.specs)} task(s) selected, node files in {self.node_base}"
+                 + ("" if self.mem_packing else ", memory packing off") + (", opportunistic starts" if self.opportunistic else "") + f"), {len(self.specs)} task(s) selected, node files in {self.node_base}"
                  + f" ({self.disk_free_gb()} GB free; new tasks pause below {self.disk_min_free_mb / 1024:g} GB)"
                  + (f", ends {datetime.datetime.fromtimestamp(self.end_time).isoformat(timespec='minutes')}" if self.end_time else "")
                  + (f", plan {self.plan_id} (reloaded when the config changes)" if self.reload else ""))
@@ -864,16 +1042,24 @@ class Worker:
         try:
             while True:
                 now = time.time()
-                if self.reload and now - last_reload > self.reload_s:
-                    last_reload = now
-                    self.maybe_reload()
+                # Beat before a handover check: a task started in the previous iteration must be in the heartbeat
+                # the successor reads (refresh_foreign)
                 if now - last_beat > HEARTBEAT_S:
-                    beat = {**info, "running": sorted(self.running), "stopping": bool(self.stopping)}
+                    beat = {**info, "running": sorted(self.running), "tasks": self.task_details(), "stopping": bool(self.stopping)}
+                    if self.stopping and self.stopping.get("handover"):
+                        beat["handover"] = self.stopping["handover"]
                     if self.reload:  # status compares it with the config's current plan
                         beat["plan"] = self.plan_id
                     self.store.beat(self.id, beat)
                     last_beat = now
+                if (self.reload or self.handover) and now - last_reload > self.reload_s:
+                    last_reload = now
+                    if self.maybe_handover():
+                        last_beat = 0.0  # status shows the drain at once
+                    elif self.reload:
+                        self.maybe_reload()
                 finished = self.poll()
+                self.guard_opportunistic()
                 if self.guard_walltime():
                     if not self.running:
                         break
@@ -882,6 +1068,7 @@ class Worker:
                 if finished or now - last_full > self.poll_s:
                     last_full = now
                     self.check_stop(started)
+                    self.refresh_foreign()
                     self.guard_memory()
                     disk_ok = self.check_disk()
                     self.refresh_estimates()
@@ -891,7 +1078,7 @@ class Worker:
                     ready, remaining = self.ready(snap)
                     self.maybe_chain(started, remaining)
                     if self.stopping and not self.running:
-                        self.log("stopped on request")
+                        self.log("handed over: own tasks finished" if self.stopping.get("handover") else "stopped on request")
                         break
                     if self.running:
                         idle_since = None

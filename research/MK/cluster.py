@@ -999,6 +999,8 @@ def make_worker(cfg: dict, specs: dict, store: "pool.Store", *, cores: int, mem_
                                time_safety=float(pcfg.get("time_safety", 1.5)), time_level=lambda level: "/class:" not in level)
     kwargs.setdefault("mem_fraction", float(pcfg.get("mem_fraction", 0.9)))
     kwargs.setdefault("disk_min_free_mb", float(pcfg.get("disk_min_free_gb", DEFAULT_DISK_MIN_FREE_GB)) * 1024)
+    kwargs.setdefault("opportunistic", bool(pcfg.get("opportunistic", True)))
+    kwargs.setdefault("opportunistic_after_s", float(pcfg.get("opportunistic_after_minutes", 10)) * 60)
     try:
         weights = _dataset_weights(cfg)
     except ValueError as e:
@@ -1064,10 +1066,14 @@ def cmd_worker(args) -> None:
             if job:
                 store.add_job(job, {"submitted_by": os.environ.get("SLURM_JOB_ID") or "local", "script": args.chain_script})
             return job
+    digest = code_digest()
+    # Outside Slurm: a code change starts a successor running it, this worker drains. In a Slurm job the job would end
+    # with this worker (and kill the successor); chained jobs start with the then-current code anyway
+    handover = None if os.environ.get("SLURM_JOB_ID") else _code_handover(config_path, sys.argv[1:], end_time, digest)
     worker = make_worker(cfg, pool_specs(plan, keys), store, cores=cores, mem_mb=mem_mb,
                          end_time=end_time, idle_s=idle_h * 3600, max_tasks=args.max_tasks, node_base=args.node_dir,
                          chain_after_s=args.chain_after_hours * 3600 if args.chain_script else None, chain=chain,
-                         info={"log": str(log_file)} if log_file else None,
+                         info={"code": digest, **({"log": str(log_file)} if log_file else {})}, handover=handover,
                          reload=_plan_reloader(config_path, cfg["name"], args.patterns or ["*"], plan_hash(plan)), plan_id=plan_hash(plan))
     sys.exit(worker.run())
 
@@ -1130,20 +1136,91 @@ def cmd_plan_json(args) -> None:
     json.dump({"name": cfg["name"], "plan_id": plan_hash(plan), "plan": plan, "dataset_weights": _dataset_weights(cfg)}, sys.stdout)
 
 
-def _detach_worker(run: str, log_dir: Path) -> None:
-    """Start this worker command again as a background process without console (+ --log) and return: it keeps running
-    when the terminal is closed or the Remote Desktop session is disconnected (not when signing out)."""
-    argv = [a for a in sys.argv[1:] if a != "--detach"]
+def _spawn_detached_worker(argv: list[str]) -> subprocess.Popen:
+    """Start `cluster.py <argv>` (+ --log, without --detach) as a background process without console: it keeps running
+    when the terminal is closed or the Remote Desktop session is disconnected (not when signing out), and when the
+    worker that started it exits."""
+    argv = [a for a in argv if a != "--detach"]
     cmd = [sys.executable, str(Path(__file__).resolve()), *argv, *([] if "--log" in argv else ["--log"])]
     kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if sys.platform == "win32":
         flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-        try:  # leave the terminal's job object (if any), which would kill the worker with the terminal
-            proc = subprocess.Popen(cmd, creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB, **kwargs)
+        try:  # leave the terminal's / worker's job object (if any), which would kill the new worker with them
+            return subprocess.Popen(cmd, creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB, **kwargs)
         except OSError:
-            proc = subprocess.Popen(cmd, creationflags=flags, **kwargs)
-    else:
-        proc = subprocess.Popen(cmd, start_new_session=True, **kwargs)
+            return subprocess.Popen(cmd, creationflags=flags, **kwargs)
+    return subprocess.Popen(cmd, start_new_session=True, **kwargs)
+
+
+CODE_FILES = [Path(__file__).resolve(), Path(pool.__file__).resolve()]  # the worker's code (handover when it changes)
+
+
+def code_digest() -> str | None:
+    """Short hash of the worker's code files (None if unreadable)."""
+    try:
+        return hashlib.sha1(b"".join(p.read_bytes() for p in CODE_FILES)).hexdigest()[:10]
+    except OSError:
+        return None
+
+
+def _successor_argv(argv: list[str], end_time: float | None) -> list[str]:
+    """The worker's own arguments for its successor; an explicit --hours becomes the remaining walltime."""
+    out, skip = [], False
+    for a in argv:
+        if skip:
+            skip = False
+        elif a == "--hours":
+            skip = True
+        elif not a.startswith("--hours="):
+            out.append(a)
+    if end_time is not None and len(out) != len(argv):
+        out += ["--hours", f"{max(end_time - time.time(), 0) / 3600:.4f}"]
+    return out
+
+
+def _code_handover(config_path: Path, argv: list[str], end_time: float | None, current: str | None, spawn=_spawn_detached_worker):
+    """Worker.handover callback (workers outside Slurm): when cluster.py / pool.py changed on disk (content hash), check
+    the new code in a fresh interpreter (`plan-json`), start a successor worker with the same arguments and return its
+    description - the caller then drains. A broken change (e.g. a file saved halfway through an edit) is logged and
+    retried when the files change again."""
+    state = {"mtimes": None, "tried": current}
+
+    def mtimes():
+        try:
+            return [p.stat().st_mtime for p in CODE_FILES]
+        except OSError:
+            return None
+
+    state["mtimes"] = mtimes()
+
+    def handover():
+        now = mtimes()
+        if now is None or now == state["mtimes"]:
+            return None
+        state["mtimes"] = now
+        digest = code_digest()
+        if digest is None or digest == state["tried"]:
+            return None
+        state["tried"] = digest
+        try:
+            out = subprocess.run([sys.executable, str(Path(__file__).resolve()), "plan-json", str(config_path)],
+                                 capture_output=True, text=True, timeout=600)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print(f"{_now()} WARNING: the worker code changed, but it could not be checked ({e!r}) - no handover", flush=True)
+            return None
+        if out.returncode != 0:
+            tail = " | ".join((out.stderr or out.stdout).strip().splitlines()[-3:])
+            print(f"{_now()} WARNING: the worker code changed, but it does not run - no handover until it changes again: {tail}", flush=True)
+            return None
+        proc = spawn(_successor_argv(argv, end_time))
+        return f"pid {proc.pid}, code {digest}"
+
+    return handover
+
+
+def _detach_worker(run: str, log_dir: Path) -> None:
+    """Start this worker command again as a background process (see _spawn_detached_worker) and return."""
+    proc = _spawn_detached_worker(sys.argv[1:])
     host = socket.gethostname()
     print(f"Worker started in the background (pid {proc.pid}); log: {log_dir / f'{host}-*-{proc.pid}.log'}\n"
           f"Check it with: cluster.py status {run}\nStop it with:  cluster.py stop {run} --host {host} [--now]")
@@ -1368,15 +1445,20 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict) -> None:
     now = time.time()
     workers = store.workers()
     current = plan_hash(plan)
+    code = code_digest()
     print(f"\nWORKERS ({len(workers)})  - plan of the config: {current}")
     for wid, w in sorted(workers.items(), key=lambda x: x[1].get("started", "")):
         alive = not w.get("exited") and now - w.get("beat", 0) < pool.STALE_S
-        state = ("stopping" if w.get("stopping") else "active") if alive else ("exited " + w["exited"] if w.get("exited") else "lost (no heartbeat)")
+        state = (("draining (handed over)" if w.get("handover") else "stopping" if w.get("stopping") else "active") if alive
+                 else ("exited " + w["exited"] if w.get("exited") else "lost (no heartbeat)"))
         size = f"{w['cores']} cores, {w['mem_mb'] / 1024:.0f} GB, started {w.get('started')}" if w.get("cores") else ""
         plan_note = ""
         if alive:  # workers reload a changed config within about a minute; older workers cannot
             plan_note = ("  plan: not reloadable (worker predates plan reload - restart it to pick up config changes)" if "plan" not in w
                          else "" if w["plan"] == current else f"  plan: {w['plan']} (outdated - reloads within a minute)")
+            if not w.get("handover") and not w.get("slurm_job") and w.get("code") != code:  # code handover (workers outside Slurm)
+                plan_note += ("  code: no handover (worker predates it - restart it to run the current code)" if "code" not in w
+                              else f"  code: {w['code']} (outdated - hands over within a minute)")
         print(f"  {wid:<40} {state:<28} {len(w.get('running', [])):>3} running  {size}{plan_note}")
     jobs = store.jobs()
     if jobs and shutil.which("squeue"):  # queued / running worker jobs (chained successors included)
@@ -1464,17 +1546,18 @@ def cmd_attempts(args) -> None:
     if not records:
         sys.exit(f"No {'/'.join(sorted(outcomes))} attempts" + (f" matching {patterns}" if args.patterns else ""))
     width = max(len(r["key"]) for r in records)
-    head = f"{'outcome':<11} {'task':<{width}} {'#':>2}  {'peak':>6} {'estimate':>8} {'elapsed':>11} {'rc':>4}  {'host':<16} start"
+    head = f"{'outcome':<12} {'task':<{width}} {'#':>2}  {'peak':>6} {'estimate':>8} {'elapsed':>11} {'rc':>4}  {'host':<16} start"
     print(head)
     print("-" * len(head))
     for r in records:
         est = (r.get("estimate") or {}).get("mem_mb")
-        print(f"{r['outcome']:<11} {r['key']:<{width}} {r.get('attempt') or '':>2}  "
+        print(f"{r['outcome'] + ('*' if r.get('opportunistic') else ''):<12} {r['key']:<{width}} {r.get('attempt') or '':>2}  "
               f"{_fmt_mem(r['peak_rss_mb']) if r.get('peak_rss_mb') else '?':>6} {_fmt_mem(est) if est else '?':>8} "
               f"{_fmt_time(r['elapsed_s']) if r.get('elapsed_s') is not None else '?':>11} {r['rc'] if r.get('rc') is not None else '':>4}  "
               f"{r.get('host') or '?':<16} {r.get('start') or '?'}")
     counts = {o: sum(r["outcome"] == o for r in records) for o in order if any(r["outcome"] == o for r in records)}
-    print(f"\n{len(records)} attempt(s): " + ", ".join(f"{n} {o}" for o, n in counts.items()))
+    print(f"\n{len(records)} attempt(s): " + ", ".join(f"{n} {o}" for o, n in counts.items())
+          + (" (* = started opportunistically, see README 'Task pool')" if any(r.get("opportunistic") for r in records) else ""))
 
 
 def cmd_pool_restart(args, store: "pool.Store", plan: dict) -> None:

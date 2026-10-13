@@ -1,4 +1,6 @@
 """Fast unit tests without subprocesses: store, estimator, priority order, estimate levels."""
+import os
+import subprocess
 import time
 
 import pytest
@@ -117,3 +119,42 @@ def test_weighted_priority_order(tmp_path):
     for bad in ({"dataset_weights": {"X": 2}}, {"dataset_weights": {"R": 0}}, {"dataset_weights": {"R": 2}, "rank_offset_hours": 12}):
         with pytest.raises(SystemExit):
             cluster.make_worker({**cfg, "pool": bad}, specs, pool.Store(tmp_path / "p"), cores=1, mem_mb=1, node_base=tmp_path)
+
+
+def test_successor_argv_keeps_the_arguments_and_the_remaining_walltime():
+    assert cluster._successor_argv(["worker", "x", "--log"], None) == ["worker", "x", "--log"]
+    argv = cluster._successor_argv(["worker", "x", "--hours", "5", "--log"], time.time() + 1800)
+    assert argv[:3] == ["worker", "x", "--log"] and argv[3] == "--hours" and 0.49 < float(argv[4]) <= 0.5
+    assert cluster._successor_argv(["worker", "x", "--hours=5"], time.time() + 3600)[2] == "--hours"
+
+
+def test_code_handover_only_for_changed_code_that_runs(tmp_path, monkeypatch, capsys):
+    code = tmp_path / "code.py"
+    code.write_text("v1")
+    monkeypatch.setattr(cluster, "CODE_FILES", [code])
+    checks, spawned = [], []
+
+    def fake_run(cmd, **kw):
+        checks.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0 if "broken" not in code.read_text() else 1, stdout="{}", stderr="SyntaxError: x")
+
+    monkeypatch.setattr(cluster.subprocess, "run", fake_run)
+
+    class Proc:
+        pid = 4242
+
+    handover = cluster._code_handover(tmp_path / "x.toml", ["worker", "x"], None, cluster.code_digest(),
+                                      spawn=lambda argv: spawned.append(argv) or Proc())
+
+    def edit(text):
+        code.write_text(text)
+        os.utime(code, (time.time() + len(checks) + len(text), time.time() + len(checks) + len(text)))  # mtime surely changes
+
+    assert handover() is None and not checks  # unchanged
+    edit("v1")
+    assert handover() is None and not checks  # touched, same content
+    edit("broken")
+    assert handover() is None and len(checks) == 1 and not spawned
+    assert "does not run" in capsys.readouterr().out
+    edit("v2")
+    assert handover().startswith("pid 4242, code ") and spawned == [["worker", "x"]]

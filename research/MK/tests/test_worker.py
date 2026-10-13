@@ -1,4 +1,7 @@
 """pool.Worker with real subprocesses (fake tasks): packing, dependencies, failures, guards, chaining, low priority."""
+import socket
+import subprocess
+import sys
 import threading
 import time
 
@@ -282,3 +285,85 @@ def test_tasks_estimated_above_the_ram_are_never_started(mk):
     snap = store.snapshot(plan)
     assert snap["S/sd1/c3/base/main/SMALL"][0] == pool.DONE and snap["H/sd1/c3/base/main/HUGE"][0] == pool.NEW
     assert sum("skipping H/sd1/c3/base/main/HUGE" in line for line in logs) == 1
+
+
+def test_small_tasks_start_opportunistically_next_to_a_large_task_and_finish(mk):
+    """BIG reserves 700 of 900 MB usable but uses ~100 MB: the small tasks (300 MB each) do not fit its reservation but
+    start opportunistically next to its actual use and finish before it."""
+    # One dataset per task: a finished task's measurement would otherwise lower the others' estimates (shared levels)
+    plan = dict([mk.task("B/sd1/c3/base/main/BIG", 10, mb=100, mem="700M")]
+                + [mk.task(f"O{i}/sd1/c3/base/regret/S{i}", 1, mem="300M") for i in range(3)])
+    cfg = mk.use(plan)
+    store = mk.store()
+    w, logs = mk.worker(cfg, plan, store, mem_mb=1000, opportunistic_after_s=0)
+    w.run()
+    results = store.results()
+    assert all(r["outcome"] == pool.DONE for r in results) and len(results) == len(plan)
+    assert {r["key"].split("/")[-1] for r in results if r["opportunistic"]} == {"S0", "S1", "S2"}
+    ev = mk.events(logs)
+    assert all(ev.index(("done", f"S{i}")) < ev.index(("done", "BIG")) for i in range(3))
+
+
+def test_opportunistic_tasks_are_preempted_when_the_large_task_grows(mk):
+    """BIG grows towards its estimate: the opportunistic tasks next to it are preempted (not BIG), retried after it."""
+    plan = dict([mk.task("B/sd1/c3/base/main/BIG", 6, mb=50, mb_end=700, mem="800M")]
+                + [mk.task(f"O/sd1/c3/base/regret/S{i}", 10, mem="200M") for i in range(3)])
+    cfg = mk.use(plan)
+    store = mk.store()
+    w, logs = mk.worker(cfg, plan, store, mem_mb=1000, opportunistic_after_s=0)
+    w.run()
+    results = store.results()
+    preempted = [r for r in results if r["outcome"] == pool.PREEMPTED]
+    assert preempted and all(r["opportunistic"] and "/S" in r["key"] for r in preempted)
+    assert [r["attempt"] for r in results if r["key"].endswith("/BIG")] == [1]
+    assert all(s[0] == pool.DONE for s in store.snapshot(plan).values())
+
+
+def test_opportunistic_starts_off(mk):
+    plan = dict([mk.task("B/sd1/c3/base/main/BIG", 3, mb=100, mem="700M"), mk.task("O/sd1/c3/base/regret/S0", 1, mem="300M")])
+    cfg = mk.use(plan, opportunistic=False)
+    w, logs = mk.worker(cfg, plan, mk.store(), mem_mb=1000, opportunistic_after_s=0)
+    w.run()
+    ev = mk.events(logs)
+    assert ev.index(("done", "BIG")) < ev.index(("start", "S0"))
+
+
+def test_tasks_of_another_worker_on_this_machine_count_as_occupied(mk):
+    """A (draining) worker of another process on this host runs a task estimated at 800 MB on 6 cores: A (300 MB) waits
+    until that process is gone instead of being packed as if the machine were empty."""
+    plan = dict([mk.task("X/sd1/c3/base/main/A", 0.5, mem="300M")])
+    cfg = mk.use(plan)
+    store = mk.store()
+    other = subprocess.Popen([sys.executable, str(mk.fake), "3", "0", "50"])
+    store.beat("other-worker", {"host": socket.gethostname(), "pid": other.pid, "slurm_job": None,
+                                "tasks": {"Y/sd1/c3/base/main/F": {"pid": other.pid, "cpus": 6, "est_mb": 800, "peak_mb": 0,
+                                                                   "rss_mb": 0, "start": time.time(), "opp": False}}})
+    w, logs = mk.worker(cfg, plan, store, mem_mb=1000, idle_s=30)
+    w.run()
+    other.wait()
+    counted = [i for i, line in enumerate(logs) if "other workers on this machine run 1 task(s)" in line]
+    started = [i for i, line in enumerate(logs) if " start " in line and "/A " in line]
+    assert counted and started and counted[0] < started[0]
+    assert any("other workers on this machine run 0 task(s)" in line for line in logs[:started[0]])
+
+
+def test_handover_drains_the_worker(mk):
+    """After the handover callback reports a successor, the worker starts nothing new and exits after its own tasks."""
+    plan = dict([mk.task("H/sd1/c3/base/main/T1", 3), mk.task("H/sd1/c3/base/main/T2", 3), mk.task("H/sd1/c3/base/main/T3", 0.3)])
+    cfg = mk.use(plan)
+    store = mk.store()
+    calls = []
+
+    def handover():
+        calls.append(1)
+        return "pid 12345, code abc" if len(calls) == 2 else None
+
+    w, logs = mk.worker(cfg, plan, store, cores=4, handover=handover, reload_s=0.2)
+    w.run()
+    snap = store.snapshot(plan)
+    assert len(calls) == 2  # never asked again once draining
+    assert snap["H/sd1/c3/base/main/T1"][0] == snap["H/sd1/c3/base/main/T2"][0] == pool.DONE
+    assert snap["H/sd1/c3/base/main/T3"][0] == pool.NEW  # left to the successor
+    assert any("handed over to a new worker (pid 12345" in line for line in logs)
+    assert any("handed over: own tasks finished" in line for line in logs)
+    assert store.workers()[w.id].get("exited")

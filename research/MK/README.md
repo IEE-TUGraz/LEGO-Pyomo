@@ -273,7 +273,8 @@ delete a result file to recompute it.
   `mem` per worker node (required by `submit-workers`), `walltime` (72 h), `chain_after_hours` (24), `workers` (3),
   `mem_fraction` (share of `mem` that is packed, 0.9), `idle_hours` (3), `mem_safety` (1.2), `time_safety` (1.5),
   `disk_min_free_gb` (10), `rank_offset_hours` (soft dataset order, see Task pool; absent = strict), `dataset_weights` (weighted dataset order,
-  e.g. `{ "RTS-GMLC" = 100, "TX-123BT" = 10 }`, unlisted datasets 1; excludes `rank_offset_hours`), `mail_type` for the worker jobs (default: `[slurm] mail_type`; address from `[slurm] mail_user` /
+  e.g. `{ "RTS-GMLC" = 100, "TX-123BT" = 10 }`, unlisted datasets 1; excludes `rank_offset_hours`), `opportunistic`
+  (true; opportunistic starts, see Task pool), `opportunistic_after_minutes` (10), `mail_type` for the worker jobs (default: `[slurm] mail_type`; address from `[slurm] mail_user` /
   `$MK_MAIL_USER`, written into `worker.sbatch` at `submit-workers` - edit that file to change it for later successors).
 - `[grid]`: `datasets`, `stretch_demand`, `clusters`, `edges`, `tasks`, `truth_original`, and `tm` entries `base` /
   `shift:N` / `perturb:R`, or an inline table `{ spec = "perturb:1.0", stretch_demand = [1.0], low_priority = true }`
@@ -303,12 +304,19 @@ dataset whose tasks turn out short then loses ground to one still estimated long
 (30 min), smaller tasks stop jumping ahead of it. `low_priority` TM variants (the random TM) only use spare capacity:
 they start once every ready normal task has been placed; once started they run to the end like any other task (they are
 never stopped to make room), but the memory guard stops low-priority tasks first. Tasks never use more Gurobi threads
-in total than the worker's cores. A task estimated above the packing share (`mem_fraction` x RAM) starts only on an
-empty machine, but then reserves only the memory it actually used so far: smaller tasks fill the rest. **Memory guard**:
-when the RAM runs out, it stops one task: low-priority tasks first, then the most recently started one - but never the
-one using the most memory. A stopped task that used more than its own estimate is **evicted** (retried with a higher
-estimate), any other one is **preempted** (it only made room: retried, its peak counts as a minimum, its runtime is not
-used).
+in total than the worker's cores. A task estimated above the packing share (`mem_fraction` x RAM) starts only when no
+other (firm) task runs. **Opportunistic starts**: a running task reserves its whole estimate, but large solves often use
+far less for hours - cores would sit idle. A ready task that does not fit the reservations may then still start
+*opportunistically* if it fits next to the memory the running tasks actually used so far (their peak; a task's first
+`opportunistic_after_minutes` count with its full estimate). Shortest estimated runtime goes first, as these tasks have
+the best chance to finish. When the large task grows into the gap, the newest opportunistic task is preempted at once
+(checked every second, so the large task keeps its headroom) and retried later. An opportunistic task never keeps a
+normal task from starting, never takes the cores of a top task that waits for its reservation, and becomes a normal task
+once its estimate fits. `attempts` marks opportunistic attempts with `*`. Turn it off with `[pool] opportunistic = false`.
+**Memory guard**: when the RAM runs out, it stops one task: opportunistic tasks first, then low-priority tasks, then the
+most recently started one - but never the one using the most memory. A stopped task that used more than its own
+estimate is **evicted** (retried with a higher estimate), any other one is **preempted** (it only made room: retried,
+its peak counts as a minimum, its runtime is not used).
 
 ```bash
 python research/MK/cluster.py resources pilot --save                # pilot measurements -> seed of the estimates
@@ -374,9 +382,20 @@ python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dep
   (removed tasks that are already running finish normally; their results stay in the pool), changed commands /
   resources apply to the next attempt. `status` prints the config's plan id and flags workers that still run another
   one; a config that does not parse (e.g. saved halfway through an edit) is logged in the worker log and ignored until
-  the file changes again. Not reloaded (restart the worker): the run `name`, other `[pool]` settings, the worker's
-  command-line options and changes to `pool.py`. Workers started before this feature cannot reload - restart them once.
+  the file changes again. Not reloaded: the run `name`, other `[pool]` settings and the worker's command-line options
+  (restart the worker). Workers started before this feature cannot reload - restart them once.
   If `evaluate` already ran, it does not run again for added tasks (run `EvaluateMarkov.py` by hand).
+- **Code changes while workers run** (workers started by hand, e.g. the Windows servers): when `cluster.py` or
+  `pool.py` changes, a worker checks within a minute that the new code runs, then starts a **successor** worker with
+  the same command-line options (in the background, logging to `pool/worker-logs/`; `--hours` becomes the remaining
+  time) and **drains**: it starts nothing new and exits once its own tasks have finished - no running solve is
+  stopped. Meanwhile the successor counts the old worker's tasks (cores, memory estimates, actual memory) as occupied,
+  so the server is not overpacked. `status` shows the old worker as `draining (handed over)` and flags workers that
+  run outdated code. A change that does not run (e.g. saved halfway through an edit) is logged and ignored until the
+  files change again; workers started before this feature cannot hand over - restart them once. The check only
+  confirms that the new code loads and builds the plan: after a code change, check with `status` (or the successor's
+  log) that the successor runs - if it crashed, the draining worker does not take over again; start a worker by hand. Slurm workers do not
+  hand over (a successor could not outlive the job); their chained jobs start with the current code.
 
 **Windows servers** (a separate site from MUSICA - results of the two sites are never mixed):
 the same task pool, one worker per server, started by hand over Remote Desktop. All workers of a pool must see the same
