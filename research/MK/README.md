@@ -345,7 +345,7 @@ python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dep
   the same task, the same task/edge/RP count, the same task/edge, the resource class (memory only); else the TOML
   `[resources.*]`. Value = largest measurement × `mem_safety` / `time_safety`. Failed, evicted, preempted and
   interrupted attempts are lower bounds: they can raise an estimate above the TOML value, but only completed runs lower
-  it. Completed runs of this pool take precedence over the seed runs and over other tasks' lower bounds, so measurements
+  it - a task's own stopped attempt never lowers its estimate below what similar completed runs say. Completed runs of this pool take precedence over the seed runs and over other tasks' lower bounds, so measurements
   can lower an estimate that a seed run set (if a task then needs more, the memory guard makes room for it). Failed
   attempts of a seed run are ignored - they usually failed for a reason fixed since. They are recomputed continuously, so
   later tasks start with better estimates. Seed a pool with a Slurm run's measurements via `resources <run> --save`
@@ -353,7 +353,9 @@ python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dep
   `MK-NOOP`) are not measurements.
 - **Memory guard**: no per-task memory limits. If free memory gets short (or the tasks use more than the worker's
   `--mem`), the most recently started task is stopped and retried later with its peak as lower bound (never the only
-  running task). Same for the walltime: shortly before the end, running tasks are stopped and retried by another worker.
+  running task). Opportunistically started tasks are stopped first, and also as soon as the tasks' actual memory use
+  exceeds the packing share (`mem_fraction`) - not because of other tasks' reservations, and not merely for using more
+  than their own estimate while the RAM suffices. Same for the walltime: shortly before the end, running tasks are stopped and retried by another worker.
 - **Idle**: a worker without anything to run waits up to `idle_hours` for tasks to become ready (e.g. while another
   worker runs a Truth solve), and exits at once only when nothing is left.
 - **Node files** go to `--node-dir` (default `$TMPDIR`); the worker records each task's node-file peak and pauses new

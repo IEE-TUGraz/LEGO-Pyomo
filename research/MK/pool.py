@@ -471,24 +471,29 @@ class Estimator:
         return max(values.values()), False
 
     def estimate(self, key: str) -> dict:
-        """{mem_mb, mem_src, time_s, time_src}; src = the level the value comes from, or 'prior'. A level with only lower
-        bounds (failed / evicted / preempted / interrupted) never goes below the prior: a task that crashes after seconds says
-        nothing about its need."""
+        """{mem_mb, mem_src, time_s, time_src}; src = the level the value comes from, or 'prior'. The most specific level
+        with completed runs sets the value (it may go below the prior); levels with only lower bounds (failed / evicted /
+        preempted / interrupted) before it are floors that only ever raise it - a task that crashes after seconds says
+        nothing about its need, and a task's own preemption must not hide the coarser levels' measurements."""
         spec = self.specs[key]
-        out = {"mem_mb": spec["prior_mem_mb"], "mem_src": "prior", "time_s": spec["prior_time_s"], "time_src": "prior"}
-        mem_found = time_found = False
+        mem, mem_src = self._resolve(self.mem, key, spec["prior_mem_mb"], self.mem_safety)
+        time_s, time_src = self._resolve(self.time, key, spec["prior_time_s"], self.time_safety)
+        return {"mem_mb": mem, "mem_src": mem_src, "time_s": time_s, "time_src": time_src}
+
+    def _resolve(self, table: dict, key: str, prior: float, safety: float) -> tuple[float, str]:
+        value, src, floor, floor_src = prior, "prior", 0.0, None
         for level in self.levels(key):
-            if level in self.mem and not mem_found:
-                mem_found = True
-                value, measured = self._pick(self.mem[level])
-                if measured or value * self.mem_safety > out["mem_mb"]:
-                    out["mem_mb"], out["mem_src"] = value * self.mem_safety, level
-            if level in self.time and not time_found:
-                time_found = True
-                value, measured = self._pick(self.time[level])
-                if measured or value * self.time_safety > out["time_s"]:
-                    out["time_s"], out["time_src"] = value * self.time_safety, level
-        return out
+            if level not in table:
+                continue
+            level_value, measured = self._pick(table[level])
+            if measured:
+                value, src = level_value * safety, level
+                break
+            if level_value > floor:
+                floor, floor_src = level_value, level
+        if floor * safety > value:
+            value, src = floor * safety, floor_src
+        return value, src
 
 
 ########################################################################################################################
@@ -765,25 +770,27 @@ class Worker:
         return run["peak_mb"] * 1.1
 
     def guard_opportunistic(self) -> None:
-        """Stop the newest opportunistic tasks while the memory in use (`_in_use`) exceeds the packing share, i.e. while
-        the firm tasks grow into the gap the opportunistic ones were started in. Runs every second (cheap: uses the RSS
-        sampled by poll), so the firm tasks keep the headroom up to the RAM."""
+        """Stop the newest opportunistic tasks while the memory the tasks actually use (RSS) exceeds the packing share, i.e.
+        once the firm tasks have really grown into the gap the opportunistic ones were started in - not merely because of
+        reservations (a young firm task's full estimate, `_in_use`), which only gate new starts in `admit`. A task above
+        its estimate survives as long as the RAM suffices. Runs every second (cheap: uses the RSS sampled by poll), so the
+        firm tasks keep the headroom up to the RAM. No restart into the same gap: admit counts at least 1.1 x peak >= RSS."""
         active = [k for k, r in self.running.items() if r["stop"] is None]
         opps = sorted((k for k in active if self.running[k]["opp"]), key=lambda k: self.running[k]["start"], reverse=True)
         if not opps:
             return
-        in_use = sum(self._in_use(self.running[k]) for k in active) + sum(self._in_use(r) for r in self.foreign.values())
+        used = sum(self.running[k]["rss_mb"] for k in active) + sum(r["rss_mb"] for r in self.foreign.values())
         for victim in opps:
-            if in_use <= self.pack_mb:
+            if used <= self.pack_mb:
                 break
             run = self.running[victim]
-            why = f"tasks need {in_use / 1024:.1f} GB of {self.pack_mb / 1024:.1f} GB usable (opportunistic start)"
+            why = f"tasks use {used / 1024:.1f} GB of {self.pack_mb / 1024:.1f} GB usable (opportunistic start)"
             if run["rss_mb"] > run["est"]["mem_mb"]:
                 self.stop(victim, EVICTED, f"{why}, it uses {run['rss_mb'] / 1024:.1f} GB > its estimate "
                                            f"{run['est']['mem_mb'] / 1024:.1f} GB - will be retried with a higher estimate")
             else:
                 self.stop(victim, PREEMPTED, f"{why} - makes room for the firm tasks, will be retried")
-            in_use -= self._in_use(run)
+            used -= run["rss_mb"]
 
     def guard_memory(self) -> None:
         """When memory runs out, stop one task: the most recently started opportunistic one, else the most recently started

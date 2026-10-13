@@ -305,9 +305,10 @@ def test_small_tasks_start_opportunistically_next_to_a_large_task_and_finish(mk)
 
 
 def test_opportunistic_tasks_are_preempted_when_the_large_task_grows(mk):
-    """BIG grows towards its estimate: the opportunistic tasks next to it are preempted (not BIG), retried after it."""
+    """BIG grows towards its estimate until the tasks really use more than the packing share: the opportunistic tasks
+    next to it are preempted (not BIG), retried after it."""
     plan = dict([mk.task("B/sd1/c3/base/main/BIG", 6, mb=50, mb_end=700, mem="800M")]
-                + [mk.task(f"O/sd1/c3/base/regret/S{i}", 10, mem="200M") for i in range(3)])
+                + [mk.task(f"O/sd1/c3/base/regret/S{i}", 10, mb=100, mem="200M") for i in range(3)])
     cfg = mk.use(plan)
     store = mk.store()
     w, logs = mk.worker(cfg, plan, store, mem_mb=1000, opportunistic_after_s=0)

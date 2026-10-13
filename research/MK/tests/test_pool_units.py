@@ -101,6 +101,40 @@ def test_own_completed_runs_take_precedence_and_preemptions_are_memory_minima():
     assert seeded.estimate(t2)["time_s"] == 100 * 1.5  # a preemption says nothing about the runtime: the sibling's
 
 
+def test_own_preemption_never_lowers_the_estimate():
+    """A task's own preemption at a low peak is only a floor: the coarser level's completed runs still set the estimate
+    (the lower bound used to hide them, so the retry fell back to the prior); a peak above them raises it."""
+    a, b = "N/sd0.7/c28/base/main/Cyclic", "N/sd1/c28/base/main/Cyclic"
+    est = _estimator([a, b], mem_safety=1.0)
+    est.add({"key": b, "outcome": pool.DONE, "peak_rss_mb": 22000, "elapsed_s": 100, "attempt": 1})
+    assert est.estimate(a)["mem_mb"] == 22000
+    est.add({"key": a, "outcome": pool.PREEMPTED, "peak_rss_mb": 8700, "attempt": 1})
+    assert est.estimate(a)["mem_mb"] == 22000 and est.estimate(a)["mem_src"] == "N/main/Cyclic/c28"
+    est.add({"key": a, "outcome": pool.PREEMPTED, "peak_rss_mb": 25000, "attempt": 2})
+    assert est.estimate(a)["mem_mb"] == 25000 and est.estimate(a)["mem_src"] == a
+    est.add({"key": a, "outcome": pool.DONE, "peak_rss_mb": 15000, "elapsed_s": 100, "attempt": 3})
+    assert est.estimate(a)["mem_mb"] == 15000  # its own completed run may lower it
+
+
+def test_opportunistic_guard_uses_actual_memory(tmp_path):
+    """Reservations (a young firm task counted at its full estimate) do not stop an opportunistic task, nor does its
+    use above its own estimate - only the tasks' actual use beyond the packing share does (newest first)."""
+    specs = {k: {"rank": 0, "deps": [], "cpus": 1, "prior_mem_mb": 1, "prior_time_s": 1} for k in ("F", "O1", "O2")}
+    w = pool.Worker(specs, pool.Store(tmp_path), pool.Estimator(specs, lambda k: [k]), cwd=tmp_path, cores=8, mem_mb=1000,
+                    mem_fraction=0.9, out=lambda m: None)
+    now = time.time()
+    w.running = {"F": {"est": {"mem_mb": 800}, "rss_mb": 100, "peak_mb": 100, "start": now, "opp": False, "stop": None},
+                 "O1": {"est": {"mem_mb": 100}, "rss_mb": 300, "peak_mb": 300, "start": now - 2, "opp": True, "stop": None},
+                 "O2": {"est": {"mem_mb": 100}, "rss_mb": 50, "peak_mb": 50, "start": now - 1, "opp": True, "stop": None}}
+    stopped = []
+    w.stop = lambda key, outcome, reason: stopped.append((key, outcome))
+    w.guard_opportunistic()
+    assert stopped == []  # 450 MB used of 900 MB, although F reserves 800 MB and O1 is above its estimate
+    w.running["F"]["rss_mb"] = 600  # 950 MB used: the newest opportunistic task goes first, and that suffices
+    w.guard_opportunistic()
+    assert stopped == [("O2", pool.PREEMPTED)]
+
+
 def test_weighted_priority_order(tmp_path):
     """Critical path x dataset weight: a 10x lower weighted task goes first only with a more than 10x longer chain;
     low-priority tasks always last; [pool] dataset_weights is validated and excludes rank_offset_hours."""
