@@ -426,6 +426,7 @@ python research/MK/cluster.py worker experiment-win-gap0.5 --detach --node-dir D
 
 ```bash
 python research/MK/cluster.py status experiment-win-gap0.5                 # counts, workers per server (active / stopping / exited)
+python research/MK/cluster.py status experiment-win-gap0.5 --active        # same, without the exited workers
 python research/MK/cluster.py log experiment-win-gap0.5 RTS-GMLC/sd0.5/c28/base/main/Truth -n 80   # attempts + tail of the latest log
 python research/MK/cluster.py attempts experiment-win-gap0.5 "RTS-GMLC/*"   # evicted / preempted / failed / interrupted attempts: peak, estimate, runtime, server (--outcome done for finished ones)
 python research/MK/cluster.py stop experiment-win-gap0.5                   # all workers: no new tasks, exit after the running ones

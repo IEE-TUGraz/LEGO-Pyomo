@@ -1446,8 +1446,11 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict) -> None:
     workers = store.workers()
     current = plan_hash(plan)
     code = code_digest()
-    print(f"\nWORKERS ({len(workers)})  - plan of the config: {current}")
+    hidden = sum(bool(w.get("exited")) for w in workers.values()) if args.active else 0
+    print(f"\nWORKERS ({len(workers)}{f', {hidden} exited not shown' if hidden else ''})  - plan of the config: {current}")
     for wid, w in sorted(workers.items(), key=lambda x: x[1].get("started", "")):
+        if args.active and w.get("exited"):
+            continue
         alive = not w.get("exited") and now - w.get("beat", 0) < pool.STALE_S
         state = (("draining (handed over)" if w.get("handover") else "stopping" if w.get("stopping") else "active") if alive
                  else ("exited " + w["exited"] if w.get("exited") else "lost (no heartbeat)"))
@@ -1670,6 +1673,8 @@ def main():
     p.add_argument("run", help="Run name or its TOML file")
     p.add_argument("--list", choices=CATEGORIES, help="List all tasks in this state instead")
     p.add_argument("--filter", help="Only list tasks matching this glob pattern, e.g. 'TX-123BT/*'")
+    p.add_argument("--active", action="store_true", help="Task pool: hide exited workers (active, stopping, draining and "
+                                                         "lost ones are still shown)")
     p.set_defaults(func=cmd_status)
     p = sub.add_parser("restart", help="Resubmit failed tasks (and everything waiting for them); task pool: also re-run done tasks "
                                        "matching the patterns (running workers pick them up)")

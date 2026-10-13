@@ -34,8 +34,8 @@ truth_original = true                                    # one Original Truth pe
 # cpus: the same for all solves of a dataset (comparable work units); a worker never starts a task with more cpus than
 # its cores. Memory is the bottleneck for the full-year solves. A worker never starts a task whose estimate exceeds its
 # RAM, so mem must stay below the RAM for every task that should run here (estimates above the packing share run
-# alone). TX-123BT's full-year solves and Original Truths are capped just below the RAM so they are tried (alone): if
-# they run out of memory, stop scheduling TX-123BT.
+# alone). Full-year solves and Original Truths are capped just below the RAM so they are tried (alone): if TX-123BT's
+# run out of memory, stop scheduling TX-123BT.
 [resources.prepare]
 default = { cpus = 4, mem = "32G", time = "06:00:00" }
 
@@ -43,17 +43,18 @@ default = { cpus = 4, mem = "32G", time = "06:00:00" }
 default = { cpus = 16, mem = "100G", time = "12:00:00" }
 
 [resources.truth-original]
-default = { cpus = 8, mem = "100G", time = "3-00:00:00" }
+default = { cpus = 8, mem = "120G", time = "1-12:00:00" }   # capped below the RAM
 "TX-123BT" = { mem = "120G" }   # MUSICA: 240G - capped below the RAM
 
 [resources.rp]
-default = { cpus = 8, mem = "16G", time = "3-00:00:00" }
-"TX-123BT" = { mem = "32G" }
+default = { cpus = 8, mem = "16G", time = "04:00:00" }
+"NREL-118" = { mem = "28G", time = "12:00:00" }
+"TX-123BT" = { mem = "20G", time = "02:00:00" }
 
 [resources.full]
-default = { cpus = 8, mem = "48G", time = "3-00:00:00" }
-"NREL-118" = { mem = "64G" }
-"TX-123BT" = { mem = "120G" }   # MUSICA: 128G - capped below the RAM
+default = { cpus = 8, mem = "120G", time = "2-00:00:00" }   # capped below the RAM
+"NREL-118" = { mem = "120G" }   # capped below the RAM
+"TX-123BT" = { mem = "120G" }   # capped below the RAM
 
 # Task pool. cores / mem are not needed (only for submit-workers on Slurm): each worker takes its machine's physical cores
 # and RAM (--cores / --mem to override).
