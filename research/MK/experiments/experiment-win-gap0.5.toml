@@ -5,6 +5,7 @@
 # "Windows servers"):
 #   python research/MK/cluster.py worker experiment-win-gap0.5 --detach --node-dir <large local disk>
 #   python research/MK/cluster.py status experiment-win-gap0.5          # / stop / restart, from any server
+# Running workers reload this file within a minute of a change (added / removed runs, resources) - no restart needed.
 
 name = "experiment-win-gap0.5"   # pool and logs go to research/MK/runs/<name>/ in the repo clone on the network drive
 
@@ -18,8 +19,12 @@ node_file_start = { default = 8, "TX-123BT" = 16 }
 datasets = ["data/RTS-GMLC", "data/TX-123BT", "data/NREL-118"]   # = scheduling preference (as in experiment.toml)
 stretch_demand = [1.0, 0.5, 0.7, 0.9]
 clusters = [3, 5, 7, 14, 21, 28]
-# 'perturb:1.0' = random transition matrix (optional runs): only without demand stretching, queued after all other runs
-tm = ["base", "shift:1", "shift:2", { spec = "perturb:1.0", stretch_demand = [1.0], low_priority = true }]
+# 'perturb:1.0' = random transition matrix (optional runs): only without demand stretching, queued after all other runs.
+# Shifted and random TMs only for RTS-GMLC (datasets = only these datasets).
+tm = ["base",
+      { spec = "shift:1", datasets = ["data/RTS-GMLC"] },
+      { spec = "shift:2", datasets = ["data/RTS-GMLC"] },
+      { spec = "perturb:1.0", stretch_demand = [1.0], low_priority = true, datasets = ["data/RTS-GMLC"] }]
 edges = ["NoEnf", "Cyclic", "Markov"]                # Truth is added automatically where it applies
 tasks = ["main", "operational", "regret", "invest-regret", "operational-regret",
          "original-invest-regret", "original-regret"]   # original-* only for tm = base
