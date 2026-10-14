@@ -629,7 +629,7 @@ def cmd_submit(args) -> None:
 def cmd_status(args) -> None:
     pool_run = load_pool(args.run)
     if pool_run:
-        return cmd_pool_status(args, pool_run[0], pool_run[1], pool_run[3])
+        return cmd_pool_status(args, pool_run[0], pool_run[1], pool_run[3], pool_run[2])
     rdir, state = load_state(args.run)
     status = classify(state, Slurm.query({current_job(t) for t in state["tasks"].values() if current_job(t)}))
 
@@ -796,6 +796,8 @@ def cmd_resources(args) -> None:
                 continue  # had nothing to do (output existed): no measurement
             if record["outcome"] == pool.DONE:
                 group(record["key"])["done"].append((record["key"], record.get("peak_rss_mb"), record.get("elapsed_s"), requested))
+            elif record["outcome"] == pool.OOM:
+                group(record["key"])["limit"].append((record["key"], "out of memory", _fmt_mem(record.get("peak_rss_mb") or 0)))
             elif record["outcome"] == pool.EVICTED:
                 group(record["key"])["limit"].append((record["key"], "evicted", _fmt_mem(record.get("peak_rss_mb") or 0)))
             elif record["outcome"] == pool.PREEMPTED:
@@ -805,7 +807,7 @@ def cmd_resources(args) -> None:
         for key, (cat, _) in status.items():
             if cat in (PENDING, RUNNING, BLOCKED):
                 group(key)["open"] += 1
-        print("Source: pool results ('requested' = the estimate the attempt started with; evicted = beyond its memory estimate, "
+        print("Source: pool results ('requested' = the estimate the attempt started with; out of memory = failed near its machine's RAM, evicted = beyond its memory estimate, "
               "preempted = made room for another task, interrupted = walltime ended)")
     else:
         rdir, state = load_state(args.run)
@@ -943,7 +945,7 @@ def select_keys(plan: dict, patterns: list[str], with_deps: bool = False) -> lis
 
 def seed_records(cfg: dict) -> list[dict]:
     """Measurements of this run and of [pool] seed_runs: runs/<run>/measurements.json (Slurm runs, `resources --save`)
-    and runs/<run>/pool/results/ (pool runs). Failed attempts of another pool are skipped: they usually failed for a reason
+    and runs/<run>/pool/results/ (pool runs). Failed and out-of-memory attempts of another pool are skipped: they usually failed for a reason
     fixed since (a bug, an unreachable MIP gap), so their peak is no lower bound for this run."""
     records = []
     for run in dict.fromkeys([cfg["name"], *cfg.get("pool", {}).get("seed_runs", [])]):
@@ -951,7 +953,7 @@ def seed_records(cfg: dict) -> list[dict]:
         if (rdir / "measurements.json").exists():
             records += [{**r, "source": f"slurm:{run}"} for r in json.loads((rdir / "measurements.json").read_text())]
         if (rdir / "pool" / "results").is_dir() and run != cfg["name"]:  # the own pool is read by the worker itself
-            records += [{**r, "source": f"pool:{run}"} for r in pool.Store(rdir / "pool").results() if r.get("outcome") != pool.FAILED]
+            records += [{**r, "source": f"pool:{run}"} for r in pool.Store(rdir / "pool").results() if r.get("outcome") not in (pool.FAILED, pool.OOM)]
     return records
 
 
@@ -1439,7 +1441,7 @@ def _print_counts(status: dict) -> None:
     print(f"{'TOTAL':<{width}}  {len(status):>6}" + "".join(f"  {totals[c]:>8}" for c in CATEGORIES))
 
 
-def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict) -> None:
+def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict, cfg: dict) -> None:
     status = pool_status(plan, store)
     _print_counts(status)
     now = time.time()
@@ -1477,11 +1479,13 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict) -> None:
               f"{sum(a[1] == 'PENDING' for a in active)} queued")
         for job, st, reason, start in active:
             print(f"  {job:<12} {st:<10} {reason if st == 'PENDING' else '':<20} {'expected start ' + start if st == 'PENDING' and start != 'N/A' else ''}")
-    retries = [r for r in store.results() if r["outcome"] in (pool.EVICTED, pool.PREEMPTED, pool.INTERRUPTED)]
+    retries = [r for r in store.results() if r["outcome"] in (pool.OOM, pool.EVICTED, pool.PREEMPTED, pool.INTERRUPTED)]
     if retries:
-        print(f"\nRETRIED ATTEMPTS: {sum(r['outcome'] == pool.EVICTED for r in retries)} evicted (beyond their memory estimate), "
+        print(f"\nRETRIED ATTEMPTS: {sum(r['outcome'] == pool.OOM for r in retries)} out of memory (near their machine's RAM), "
+              f"{sum(r['outcome'] == pool.EVICTED for r in retries)} evicted (beyond their memory estimate), "
               f"{sum(r['outcome'] == pool.PREEMPTED for r in retries)} preempted (made room for another task), "
               f"{sum(r['outcome'] == pool.INTERRUPTED for r in retries)} interrupted (walltime / worker stopped)")
+    _print_waiting_for_ram(cfg, plan, store, status, workers, now)
     shown = [args.list] if args.list else [FAILED, BLOCKED]
     for cat in shown:
         keys = [k for k, (c, _) in status.items() if c == cat and (args.filter is None or fnmatch.fnmatch(k, args.filter))]
@@ -1513,6 +1517,46 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict) -> None:
                   + (f"\n      log: {info['log']}" if info.get("log") else ""))
     if not args.list:
         print(f"\nRetry failed tasks (and unblock the tasks waiting for them): cluster.py restart {args.run} --failed")
+
+
+def _print_waiting_for_ram(cfg: dict, plan: dict, store: "pool.Store", status: dict, workers: dict, now: float) -> None:
+    """Pending tasks that no active worker starts because their memory estimate exceeds its RAM (pool.exceeds_ram, as in
+    Worker.admit), and how many open tasks depend on them. Active = alive and not stopping / draining (they start nothing)."""
+    active = [w for w in workers.values() if not w.get("exited") and now - w.get("beat", 0) < pool.STALE_S
+              and not w.get("stopping") and w.get("mem_mb")]
+    pending = [k for k, (cat, _) in status.items() if cat == PENDING]
+    if not active or not pending:
+        return
+    ram = max(w["mem_mb"] for w in active)
+    est = make_worker(cfg, pool_specs(plan, list(plan)), store, cores=1, mem_mb=ram, out=lambda *a: None).est
+    for record in store.results():
+        est.add(record)
+    waiting = {}
+    for key in pending:
+        mem = est.estimate(key)["mem_mb"]
+        if pool.exceeds_ram(mem, ram, status[key][1]["attempt"], status[key][1]):
+            waiting[key] = mem
+    if not waiting:
+        return
+    kids = {}
+    for key, task in plan.items():
+        for dep in task["deps"]:
+            kids.setdefault(dep, []).append(key)
+    stack, dependents = list(waiting), set()
+    while stack:
+        for kid in kids.get(stack.pop(), []):
+            if kid not in dependents and kid not in waiting and status[kid][0] not in (DONE, FAILED):
+                dependents.add(kid)
+                stack.append(kid)
+    print(f"\nWAITING FOR MORE RAM: {len(waiting)} task(s) are estimated above the RAM of every active worker (largest "
+          f"{ram / 1024:.0f} GB); {len(dependents)} more task(s) depend on them")
+    for key, mem in sorted(waiting.items(), key=lambda x: -x[1])[:15]:
+        last = status[key][1]
+        oom = (f"  out of memory in attempt {last['attempt']} (peak {last['peak_rss_mb'] / 1024:.1f} GB on {last.get('host') or last.get('worker')})"
+               if last.get("outcome") == pool.OOM and last.get("peak_rss_mb") else "")
+        print(f"  {key:<55} est. {mem / 1024:6.1f} GB{oom}")
+    if len(waiting) > 15:
+        print(f"  ... and {len(waiting) - 15} more")
 
 
 def cmd_pool_log(args, store: "pool.Store", plan: dict) -> None:
@@ -1547,10 +1591,10 @@ def cmd_attempts(args) -> None:
     if not pool_run:
         sys.exit(f"'{args.run}' is not a pool run (attempts lists the results of a task pool)")
     store = pool_run[1]
-    outcomes = set(args.outcome or [pool.EVICTED, pool.PREEMPTED, pool.FAILED, pool.INTERRUPTED])
+    outcomes = set(args.outcome or [pool.OOM, pool.EVICTED, pool.PREEMPTED, pool.FAILED, pool.INTERRUPTED])
     patterns = args.patterns or ["*"]
     records = [r for r in store.results() if r.get("outcome") in outcomes and any(fnmatch.fnmatch(r.get("key", ""), p) for p in patterns)]
-    order = [pool.EVICTED, pool.PREEMPTED, pool.FAILED, pool.INTERRUPTED, pool.DONE]
+    order = [pool.OOM, pool.EVICTED, pool.PREEMPTED, pool.FAILED, pool.INTERRUPTED, pool.DONE]
     records.sort(key=lambda r: (order.index(r["outcome"]) if r["outcome"] in order else len(order), r["key"], r.get("attempt") or 0))
     if not records:
         sys.exit(f"No {'/'.join(sorted(outcomes))} attempts" + (f" matching {patterns}" if args.patterns else ""))
@@ -1578,6 +1622,9 @@ def cmd_pool_restart(args, store: "pool.Store", plan: dict) -> None:
         sys.exit(f"No task of the plan matches {args.patterns} (task keys look like 'TX-123BT/sd1/c28/base/main/Truth', see status --list)")
     failed = [k for k, (cat, _) in status.items() if cat == FAILED and (args.failed or k in matched)]
     done = [k for k, (cat, _) in status.items() if cat == DONE and k in matched and k != "evaluate"]
+    # Out of memory is retried automatically; a pattern discards the attempt as a measurement (e.g. it ran out of memory
+    # next to another solve): no lower bound any more, no RAM rule - retried like any other task
+    oom = [k for k in matched if status[k][0] == PENDING and status[k][1].get("outcome") == pool.OOM and not status[k][1].get("discarded")]
     if args.with_dependents:  # finished tasks downstream of the selected ones re-run too (they used the old outputs)
         kids = {}
         for key, task in plan.items():
@@ -1591,16 +1638,23 @@ def cmd_pool_restart(args, store: "pool.Store", plan: dict) -> None:
                     stack.append(kid)
                     if status[kid][0] == DONE:
                         done.append(kid)
-    skipped = sorted(k for k in matched if status[k][0] not in (FAILED, DONE))
+    skipped = sorted(k for k in matched if status[k][0] not in (FAILED, DONE) and k not in oom)
     if skipped:
         print(f"Not restarted - {len(skipped)} matching task(s) are not finished (running, pending or blocked; they run anyway):")
         for key in skipped[:20]:
             print(f"  {key} ({status[key][0]})")
         if len(skipped) > 20:
             print(f"  ... and {len(skipped) - 20} more")
-    if not failed and not done:
+    if not failed and not done and not oom:
         sys.exit("Nothing to restart (failed and done tasks can be restarted; running workers pick them up)")
     suffix = "  (dry run)" if args.dry_run else ""
+    if oom:
+        print(f"Discarding the out-of-memory attempt of {len(oom)} task(s) - no longer a lower bound of the estimates, "
+              f"retried like any other task{suffix}")
+        for key in oom:
+            print(f"  {key} (attempt {status[key][1]['attempt']}, peak {(status[key][1].get('peak_rss_mb') or 0) / 1024:.1f} GB)")
+            if not args.dry_run:
+                store.reset(key, status[key][1]["attempt"])
     if failed:
         print(f"Retrying {len(failed)} failed task(s){suffix}")
         for key in failed:
@@ -1714,7 +1768,7 @@ def main():
     p = sub.add_parser("attempts", help="Task pool: one line per attempt (peak memory, estimate, runtime, host) - default: evicted / preempted / failed / interrupted")
     p.add_argument("run", help="Run name or its TOML file")
     p.add_argument("patterns", nargs="*", help="Only these tasks (glob patterns, e.g. 'RTS-GMLC/*'; default: all)")
-    p.add_argument("--outcome", action="append", choices=["evicted", "preempted", "failed", "interrupted", "done"],
+    p.add_argument("--outcome", action="append", choices=["oom", "evicted", "preempted", "failed", "interrupted", "done"],
                    help="Only attempts with this outcome (repeatable; default: evicted, preempted, failed, interrupted)")
     p.set_defaults(func=cmd_attempts)
     p = sub.add_parser("local", help="Run tasks on this machine without Slurm (sequentially, in dependency order)")

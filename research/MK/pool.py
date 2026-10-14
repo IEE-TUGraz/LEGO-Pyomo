@@ -6,14 +6,14 @@ interrupted attempt of this and the seed runs (this pool's completed runs take p
 
 Store layout (all files immutable once written, except the worker heartbeats):
     claims/<task>.<n>     attempt n of a task, created with O_EXCL (exactly one worker wins); content: worker id
-    results/<task>.<n>.json   outcome of attempt n (done / failed / evicted / preempted / interrupted) + measurements
+    results/<task>.<n>.json   outcome of attempt n (done / failed / oom / evicted / preempted / interrupted) + measurements
     resets/<task>.<n>     attempt n failed (or: an evaluate that ran too early is done), but may be retried (cluster.py restart)
     workers/<id>.json     heartbeat (rewritten every HEARTBEAT_S)
     jobs/<slurm id>.json  submitted worker jobs (submit-workers, chained successors)
     stop/<target>.json    stop request (cluster.py stop) for the workers of a host / one worker / all that started before it
     logs/<task>.<n>.log   output of attempt n
 A task's state follows from its highest attempt: no claim -> new; result done/failed -> done/failed (+ reset ->
-retry); evicted/preempted/interrupted -> retry; claim without result -> running while its worker's heartbeat is fresh, else retry.
+retry); oom/evicted/preempted/interrupted -> retry; claim without result -> running while its worker's heartbeat is fresh, else retry.
 """
 import ctypes
 import datetime
@@ -38,6 +38,22 @@ STALE_VIEW_SPREAD_S = 3 * HEARTBEAT_S
 DONE, FAILED, EVICTED, INTERRUPTED = "done", "failed", "evicted", "interrupted"
 PREEMPTED = "preempted"  # stopped by the memory guard to make room for another task (it stayed within its own estimate)
 NEW, RUNNING, RETRY = "new", "running", "retry"
+# Out of memory: a task that exits non-zero with a peak of >= NEAR_RAM_FRACTION of its machine's RAM (Gurobi's own OOM:
+# the process peaks just below the RAM, the rest went to the page file). Not a failure: the attempt is a lower bound of
+# max(peak, RAM) x lower_bound_factor, the task goes back into the pool and only a worker whose RAM exceeds the new
+# estimate starts it (exceeds_ram). Also the Slurm outcome of an OUT_OF_MEMORY job (cluster.resources).
+OOM = "oom"
+NEAR_RAM_FRACTION = 0.85
+
+
+def near_ram(peak_mb: float | None, ram_mb: float | None) -> bool:
+    return bool(peak_mb and ram_mb and peak_mb >= NEAR_RAM_FRACTION * ram_mb)
+
+
+def exceeds_ram(est_mb: float, mem_mb: float, attempt: int, last: dict) -> bool:
+    """A worker with mem_mb of RAM never starts a task estimated above it - unless the estimate is a scaled-up eviction
+    (the task may fit alone: it runs alone). Applies before the first attempt and after an out-of-memory attempt."""
+    return est_mb > mem_mb and (attempt == 0 or (last.get("outcome") == OOM and not last.get("discarded")))
 
 
 def _safe(key: str) -> str:
@@ -372,14 +388,31 @@ class Store:
         return dead
 
     def results(self) -> list[dict]:
-        """All result records (new files are read once and cached)."""
+        """All result records (new files are read once and cached). Records written before the out-of-memory outcome (no
+        `mem_mb`) are read as OOM if they failed near their machine's RAM (from the worker's heartbeat)."""
+        workers = None
         for path in (self.root / "results").iterdir():
             if path.suffix == ".json" and path.name not in self._results:
                 try:
-                    self._results[path.name] = json.loads(path.read_text())
+                    record = json.loads(path.read_text())
                 except (OSError, ValueError):
-                    pass  # being written (atomic replace makes this rare); read next time
-        return list(self._results.values())
+                    continue  # being written (atomic replace makes this rare); read next time
+                if record.get("outcome") == FAILED and "mem_mb" not in record and record.get("peak_rss_mb"):
+                    workers = self.workers() if workers is None else workers
+                    ram = (workers.get(record.get("worker")) or {}).get("mem_mb")
+                    if near_ram(record["peak_rss_mb"], ram):
+                        record = {**record, "outcome": OOM, "limit_mb": ram, "oom_inferred": True}
+                self._results[path.name] = record
+        # A reset out-of-memory attempt (cluster.py restart <pattern>, e.g. it ran out of memory next to another solve)
+        # is no measurement any more: no lower bound, no RAM rule (Estimator.add / exceeds_ram skip `discarded`)
+        resets, out = None, []
+        for name, record in self._results.items():
+            if record.get("outcome") == OOM:
+                resets = set(os.listdir(self.root / "resets")) if resets is None else resets
+                if name.removesuffix(".json") in resets:
+                    record = {**record, "discarded": True}
+            out.append(record)
+        return out
 
     def stale_view(self, host: str, now: float | None = None) -> tuple[str, set[str]] | None:
         """(description, worker ids) if this host's view of the store looks frozen, else None: no non-exited worker on
@@ -446,7 +479,9 @@ class Store:
 
 class Estimator:
     """Memory / runtime per task from measurements, falling back through `levels(key)` (most specific first) to the
-    prior (TOML resources), times a safety factor. Per level: the max of this pool's completed runs if there are any
+    prior (TOML resources). Memory of a completed run is its peak as measured, capped at its machine's RAM (no safety
+    factor: user decision Oct 2026 - a run that finished with paging needs no more than the RAM); memory lower bounds and
+    all runtimes are scaled by the safety factors. Per level: the max of this pool's completed runs if there are any
     (they may lower what the seed runs or other tasks' lower bounds say), else the max of the seed runs' completed runs
     (raised by this pool's lower bounds), else the largest lower bound. Lower bounds: failed attempts (peak), evictions
     (scaled up once more), preemptions (peak, no runtime), interruptions (runtime scaled up). Seed records carry a
@@ -457,14 +492,14 @@ class Estimator:
                  time_level=lambda level: True):
         self.specs, self.levels, self.time_level = specs, levels, time_level
         self.mem_safety, self.time_safety, self.lb = mem_safety, time_safety, lower_bound_factor
-        # level -> {(origin, kind): max observed (lower bounds already scaled)}; origin own / seed, kind done / lb
+        # level -> {(origin, kind): max observed, safety factors applied}; origin own / seed, kind done / lb
         self.mem, self.time = {}, {}
         self.seen = set()
 
     def add(self, record: dict) -> None:
         """record: key, outcome, peak_rss_mb, elapsed_s (results of pool attempts or imported Slurm measurements)."""
         ident = (record.get("source", "pool"), record["key"], record.get("attempt"), record.get("job"))
-        if ident in self.seen or record.get("noop"):
+        if ident in self.seen or record.get("noop") or record.get("discarded"):
             return
         self.seen.add(ident)
         outcome, peak, elapsed = record["outcome"], record.get("peak_rss_mb"), record.get("elapsed_s")
@@ -472,15 +507,19 @@ class Estimator:
         mem = time_ = None
         if outcome == DONE:
             mem, time_ = peak, elapsed
+            if mem and record.get("mem_mb"):  # finished with paging: it needs no more than that machine's RAM
+                mem = min(mem, record["mem_mb"])
         elif outcome == FAILED:
             mem = peak  # whatever it used is a lower bound; the runtime of a failure says nothing
-        elif outcome == EVICTED or outcome == "oom":  # the need is above what it reached (an OOM: above the limit)
+        elif outcome == EVICTED or outcome == OOM:  # the need is above what it reached (an OOM: above the limit)
             mem = max(peak or 0, record.get("limit_mb") or 0) * self.lb or None
         elif outcome == PREEMPTED:
             mem = peak  # made room for another task: it needs at least what it reached; its runtime says nothing
         elif outcome == INTERRUPTED or outcome == "timeout":
             mem = peak
             time_ = max(elapsed or 0, record.get("limit_s") or 0) * self.lb or None
+        mem = mem and mem * (1.0 if outcome == DONE else self.mem_safety)
+        time_ = time_ and time_ * self.time_safety
         for level in self.levels(record["key"]):
             if mem:
                 values = self.mem.setdefault(level, {})
@@ -488,6 +527,10 @@ class Estimator:
             if time_ and self.time_level(level):
                 values = self.time.setdefault(level, {})
                 values[slot] = max(values.get(slot, 0), time_)
+
+    def clear(self) -> None:
+        """Forget all records (a measurement was discarded: the maxima cannot be undone, so the caller re-adds the rest)."""
+        self.mem, self.time, self.seen = {}, {}, set()
 
     @staticmethod
     def _pick(values: dict) -> tuple[float, bool]:
@@ -504,23 +547,23 @@ class Estimator:
         preempted / interrupted) before it are floors that only ever raise it - a task that crashes after seconds says
         nothing about its need, and a task's own preemption must not hide the coarser levels' measurements."""
         spec = self.specs[key]
-        mem, mem_src = self._resolve(self.mem, key, spec["prior_mem_mb"], self.mem_safety)
-        time_s, time_src = self._resolve(self.time, key, spec["prior_time_s"], self.time_safety)
+        mem, mem_src = self._resolve(self.mem, key, spec["prior_mem_mb"])
+        time_s, time_src = self._resolve(self.time, key, spec["prior_time_s"])
         return {"mem_mb": mem, "mem_src": mem_src, "time_s": time_s, "time_src": time_src}
 
-    def _resolve(self, table: dict, key: str, prior: float, safety: float) -> tuple[float, str]:
+    def _resolve(self, table: dict, key: str, prior: float) -> tuple[float, str]:
         value, src, floor, floor_src = prior, "prior", 0.0, None
         for level in self.levels(key):
             if level not in table:
                 continue
             level_value, measured = self._pick(table[level])
             if measured:
-                value, src = level_value * safety, level
+                value, src = level_value, level
                 break
             if level_value > floor:
                 floor, floor_src = level_value, level
-        if floor * safety > value:
-            value, src = floor * safety, floor_src
+        if floor > value:
+            value, src = floor, floor_src
         return value, src
 
 
@@ -573,7 +616,8 @@ class Worker:
         self.job_object = _kill_on_close_job()  # Windows: tasks die with the worker
         self.stopping = None  # the stop request being followed (cluster.py stop)
         self.too_large = set()  # tasks needing more cpus than this worker's cores (logged once, never started here)
-        self.too_big = set()  # unattempted tasks whose memory estimate exceeds the RAM (logged once; re-checked as estimates change)
+        # tasks whose memory estimate exceeds the RAM (exceeds_ram; logged once, re-checked every admission)
+        self.too_big = set()
         self.running = {}  # key -> {proc, attempt, start, est, cpus, peak_mb, rss_mb, node_dir, node_peak_mb, log, stop, opp, opp_start}
         self.reload, self.reload_s, self.plan_id = reload, reload_s, plan_id
         # Code handover: called every reload_s; starts a successor running the changed code and returns its description
@@ -583,7 +627,8 @@ class Worker:
         # entries: they occupy cores and memory here (see refresh_foreign)
         self.foreign, self.foreign_peaks = {}, {}
         self._set_specs(specs)
-        for record in seed_records:
+        self.seed_records, self.discarded = list(seed_records), set()  # discarded: (key, attempt) of reset OOM attempts
+        for record in self.seed_records:
             self.est.add(record)
         self.estimates, self.critical = {}, {}
         self.head_blocked = (None, 0.0)
@@ -591,7 +636,7 @@ class Worker:
         self.last_disk_warning = 0.0
         self.stale_view = None  # Store.stale_view() of the last poll: (note, worker ids whose claims are not retried)
         self.any_failed = False
-        self.counts = {DONE: 0, FAILED: 0, EVICTED: 0, PREEMPTED: 0, INTERRUPTED: 0}
+        self.counts = {DONE: 0, FAILED: 0, OOM: 0, EVICTED: 0, PREEMPTED: 0, INTERRUPTED: 0}
 
     def log(self, msg: str) -> None:
         self.out(f"{_now()} {msg}")
@@ -625,7 +670,14 @@ class Worker:
 
     # -- estimates and priorities ---------------------------------------------------------------------------------------
     def refresh_estimates(self) -> None:
-        for record in self.store.results():
+        records = self.store.results()
+        discarded = {(r["key"], r.get("attempt")) for r in records if r.get("discarded")}
+        if discarded - self.discarded:  # a reset OOM attempt was already added as a lower bound: rebuild without it
+            self.discarded = discarded
+            self.est.clear()
+            for record in self.seed_records:
+                self.est.add(record)
+        for record in records:
             self.est.add(record)
         self.estimates = {key: self.est.estimate(key) for key in self.specs}
         self.critical = {}
@@ -693,12 +745,17 @@ class Worker:
             run["handle"].close()
         shutil.rmtree(run["node_dir"], ignore_errors=True)
         outcome = run["stop"][0] if run["stop"] else (DONE if rc == 0 else FAILED)
+        # Out of memory only with memory packing: without it (local) nothing would keep the retry off this machine
+        if outcome == FAILED and self.mem_packing and near_ram(run["peak_mb"], self.mem_mb):
+            outcome = OOM
         elapsed = time.time() - run["start"]
         noop = outcome == DONE and run["log"] is not None and _log_has_marker(run["log"], NOOP_MARKER)
         record = {"outcome": outcome, "noop": noop, "rc": rc, "elapsed_s": round(elapsed, 1), "peak_rss_mb": round(run["peak_mb"], 1) or None,
-                  "node_files_peak_mb": round(run["node_peak_mb"], 1), "threads": run["cpus"], "worker": self.id,
+                  "node_files_peak_mb": round(run["node_peak_mb"], 1), "threads": run["cpus"], "worker": self.id, "mem_mb": round(self.mem_mb, 1),
                   "host": socket.gethostname(), "start": datetime.datetime.fromtimestamp(run["start"]).isoformat(timespec="seconds"),
                   "end": _now(), "estimate": run["est"], "opportunistic": run["opp_start"], "log": str(run["log"]) if run["log"] else None}
+        if outcome == OOM:
+            record["limit_mb"] = round(self.mem_mb, 1)  # the estimator's lower bound: max(peak, limit) x lower_bound_factor
         self.store.write_result(key, run["attempt"], record)
         self.est.add({"key": key, "attempt": run["attempt"], **record})
         self.counts[outcome] += 1
@@ -706,7 +763,8 @@ class Worker:
             self.any_failed = True
         peak = f", peak {run['peak_mb'] / 1024:.1f} GB" if run["peak_mb"] else ""
         peak += " (nothing to do - not used as a measurement)" if noop else ""
-        self.log(f"{outcome} {key} after {datetime.timedelta(seconds=int(elapsed))}" + (f" (exit {rc})" if outcome == FAILED else "") + peak)
+        self.log(f"{outcome} {key} after {datetime.timedelta(seconds=int(elapsed))}" + (f" (exit {rc})" if outcome in (FAILED, OOM) else "") + peak
+                 + (f" of {self.mem_mb / 1024:.0f} GB RAM: out of memory - back in the pool for a worker with more RAM" if outcome == OOM else ""))
         if self.specs[key].get("retired"):  # removed from the plan while it ran: not started again
             self._set_specs({k: s for k, s in self.specs.items() if k != key})
             self.estimates.pop(key, None)
@@ -940,13 +998,13 @@ class Worker:
                     self.log(f"skipping {key}: needs {self.specs[key]['cpus']} cpus, this worker has {self.cores} cores - left to other workers")
                 continue
             est = self.estimates[key]
-            # Above the RAM it would only swap / run out of memory here. Only before the first attempt: an evicted task's
-            # estimate is a scaled-up lower bound, so its retry still runs alone
-            if self.mem_packing and est["mem_mb"] > self.mem_mb and snap[key][1] == 0:
+            # Above the RAM it would only swap / run out of memory here (before the first attempt and after an out-of-memory
+            # attempt; an evicted task's estimate is a scaled-up lower bound, so its retry still runs alone)
+            if self.mem_packing and exceeds_ram(est["mem_mb"], self.mem_mb, snap[key][1], snap[key][2]):
                 if key not in self.too_big:
                     self.too_big.add(key)
                     self.log(f"skipping {key}: estimated at {est['mem_mb'] / 1024:.1f} GB, this machine has {self.mem_mb / 1024:.0f} GB "
-                             f"- left to other workers")
+                             + ("(out of memory before) " if snap[key][2].get("outcome") == OOM else "") + "- left to other workers")
                 continue
             remaining_s = None if self.end_time is None else self.end_time - self.interrupt_margin_s - time.time()
             if remaining_s is not None and est["time_src"] != "prior" and est["time_s"] > remaining_s:
@@ -1114,10 +1172,13 @@ class Worker:
                 if finished or now - last_full > self.poll_s:
                     last_full = now
                     self.check_stop(started)
+                    # Estimates before refresh_foreign: a foreign task without est_mb (heartbeat predating task details)
+                    # takes this worker's estimate - on the first poll, with no estimates yet, it counted as 0 GB and a
+                    # full-year solve was started next to another one (Oct 2026)
+                    self.refresh_estimates()
                     self.refresh_foreign()
                     self.guard_memory()
                     disk_ok = self.check_disk()
-                    self.refresh_estimates()
                     self.check_stale_view()
                     snap = self.store.snapshot(self.specs, hold=self.stale_view[1] if self.stale_view else frozenset())
                     if disk_ok and not self.stopping and self.admit(snap) or finished:

@@ -372,6 +372,90 @@ def test_tasks_of_another_worker_on_this_machine_count_as_occupied(mk):
     assert any("other workers on this machine run 0 task(s)" in line for line in logs[:started[0]])
 
 
+def test_old_heartbeat_task_counts_with_its_estimate_from_the_first_poll(mk):
+    """A draining worker whose heartbeat predates task details lists only `running`: its task takes this worker's
+    estimate from the first poll on (it used to count 0 GB there, and a second full-year solve started next to it)."""
+    plan = dict([mk.task("Y/sd1/c3/base/main/F", mem="800M"), mk.task("X/sd1/c3/base/main/A", 0.5, mem="300M")])
+    cfg = mk.use(plan)
+    store = mk.store()
+    other = subprocess.Popen([sys.executable, str(mk.fake), "3", "0", "50"])
+    store.claim("Y/sd1/c3/base/main/F", 1, "old-worker")
+    store.beat("old-worker", {"host": socket.gethostname(), "pid": other.pid, "slurm_job": None, "running": ["Y/sd1/c3/base/main/F"]})
+    w, logs = mk.worker(cfg, plan, store, mem_mb=1000, idle_s=1)
+    w.run()
+    other.wait()
+    counted = [line for line in logs if "other workers on this machine run 1 task(s)" in line]
+    assert counted and "est. 0.0 GB" not in counted[0]
+    started = [i for i, line in enumerate(logs) if " start " in line and "/A " in line]
+    assert started and any("other workers on this machine run 0 task(s)" in line for line in logs[:started[0]])
+
+
+def test_out_of_memory_goes_back_into_the_pool_for_a_worker_with_more_ram(mk, capsys):
+    """An attempt that failed near its machine's RAM ran out of memory: not failed, but back in the pool with an estimate
+    above that RAM. status counts it (and its dependents) as waiting for more RAM; only a larger worker starts it.
+    The record predates the out-of-memory outcome (failed, no mem_mb): the RAM comes from its worker's heartbeat."""
+    oom, after, other = "M/sd1/c3/base/main/OOM", "M/sd1/c3/base/regret/AFTER", "L/sd1/c3/base/main/OTHER"
+    plan = dict([mk.task(oom), mk.task(after, deps=[oom]), mk.task(other)])
+    cfg = mk.use(plan)
+    store = mk.store()
+    pool._write_json_atomic(store.root / "meta.json", {"config": "x"})
+    store.beat("w", {"host": "elsewhere", "mem_mb": 1000})  # an active 1000 MB worker
+    store.claim(oom, 1, "w")
+    store.write_result(oom, 1, {"outcome": pool.FAILED, "peak_rss_mb": 900, "worker": "w"})
+    capsys.readouterr()
+    mk.cli("status", "fake")
+    out = capsys.readouterr().out
+    assert "WAITING FOR MORE RAM: 1 task(s)" in out and "1 more task(s) depend on them" in out and "FAILED (" not in out
+    assert "1 out of memory" in out
+    assert cluster.pool_status(plan, store)[oom][0] == cluster.PENDING
+    w, logs = mk.worker(cfg, plan, store, mem_mb=1000)
+    w.run()
+    snap = store.snapshot(plan)
+    assert snap[other][0] == pool.DONE and snap[oom][:2] == (pool.RETRY, 1)
+    assert sum(f"skipping {oom}" in line and "out of memory before" in line for line in logs) == 1
+    w, _ = mk.worker(cfg, plan, store, mem_mb=4000)
+    w.run()
+    snap = store.snapshot(plan)
+    assert snap[oom][:2] == (pool.DONE, 2) and snap[after][0] == pool.DONE
+
+
+def test_restarting_an_out_of_memory_attempt_discards_it_as_a_measurement(mk, capsys):
+    """restart --failed never selects an OOM task; a pattern discards the attempt: its lower bound no longer raises the
+    estimates (also not the sibling's, which shares the level), and the task runs on the same machine size again."""
+    oom, sib = "M/sd1/c3/base/main/OOM", "M/sd0.5/c3/base/main/OOM"
+    plan = dict([mk.task(oom), mk.task(sib)])
+    cfg = mk.use(plan)
+    store = mk.store()
+    pool._write_json_atomic(store.root / "meta.json", {"config": "x"})
+    store.claim(oom, 1, "w")
+    store.write_result(oom, 1, {"outcome": pool.OOM, "peak_rss_mb": 900, "mem_mb": 1000, "limit_mb": 1000, "worker": "w"})
+    w, logs = mk.worker(cfg, plan, store, mem_mb=1000)
+    w.refresh_estimates()
+    assert w.estimates[sib]["mem_mb"] > 1000
+    assert mk.cli("restart", "fake", "--failed") != 0  # nothing to restart
+    capsys.readouterr()
+    assert mk.cli("restart", "fake", oom) == 0
+    assert "Discarding the out-of-memory attempt of 1 task(s)" in capsys.readouterr().out
+    w.refresh_estimates()
+    assert w.estimates[sib]["mem_src"] == w.estimates[oom]["mem_src"] == "prior"
+    w.run()
+    snap = store.snapshot(plan)
+    assert snap[oom][:2] == (pool.DONE, 2) and snap[sib][0] == pool.DONE
+
+
+def test_a_task_failing_near_the_ram_is_recorded_as_out_of_memory(mk):
+    key = "M/sd1/c3/base/main/BIG"
+    plan = dict([mk.task(key, 1, rc=1, mb=105, mem="110M")])
+    cfg = mk.use(plan)
+    store = mk.store()
+    w, logs = mk.worker(cfg, plan, store, mem_mb=120)  # runs alone (above the packing share, within the RAM)
+    w.run()
+    (record,) = store.results()
+    assert record["outcome"] == pool.OOM and record["limit_mb"] == 120 and record["mem_mb"] == 120
+    assert store.snapshot(plan)[key][:2] == (pool.RETRY, 1)  # not failed, but not retried on this machine
+    assert w.estimates[key]["mem_mb"] > 120 and any("back in the pool" in line for line in logs)
+
+
 def test_handover_drains_the_worker(mk):
     """After the handover callback reports a successor, the worker starts nothing new and exits after its own tasks."""
     plan = dict([mk.task("H/sd1/c3/base/main/T1", 3), mk.task("H/sd1/c3/base/main/T2", 3), mk.task("H/sd1/c3/base/main/T3", 0.3)])

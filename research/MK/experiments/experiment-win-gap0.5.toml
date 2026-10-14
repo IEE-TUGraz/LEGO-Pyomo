@@ -59,8 +59,7 @@ default = { cpus = 8, mem = "120G", time = "2-00:00:00" }   # capped below the R
 # Task pool. cores / mem are not needed (only for submit-workers on Slurm): each worker takes its machine's physical cores
 # and RAM (--cores / --mem to override).
 [pool]
-seed_runs = ["pilot", "experiment-win"]  # memory estimates: MUSICA's pilot (if runs/pilot/measurements.json is copied to the
-                                         # share) and the 0.3 % run on these servers (its failed attempts are not used)
+seed_runs = []  # estimates only from this pool's own measurements (and the priors below)
 mem_fraction = 0.9     # share of the RAM that tasks are packed into
 idle_hours = 3         # a worker without anything to run waits this long before it exits
 # Dataset order: priority = remaining chain of dependent tasks (critical path) x weight, so a TX-123BT task goes before

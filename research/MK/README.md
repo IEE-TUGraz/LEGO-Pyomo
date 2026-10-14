@@ -271,7 +271,7 @@ delete a result file to recompute it.
   (`Node files: peak … MB, min free disk … MB` at the end of the log) and warns below this.
 - `[pool]` (task pool only): `seed_runs` (runs whose measurements seed the estimates, e.g. `["pilot"]`), `cores` and
   `mem` per worker node (required by `submit-workers`), `walltime` (72 h), `chain_after_hours` (24), `workers` (3),
-  `mem_fraction` (share of `mem` that is packed, 0.9), `idle_hours` (3), `mem_safety` (1.2), `time_safety` (1.5),
+  `mem_fraction` (share of `mem` that is packed, 0.9), `idle_hours` (3), `mem_safety` (1.2, memory lower bounds only), `time_safety` (1.5),
   `disk_min_free_gb` (10), `rank_offset_hours` (soft dataset order, see Task pool; absent = strict), `dataset_weights` (weighted dataset order,
   e.g. `{ "RTS-GMLC" = 100, "TX-123BT" = 10 }`, unlisted datasets 1; excludes `rank_offset_hours`), `opportunistic`
   (true; opportunistic starts, see Task pool), `opportunistic_after_minutes` (10), `mail_type` for the worker jobs (default: `[slurm] mail_type`; address from `[slurm] mail_user` /
@@ -340,11 +340,21 @@ python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dep
   `restart` warns about running tasks that depend on restarted ones (they use the old outputs - a prepare re-run
   rewrites folders they read; wait for them or stop them first). `--dry-run` lists the selection. Workers started
   before this feature re-run done tasks *with* `--no-overwrite` (so they skip) - restart them first.
+- **Out of memory is not a failure**: a task that exits with an error after peaking at ≥ 85 % of its machine's RAM
+  ran out of memory (outcome `oom`). It goes back into the pool by itself (no `restart` needed) with its memory
+  estimate raised above that RAM (1.25 × RAM × the safety factor), so only a worker with more RAM starts it - e.g. a
+  task that ran out of memory on a 24 GB machine moves to a 128 GB one, a 128 GB OOM waits for a large-memory server.
+  `status` lists these under **WAITING FOR MORE RAM**: the pending tasks whose estimate exceeds the RAM of every
+  active worker (also never-attempted ones estimated that high), and how many tasks depend on them. While such tasks
+  remain, `evaluate` waits and idle workers exit after `idle_hours`. Applies with memory packing (not to `local`).
+  If an out-of-memory attempt was not the task's own fault (e.g. another big solve ran on the same machine), discard
+  it: `restart <run> '<task key>'` - it no longer raises the estimates and the task is retried like any other.
 
 - **Estimates** come from measurements (peak RSS, runtime) of this run and of `[pool] seed_runs`, most specific first:
   the same task, the same task/edge/RP count, the same task/edge, the resource class (memory only); else the TOML
-  `[resources.*]`. Value = largest measurement × `mem_safety` / `time_safety`. Failed, evicted, preempted and
-  interrupted attempts are lower bounds: they can raise an estimate above the TOML value, but only completed runs lower
+  `[resources.*]`. Memory of a completed run = its peak, capped at its machine's RAM, without a safety factor (a run
+  that finished with paging needs no more than that RAM); runtimes × `time_safety`. Failed, evicted, out-of-memory,
+  preempted and interrupted attempts are lower bounds (memory × `mem_safety`): they can raise an estimate above the TOML value, but only completed runs lower
   it - a task's own stopped attempt never lowers its estimate below what similar completed runs say. Completed runs of this pool take precedence over the seed runs and over other tasks' lower bounds, so measurements
   can lower an estimate that a seed run set (if a task then needs more, the memory guard makes room for it). Failed
   attempts of a seed run are ignored - they usually failed for a reason fixed since. They are recomputed continuously, so

@@ -74,8 +74,8 @@ def test_estimator_levels_lower_bounds_and_noop():
     est.add({"key": r, "outcome": "oom", "peak_rss_mb": 99000, "limit_mb": 100000, "limit_s": 86400, "source": "slurm:pilot", "job": "2"})
     est.add({"key": b, "outcome": pool.DONE, "peak_rss_mb": 1, "elapsed_s": 1, "noop": True, "attempt": 1})
     e_a, e_b, e_r = est.estimate(a), est.estimate(b), est.estimate(r)
-    assert e_a["mem_mb"] == 60000 and e_a["mem_src"] == a and e_a["time_s"] == 10800
-    assert e_b["mem_src"] == "T/main/Markov" and e_b["mem_mb"] == 60000  # other demand / TM / clusters; the no-op is ignored
+    assert e_a["mem_mb"] == 50000 and e_a["mem_src"] == a and e_a["time_s"] == 10800  # completed: memory unscaled
+    assert e_b["mem_src"] == "T/main/Markov" and e_b["mem_mb"] == 50000  # other demand / TM / clusters; the no-op is ignored
     assert e_r["mem_mb"] == 100000 * 1.25 * 1.2  # OOM: the limit (not the slightly lower peak) is the lower bound
     assert e_r["time_src"] == "prior"  # runtime never falls back to the class level
 
@@ -113,7 +113,18 @@ def test_lower_bounds_never_lower_the_prior():
     est.add({"key": f, "outcome": pool.FAILED, "peak_rss_mb": 200, "elapsed_s": 3, "attempt": 1})
     est.add({"key": d, "outcome": pool.DONE, "peak_rss_mb": 200, "elapsed_s": 3, "attempt": 1})
     assert est.estimate(f)["mem_mb"] == 1000 and est.estimate(f)["mem_src"] == "prior"
-    assert est.estimate(d)["mem_mb"] == 200 * 1.2 and est.estimate(d)["mem_src"] == d
+    assert est.estimate(d)["mem_mb"] == 200 and est.estimate(d)["mem_src"] == d
+
+
+def test_completed_runs_need_at_most_their_machines_ram():
+    """A completed run's peak is its need (no safety factor), capped at its machine's RAM (it finished with paging);
+    lower bounds keep the safety factor."""
+    a, b = "T/sd1/c28/base/main/Truth", "U/sd1/c28/base/main/Truth"
+    est = _estimator([a, b], mem_safety=1.2)
+    est.add({"key": a, "outcome": pool.DONE, "peak_rss_mb": 130000, "mem_mb": 128000, "elapsed_s": 10, "attempt": 1})
+    est.add({"key": b, "outcome": pool.FAILED, "peak_rss_mb": 2000, "elapsed_s": 10, "attempt": 1})
+    assert est.estimate(a)["mem_mb"] == 128000
+    assert est.estimate(b)["mem_mb"] == 2000 * 1.2
 
 
 def test_own_completed_runs_take_precedence_and_preemptions_are_memory_minima():
