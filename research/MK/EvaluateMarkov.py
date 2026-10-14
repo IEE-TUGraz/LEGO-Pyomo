@@ -47,6 +47,12 @@ from InOutModule.printer import Printer
 printer = Printer.getInstance()
 printer.set_width(300)
 
+
+def _connect_ro(path: str) -> sqlite3.Connection:
+    """Open a result file read-only (mode=ro): evaluation never modifies the files, also not via a hot-journal rollback.
+    os.path.abspath, not Path.resolve: resolve can turn a mapped drive into a UNC path, which SQLite URIs reject."""
+    return sqlite3.connect(Path(os.path.abspath(path)).as_uri() + "?mode=ro", uri=True)
+
 ########################################################################################################################
 # Constants
 ########################################################################################################################
@@ -306,7 +312,7 @@ def _load_file(path: str, full: bool, analysis: bool) -> tuple[dict, pd.DataFram
     entry = {'file': path, 'basename': os.path.basename(path), 'kind': kind, 'base_file': base_file}
     values = None
     try:
-        with closing(sqlite3.connect(path)) as conn:
+        with closing(_connect_ro(path)) as conn:
             entry.update(_load_metadata_from_conn(conn, entry['basename']))
             try:
                 row = conn.execute('SELECT "values" FROM objective LIMIT 1').fetchone()
@@ -508,7 +514,7 @@ def _chronology_worker(path: str, ref_path: str | None) -> dict:
     chronological deviation from ref_path (if given)."""
     result = {}
     try:
-        with closing(sqlite3.connect(path)) as conn:
+        with closing(_connect_ro(path)) as conn:
             hindex = _hindex(conn)
             if hindex is None:
                 return result
@@ -516,7 +522,7 @@ def _chronology_worker(path: str, ref_path: str | None) -> dict:
             result.update(tm_structure(day_rps))
             result.update(storage_boundary_check(conn, hindex, day_rps))
             if ref_path is not None:
-                with closing(sqlite3.connect(ref_path)) as ref_conn:
+                with closing(_connect_ro(ref_path)) as ref_conn:
                     result.update(chronological_deviation(conn, hindex, ref_conn))
     except Exception as e:
         result['chronology_error'] = str(e)
@@ -883,7 +889,7 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder=None, numb
     per_case_investment: dict[tuple[str, str], float] = {}
     for sqlite_file, label in zip(sqlite_files, case_labels):
         try:
-            with closing(sqlite3.connect(sqlite_file)) as cnx:
+            with closing(_connect_ro(sqlite_file)) as cnx:
                 df_inv = pd.read_sql("SELECT * FROM vGenInvest", cnx)
             for _, row in df_inv.iterrows():
                 g_name = row[df_inv.columns[0]]
@@ -903,7 +909,7 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder=None, numb
     hindex = None
     hindex_source = next((f for f, l in zip(sqlite_files, case_labels) if l.strip() not in ("Truth", "Truth ")), sqlite_files[0])
     try:
-        with closing(sqlite3.connect(hindex_source)) as cnx:
+        with closing(_connect_ro(hindex_source)) as cnx:
             hindex = pd.read_sql("SELECT * FROM hindex", cnx)
         if hindex.empty:
             hindex = None
@@ -1067,7 +1073,7 @@ def plot_unit_commitment(sqlite_files, case_labels, case_study_folder=None, numb
 def _load_unit_commitment_from_sqlite(sqlite_file, case_label):
     """Load unit commitment data from a sqlite file and return a DataFrame with case/rp/k/g index."""
     g_rename = {"thermalGenerators": "g"}
-    with closing(sqlite3.connect(sqlite_file)) as cnx:
+    with closing(_connect_ro(sqlite_file)) as cnx:
         vCommit = pd.read_sql("SELECT * FROM vCommit", cnx).rename(columns={"values": "vCommit", **g_rename})
         vStartup = pd.read_sql("SELECT * FROM vStartup", cnx).rename(columns={"values": "vStartup", **g_rename})
         vShutdown = pd.read_sql("SELECT * FROM vShutdown", cnx).rename(columns={"values": "vShutdown", **g_rename})
