@@ -228,8 +228,9 @@ python research/MK/cluster.py local pilot 'TX-123BT/sd1/c28/base/regret/Markov' 
 `local` is the pool worker (see "Task pool" below) with a throw-away pool: `-j/--jobs N` runs up to N tasks at once,
 each as soon as its dependencies have finished; output then always goes to log files `<key>.<attempt>.log` (`--log-dir`,
 default `runs/<name>-local/logs/`). Memory packing is off (`-j` is the concurrency; the TOML memory is sized for Slurm),
-but the memory guard still stops the newest task if the machine runs out of memory. All prepare jobs are independent and
-write disjoint folders, so they can run fully in parallel (~3 GB RAM each). Mind the memory with solves: full-year
+but the memory guard still stops the newest task if the machine runs out of memory. All prepare jobs write disjoint folders
+and run fully in parallel (~3 GB RAM each) - except with `--filter-zone`, `--limitK` or `--shift` in `[markov] args`:
+these write one folder that all demand levels of a dataset share, so the dataset's other prepares wait for its first one. Mind the memory with solves: full-year
 models need tens of GB each. `--with-deps` adds all upstream tasks (finished ones skip quickly via `--no-overwrite`).
 Without `--keep-going`, a failure stops starting new tasks (running ones finish); with it, only the tasks depending on
 the failure are skipped. Gurobi threads per task = the task's `cpus`, at most CPU count / jobs (`--threads`). The exit
@@ -240,7 +241,7 @@ prefix the command with `start /low /b /wait`, and quote patterns with `"` inste
 of the folder name; lower case for low-priority runs) + task (4) + edge (2), then `_` and the array name, e.g.
 `TXmainMk_main-Markov-TX-123BT`. Task codes: `prep` prepare, `trOr` truth-original, `main`, `oper` operational, `rgrt`
 regret, `iRgr` invest-regret, `oRgr` operational-regret, `OiRg` original-invest-regret, `ORgr` original-regret. Edge
-codes: `Tr` Truth, `NE` NoEnf, `Cy` Cyclic, `Mk` Markov, `--` none. Full names: `squeue -o "%.18i %.40j %.8T %.10M"`.
+codes: `Tr` Truth, `NE` NoEnf, `Cy` Cyclic, `Mk` Markov, `--` none, `St` the prepares that wait for the first one. Full names: `squeue -o "%.18i %.40j %.8T %.10M"`.
 
 **Queue order**: `grid.datasets` order (RTS-GMLC, TX-123BT, NREL-118), then the runs of `low_priority` TM variants
 (own arrays ending in `-low`, e.g. `rtmainMk_main-Markov-RTS-GMLC-low`). Every job gets `sbatch --nice` = rank ×

@@ -63,7 +63,11 @@ TASK_DEPS = {  # (task, edge) -> [(task, edge)] within the same grid point; "EDG
 # <dataset 2><task 4><edge 2> (e.g. 'TXmainMk', 'NRoRgrTr'), followed by '_' and the full group name
 TASK_CODES = {"main": "main", "operational": "oper", "regret": "rgrt", "invest-regret": "iRgr", "operational-regret": "oRgr",
               "original-invest-regret": "OiRg", "original-regret": "ORgr", "prepare": "prep", "truth-original": "trOr"}
-EDGE_CODES = {"Truth": "Tr", "NoEnf": "NE", "Cyclic": "Cy", "Markov": "Mk", None: "--"}
+EDGE_CODES = {"Truth": "Tr", "NoEnf": "NE", "Cyclic": "Cy", "Markov": "Mk", None: "--",
+              "stretch": "St"}  # "stretch": the prepares that wait for a dataset's first prepare (SHARED_PREP_ARGS)
+# Markov.py preprocessing steps before --stretch-demand: they write one folder that all demand levels of a dataset share.
+# Folder creation is not safe against concurrent prepares, so the other prepares of the dataset wait for its first one.
+SHARED_PREP_ARGS = {"--filter-zone", "--limitK", "--shift"}
 
 # Slurm state -> category shown by `status`
 DONE, RUNNING, PENDING, BLOCKED, FAILED, UNKNOWN = "done", "running", "pending", "blocked", "failed", "unknown"
@@ -277,13 +281,18 @@ def build_plan(cfg: dict) -> dict:
         task_rank = rank.get(dataset, 0) + (len(rank) if low else 0)  # evaluate (no dataset): 0
         plan[key] = {"key": key, "group": group, "jobname": jobname, "rank": task_rank, "dataset_rank": rank.get(dataset, 0), "low": low, "index": index, "cmd": " ".join(cmd), "res": res, "deps": deps}
 
+    shared_prep = bool(SHARED_PREP_ARGS & set(markov.get("args", [])))
     for dataset in grid["datasets"]:
         name = Path(dataset).name
+        first_prepare = f"{name}/sd{stretch[0]:g}/prepare"
         for si, sd in enumerate(stretch, 1):
             prefix = f"{name}/sd{sd:g}"
-            add(f"{prefix}/prepare", f"prepare-{name}", si,
-                markov_cmd(dataset, sd, "--clusters", ",".join(map(str, clusters)), "--prepare-only"),
-                _resources(cfg, "prepare", name), [], name, "prepare")
+            prepare_cmd = markov_cmd(dataset, sd, "--clusters", ",".join(map(str, clusters)), "--prepare-only")
+            if shared_prep and si > 1:  # own array: a Slurm array cannot depend on one of its own tasks
+                add(f"{prefix}/prepare", f"prepare-{name}-stretch", si - 1, prepare_cmd,
+                    _resources(cfg, "prepare", name), [first_prepare], name, "prepare", "stretch")
+            else:
+                add(f"{prefix}/prepare", f"prepare-{name}", si, prepare_cmd, _resources(cfg, "prepare", name), [], name, "prepare")
             if grid.get("truth_original", False):
                 add(f"{prefix}/truth-original", f"truth-original-{name}", si, markov_cmd(dataset, sd, *solver_args(name), "--task", "truth-original"),
                     _resources(cfg, "truth-original", name), [f"{prefix}/prepare"], name, "truth-original")

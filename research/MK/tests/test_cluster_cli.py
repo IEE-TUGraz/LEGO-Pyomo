@@ -28,6 +28,19 @@ def test_node_file_start_fraction_is_rejected():
         cluster.build_plan({**cfg, "markov": {**markov, "node_file_start_fraction": 0.5}})
 
 
+def test_shared_preprocessing_serializes_the_prepares_of_a_dataset():
+    _, cfg = cluster._load_config("experiment")
+    plan = cluster.build_plan(cfg)
+    assert all(not t["deps"] for k, t in plan.items() if k.endswith("/prepare"))  # own stretchDemand folders: parallel
+    shared = cluster.build_plan({**cfg, "markov": {**cfg["markov"], "args": [*cfg["markov"]["args"], "--limitK", "k0001-k4392"]}})
+    first = f"{cfg['grid']['datasets'][0].split('/')[-1]}/sd{float(cfg['grid']['stretch_demand'][0]):g}/prepare"
+    assert not shared[first]["deps"]
+    others = [t for k, t in shared.items() if k.endswith("/prepare") and k.startswith(first.split("/")[0] + "/") and k != first]
+    assert others and all(t["deps"] == [first] for t in others)
+    # own job array, so the Slurm dependency is on the first prepare's array
+    assert cluster.group_dependency(shared, others) == f"afterok:@{shared[first]['group']}"
+
+
 def test_submit_workers_dry_run_creates_nothing(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cluster, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.setenv("MK_MAIL_USER", "someone@example.org")
