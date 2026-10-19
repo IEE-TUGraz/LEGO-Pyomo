@@ -434,8 +434,11 @@ Config: `experiments/experiment-win-gap0.5.toml` - same model options as `experi
 RTS-GMLC's full-year Truths do not reach 0.3 %) and the same grid, except that the shifted and random transition
 matrices run for RTS-GMLC only, with `cpus`, memory and `node_file_start` sized for the servers. It replaces
 `experiment-win.toml` (0.3 %, kept to read its pool; the MUSICA `pilot` also ran at 0.3 %). The gap is part of the
-result file names (`mipGap0.005`), so results of the two gaps never overwrite each other. Gurobi node files belong on a fast local disk (`--node-dir`; the network
-drive works but is slow).  Work units are
+result file names (`mipGap0.005`), so results of the two gaps never overwrite each other.
+`experiments/experiment-win-gap0.5-onethird.toml` is the same run on the first 122 days only (`--limitK k0001-k2928`,
+applied before demand stretching and clustering), to cut runtime and memory; it has its own pool,
+input folders (`data/<dataset>/limitKk0001-k2928/...`) and result names, and deliberately low priors. Gurobi node files belong on a fast local disk (`--node-dir`; the network
+drive works but is slow). Work units are
 comparable across machines that pass `check_workunits.py` (see below). The memory of TX-123BT's full-year
 solves and Original Truths is capped just below the servers' RAM, so they are tried, each alone on its server. If they
 run out of memory, stop scheduling the dataset: remove it from `grid.datasets` and `[pool] dataset_weights` (the running workers pick that up, see
