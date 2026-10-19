@@ -2,7 +2,8 @@
 
 Workers (one per node, or one on a laptop) pull tasks from a pool in runs/<name>/pool/ and pack them onto their machine by
 estimated memory and cores. Estimates start from the TOML resources and improve with every finished, evicted or
-interrupted attempt of this and the seed runs (this pool's completed runs take precedence over the seed runs'). Standard library only; independent of cluster.py (which builds the specs).
+interrupted attempt of this and the seed runs (this pool's completed runs take precedence over the seed runs'), and from
+the last heartbeat peaks of attempts lost with a dead worker (Store.lost_records). Standard library only; independent of cluster.py (which builds the specs).
 
 Store layout (all files immutable once written, except the worker heartbeats):
     claims/<task>.<n>     attempt n of a task, created with O_EXCL (exactly one worker wins); content: worker id
@@ -44,6 +45,10 @@ NEW, RUNNING, RETRY = "new", "running", "retry"
 # estimate starts it (exceeds_ram). Also the Slurm outcome of an OUT_OF_MEMORY job (cluster.resources).
 OOM = "oom"
 NEAR_RAM_FRACTION = 0.85
+# Lost: an attempt whose worker died without writing its result (e.g. the node failed). Never written to results/ - a
+# synthetic record from the dead worker's last heartbeat (Store.lost_records), only for the estimator: its peak there is a
+# lower bound, scaled like an eviction (the node may have died because the task kept growing)
+LOST = "lost"
 
 
 def near_ram(peak_mb: float | None, ram_mb: float | None) -> bool:
@@ -436,6 +441,38 @@ class Store:
             return None
         return f"the last {len(held)} live workers on other hosts went silent together {(now - last) / 60:.0f} min ago", held
 
+    def lost_records(self, now: float | None = None, hold: set[str] = frozenset()) -> list[dict]:
+        """Lower-bound records (outcome LOST) of attempts whose worker died without writing their result: the claim has
+        no result, its worker is exited or silent for STALE_S (not in hold, see stale_view) and its last heartbeat lists
+        the task (`tasks`, with peak and start). Without them a retry after a node failure would start from the same
+        estimate that let the node run out of memory. Computed per call, never written."""
+        now = time.time() if now is None else now
+        candidates = {}  # safe key -> [(key, worker id, heartbeat, task entry)] of dead workers' last tasks
+        for wid, w in self.workers().items():
+            if wid in hold or not (w.get("exited") or now - w.get("beat", 0) >= STALE_S):
+                continue
+            for key, task in (w.get("tasks") or {}).items():
+                if task.get("peak_mb"):
+                    candidates.setdefault(_safe(key), []).append((key, wid, w, task))
+        if not candidates:
+            return []
+        done = {(r["key"], r.get("attempt")) for r in self.results()}
+        out = []
+        for name in os.listdir(self.root / "claims"):
+            safe, _, n = name.rpartition(".")
+            if not n.isdigit() or safe not in candidates or (candidates[safe][0][0], int(n)) in done:
+                continue
+            try:
+                owner = (self.root / "claims" / name).read_text().strip()
+            except OSError:
+                continue
+            for key, wid, w, task in candidates[safe]:
+                if wid == owner:
+                    out.append({"key": key, "attempt": int(n), "outcome": LOST, "peak_rss_mb": task["peak_mb"],
+                                "elapsed_s": round(w.get("beat", 0) - task["start"], 1) if task.get("start") else None,
+                                "worker": wid, "mem_mb": w.get("mem_mb")})
+        return out
+
     def snapshot(self, keys, now: float | None = None, hold: set[str] = frozenset()) -> dict:
         """{key: (state, attempt, info)}: state NEW/RUNNING/RETRY/DONE/FAILED; attempt = highest claimed attempt (0 = none);
         info = the result record, or {'worker': id} for RUNNING. hold: the worker ids of stale_view() (a worker whose
@@ -503,7 +540,8 @@ class Estimator:
 
     def add(self, record: dict) -> None:
         """record: key, outcome, peak_rss_mb, elapsed_s (results of pool attempts or imported Slurm measurements)."""
-        ident = (record.get("source", "pool"), record["key"], record.get("attempt"), record.get("job"))
+        # A LOST record is synthetic: the attempt's real result (a worker that only looked dead) must still be added
+        ident = (record.get("source", "pool"), record["key"], record.get("attempt"), record.get("job"), record["outcome"] == LOST)
         if ident in self.seen or record.get("noop") or record.get("discarded"):
             return
         self.seen.add(ident)
@@ -518,6 +556,9 @@ class Estimator:
             mem = peak  # whatever it used is a lower bound; the runtime of a failure says nothing
         elif outcome == EVICTED or outcome == OOM:  # the need is above what it reached (an OOM: above the limit)
             mem = max(peak or 0, record.get("limit_mb") or 0) * self.lb or None
+        elif outcome == LOST:  # its worker died (node failure): it needed more than its last heartbeat's peak
+            mem = peak and peak * self.lb
+            time_ = record.get("elapsed_s")  # ran at least this long (no factor: the death cut it short, not a limit)
         elif outcome == PREEMPTED:
             mem = peak  # made room for another task: it needs at least what it reached; its runtime says nothing
         elif outcome == INTERRUPTED or outcome == "timeout":
@@ -684,7 +725,7 @@ class Worker:
             self.est.clear()
             for record in self.seed_records:
                 self.est.add(record)
-        for record in records:
+        for record in records + self.store.lost_records(hold=self.stale_view[1] if self.stale_view else frozenset()):
             self.est.add(record)
         self.estimates = {key: self.est.estimate(key) for key in self.specs}
         self.critical = {}

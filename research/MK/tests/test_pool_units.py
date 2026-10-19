@@ -28,6 +28,29 @@ def test_claim_is_exclusive_and_states_follow_highest_attempt(tmp_path):
     assert store.snapshot(keys)["c"][0] == pool.RETRY
 
 
+def test_lost_attempts_of_a_dead_worker_are_lower_bounds(tmp_path):
+    store = pool.Store(tmp_path)
+    now = time.time()
+    store.claim("big", 1, "dead")
+    store.claim("small", 1, "dead")
+    store.write_result("small", 1, {"outcome": pool.DONE, "peak_rss_mb": 3000, "elapsed_s": 50})
+    store.claim("other", 1, "live")
+    pool._write_json_atomic(store.root / "workers" / "dead.json", {"beat": now - 2 * pool.STALE_S, "tasks": {
+        "big": {"peak_mb": 100000, "start": now - 2 * pool.STALE_S - 3000}, "small": {"peak_mb": 3000, "start": now - 3000}}})
+    pool._write_json_atomic(store.root / "workers" / "live.json", {"beat": now, "tasks": {"other": {"peak_mb": 5000, "start": now}}})
+    lost = store.lost_records(now=now)
+    assert [(r["key"], r["attempt"], r["outcome"], r["elapsed_s"]) for r in lost] == [("big", 1, pool.LOST, 3000.0)]
+    assert store.lost_records(now=now, hold={"dead"}) == []  # a frozen view: the worker may be alive
+    assert store.snapshot(["big"], now=now)["big"][0] == pool.RETRY  # the snapshot does not see lost records
+    est = pool.Estimator({"big": {"prior_mem_mb": 49152, "prior_time_s": 3600}}, lambda k: [k], mem_safety=1.2, lower_bound_factor=1.25)
+    for record in lost:
+        est.add(record)
+    assert est.estimate("big")["mem_mb"] == pytest.approx(100000 * 1.25 * 1.2)
+    # the real result of the same attempt (its worker only looked dead) still counts
+    est.add({"key": "big", "attempt": 1, "outcome": pool.DONE, "peak_rss_mb": 90000, "elapsed_s": 9000})
+    assert est.estimate("big")["mem_mb"] == 90000
+
+
 def test_stale_view_holds_claims_of_the_workers_that_went_silent_together(tmp_path):
     store = pool.Store(tmp_path)
     now = time.time()

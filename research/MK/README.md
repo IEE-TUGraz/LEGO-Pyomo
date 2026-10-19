@@ -384,7 +384,11 @@ python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dep
   with a few chains and add more with another `submit-workers --workers N` once the estimate is based on
   measurements; `evaluate` runs automatically after all other tasks.
 - Per-attempt logs: `runs/<name>/pool/logs/<key>.<attempt>.log`. A dead worker's tasks are retried after 10 min without
-  heartbeat - at once if a new worker starts on the same machine and finds the old worker's process gone.
+  heartbeat - at once if a new worker starts on the same machine and finds the old worker's process gone. Their peaks
+  from the dead worker's last heartbeat become lower bounds like an eviction (peak × 1.25 × `mem_safety`), so a task
+  that took its node down (`NODE_FAIL`, e.g. out of memory) does not restart with the same estimate. The worker's own
+  output (`jobs/worker_<job>.out`) is unbuffered; after a node failure the per-task logs and the heartbeat
+  (`workers/<host>-j<job>-<pid>.json`: tasks with est / RSS / peak) show what was running.
   Exception: if the last live workers on other machines all went silent at the same moment, the machine looking at
   the pool more likely reads an outdated copy of the share (seen on a Windows laptop after standby: `status` showed
   every other worker as "lost" while they were running fine). Its worker then logs a warning and never retries their
