@@ -395,6 +395,9 @@ python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dep
 - **Stopping workers** started by hand (no Slurm job to cancel): `cluster.py stop <run> [--host NAME ...] [--now]`.
   Default: the workers start no new tasks and exit once their running tasks have finished; `--now` interrupts the
   running tasks (retried by other / later workers). Only workers that started before the request are affected.
+  Switching a machine to another experiment right away is safe: a worker counts the tasks of every other worker on its
+  machine as occupied (cores, memory estimates, actual memory) - also those of other experiments (other pools in
+  `runs/`), e.g. the last solves of a draining one - and waits for room instead of overpacking the machine.
 - **Adding / removing runs while workers run**: edit the config (`[grid]`, `[resources.*]`, `[markov] args`,
   `[pool] dataset_weights`) - no restart needed. Every worker checks the config file and `cluster.py` once a minute
   and, if either changed, rebuilds the task plan: new tasks become runnable, removed tasks are no longer started

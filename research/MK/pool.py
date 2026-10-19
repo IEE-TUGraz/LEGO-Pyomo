@@ -64,6 +64,17 @@ def _now() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
+def read_workers(root: Path) -> dict:
+    """Heartbeats {worker id: heartbeat} of the pool at root, read only (no Store: its constructor creates folders)."""
+    out = {}
+    for path in (Path(root) / "workers").glob("*.json"):
+        try:
+            out[path.stem] = json.loads(path.read_text())
+        except (OSError, ValueError):
+            pass
+    return out
+
+
 def _write_json_atomic(path: Path, data) -> None:
     """Write via a temp file + rename, so readers never see a half-written file. Windows refuses the rename while another
     process reads the target: retry briefly."""
@@ -347,13 +358,7 @@ class Store:
         return out
 
     def workers(self) -> dict:
-        out = {}
-        for path in (self.root / "workers").glob("*.json"):
-            try:
-                out[path.stem] = json.loads(path.read_text())
-            except (OSError, ValueError):
-                pass
-        return out
+        return read_workers(self.root)
 
     def request_stop(self, target: str, now: bool) -> None:
         """Stop request for the workers that started before it: target = 'all', a host name or a worker id. Drain (finish
@@ -578,6 +583,8 @@ class Worker:
     Selection: only these keys are run; dependencies outside the specs count as satisfied.
     reload: optional callback, called every reload_s: returns None (no change) or {specs, weights, plan_id} - the new
     task set (see update_specs), so tasks can be added / removed while the worker runs.
+    peers: optional callback -> {name: root} of other pools (other experiments) whose workers on this machine also
+    occupy cores and memory here (refresh_foreign); None = only this pool's workers count.
     """
 
     def __init__(self, specs: dict, store: Store, estimator: Estimator, *, cwd: Path, cores: int, mem_mb: float,
@@ -589,7 +596,7 @@ class Worker:
                  weights: dict | None = None, opportunistic: bool = True, opportunistic_after_s: float = 600,
                  chain_after_s: float | None = None,
                  chain=None, chain_retry_s: float = 600, info: dict | None = None, reload=None, reload_s: float = 60, handover=None,
-                 plan_id: str | None = None, out=print):
+                 plan_id: str | None = None, peers=None, out=print):
         self.store, self.est = store, estimator
         self.info = info or {}  # extra heartbeat fields (e.g. the worker's log file)
         self.cwd, self.cores, self.mem_mb = cwd, cores, mem_mb
@@ -624,8 +631,8 @@ class Worker:
         # (then this worker drains), or None
         self.handover = handover
         # Tasks of other live workers on this machine (e.g. one draining after a handover), shaped like `running`
-        # entries: they occupy cores and memory here (see refresh_foreign)
-        self.foreign, self.foreign_peaks = {}, {}
+        # entries: they occupy cores and memory here (see refresh_foreign). peers: other pools' workers count too
+        self.foreign, self.foreign_peaks, self.peers = {}, {}, peers
         self._set_specs(specs)
         self.seed_records, self.discarded = list(seed_records), set()  # discarded: (key, attempt) of reset OOM attempts
         for record in self.seed_records:
@@ -825,19 +832,25 @@ class Worker:
         self.stale_view = view
 
     def refresh_foreign(self) -> None:
-        """Tasks of the other live workers on this machine (outside Slurm only) from their heartbeats,
-        memory sampled here by pid (heartbeats are up to HEARTBEAT_S old). Workers in this process are skipped: they only
-        exist in tests, where they stand for separate machines. Heartbeats without task details (workers predating them)
-        count each task with this worker's estimate, as just started."""
+        """Tasks of the other live workers on this machine (outside Slurm only) from their heartbeats - of this pool and
+        of the peer pools (other experiments) - memory sampled here by pid (heartbeats are up to HEARTBEAT_S old). Workers
+        in this process are skipped: they only exist in tests, where they stand for separate machines. Heartbeats without
+        task details (workers predating them) count each task with this worker's estimate, as just started."""
         if os.environ.get("SLURM_JOB_ID"):
             return  # a Slurm job has one worker (successors are new jobs with their own allocation)
+        workers = [(None, wid, w) for wid, w in self.store.workers().items()]  # (pool name: None = own, id, heartbeat)
+        if self.peers:
+            try:
+                workers += [(name, wid, w) for name, root in self.peers().items() for wid, w in read_workers(root).items()]
+            except OSError as e:  # an unreadable runs folder must not stop the worker; its own pool still counts
+                self.log(f"warning: workers of other pools not read ({e})")
         foreign, now = {}, time.time()
-        for wid, w in self.store.workers().items():
+        for pool_name, wid, w in workers:
             if (wid == self.id or w.get("exited") or now - w.get("beat", 0) > STALE_S or not w.get("pid") or w.get("pid") == os.getpid()
                     or w.get("host", "").lower() != self.host.lower() or w.get("slurm_job") or not pid_alive(int(w["pid"]))):
                 continue
             for key, t in (w.get("tasks") or {k: {} for k in w.get("running", [])}).items():
-                fid = f"{wid}/{key}"
+                fid = f"{pool_name}:{wid}/{key}" if pool_name else f"{wid}/{key}"
                 rss, hwm = pid_rss_mb(int(t["pid"])) if t.get("pid") else (None, None)
                 if t.get("pid") and rss is None and not pid_alive(int(t["pid"])):
                     continue  # finished since the heartbeat
@@ -845,10 +858,12 @@ class Worker:
                 foreign[fid] = {"est": {"mem_mb": est}, "cpus": t.get("cpus") or (self.threads(key) if key in self.specs else 1),
                                 "peak_mb": max(self.foreign_peaks.get(fid, 0.0), t.get("peak_mb") or 0.0, hwm or rss or 0.0),
                                 "rss_mb": rss if rss is not None else t.get("rss_mb") or 0.0, "start": t.get("start") or now,
-                                "opp": bool(t.get("opp")), "stop": None}
+                                "opp": bool(t.get("opp")), "stop": None, "pool": pool_name}
         if len(foreign) != len(self.foreign):
+            peer_pools = sorted({r["pool"] for r in foreign.values() if r["pool"]})
             self.log(f"other workers on this machine run {len(foreign)} task(s) - counted as occupied here"
-                     + (f" ({sum(r['cpus'] for r in foreign.values())} threads, est. {sum(r['est']['mem_mb'] for r in foreign.values()) / 1024:.1f} GB)" if foreign else ""))
+                     + (f" ({sum(r['cpus'] for r in foreign.values())} threads, est. {sum(r['est']['mem_mb'] for r in foreign.values()) / 1024:.1f} GB"
+                        + (f"; other experiments: {', '.join(peer_pools)}" if peer_pools else "") + ")" if foreign else ""))
         self.foreign = foreign
         self.foreign_peaks = {fid: r["peak_mb"] for fid, r in foreign.items()}
 

@@ -372,6 +372,26 @@ def test_tasks_of_another_worker_on_this_machine_count_as_occupied(mk):
     assert any("other workers on this machine run 0 task(s)" in line for line in logs[:started[0]])
 
 
+def test_tasks_of_another_experiments_worker_on_this_machine_count_as_occupied(mk):
+    """A (drained) worker of another experiment - another pool in runs/ - runs a task estimated at 800 MB on this host:
+    A (300 MB) waits for it like for one of the own pool."""
+    plan = dict([mk.task("X/sd1/c3/base/main/A", 0.5, mem="300M")])
+    cfg = mk.use(plan)
+    other = subprocess.Popen([sys.executable, str(mk.fake), "3", "0", "50"])
+    mk.store("old-experiment").beat("other-worker", {
+        "host": socket.gethostname(), "pid": other.pid, "slurm_job": None,
+        "tasks": {"Y/sd1/c3/base/main/F": {"pid": other.pid, "cpus": 6, "est_mb": 800, "peak_mb": 0, "rss_mb": 0,
+                                           "start": time.time(), "opp": False}}})
+    w, logs = mk.worker(cfg, plan, mk.store(), mem_mb=1000, idle_s=1)
+    w.run()
+    other.wait()
+    counted = [i for i, line in enumerate(logs) if "other workers on this machine run 1 task(s)" in line]
+    started = [i for i, line in enumerate(logs) if " start " in line and "/A " in line]
+    assert counted and started and counted[0] < started[0] and "other experiments: old-experiment" in logs[counted[0]]
+    assert any("other workers on this machine run 0 task(s)" in line for line in logs[:started[0]])
+    assert cluster.other_pools(mk.store()) == {"old-experiment": cluster.RUNS_DIR / "old-experiment" / "pool"}
+
+
 def test_old_heartbeat_task_counts_with_its_estimate_from_the_first_poll(mk):
     """A draining worker whose heartbeat predates task details lists only `running`: its task takes this worker's
     estimate from the first poll on (it used to count 0 GB there, and a second full-year solve started next to it)."""

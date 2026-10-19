@@ -995,6 +995,12 @@ def plan_hash(plan: dict) -> str:
     return hashlib.sha1(json.dumps(plan, sort_keys=True).encode()).hexdigest()[:10]
 
 
+def other_pools(store: "pool.Store") -> dict:
+    """{run name: pool root} of the other task pools in RUNS_DIR: their workers on this machine count as occupying it
+    (Worker.peers), e.g. a drained experiment's last solves next to the workers of the next one."""
+    return {p.parent.name: p for p in RUNS_DIR.glob("*/pool") if p.resolve() != store.root.resolve()}
+
+
 def make_worker(cfg: dict, specs: dict, store: "pool.Store", *, cores: int, mem_mb: float, **kwargs) -> "pool.Worker":
     pcfg = cfg.get("pool", {})
     estimator = pool.Estimator(specs, estimate_levels, mem_safety=float(pcfg.get("mem_safety", 1.2)),
@@ -1011,6 +1017,7 @@ def make_worker(cfg: dict, specs: dict, store: "pool.Store", *, cores: int, mem_
         kwargs.setdefault("weights", _key_weights(weights, specs))
     elif pcfg.get("rank_offset_hours") is not None:  # soft dataset order; absent = strict (grid.datasets order first)
         kwargs.setdefault("rank_offset_s", float(pcfg["rank_offset_hours"]) * 3600)
+    kwargs.setdefault("peers", lambda: other_pools(store))
     return pool.Worker(specs, store, estimator, cwd=HERE.parent.parent, cores=cores, mem_mb=mem_mb, seed_records=seed_records(cfg), **kwargs)
 
 
@@ -1376,8 +1383,8 @@ def cmd_local(args) -> None:
     with tempfile.TemporaryDirectory(prefix="mk-local-pool-") as tmp:
         store = pool.Store(Path(tmp), log_dir=log_dir)
         # Memory packing off: -j is the concurrency (the TOML memory is sized for Slurm jobs, not this machine); the
-        # memory guard still evicts the newest task if the machine runs out of memory
-        worker = make_worker(cfg, specs, store, cores=cores, mem_mb=total or 16 * 1024, mem_packing=False, idle_s=0,
+        # memory guard still evicts the newest task if the machine runs out of memory. No peers: -j is the user's choice
+        worker = make_worker(cfg, specs, store, cores=cores, mem_mb=total or 16 * 1024, mem_packing=False, idle_s=0, peers=None,
                              max_tasks=args.jobs, thread_cap=thread_cap, keep_going=args.keep_going,
                              console=args.jobs == 1 and log_dir is None, poll_s=2)
         worker.run()
