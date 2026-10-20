@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 NOOP_MARKER = "MK-NOOP:"  # printed by Markov.py when a task had nothing to do (output existed): not a measurement
@@ -69,15 +70,44 @@ def _now() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
+READ_THREADS = 32  # parallel reads of the small JSON files: on the network share each one costs round trips, not bandwidth
+PROGRESS_MIN_FILES = 100  # fewer files are read without a progress line
+
+
+def _read_json(path: Path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None  # being written (atomic replace makes this rare) or gone
+
+
+def read_json_files(paths: list[Path], label: str = "", progress: bool = False) -> dict:
+    """{path: parsed JSON or None if unreadable}, read in parallel. progress (with >= PROGRESS_MIN_FILES files): one
+    append-only line on stdout, '<label>: 10% 20% ... 100% (<seconds> s)' - no carriage returns, so it reads the same in a
+    log file as in the terminal."""
+    paths = list(paths)
+    if len(paths) <= 1:
+        return {p: _read_json(p) for p in paths}
+    show = progress and len(paths) >= PROGRESS_MIN_FILES
+    if show:
+        print(f"{label}:", end="", flush=True)
+    start, out, step = time.time(), {}, 10
+    with ThreadPoolExecutor(min(READ_THREADS, len(paths))) as executor:
+        futures = {executor.submit(_read_json, p): p for p in paths}
+        for future in as_completed(futures):
+            out[futures[future]] = future.result()
+            while show and len(out) * 100 >= step * len(paths):
+                print(f" {step}%", end="", flush=True)
+                step += 10
+    if show:
+        print(f" ({time.time() - start:.1f} s)", flush=True)
+    return out
+
+
 def read_workers(root: Path) -> dict:
     """Heartbeats {worker id: heartbeat} of the pool at root, read only (no Store: its constructor creates folders)."""
-    out = {}
-    for path in (Path(root) / "workers").glob("*.json"):
-        try:
-            out[path.stem] = json.loads(path.read_text())
-        except (OSError, ValueError):
-            pass
-    return out
+    files = read_json_files(list((Path(root) / "workers").glob("*.json")))
+    return {path.stem: info for path, info in files.items() if info is not None}
 
 
 def _write_json_atomic(path: Path, data) -> None:
@@ -306,8 +336,9 @@ def _kill(proc: subprocess.Popen) -> None:
 ########################################################################################################################
 
 class Store:
-    def __init__(self, root: Path, log_dir: Path | None = None):
+    def __init__(self, root: Path, log_dir: Path | None = None, progress: bool = False):
         self.root = Path(root)
+        self.progress = progress  # progress line while reading many result files (read_json_files)
         self.log_dir = Path(log_dir) if log_dir else self.root / "logs"
         for sub in ("claims", "results", "resets", "workers", "jobs", "stop"):
             (self.root / sub).mkdir(parents=True, exist_ok=True)
@@ -401,12 +432,11 @@ class Store:
         """All result records (new files are read once and cached). Records written before the out-of-memory outcome (no
         `mem_mb`) are read as OOM if they failed near their machine's RAM (from the worker's heartbeat)."""
         workers = None
-        for path in (self.root / "results").iterdir():
-            if path.suffix == ".json" and path.name not in self._results:
-                try:
-                    record = json.loads(path.read_text())
-                except (OSError, ValueError):
-                    continue  # being written (atomic replace makes this rare); read next time
+        new = [path for path in (self.root / "results").iterdir() if path.suffix == ".json" and path.name not in self._results]
+        files = read_json_files(new, f"reading {len(new)} result files", self.progress)
+        for path in new:
+            record = files[path]
+            if record is not None:  # None: being written (atomic replace makes this rare); read next time
                 if record.get("outcome") == FAILED and "mem_mb" not in record and record.get("peak_rss_mb"):
                     workers = self.workers() if workers is None else workers
                     ram = (workers.get(record.get("worker")) or {}).get("mem_mb")

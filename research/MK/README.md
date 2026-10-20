@@ -333,6 +333,10 @@ python research/MK/cluster.py restart experiment --failed           # failed tas
 python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dependents --dry-run   # re-run done tasks
 ```
 
+- **Reading the pool on a network share** takes a while once it holds many results (each small file costs network
+  round trips; they are read in parallel). With 100 or more result files, the pool commands (`status`, `restart`,
+  `attempts`, ...) first print one progress line: `reading 812 result files: 10% 20% ... 100% (9.3 s)`. It only appends
+  text (no carriage returns), so it reads the same when the output is redirected to a file.
 - **Restarting individual tasks** while workers run: `restart <run> <patterns>` makes the matching *failed and done*
   tasks runnable again; the running workers pick them up (no worker restart). A done task is re-run without
   `--no-overwrite` (which would skip it, as its output exists) - `prepare` also without `--reuse-inputfiles`, so it

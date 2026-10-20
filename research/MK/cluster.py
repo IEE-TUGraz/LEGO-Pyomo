@@ -1423,7 +1423,7 @@ def load_pool(run: str) -> tuple[Path, "pool.Store", dict, dict] | None:
     if not Path(config).is_file():  # e.g. the pool was created on another machine / via another path to the share
         config = rdir.name
     _, cfg = _load_config(config)
-    return rdir, pool.Store(rdir / "pool"), cfg, build_plan(cfg)
+    return rdir, pool.Store(rdir / "pool", progress=True), cfg, build_plan(cfg)
 
 
 def pool_status(plan: dict, store: "pool.Store") -> dict:
