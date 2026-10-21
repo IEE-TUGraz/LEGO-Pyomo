@@ -105,6 +105,7 @@ Produces `.sqlite` files with model results, run parameters, and solver statisti
 | `--original-reference-only` | off         | Only solve the original full-chronological model of the (preprocessed) folder (`MK-…-TruthOriginal.sqlite`) and exit |
 | `--task`                 | —              | Run exactly **one** solve of a grid point (one `--clusters` value): `main`, `operational`, `regret`, `invest-regret`, `operational-regret`, `original-regret`, `original-invest-regret` or `truth-original` (= `--original-reference-only`). Inputs from earlier solves are read from their result files; exits non-zero unless the output is optimal. Used by `cluster.py` — see "Cluster runs" |
 | `--edge`                 | —              | Edge handling of the `--task` solve: `Truth`, `NoEnf`, `Cyclic`, `Markov`, `Markov-Strict` |
+| `--output-dir`           | cwd            | Write the outputs of the `--task` solve (sqlite, TM plot) into this folder; inputs are still read from the cwd (set by the pool worker's spool) |
 
 
 **Output naming**: `MK-{identifier}-{edgeHandling}.sqlite`. Regret files append `-regret`, `-invest-regret`, or
@@ -275,7 +276,9 @@ delete a result file to recompute it.
   `mem_fraction` (share of `mem` that is packed, 0.9), `idle_hours` (3), `mem_safety` (1.2, memory lower bounds only), `time_safety` (1.5),
   `disk_min_free_gb` (10), `rank_offset_hours` (soft dataset order, see Task pool; absent = strict), `dataset_weights` (weighted dataset order,
   e.g. `{ "RTS-GMLC" = 100, "TX-123BT" = 10 }`, unlisted datasets 1; excludes `rank_offset_hours`), `opportunistic`
-  (true; opportunistic starts, see Task pool), `opportunistic_after_minutes` (10), `mail_type` for the worker jobs (default: `[slurm] mail_type`; address from `[slurm] mail_user` /
+  (true; opportunistic starts, see Task pool), `opportunistic_after_minutes` (10), `spool_dir` (local folder for
+  local-first writes, see "Windows servers"; absent = off, overridden by `worker --spool-dir`), `node_dir` (base folder for Gurobi node files on each
+  worker's machine; absent = `$TMPDIR`, overridden by `worker --node-dir`), `mail_type` for the worker jobs (default: `[slurm] mail_type`; address from `[slurm] mail_user` /
   `$MK_MAIL_USER`, written into `worker.sbatch` at `submit-workers` - edit that file to change it for later successors).
 - `[grid]`: `datasets`, `stretch_demand`, `clusters`, `edges`, `tasks`, `truth_original`, and `tm` entries `base` /
   `shift:N` / `perturb:R`, or an inline table `{ spec = "perturb:1.0", stretch_demand = [1.0], low_priority = true }`
@@ -389,11 +392,11 @@ python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dep
   with a few chains and add more with another `submit-workers --workers N` once the estimate is based on
   measurements; `evaluate` runs automatically after all other tasks.
 - Per-attempt logs: `runs/<name>/pool/logs/<key>.<attempt>.log`. A dead worker's tasks are retried after 10 min without
-  heartbeat - at once if a new worker starts on the same machine and finds the old worker's process gone. Their peaks
-  from the dead worker's last heartbeat become lower bounds like an eviction (peak × 1.25 × `mem_safety`), so a task
-  that took its node down (`NODE_FAIL`, e.g. out of memory) does not restart with the same estimate. The worker's own
-  output (`jobs/worker_<job>.out`) is unbuffered; after a node failure the per-task logs and the heartbeat
-  (`workers/<host>-j<job>-<pid>.json`: tasks with est / RSS / peak) show what was running.
+  heartbeat (at a lower priority, see "Share outages") - at once if a new worker starts on the same machine and finds
+  the old worker's process gone. Their peaks from the dead worker's last heartbeat become lower bounds like an eviction
+  (peak × 1.25 × `mem_safety`), so a task that took its node down (`NODE_FAIL`, e.g. out of memory) does not restart
+  with the same estimate. The worker's own output (`jobs/worker_<job>.out`) is unbuffered; after a node failure the
+  per-task logs and the heartbeat (`workers/<host>-j<job>-<pid>.json`: tasks with est / RSS / peak) show what was running.
   Exception: if the last live workers on other machines all went silent at the same moment, the machine looking at
   the pool more likely reads an outdated copy of the share (seen on a Windows laptop after standby: `status` showed
   every other worker as "lost" while they were running fine). Its worker then logs a warning and never retries their
@@ -453,7 +456,7 @@ the `shift:N` / `perturb:R` entries).
 2. On each server, in a terminal with the env active, from the repo on the share:
 
 ```bash
-python research/MK/cluster.py worker experiment-win-gap0.5 --detach --node-dir D:/gurobi-nodes
+python research/MK/cluster.py worker experiment-win-gap0.5 --detach --node-dir D:/gurobi-nodes --spool-dir D:/mk-spool
 ```
 
 3. Control all workers from any one server (or any machine with the share):
@@ -475,11 +478,32 @@ does a reboot (Windows Updates): start it again afterwards; a new worker on the 
 previous one at once. If the worker dies, Windows also ends its tasks (job object), so no orphaned solve keeps writing
 a result file that another worker retries. Other options as for any worker: `--cores` (default: all **physical** cores),
 `--mem` (default: all RAM; `[pool] mem_fraction` of it is packed), `--node-dir` (Gurobi node files - a large local disk;
-default `%TEMP%`), `--idle-hours`, `--max-tasks`, task patterns. A worker never starts a task whose `cpus` exceed its
+default `[pool] node_dir`, else `%TEMP%`), `--idle-hours`, `--max-tasks`, task patterns. A worker never starts a task whose `cpus` exceed its
 cores (fewer threads would make work units and solver times incomparable), nor a not-yet-attempted task whose memory
 estimate exceeds its RAM (it would only swap; estimates between `mem_fraction` x RAM and the RAM run alone): it logs
 `skipping ...` and leaves the task to the other workers. The memory check uses the current estimate, so a measurement
 (also from `seed_runs`) can lift or impose it; an evicted or preempted task's retry is never skipped.
+
+**Local-first writes** (`--spool-dir C:/mk-spool` or `[pool] spool_dir`): when a server's connection to the share
+drops, writes to files that are already open (worker log, task logs) can get lost without any error, and a task that
+ends during the outage fails (exit code 120). With a spool folder the worker writes its log, the task logs, the task
+outputs (`MK-*.sqlite`, TM plot; `Markov.py --output-dir`) and the result records to this local folder first and copies
+them to the share in the background (every 10 s, retried while the share is unreachable). A result reaches the share
+only after the task's outputs, so dependent tasks never start too early; while a worker still holds results it does
+not exit. The worker log shows `spool: the share is not reachable ...` / `... reachable again`, `status` shows
+`unsynced: N file(s), M result(s)` per worker. What a worker could not send before it ended (crash, reboot) is sent by
+the next worker started on the same server - so after a reboot, start a worker there again. Claims, heartbeats and
+reading the pool state still go to the share directly, and prepare tasks (input folders) and `evaluate` still write
+there.
+
+**Share outages**: a worker does not exit when the share cannot be read or written (heartbeats, claims,
+reading the pool state): its running tasks continue, it retries every poll (15 s) and logs `WARNING: the pool is not
+reachable ...` / `the pool is reachable again after ...`. Only after `idle_hours` (or `--idle-hours`) without the
+share does it give up and exit, ending its running tasks. A task it claimed but could not start gets an `interrupted`
+result once the share is back (retried by any worker); a result it could not write is written then (without a spool).
+Other workers see no heartbeats from it meanwhile: after 10 min they consider it dead and retry its tasks - at a
+lower priority (critical path / 5, like a dataset weighted 5x lower), since it may still be solving them: other
+ready tasks go first. Tasks of a worker known to have ended (marked exited or its process gone) are retried normally.
 
 **Pilot before the full run** (per-task mode; optional for the task pool, which learns its estimates while it runs
 and can be seeded with a pilot via `[pool] seed_runs`): the resources in `experiment.toml` are guesses. `experiments/pilot.toml` runs one grid

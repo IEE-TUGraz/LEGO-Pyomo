@@ -936,7 +936,9 @@ def pool_specs(plan: dict, keys: list[str]) -> dict:
         specs[key] = {"cmd": [sys.executable, *cmd[1:]] if cmd[0] == "python" else cmd, "deps": task["deps"], "cpus": task["res"]["cpus"],
                       "prior_mem_mb": _mem_mb(task["res"]["mem"].upper().removesuffix("B")), "prior_time_s": _elapsed_s(task["res"]["time"]) or 0,
                       "rank": task.get("rank", 0), "dataset_rank": task.get("dataset_rank", 0), "low": task.get("low", False),
-                      "after_all": key == "evaluate"}  # evaluate: after all others (like afterany)
+                      "after_all": key == "evaluate",  # evaluate: after all others (like afterany)
+                      # Markov.py solves write their outputs into this folder: with a spool, a local one ([pool] spool_dir)
+                      "stage_arg": "--output-dir" if "--task" in cmd else None}
     return specs
 
 
@@ -1074,12 +1076,16 @@ def cmd_worker(args) -> None:
               f"(unless measurements lower their estimate)")
     if args.detach:
         return _detach_worker(cfg["name"], store.root / "worker-logs")
+    spool_dir = args.spool_dir or cfg.get("pool", {}).get("spool_dir")
+    # Local-first writes (pool.Spool): the worker log, task logs, task outputs and results go to this machine's disk and
+    # are copied to the share in the background - a dropped network connection loses nothing
+    spool = pool.Spool(Path(spool_dir) / cfg["name"], store, HERE.parent.parent) if spool_dir else None
     log_file = None
     if args.log:  # worker output to a file in the pool (no Slurm job log), also echoed to the console while there is one
         log_file = store.root / "worker-logs" / f"{socket.gethostname()}-{datetime.datetime.now():%Y%m%d-%H%M%S}-{os.getpid()}.log"
         log_file.parent.mkdir(exist_ok=True)
-        sys.stdout = sys.stderr = _Tee(open(log_file, "a", encoding="utf-8", buffering=1), sys.__stdout__)
-        print(f"{_now()} worker log: {log_file}")
+        sys.stdout = sys.stderr = _Tee(open(spool.mirror(log_file) if spool else log_file, "a", encoding="utf-8", buffering=1), sys.__stdout__)
+        print(f"{_now()} worker log: {log_file}" + (f" (written to {spool.dir} first)" if spool else ""))
     end_time = time.time() + args.hours * 3600 if args.hours else _slurm_end_time()
     idle_h = args.idle_hours if args.idle_hours is not None else float(cfg.get("pool", {}).get("idle_hours", DEFAULT_IDLE_HOURS))
     chain = None
@@ -1094,10 +1100,12 @@ def cmd_worker(args) -> None:
     # with this worker (and kill the successor); chained jobs start with the then-current code anyway
     handover = None if os.environ.get("SLURM_JOB_ID") else _code_handover(config_path, sys.argv[1:], end_time, digest)
     worker = make_worker(cfg, pool_specs(plan, keys), store, cores=cores, mem_mb=mem_mb,
-                         end_time=end_time, idle_s=idle_h * 3600, max_tasks=args.max_tasks, node_base=args.node_dir,
+                         end_time=end_time, idle_s=idle_h * 3600, max_tasks=args.max_tasks,
+                         node_base=args.node_dir or cfg.get("pool", {}).get("node_dir"),
                          chain_after_s=args.chain_after_hours * 3600 if args.chain_script else None, chain=chain,
                          info={"code": digest, **({"log": str(log_file)} if log_file else {})}, handover=handover,
-                         reload=_plan_reloader(config_path, cfg["name"], args.patterns or ["*"], plan_hash(plan)), plan_id=plan_hash(plan))
+                         reload=_plan_reloader(config_path, cfg["name"], args.patterns or ["*"], plan_hash(plan)), plan_id=plan_hash(plan),
+                         spool=spool)
     sys.exit(worker.run())
 
 
@@ -1250,13 +1258,21 @@ def _detach_worker(run: str, log_dir: Path) -> None:
 
 
 class _Tee:
-    """Text stream writing to a log file and, as long as it works, to the console (a scheduled task may have none)."""
+    """Text stream writing to a log file and, as long as it works, to the console (a scheduled task may have none). A
+    failing log write (log on a share that dropped) reopens the file, else loses the line - it must not end the worker."""
 
     def __init__(self, log, console):
         self.log, self.console = log, console
 
     def write(self, text: str) -> int:
-        self.log.write(text)
+        try:
+            self.log.write(text)
+        except (OSError, ValueError):
+            try:
+                self.log = open(self.log.name, "a", encoding="utf-8", buffering=1)
+                self.log.write(text)
+            except OSError:
+                pass
         if self.console is not None:
             try:
                 self.console.write(text)
@@ -1266,7 +1282,10 @@ class _Tee:
         return len(text)
 
     def flush(self) -> None:
-        self.log.flush()
+        try:
+            self.log.flush()
+        except (OSError, ValueError):
+            pass
 
 
 def _sbatch_from_job(script: str) -> str | None:
@@ -1487,7 +1506,9 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict, cfg: dict
             if not w.get("slurm_job") and w.get("code") != code:  # code handover (workers outside Slurm)
                 plan_note += ("  code: no handover (worker predates it - restart it to run the current code)" if "code" not in w
                               else f"  code: {w['code']} (outdated - hands over within a minute)")
-        print(f"  {wid:<40} {state:<28} {len(w.get('running', [])):>3} running  {size}{plan_note}")
+        unsynced = w.get("unsynced") if alive else None  # pool.Spool: written locally, not on the share yet
+        unsynced_note = f"  unsynced: {unsynced.get('files', 0)} file(s), {unsynced.get('results', 0)} result(s)" if unsynced else ""
+        print(f"  {wid:<40} {state:<28} {len(w.get('running', [])):>3} running  {size}{plan_note}{unsynced_note}")
     stale_view = store.stale_view(socket.gethostname(), now)
     if stale_view:
         print(f"  note: {stale_view[0]} - this machine probably reads an outdated copy of the pool (e.g. after standby);"
@@ -1811,7 +1832,9 @@ def main():
     p.add_argument("--hours", type=float, help="Walltime of this worker (default: the Slurm job's end, else unlimited)")
     p.add_argument("--idle-hours", type=float, help=f"Exit after this long without anything to run (default: [pool] idle_hours or {DEFAULT_IDLE_HOURS:g})")
     p.add_argument("--max-tasks", type=int, help="At most this many tasks at once")
-    p.add_argument("--node-dir", help="Base directory for Gurobi node files (default: $TMPDIR, else the system temp dir)")
+    p.add_argument("--node-dir", help="Base directory for Gurobi node files (default: [pool] node_dir, else $TMPDIR, else the system temp dir)")
+    p.add_argument("--spool-dir", help="Local folder: logs, task outputs and results are written here first and copied to the pool in the "
+                                       "background, so a dropped network connection loses nothing (default: [pool] spool_dir, else off)")
     p.add_argument("--chain-script", help="sbatch this script once --chain-after-hours have passed, if tasks remain (set by submit-workers)")
     p.add_argument("--chain-after-hours", type=float, default=24, help="When to submit the successor (default 24)")
     p.add_argument("--log", action="store_true", help="Also write the worker's output to runs/<name>/pool/worker-logs/")

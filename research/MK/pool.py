@@ -15,6 +15,7 @@ Store layout (all files immutable once written, except the worker heartbeats):
     logs/<task>.<n>.log   output of attempt n
 A task's state follows from its highest attempt: no claim -> new; result done/failed -> done/failed (+ reset ->
 retry); oom/evicted/preempted/interrupted -> retry; claim without result -> running while its worker's heartbeat is fresh, else retry.
+With a Spool, logs, task outputs and results are written to a local folder first and copied to the store in the background.
 """
 import ctypes
 import datetime
@@ -26,6 +27,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -33,6 +35,9 @@ from pathlib import Path
 NOOP_MARKER = "MK-NOOP:"  # printed by Markov.py when a task had nothing to do (output existed): not a measurement
 HEARTBEAT_S = 30
 STALE_S = 600  # a worker without heartbeat for this long is dead; its claims are retried
+# ... with their critical path divided by this factor: the worker may only have lost the share and still be solving
+# them (Worker.run outage handling), so other ready tasks go first unless the chain is this much longer
+SILENT_RETRY_FACTOR = 5
 # The last live workers on other hosts going silent together (last beats within STALE_VIEW_SPREAD_S of each other) means
 # this machine more likely reads an outdated copy of the store (seen on Windows after standby) than that they all died:
 # their claims are never retried from here (Store.stale_view) - if they really died, that needs manual intervention
@@ -115,6 +120,17 @@ def _write_json_atomic(path: Path, data) -> None:
     process reads the target: retry briefly."""
     tmp = path.with_name(path.name + f".tmp{os.getpid()}-{id(data)}")
     tmp.write_text(json.dumps(data, indent=1))
+    _replace(tmp, path)
+
+
+def _copy_atomic(src: Path, dst: Path) -> None:
+    """Copy a file like _write_json_atomic writes one: a temp file next to dst, then a rename."""
+    tmp = dst.with_name(dst.name + f".tmp{os.getpid()}-{threading.get_ident()}")
+    shutil.copyfile(src, tmp)
+    _replace(tmp, dst)
+
+
+def _replace(tmp: Path, path: Path) -> None:
     for i in range(20):
         try:
             os.replace(tmp, path)
@@ -535,7 +551,8 @@ class Store:
                 elif worker in hold and not w.get("exited"):
                     out[key] = (RUNNING, n, {"worker": worker, "unverified": True})
                 else:
-                    out[key] = (RETRY, n, {"worker": worker, "stale": True})
+                    # silent: the heartbeat stopped without an exit (not marked exited / gone)
+                    out[key] = (RETRY, n, {"worker": worker, "stale": True, **({"silent": True} if w is not None and not w.get("exited") else {})})
             elif result["outcome"] == DONE:
                 out[key] = (RETRY if f"{_safe(key)}.{n}" in resets else DONE, n, result)
             elif result["outcome"] == FAILED:
@@ -543,6 +560,209 @@ class Store:
             else:
                 out[key] = (RETRY, n, result)
         return out
+
+
+########################################################################################################################
+# Spool: local-first writes for a pool on a network share
+########################################################################################################################
+
+def worker_id() -> str:
+    """Id of a worker running in this process (Worker.id; also names its Spool folder)."""
+    job = os.environ.get("SLURM_JOB_ID")
+    return f"{socket.gethostname()}-{('j' + job) if job else 'local'}-{os.getpid()}"
+
+
+class Spool:
+    """Everything a worker writes to the pool besides claims and heartbeats goes to a local folder first; a background
+    thread copies it to the share every sync_s, always through freshly opened files, and keeps retrying while the share
+    is unreachable. Oct 2026: after the SMB connection of a host dropped, writes to files that were already open (worker
+    log, task output) went nowhere without an error for hours, while files opened anew (heartbeats) worked.
+
+    <root>/<worker id>/
+        mirror/<path below the store root>   logs: the bytes beyond what was already copied are appended to the share file
+        outbox/<task>.<attempt>/out/         staged task outputs (the task's --output-dir), copied into out_root ...
+        outbox/<task>.<attempt>/result.json  ... before the attempt's result record goes to the store (dependent tasks read
+                                             the outputs as soon as the result says done)
+    Folders of dead workers of this machine are adopted (recover) and finished the same way; their logs continue from the
+    share copy's size. Claims are never spooled (their O_EXCL creation is the mutual exclusion), heartbeats are skipped.
+    """
+
+    def __init__(self, root: Path, store: Store, out_root: Path, worker: str | None = None, sync_s: float = 10, out=print):
+        self.root, self.store, self.out_root, self.sync_s, self.out = Path(root), store, Path(out_root), sync_s, out
+        self.dir = self.root / (worker or worker_id())
+        (self.dir / "mirror").mkdir(parents=True, exist_ok=True)
+        (self.dir / "outbox").mkdir(exist_ok=True)
+        self.files = {}  # local path -> {remote, pos: bytes already on the share, closed: no more writes}
+        self.adopted = []  # folders of dead workers of this machine (recover)
+        self.lock = threading.Lock()  # self.files: the main thread adds / closes, the sync thread copies / removes
+        self.outage = False  # an error was logged and the share has not been fully reachable since
+        self.left = (0, 0)  # (files, results) not on the share after the last sync
+        self.thread, self.halt = None, threading.Event()
+
+    def log(self, msg: str) -> None:
+        self.out(f"{_now()} {msg}")
+
+    # -- main thread ----------------------------------------------------------------------------------------------------
+    def mirror(self, remote: Path) -> Path:
+        """The local file to write instead of `remote` (a file below the store root)."""
+        local = self.dir / "mirror" / Path(remote).relative_to(self.store.root)
+        local.parent.mkdir(parents=True, exist_ok=True)
+        with self.lock:
+            self.files[local] = {"remote": Path(remote), "pos": 0, "closed": False}
+        return local
+
+    def close(self, local: Path) -> None:
+        """No more writes to a mirrored file: removed once all of it is on the share."""
+        with self.lock:
+            if local in self.files:
+                self.files[local]["closed"] = True
+
+    def stage_dir(self, key: str, attempt: int) -> Path:
+        """Folder for the output files of an attempt (copied to out_root when it is queued)."""
+        path = self.dir / "outbox" / f"{_safe(key)}.{attempt}" / "out"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def queue(self, key: str, attempt: int, record: dict, upload: bool = True) -> None:
+        """Hand over a finished attempt: its staged outputs, then its result record go to the share. upload=False drops
+        the outputs (a task stopped by the worker may have left half a file)."""
+        entry = self.dir / "outbox" / f"{_safe(key)}.{attempt}"
+        entry.mkdir(parents=True, exist_ok=True)
+        if not upload:
+            shutil.rmtree(entry / "out", ignore_errors=True)
+        _write_json_atomic(entry / "result.json", {"key": key, "attempt": attempt, "record": record})
+
+    def pending_results(self) -> int:
+        """Own finished attempts whose result is not in the store yet (a local listing)."""
+        return sum((entry / "result.json").exists() for entry in (self.dir / "outbox").iterdir())
+
+    def start(self) -> None:
+        """Sync once (incl. dead workers' folders - before the caller marks those workers exited: their results first)
+        and start the sync thread."""
+        self.sync()
+        self.thread = threading.Thread(target=self._loop, name="spool", daemon=True)
+        self.thread.start()
+
+    def stop(self, timeout_s: float) -> tuple[int, int]:
+        """Stop the thread and sync until everything is on the share or timeout_s has passed; (files, results) left."""
+        self.halt.set()
+        if self.thread:
+            self.thread.join()
+        deadline = time.time() + timeout_s
+        while self.sync() != (0, 0) and time.time() < deadline:
+            time.sleep(min(self.sync_s, max(0.0, deadline - time.time())))
+        return self.left
+
+    def recover(self) -> None:
+        """Adopt the folders of this machine's ended workers (normal exit: the end of their own log; crash, reboot, or the
+        share still unreachable at their exit: whatever they could not send). An outbox entry without result.json
+        belongs to a task that died with its worker: dropped (it is retried)."""
+        for folder in self.root.iterdir():
+            pid = folder.name.rsplit("-", 1)[-1]
+            if folder == self.dir or folder in self.adopted or not folder.is_dir() or not pid.isdigit() or pid_alive(int(pid)):
+                continue
+            for entry in (folder / "outbox").glob("*"):
+                if not (entry / "result.json").exists():
+                    shutil.rmtree(entry, ignore_errors=True)
+            self.adopted.append(folder)
+
+    # -- sync -----------------------------------------------------------------------------------------------------------
+    def _loop(self) -> None:
+        while not self.halt.wait(self.sync_s):
+            try:
+                self.sync()
+            except Exception as e:  # noqa: BLE001 - the thread must outlive any surprise; the next pass retries
+                self.log(f"WARNING: spool sync raised {e!r}")
+
+    def sync(self) -> tuple[int, int]:
+        """One pass: append new log bytes, send finished attempts, finish adopted folders. (files, results) left."""
+        self.recover()
+        errors = []
+        files = 0
+        with self.lock:
+            items = list(self.files.items())
+        for local, entry in items:
+            try:
+                complete = self._append(local, entry)
+            except OSError as e:
+                errors.append(e)
+                files += 1
+                continue
+            if complete and entry["closed"]:
+                with self.lock:
+                    self.files.pop(local, None)
+                local.unlink(missing_ok=True)
+            elif not complete:
+                files += 1
+        results = self._send_outbox(self.dir / "outbox", errors)
+        for folder in list(self.adopted):
+            f, r = self._finish_adopted(folder, errors)
+            files, results = files + f, results + r
+        self.left = (files, results)
+        if errors and not self.outage:
+            self.outage = True
+            self.log(f"spool: the share is not reachable ({errors[0]}) - {files} file(s) / {results} result(s) stay in {self.dir} "
+                     f"and are sent once it is")
+        elif not errors and self.outage:
+            self.outage = False
+            self.log("spool: the share is reachable again - spooled files and results sent")
+        return self.left
+
+    @staticmethod
+    def _append(local: Path, entry: dict) -> bool:
+        """Append the bytes of local beyond entry['pos'] to its share file; True if all of them are there."""
+        size = local.stat().st_size
+        if size > entry["pos"]:
+            with open(local, "rb") as src:
+                src.seek(entry["pos"])
+                data = src.read(size - entry["pos"])
+            with open(entry["remote"], "ab") as dst:
+                dst.write(data)
+            entry["pos"] += len(data)
+        return entry["pos"] >= size
+
+    def _send_outbox(self, outbox: Path, errors: list) -> int:
+        """Send the finished attempts of an outbox (outputs first, then the result); the number not sent."""
+        left = 0
+        for entry in sorted(outbox.glob("*")):
+            meta = entry / "result.json"
+            if not meta.exists():
+                continue  # still running
+            try:
+                for path in sorted((entry / "out").glob("*")):
+                    if path.is_file():
+                        _copy_atomic(path, self.out_root / path.name)
+                        path.unlink()
+                data = json.loads(meta.read_text())
+                self.store.write_result(data["key"], data["attempt"], data["record"])
+            except OSError as e:
+                errors.append(e)
+                left += 1
+                continue
+            shutil.rmtree(entry, ignore_errors=True)
+        return left
+
+    def _finish_adopted(self, folder: Path, errors: list) -> tuple[int, int]:
+        """Logs of a dead worker continue from the share copy's size (its copy position died with it); the folder is
+        removed once everything is sent."""
+        files = 0
+        for local in sorted(p for p in (folder / "mirror").rglob("*") if p.is_file()):
+            remote = self.store.root / local.relative_to(folder / "mirror")
+            try:
+                try:
+                    have = remote.stat().st_size
+                except FileNotFoundError:
+                    have = 0
+                self._append(local, {"remote": remote, "pos": have})
+                local.unlink()
+            except OSError as e:
+                errors.append(e)
+                files += 1
+        results = self._send_outbox(folder / "outbox", errors)
+        if files == 0 and results == 0:
+            shutil.rmtree(folder, ignore_errors=True)
+            self.adopted.remove(folder)
+        return files, results
 
 
 ########################################################################################################################
@@ -667,7 +887,7 @@ class Worker:
                  weights: dict | None = None, opportunistic: bool = True, opportunistic_after_s: float = 600,
                  chain_after_s: float | None = None,
                  chain=None, chain_retry_s: float = 600, info: dict | None = None, reload=None, reload_s: float = 60, handover=None,
-                 plan_id: str | None = None, peers=None, out=print):
+                 plan_id: str | None = None, peers=None, spool: Spool | None = None, spool_drain_s: float = 120, out=print):
         self.store, self.est = store, estimator
         self.info = info or {}  # extra heartbeat fields (e.g. the worker's log file)
         self.cwd, self.cores, self.mem_mb = cwd, cores, mem_mb
@@ -688,15 +908,17 @@ class Worker:
         self.chain_after_s, self.chain, self.chain_retry_s = chain_after_s, chain, chain_retry_s
         self.chained, self.last_chain_try = None, 0.0
         self.out = out
-        job = os.environ.get("SLURM_JOB_ID")
+        # Local-first writes (task logs, staged outputs, results) for a pool on a network share; at exit, at most
+        # spool_drain_s to send what is left (the next worker on this machine sends the rest)
+        self.spool, self.spool_drain_s = spool, spool_drain_s
         self.host = socket.gethostname()
-        self.id = f"{self.host}-{('j' + job) if job else 'local'}-{os.getpid()}"
+        self.id = worker_id()
         self.job_object = _kill_on_close_job()  # Windows: tasks die with the worker
         self.stopping = None  # the stop request being followed (cluster.py stop)
         self.too_large = set()  # tasks needing more cpus than this worker's cores (logged once, never started here)
         # tasks whose memory estimate exceeds the RAM (exceeds_ram; logged once, re-checked every admission)
         self.too_big = set()
-        self.running = {}  # key -> {proc, attempt, start, est, cpus, peak_mb, rss_mb, node_dir, node_peak_mb, log, stop, opp, opp_start}
+        self.running = {}  # key -> {proc, attempt, start, est, cpus, peak_mb, rss_mb, node_dir, node_peak_mb, log, local_log, stop, opp, opp_start}
         self.reload, self.reload_s, self.plan_id = reload, reload_s, plan_id
         # Code handover: called every reload_s; starts a successor running the changed code and returns its description
         # (then this worker drains), or None
@@ -709,11 +931,13 @@ class Worker:
         for record in self.seed_records:
             self.est.add(record)
         self.estimates, self.critical = {}, {}
+        self.silent = set()  # ready tasks whose last claim belongs to a silent worker (priority: SILENT_RETRY_FACTOR)
         self.head_blocked = (None, 0.0)
         self.last_evict = 0.0
         self.last_disk_warning = 0.0
         self.stale_view = None  # Store.stale_view() of the last poll: (note, worker ids whose claims are not retried)
         self.any_failed = False
+        self.unstarted = []  # (key, attempt) claimed but not started (pool not reachable, no spool): result still to write
         self.counts = {DONE: 0, FAILED: 0, OOM: 0, EVICTED: 0, PREEMPTED: 0, INTERRUPTED: 0}
 
     def log(self, msg: str) -> None:
@@ -767,13 +991,15 @@ class Worker:
         dependent tasks (critical path), then memory. Soft: low-priority tasks still last; otherwise the critical path
         minus dataset_rank x rank_offset_s, so a later dataset's task goes first if its chain is that much longer.
         Weighted (weights set): low-priority tasks still last; otherwise the critical path x the task's weight, so a task
-        of a dataset weighted 10x lower goes first only if its chain is more than 10x longer."""
+        of a dataset weighted 10x lower goes first only if its chain is more than 10x longer. In all modes, the retry of a
+        silent worker's task counts its critical path / SILENT_RETRY_FACTOR (that worker may still be running it)."""
         spec = self.specs[key]
+        critical = self.critical.get(key, 0) / (SILENT_RETRY_FACTOR if key in self.silent else 1)
         if self.weights is not None:
-            return spec.get("low", False), -self.critical.get(key, 0) * self.weights.get(key, 1.0), -self.estimates[key]["mem_mb"]
+            return spec.get("low", False), -critical * self.weights.get(key, 1.0), -self.estimates[key]["mem_mb"]
         if self.rank_offset_s is None:
-            return spec["rank"], -self.critical.get(key, 0), -self.estimates[key]["mem_mb"]
-        return (spec.get("low", False), -(self.critical.get(key, 0) - spec.get("dataset_rank", spec["rank"]) * self.rank_offset_s),
+            return spec["rank"], -critical, -self.estimates[key]["mem_mb"]
+        return (spec.get("low", False), -(critical - spec.get("dataset_rank", spec["rank"]) * self.rank_offset_s),
                 -self.estimates[key]["mem_mb"])
 
     def threads(self, key: str) -> int:
@@ -790,7 +1016,10 @@ class Worker:
         if dropped:  # manual re-run of a done task (cluster.py restart)
             cmd = [a for a in cmd if a not in dropped]
         log = None if self.console else self.store.log_path(key, attempt)
-        handle = open(log, "w", encoding="utf-8", errors="replace") if log else None
+        local_log = self.spool.mirror(log) if log and self.spool else log
+        handle = open(local_log, "w", encoding="utf-8", errors="replace") if log else None
+        if self.spool and spec.get("stage_arg"):  # outputs go to a local folder; the spool copies them to the cwd
+            cmd += [spec["stage_arg"], str(self.spool.stage_dir(key, attempt))]
         # Windows: no console window per task when logging to a file (the worker may run without a desktop, e.g. as a
         # scheduled task); stdin from NUL so no task inherits an invalid console handle
         kwargs = {"start_new_session": True} if sys.platform != "win32" else \
@@ -803,11 +1032,33 @@ class Worker:
         if self.job_object and not _assign_to_job(self.job_object, proc):
             self.log(f"warning: {key} could not be tied to the worker's lifetime (job object) - kill it by hand if the worker dies")
         self.running[key] = {"proc": proc, "attempt": attempt, "start": time.time(), "est": est, "cpus": self.threads(key),
-                             "peak_mb": 0.0, "rss_mb": 0.0, "node_dir": node_dir, "node_peak_mb": 0.0, "log": log, "handle": handle,
+                             "peak_mb": 0.0, "rss_mb": 0.0, "node_dir": node_dir, "node_peak_mb": 0.0, "log": log, "local_log": local_log, "handle": handle,
                              "stop": None, "opp": opp, "opp_start": opp}
         src = "" if est["mem_src"] != "prior" else " (prior)"
         self.log(f"start {key} (" + ("opportunistic, " if opp else "") + f"attempt {attempt}, {self.threads(key)} threads, est. {est['mem_mb'] / 1024:.1f} GB{src}, "
                  f"{est['time_s'] / 3600:.1f} h)" + (f", re-run without {' '.join(dropped)}" if dropped else "") + (f" -> {log}" if log else ""))
+
+    def launch(self, key: str, attempt: int, opp: bool = False) -> None:
+        """start() a claimed attempt. If that fails (the pool is not reachable: reading drop args, opening the log), the
+        attempt gets an interrupted result - retried by any worker - instead of a claim nobody runs while this worker
+        waits out the outage."""
+        try:
+            self.start(key, attempt, opp)
+        except OSError as e:
+            record = {"outcome": INTERRUPTED, "noop": False, "worker": self.id, "host": self.host, "end": _now(),
+                      "reason": f"not started: {e!r}"}
+            if self.spool:
+                self.spool.queue(key, attempt, record, upload=False)
+            else:
+                self.unstarted.append((key, attempt, record))
+            raise
+
+    def write_unstarted(self) -> None:
+        while self.unstarted:
+            key, attempt, record = self.unstarted[0]
+            self.store.write_result(key, attempt, record)
+            self.unstarted.pop(0)
+            self.log(f"{key} (attempt {attempt}) was claimed but not started - marked interrupted, it is retried")
 
     def stop(self, key: str, outcome: str, reason: str) -> None:
         """Evict / interrupt a running task: TERM now, KILL after 30 s (checked in poll)."""
@@ -818,7 +1069,10 @@ class Worker:
             _terminate(run["proc"])
 
     def finish(self, key: str, rc: int) -> None:
-        run = self.running.pop(key)
+        # The task stays in `running` until its result is written: a failed write (pool not reachable, no spool) raises
+        # and the next poll finishes it again, with the same end time
+        run = self.running[key]
+        run.setdefault("end", time.time())
         if run["handle"]:
             run["handle"].close()
         shutil.rmtree(run["node_dir"], ignore_errors=True)
@@ -826,15 +1080,21 @@ class Worker:
         # Out of memory only with memory packing: without it (local) nothing would keep the retry off this machine
         if outcome == FAILED and self.mem_packing and near_ram(run["peak_mb"], self.mem_mb):
             outcome = OOM
-        elapsed = time.time() - run["start"]
-        noop = outcome == DONE and run["log"] is not None and _log_has_marker(run["log"], NOOP_MARKER)
+        elapsed = run["end"] - run["start"]
+        noop = outcome == DONE and run["log"] is not None and _log_has_marker(run["local_log"], NOOP_MARKER)
+        if self.spool and run["log"] is not None:
+            self.spool.close(run["local_log"])
         record = {"outcome": outcome, "noop": noop, "rc": rc, "elapsed_s": round(elapsed, 1), "peak_rss_mb": round(run["peak_mb"], 1) or None,
                   "node_files_peak_mb": round(run["node_peak_mb"], 1), "threads": run["cpus"], "worker": self.id, "mem_mb": round(self.mem_mb, 1),
                   "host": socket.gethostname(), "start": datetime.datetime.fromtimestamp(run["start"]).isoformat(timespec="seconds"),
-                  "end": _now(), "estimate": run["est"], "opportunistic": run["opp_start"], "log": str(run["log"]) if run["log"] else None}
+                  "end": datetime.datetime.fromtimestamp(run["end"]).isoformat(timespec="seconds"), "estimate": run["est"], "opportunistic": run["opp_start"], "log": str(run["log"]) if run["log"] else None}
         if outcome == OOM:
             record["limit_mb"] = round(self.mem_mb, 1)  # the estimator's lower bound: max(peak, limit) x lower_bound_factor
-        self.store.write_result(key, run["attempt"], record)
+        if self.spool:  # outputs and result reach the share in the background (the result after the outputs)
+            self.spool.queue(key, run["attempt"], record, upload=run["stop"] is None)
+        else:
+            self.store.write_result(key, run["attempt"], record)
+        del self.running[key]
         self.est.add({"key": key, "attempt": run["attempt"], **record})
         self.counts[outcome] += 1
         if outcome == FAILED:
@@ -1040,6 +1300,7 @@ class Worker:
                 ready.append(key)
         if remaining == len(last):  # only after_all tasks left
             ready += [k for k in last if snap[k][0] in (NEW, RETRY) and k not in self.running]
+        self.silent = {k for k in ready if snap[k][2].get("silent")}
         ready.sort(key=self.priority)
         return ready, remaining
 
@@ -1108,7 +1369,7 @@ class Worker:
                     continue  # another worker took it
                 if alone and not fits_mem:
                     self.log(f"note: {key} is estimated at {est['mem_mb'] / 1024:.1f} GB > {self.pack_mb / 1024:.1f} GB usable - running it alone")
-                self.start(key, snap[key][1] + 1)
+                self.launch(key, snap[key][1] + 1)
                 firm.append(self.running[key])
                 reserved += est["mem_mb"]
                 in_use += est["mem_mb"]
@@ -1141,7 +1402,7 @@ class Worker:
                 continue
             if not self.store.claim(key, snap[key][1] + 1, self.id):
                 continue
-            self.start(key, snap[key][1] + 1, opp=True)
+            self.launch(key, snap[key][1] + 1, opp=True)
             in_use += est
             cores_used += self.threads(key)
             started += 1
@@ -1223,71 +1484,97 @@ class Worker:
         started = time.time()
         info = {"host": self.host, "pid": os.getpid(), "slurm_job": os.environ.get("SLURM_JOB_ID"), "cores": self.cores,
                 "mem_mb": self.mem_mb, "started": _now(), "started_ts": started, "end_time": self.end_time, **self.info}
+        if self.spool:  # before mark_dead_workers: results a dead worker of this machine could not send go first
+            self.spool.start()
         for wid in self.store.mark_dead_workers(self.host):
             self.log(f"worker {wid} on this host is gone (crash / reboot) - its tasks are retried now")
         last_beat = last_full = 0.0
         last_reload = time.time()
         idle_since = None
         snap = {}
+        outage = None  # (since, error) while the pool cannot be read or written
         try:
             while True:
                 now = time.time()
-                # Beat before a handover check: a task started in the previous iteration must be in the heartbeat
-                # the successor reads (refresh_foreign)
-                if now - last_beat > HEARTBEAT_S:
-                    beat = {**info, "running": sorted(self.running), "tasks": self.task_details(), "stopping": bool(self.stopping)}
-                    if self.stopping and self.stopping.get("handover"):
-                        beat["handover"] = self.stopping["handover"]
-                    if self.reload:  # status compares it with the config's current plan
-                        beat["plan"] = self.plan_id
-                    self.store.beat(self.id, beat)
-                    last_beat = now
-                if (self.reload or self.handover) and now - last_reload > self.reload_s:
-                    last_reload = now
-                    if self.maybe_handover():
-                        last_beat = 0.0  # status shows the drain at once
-                    elif self.reload:
-                        self.maybe_reload()
-                finished = self.poll()
-                self.guard_opportunistic()
-                if self.guard_walltime():
-                    if not self.running:
-                        break
-                    time.sleep(1)
-                    continue
-                if finished or now - last_full > self.poll_s:
-                    last_full = now
-                    self.check_stop(started)
-                    # Estimates before refresh_foreign: a foreign task without est_mb (heartbeat predating task details)
-                    # takes this worker's estimate - on the first poll, with no estimates yet, it counted as 0 GB and a
-                    # full-year solve was started next to another one (Oct 2026)
-                    self.refresh_estimates()
-                    self.refresh_foreign()
-                    self.guard_memory()
-                    disk_ok = self.check_disk()
-                    self.check_stale_view()
-                    snap = self.store.snapshot(self.specs, hold=self.stale_view[1] if self.stale_view else frozenset())
-                    if disk_ok and not self.stopping and self.admit(snap) or finished:
-                        last_beat = 0.0  # status shows started / finished tasks at once, not up to HEARTBEAT_S later
-                    ready, remaining = self.ready(snap)
-                    self.maybe_chain(started, remaining)
-                    if self.stopping and not self.running:
-                        self.log("handed over: own tasks finished" if self.stopping.get("handover") else "stopped on request")
-                        break
-                    if self.running:
-                        idle_since = None
-                    elif remaining == 0 or (self.any_failed and not self.keep_going):
-                        self.log("nothing left to run" if remaining == 0 else "stopping after a failure (keep_going off)")
-                        break
-                    elif self.foreign:
-                        # Other workers on this machine (e.g. one draining after a handover) hold cores / memory that
-                        # free up when their tasks end: not idle - exiting now could leave the machine without a worker
-                        idle_since = None
-                    else:
-                        idle_since = idle_since or now
-                        if now - idle_since > self.idle_s:
-                            self.log(f"idle for {datetime.timedelta(seconds=int(self.idle_s))} with {remaining} task(s) still waiting for others - exiting")
+                try:
+                    self.write_unstarted()
+                    # Beat before a handover check: a task started in the previous iteration must be in the heartbeat
+                    # the successor reads (refresh_foreign)
+                    if now - last_beat > HEARTBEAT_S:
+                        beat = {**info, "running": sorted(self.running), "tasks": self.task_details(), "stopping": bool(self.stopping)}
+                        if self.stopping and self.stopping.get("handover"):
+                            beat["handover"] = self.stopping["handover"]
+                        if self.reload:  # status compares it with the config's current plan
+                            beat["plan"] = self.plan_id
+                        if self.spool and any(self.spool.left):
+                            beat["unsynced"] = dict(zip(("files", "results"), self.spool.left))
+                        self.store.beat(self.id, beat)
+                        last_beat = now
+                    if (self.reload or self.handover) and now - last_reload > self.reload_s:
+                        last_reload = now
+                        if self.maybe_handover():
+                            last_beat = 0.0  # status shows the drain at once
+                        elif self.reload:
+                            self.maybe_reload()
+                    finished = self.poll()
+                    self.guard_opportunistic()
+                    if self.guard_walltime():
+                        if not self.running:
                             break
+                        time.sleep(1)
+                        continue
+                    if finished or now - last_full > self.poll_s:
+                        last_full = now
+                        self.check_stop(started)
+                        # Estimates before refresh_foreign: a foreign task without est_mb (heartbeat predating task details)
+                        # takes this worker's estimate - on the first poll, with no estimates yet, it counted as 0 GB and a
+                        # full-year solve was started next to another one (Oct 2026)
+                        self.refresh_estimates()
+                        self.refresh_foreign()
+                        self.guard_memory()
+                        disk_ok = self.check_disk()
+                        self.check_stale_view()
+                        snap = self.store.snapshot(self.specs, hold=self.stale_view[1] if self.stale_view else frozenset())
+                        if disk_ok and not self.stopping and self.admit(snap) or finished:
+                            last_beat = 0.0  # status shows started / finished tasks at once, not up to HEARTBEAT_S later
+                        ready, remaining = self.ready(snap)
+                        self.maybe_chain(started, remaining)
+                        # Results still in the spool keep the worker alive like running tasks: their claims are only
+                        # retried by others after this worker's heartbeat ends
+                        busy = bool(self.running) or bool(self.unstarted) or bool(self.spool and self.spool.pending_results())
+                        if self.stopping and not busy:
+                            self.log("handed over: own tasks finished" if self.stopping.get("handover") else "stopped on request")
+                            break
+                        if busy:
+                            idle_since = None
+                        elif remaining == 0 or (self.any_failed and not self.keep_going):
+                            self.log("nothing left to run" if remaining == 0 else "stopping after a failure (keep_going off)")
+                            break
+                        elif self.foreign:
+                            # Other workers on this machine (e.g. one draining after a handover) hold cores / memory that
+                            # free up when their tasks end: not idle - exiting now could leave the machine without a worker
+                            idle_since = None
+                        else:
+                            idle_since = idle_since or now
+                            if now - idle_since > self.idle_s:
+                                self.log(f"idle for {datetime.timedelta(seconds=int(self.idle_s))} with {remaining} task(s) still waiting for others - exiting")
+                                break
+                except OSError as e:
+                    # A dropped share connection (SMB) must not end the worker and its running tasks: retry until the
+                    # pool is reachable again, for at most idle_s (Oct 2026: three servers lost their workers in one outage)
+                    if outage is None:
+                        outage = (now, e)
+                        self.log(f"WARNING: the pool is not reachable ({e!r}) - running tasks continue; retrying every "
+                                 f"{self.poll_s:g} s for up to {datetime.timedelta(seconds=int(self.idle_s))} before exiting")
+                    elif now - outage[0] > self.idle_s:
+                        self.log(f"the pool has not been reachable for {datetime.timedelta(seconds=int(now - outage[0]))} "
+                                 f"(last error {e!r}) - exiting" + (f", ending its {len(self.running)} running task(s)" if self.running else ""))
+                        break
+                    time.sleep(self.poll_s)
+                    continue
+                if outage:
+                    self.log(f"the pool is reachable again after {datetime.timedelta(seconds=int(time.time() - outage[0]))}")
+                    outage = None
                 time.sleep(1)
         except KeyboardInterrupt:
             self.log("interrupted - stopping running tasks (they will be retried)")
@@ -1297,6 +1584,11 @@ class Worker:
                 self.poll()
                 time.sleep(1)
         finally:
+            self.log(f"worker {self.id} exits: " + ", ".join(f"{n} {k}" for k, n in self.counts.items() if n))
+            if self.spool:  # before the exited heartbeat, which makes the claims of unsent results retryable
+                files, results = self.spool.stop(self.spool_drain_s)
+                if files or results:
+                    self.log(f"spool: {files} file(s) / {results} result(s) not on the share yet - left in {self.spool.dir} "
+                             f"for the next worker on this machine")
             self.store.beat(self.id, {**info, "running": [], "exited": _now()})
-        self.log(f"worker {self.id} exits: " + ", ".join(f"{n} {k}" for k, n in self.counts.items() if n))
         return 1 if self.any_failed else 0

@@ -458,6 +458,21 @@ def analyze_and_write(lego, sqlite_file: str | None, tm_cs=None, nonbinary_tol: 
 # Writing, solving and fixing results
 ########################################################################################################################
 
+_output_dir = None  # --output-dir: where this process writes its output files (default: the cwd)
+
+
+def _output_path(path: str) -> str:
+    """Where this process writes an output file. With --output-dir (cluster.py's pool worker stages task outputs on a
+    local disk and copies them into the cwd after the task) inputs are still read from the cwd."""
+    return os.path.join(_output_dir, path) if _output_dir else path
+
+
+def _written_path(path: str) -> str:
+    """An output of this process: the staged copy if it was written there, else the cwd file (a --no-overwrite no-op)."""
+    staged = _output_path(path)
+    return staged if os.path.exists(staged) else path
+
+
 def write_results(lego, file_prefix: str, no_sqlite: bool, tm_cs: CaseStudy | None = None, **run_parameters):
     """Write model results, solver statistics and run parameters to '{file_prefix}.sqlite', then add the
     per-run analysis tables (see analyze_and_write).
@@ -468,7 +483,7 @@ def write_results(lego, file_prefix: str, no_sqlite: bool, tm_cs: CaseStudy | No
     sqlite_file = None
     if not no_sqlite:
         sqlite_timer = time.time()
-        sqlite_file = f"{file_prefix}.sqlite"
+        sqlite_file = _output_path(f"{file_prefix}.sqlite")
         printer.information(f"Writing model to SQLite database: {sqlite_file}")
         SQLiteWriter.model_to_sqlite(lego.model, sqlite_file)
         SQLiteWriter.add_solver_statistics_to_sqlite(sqlite_file, lego)
@@ -1131,7 +1146,7 @@ def execute_case_studies(case_study_path: str, no_sqlite: bool = False,
             tm_title_parts.append(f"Diagonal shifted to the right by {shift_tm} steps")
         if perturb_tm is not None:
             tm_title_parts.append(f"Perturbed by {perturb_tm}")
-        Utilities.plot_transition_matrix(cs.rpTransitionMatrixAbsolute, title=", ".join(tm_title_parts), output=f"MK-{identifier}.png")
+        Utilities.plot_transition_matrix(cs.rpTransitionMatrixAbsolute, title=", ".join(tm_title_parts), output=_output_path(f"MK-{identifier}.png"))
 
     _cap_min_up_down_times(cs, len(cs.dPower_WeightsK.index))
     _drop_zero_capacity_vres(cs)
@@ -1659,7 +1674,8 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
          network: str | None = None, commit_consumption: float = 1.0, startup_consumption: float = 1.0,
          shift_tm: int | None = None, perturb_tm: float | None = None,
          prepare_only: bool = False, original_reference: bool = False, original_reference_only: bool = False,
-         task: str | None = None, edge: str | None = None):
+         task: str | None = None, edge: str | None = None, output_dir: str | None = None):
+    global _output_dir
     ew = ExcelWriter()
 
     # --clusters accepts a single number or a comma-separated list (e.g. '3,5,7,10,14,18')
@@ -1687,6 +1703,11 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                 raise ValueError(f"--task {task} requires exactly one --clusters value > 1")
             if edge == "Markov-Strict" and not enable_strict_markov:
                 raise ValueError("--edge Markov-Strict requires --enable-strict-markov")
+    if output_dir is not None:
+        if task is None:
+            raise ValueError("--output-dir requires --task (all-in-one runs read their own outputs back from the cwd)")
+        os.makedirs(output_dir, exist_ok=True)
+        _output_dir = output_dir
 
     if original_reference and not (invest_regret or calculate_regret):
         raise ValueError("--original-reference requires --invest-regret and/or --calculate-regret (it evaluates their decisions in the original model)")
@@ -1826,7 +1847,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                                        commit_consumption=commit_consumption, startup_consumption=startup_consumption, scale_vres=scale_vres,
                                        scale_invest_cost=scale_invest_cost, thermal_invest_only=thermal_invest_only)
                 if task is not None:
-                    _require_optimal_file(f"{out_prefix}.sqlite", "--task truth-original")
+                    _require_optimal_file(_written_path(f"{out_prefix}.sqlite"), "--task truth-original")
                 continue
 
             for cluster in cluster_list:
@@ -1860,7 +1881,7 @@ def main(caseStudyFolder: str, debug: bool = False, no_sqlite: bool = False, cal
                                      original_folder=folder if (original_reference or (task or "").startswith("original-")) and cluster > 1 else None,
                                      task=task, edge=edge)
                 if task is not None:
-                    _require_optimal_file(sqlite_files[0], f"--task {task} --edge {edge}")
+                    _require_optimal_file(_written_path(sqlite_files[0]), f"--task {task} --edge {edge}")
         except Exception as e:
             printer.error(f"Exception while executing case study '{locals().get('cluster_folder', folder)}': {e}")  # locals-hack to always get correct folder-name
             if debug or task is not None:
@@ -1918,6 +1939,7 @@ if __name__ == "__main__":
     parser.add_argument("--original-reference-only", action="store_true", help="Only solve the original full-chronological model of the (preprocessed) folder ('MK-...-TruthOriginal.sqlite') and exit. Independent of --clusters, so one run serves all RP counts")
     parser.add_argument("--task", type=str, default=None, choices=TASKS, help="Run exactly ONE solve of a grid point (one --clusters value) instead of the whole experiment; inputs from earlier solves (Truth investment, main-run decisions, operational vCommit) are read from their result files. Exits non-zero unless the output is optimal. Used by cluster.py; 'truth-original' = --original-reference-only")
     parser.add_argument("--edge", type=str, default=None, choices=list(EDGES), help="Edge handling of the --task solve")
+    parser.add_argument("--output-dir", type=str, default=None, help="Write the output files (sqlite, TM plot) of the --task solve into this folder instead of the cwd; inputs are still read from the cwd (used by cluster.py's pool worker to stage outputs on a local disk)")
     args = parser.parse_args()
 
     main(**vars(args))

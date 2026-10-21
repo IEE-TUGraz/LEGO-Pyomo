@@ -1,7 +1,7 @@
 # One-third-year variant of experiment with MIP gap of 0.5 %
 # Limited to the first 122 days: --limitK k0001-k2928
 # One worker per server, started by hand (see README, "Windows servers"):
-#   python research/MK/cluster.py worker experiment-win-gap0.5-onethird --detach --node-dir <large local disk>
+#   python research/MK/cluster.py worker experiment-win-gap0.5-onethird --detach
 #   python research/MK/cluster.py status experiment-win-gap0.5-onethird          # / stop / restart, from any server
 # Running workers reload this file within a minute of a change (added / removed runs, resources) - no restart needed.
 
@@ -59,6 +59,9 @@ cpu_pin = "grid-point"
 # Dataset order: priority = remaining chain of dependent tasks (critical path) x weight, so a TX-123BT task goes before
 # an RTS-GMLC task only if its chain is more than 10x longer (NREL-118 vs TX-123BT likewise; random TM stays last)
 dataset_weights = { "RTS-GMLC" = 100, "TX-123BT" = 10, "NREL-118" = 1 }
+# Local folders on each server (read at worker start; --node-dir / --spool-dir override them)
+node_dir = "C:/gurobi-nodes"   # Gurobi node files - a large, fast local disk
+spool_dir = "C:/mk-spool"      # local-first writes: logs, outputs and results survive a dropped share connection
 
 [evaluate]
 args = ["all", "--no-show", "--separateClusters"]
