@@ -1,6 +1,6 @@
 # Runs for the Markov paper.
-# Submit from the repo root on MUSICA:  python research/MK/cluster.py submit research/MK/experiments/experiment.toml
-# Every solve is its own Slurm job; see research/MK/README.md (section "Cluster runs") for the task graph and commands.
+# Run from the repo root on MUSICA:  python research/MK/cluster.py submit-workers experiment
+# Every solve is a task of the pool; see research/MK/README.md (section "Cluster runs") for the task graph and commands.
 
 name = "experiment"   # run state and logs go to research/MK/runs/<name>/
 
@@ -25,11 +25,15 @@ args = ["--network", "TP", "--mip-gap", "0.005"]   # model options of every solv
 node_file_start = { default = 8, "TX-123BT" = 16 }
 
 [grid]
-datasets = ["data/RTS-GMLC", "data/TX-123BT", "data/NREL-118"]   # = scheduling preference among your own jobs ([slurm] nice_step)
+datasets = ["data/RTS-GMLC", "data/TX-123BT", "data/NREL-118"]   # = dataset order of the pool ([pool] dataset_weights)
 stretch_demand = [1.0, 0.5, 0.7, 0.9]
 clusters = [3, 5, 7, 14, 21, 28]
-# 'perturb:1.0' = random transition matrix (optional runs): only without demand stretching, queued after all other runs
-tm = ["base", "shift:1", "shift:2", { spec = "perturb:1.0", stretch_demand = [1.0], low_priority = true }]
+# 'perturb:1.0' = random transition matrix (optional runs): only without demand stretching, queued after all other runs.
+# Shifted and random TMs only for RTS-GMLC (datasets = only these datasets).
+tm = ["base",
+      { spec = "shift:1", datasets = ["data/RTS-GMLC"] },
+      { spec = "shift:2", datasets = ["data/RTS-GMLC"] },
+      { spec = "perturb:1.0", stretch_demand = [1.0], low_priority = true, datasets = ["data/RTS-GMLC"] }]
 edges = ["NoEnf", "Cyclic", "Markov"]                # Truth is added automatically where it applies
 tasks = ["main", "operational", "regret", "invest-regret", "operational-regret",
          "original-invest-regret", "original-regret"]   # original-* only for tm = base
@@ -71,8 +75,8 @@ walltime = "3-00:00:00"  # max of the zen4_0768 QoS
 chain_after_hours = 24   # then the job submits its successor (if tasks remain), which queues while this one runs
 workers = 3            # worker chains started by `cluster.py submit-workers` (more can be added at any time)
 idle_hours = 3         # a worker without anything to run waits this long before it exits
-rank_offset_hours = 12 # soft dataset order: each grid.datasets position counts as 12 h less critical path (low_priority TMs stay last)
-mail_type = "BEGIN,END,FAIL"   # worker job mails (address: $MK_MAIL_USER); per-task jobs use [slurm] mail_type
+dataset_weights = { "RTS-GMLC" = 100, "TX-123BT" = 10, "NREL-118" = 1 }   # priority = critical path x weight (low_priority TMs stay last); as on the Windows servers
+mail_type = "BEGIN,END,FAIL"   # worker job mails (address: $MK_MAIL_USER)
 
 [evaluate]
 args = ["all", "--no-show", "--separateClusters"]

@@ -281,6 +281,13 @@ def build_plan(cfg: dict) -> dict:
     clashes = {h: sorted(g) for h, g in heads.items() if len(g) > 1}
     if clashes:
         raise ValueError(f"Job names not distinguishable by their first 8 characters: {clashes} - extend TASK_CODES/EDGE_CODES")
+
+    # [pool] dataset_weights per task: part of the plan (plan_hash), so running workers reload changed weights like any
+    # other config change - also workers predating this, which reload only when the plan hash changes
+    weights = _dataset_weights(cfg)
+    if weights is not None:
+        for key, task in plan.items():
+            task["weight"] = weights.get(key.split("/")[0], 1.0)
     return plan
 
 
@@ -677,6 +684,17 @@ def seed_records(cfg: dict) -> list[dict]:
     return records
 
 
+def mark_ended_slurm_workers(store: "pool.Store") -> list[str]:
+    """Mark the pool's Slurm workers whose job squeue no longer lists as exited (Store.mark_ended_jobs); nothing where
+    squeue is missing (Windows servers) or fails - an empty list must not count every job as ended."""
+    if not shutil.which("squeue"):
+        return []
+    out = subprocess.run(["squeue", "-h", "-u", os.environ.get("USER", ""), "-o", "%i"], capture_output=True, text=True)
+    if out.returncode != 0:
+        return []
+    return store.mark_ended_jobs(set(out.stdout.split()))
+
+
 def _slurm_end_time() -> float | None:
     """End of the current Slurm job (start + time limit) as a timestamp, if running inside one."""
     job = os.environ.get("SLURM_JOB_ID")
@@ -803,17 +821,35 @@ def cmd_worker(args) -> None:
                 store.add_job(job, {"submitted_by": os.environ.get("SLURM_JOB_ID") or "local", "script": args.chain_script})
             return job
     digest = code_digest()
-    # Outside Slurm: a code change starts a successor running it, this worker drains. In a Slurm job the job would end
-    # with this worker (and kill the successor); chained jobs start with the then-current code anyway
-    handover = None if os.environ.get("SLURM_JOB_ID") else _code_handover(config_path, sys.argv[1:], end_time, digest)
+    # A code change starts a successor running it, this worker drains. Outside Slurm the successor is detached. In a
+    # Slurm job it is a child in the same job, which ends with this process: this one waits for it after draining. The
+    # successor inherits the chaining - the delay left until the successor job, or none if this job has submitted it
+    in_slurm = bool(os.environ.get("SLURM_JOB_ID"))
+    if in_slurm:
+        for wid in mark_ended_slurm_workers(store):
+            print(f"{_now()} worker {wid}: its Slurm job has ended - marked as exited (its tasks are retried)")
+    worker, successors = None, []
+
+    def successor_argv():
+        if not in_slurm or worker.chain_after_s is None:
+            return _successor_argv(sys.argv[1:], end_time)
+        left = max(worker.chain_after_s - (time.time() - worker.started), 0) / 3600
+        return _successor_argv(sys.argv[1:], end_time, chain_after_h=left, chain=not worker.chained)
+
+    spawn = (lambda argv: successors.append(_spawn_job_worker(argv)) or successors[-1]) if in_slurm else _spawn_detached_worker
     worker = make_worker(cfg, pool_specs(plan, keys), store, cores=cores, mem_mb=mem_mb,
                          end_time=end_time, idle_s=idle_h * 3600, max_tasks=args.max_tasks,
                          node_base=args.node_dir or cfg.get("pool", {}).get("node_dir"),
                          chain_after_s=args.chain_after_hours * 3600 if args.chain_script else None, chain=chain,
-                         info={"code": digest, **({"log": str(log_file)} if log_file else {})}, handover=handover,
+                         info={"code": digest, "code_handover": True, **({"log": str(log_file)} if log_file else {})},
+                         handover=_code_handover(config_path, successor_argv, digest, spawn=spawn),
                          reload=_plan_reloader(config_path, cfg["name"], args.patterns or ["*"], plan_hash(plan)), plan_id=plan_hash(plan),
                          spool=spool)
-    sys.exit(worker.run())
+    code = worker.run()
+    if successors:
+        print(f"{_now()} waiting for the successor worker (pid {successors[-1].pid}): the Slurm job ends with this process", flush=True)
+        code = successors[-1].wait() or code
+    sys.exit(code)
 
 
 def _plan_reloader(config_path: Path, name: str, patterns: list[str], current: str):
@@ -901,26 +937,44 @@ def code_digest() -> str | None:
         return None
 
 
-def _successor_argv(argv: list[str], end_time: float | None) -> list[str]:
-    """The worker's own arguments for its successor; an explicit --hours becomes the remaining walltime."""
+def _drop_option(argv: list[str], name: str) -> list[str]:
+    """argv without the option `name` and its value (`--x v` or `--x=v`)."""
     out, skip = [], False
     for a in argv:
         if skip:
             skip = False
-        elif a == "--hours":
+        elif a == name:
             skip = True
-        elif not a.startswith("--hours="):
+        elif not a.startswith(name + "="):
             out.append(a)
-    if end_time is not None and len(out) != len(argv):
-        out += ["--hours", f"{max(end_time - time.time(), 0) / 3600:.4f}"]
     return out
 
 
-def _code_handover(config_path: Path, argv: list[str], end_time: float | None, current: str | None, spawn=_spawn_detached_worker):
-    """Worker.handover callback (workers outside Slurm): when cluster.py / pool.py changed on disk (content hash), check
-    the new code in a fresh interpreter (`plan-json`), start a successor worker with the same arguments and return its
-    description - the caller then drains. A broken change (e.g. a file saved halfway through an edit) is logged and
-    retried when the files change again."""
+def _successor_argv(argv: list[str], end_time: float | None, chain_after_h: float | None = None, chain: bool = True) -> list[str]:
+    """The worker's own arguments for its successor; an explicit --hours becomes the remaining walltime. Slurm job:
+    chain_after_h replaces --chain-after-hours (the delay left until the job submits its successor job); chain=False
+    drops the chaining (this job has already submitted its successor job)."""
+    out = _drop_option(argv, "--hours")
+    if end_time is not None and len(out) != len(argv):
+        out += ["--hours", f"{max(end_time - time.time(), 0) / 3600:.4f}"]
+    if not chain:
+        out = _drop_option(_drop_option(out, "--chain-after-hours"), "--chain-script")
+    elif chain_after_h is not None:
+        out = _drop_option(out, "--chain-after-hours") + ["--chain-after-hours", f"{chain_after_h:.4f}"]
+    return out
+
+
+def _spawn_job_worker(argv: list[str]) -> subprocess.Popen:
+    """Start `cluster.py <argv>` as a child in the same Slurm job, writing to the job's output file. The caller must
+    outlive it: the job (and everything in it) ends when the job script's process exits."""
+    return subprocess.Popen([sys.executable, str(Path(__file__).resolve()), *argv], stdin=subprocess.DEVNULL)
+
+
+def _code_handover(config_path: Path, successor_argv, current: str | None, spawn=_spawn_detached_worker):
+    """Worker.handover callback: when cluster.py / pool.py changed on disk (content hash), check the new code in a fresh
+    interpreter (`plan-json`), start a successor worker with successor_argv() and return its description - the caller
+    then drains. A broken change (e.g. a file saved halfway through an edit) is logged and retried when the files change
+    again."""
     state = {"mtimes": None, "tried": current}
 
     def mtimes():
@@ -950,7 +1004,7 @@ def _code_handover(config_path: Path, argv: list[str], end_time: float | None, c
             tail = " | ".join((out.stderr or out.stdout).strip().splitlines()[-3:])
             print(f"{_now()} WARNING: the worker code changed, but it does not run - no handover until it changes again: {tail}", flush=True)
             return None
-        proc = spawn(_successor_argv(argv, end_time))
+        proc = spawn(successor_argv())
         return f"pid {proc.pid}, code {digest}"
 
     return handover
@@ -1189,6 +1243,8 @@ def _print_counts(status: dict) -> None:
 
 
 def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict, cfg: dict) -> None:
+    for wid in mark_ended_slurm_workers(store):  # e.g. a node failure: nothing else would ever mark them
+        print(f"worker {wid}: its Slurm job has ended - marked as exited (its tasks are retried)")
     status = pool_status(plan, store)
     _print_counts(status)
     now = time.time()
@@ -1210,9 +1266,12 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict, cfg: dict
         if alive and not w.get("stopping"):
             plan_note = ("  plan: not reloadable (worker predates plan reload - restart it to pick up config changes)" if "plan" not in w
                          else "" if w["plan"] == current else f"  plan: {w['plan']} (outdated - reloads within a minute)")
-            if not w.get("slurm_job") and w.get("code") != code:  # code handover (workers outside Slurm)
-                plan_note += ("  code: no handover (worker predates it - restart it to run the current code)" if "code" not in w
-                              else f"  code: {w['code']} (outdated - hands over within a minute)")
+            if w.get("code") != code:  # code handover; Slurm workers only since "code_handover" is in their heartbeat
+                if w.get("slurm_job") and not w.get("code_handover"):
+                    plan_note += f"  code: {w.get('code')} (outdated - no handover in this job, its successor job starts with the current code)"
+                else:
+                    plan_note += ("  code: no handover (worker predates it - restart it to run the current code)" if "code" not in w
+                                  else f"  code: {w['code']} (outdated - hands over within a minute)")
         unsynced = w.get("unsynced") if alive else None  # pool.Spool: written locally, not on the share yet
         unsynced_note = f"  unsynced: {unsynced.get('files', 0)} file(s), {unsynced.get('results', 0)} result(s)" if unsynced else ""
         print(f"  {wid:<40} {state:<28} {len(w.get('running', [])):>3} running  {size}{plan_note}{unsynced_note}")

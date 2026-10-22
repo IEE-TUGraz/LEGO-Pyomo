@@ -444,6 +444,22 @@ class Store:
                     pass
         return dead
 
+    def mark_ended_jobs(self, active_jobs: set[str]) -> list[str]:
+        """Mark Slurm workers as exited whose job the scheduler no longer lists (active_jobs: the user's jobs in squeue) and
+        whose heartbeat is stale - e.g. after a NODE_FAIL, which leaves no exited heartbeat, and no later worker runs on
+        that node to notice (mark_dead_workers). Their claims are then retried normally, also by workers in a stale view."""
+        dead, now = [], time.time()
+        for wid, info in self.workers().items():
+            job = info.get("slurm_job")
+            if not job or info.get("exited") or job in active_jobs or now - info.get("beat", 0) < STALE_S:
+                continue
+            try:
+                _write_json_atomic(self.root / "workers" / f"{wid}.json", {**info, "exited": _now(), "exit_reason": f"Slurm job {job} ended"})
+                dead.append(wid)
+            except OSError:
+                pass
+        return dead
+
     def results(self) -> list[dict]:
         """All result records (new files are read once and cached). Records written before the out-of-memory outcome (no
         `mem_mb`) are read as OOM if they failed near their machine's RAM (from the worker's heartbeat)."""
@@ -907,6 +923,7 @@ class Worker:
         # if tasks remain; retried every chain_retry_s until it succeeds
         self.chain_after_s, self.chain, self.chain_retry_s = chain_after_s, chain, chain_retry_s
         self.chained, self.last_chain_try = None, 0.0
+        self.started = None  # start of run(); a code handover in a Slurm job hands the remaining chain delay on
         self.out = out
         # Local-first writes (task logs, staged outputs, results) for a pool on a network share; at exit, at most
         # spool_drain_s to send what is left (the next worker on this machine sends the rest)
@@ -1163,14 +1180,15 @@ class Worker:
         self.stale_view = view
 
     def refresh_foreign(self) -> None:
-        """Tasks of the other live workers on this machine (outside Slurm only) from their heartbeats - of this pool and
-        of the peer pools (other experiments) - memory sampled here by pid (heartbeats are up to HEARTBEAT_S old). Workers
-        in this process are skipped: they only exist in tests, where they stand for separate machines. Heartbeats without
-        task details (workers predating them) count each task with this worker's estimate, as just started."""
-        if os.environ.get("SLURM_JOB_ID"):
-            return  # a Slurm job has one worker (successors are new jobs with their own allocation)
+        """Tasks of the other live workers on this machine from their heartbeats - of this pool and of the peer pools
+        (other experiments) - memory sampled here by pid (heartbeats are up to HEARTBEAT_S old). In a Slurm job only the
+        workers of the same job count (a code handover runs its successor in the job; the node is exclusive, so other
+        pools' workers cannot be on it); outside Slurm only workers outside Slurm. Workers in this process are skipped:
+        they only exist in tests, where they stand for separate machines. Heartbeats without task details (workers
+        predating them) count each task with this worker's estimate, as just started."""
+        job = os.environ.get("SLURM_JOB_ID") or None
         workers = [(None, wid, w) for wid, w in self.store.workers().items()]  # (pool name: None = own, id, heartbeat)
-        if self.peers:
+        if self.peers and not job:
             try:
                 workers += [(name, wid, w) for name, root in self.peers().items() for wid, w in read_workers(root).items()]
             except OSError as e:  # an unreadable runs folder must not stop the worker; its own pool still counts
@@ -1178,7 +1196,8 @@ class Worker:
         foreign, now = {}, time.time()
         for pool_name, wid, w in workers:
             if (wid == self.id or w.get("exited") or now - w.get("beat", 0) > STALE_S or not w.get("pid") or w.get("pid") == os.getpid()
-                    or w.get("host", "").lower() != self.host.lower() or w.get("slurm_job") or not pid_alive(int(w["pid"]))):
+                    or w.get("host", "").lower() != self.host.lower() or (w.get("slurm_job") or None) != job
+                    or not pid_alive(int(w["pid"]))):
                 continue
             for key, t in (w.get("tasks") or {k: {} for k in w.get("running", [])}).items():
                 fid = f"{pool_name}:{wid}/{key}" if pool_name else f"{wid}/{key}"
@@ -1481,7 +1500,7 @@ class Worker:
                  + f" ({self.disk_free_gb()} GB free; new tasks pause below {self.disk_min_free_mb / 1024:g} GB)"
                  + (f", ends {datetime.datetime.fromtimestamp(self.end_time).isoformat(timespec='minutes')}" if self.end_time else "")
                  + (f", plan {self.plan_id} (reloaded when the config changes)" if self.reload else ""))
-        started = time.time()
+        started = self.started = time.time()
         info = {"host": self.host, "pid": os.getpid(), "slurm_job": os.environ.get("SLURM_JOB_ID"), "cores": self.cores,
                 "mem_mb": self.mem_mb, "started": _now(), "started_ts": started, "end_time": self.end_time, **self.info}
         if self.spool:  # before mark_dead_workers: results a dead worker of this machine could not send go first

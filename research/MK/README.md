@@ -262,7 +262,7 @@ it finishes before the worker's walltime. Priority: the longest chain of depende
 runtime estimates) minus `[pool] rank_offset_hours` (12) per position in `grid.datasets` - so RTS-GMLC goes first among
 equal chains, but a TX-123BT task whose chain is more than 12 h longer goes before it. Without `rank_offset_hours` the
 order is strict (all ready tasks of the first dataset first). With `[pool] dataset_weights` instead, the priority is
-the critical path × the dataset's weight: with weights 100 / 10 / 1 (the Windows servers), a TX-123BT task goes before
+the critical path × the dataset's weight: with weights 100 / 10 / 1 (`experiment.toml` and the Windows servers), a TX-123BT task goes before
 an RTS-GMLC task only if its remaining chain is more than 10× longer. Chains start from the TOML `time` values (often
 the same walltime for all datasets, so the weights alone decide) and become measured runtimes as tasks finish - a
 dataset whose tasks turn out short then loses ground to one still estimated long. Ties: largest memory first. If the top task waits too long
@@ -365,6 +365,10 @@ python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dep
   network drive (or a reboot) fixes the view. If those workers really died together (e.g. a power cut), release
   their tasks by hand: start a worker on each of their machines (it marks the old workers' gone processes as exited),
   or add `"exited": "<reason>"` to their `pool/workers/<id>.json`.
+- **Dead Slurm workers** (e.g. `NODE_FAIL`: no exit was recorded, and no later job runs on that node to notice) are
+  shown as `lost (no heartbeat)` until `status` or a starting worker job finds that `squeue` no longer lists their job
+  (and their heartbeat is older than 10 min): then they are marked `exited` ("Slurm job … ended"), and their tasks are
+  retried normally. Nothing to do by hand; `status --active` hides them afterwards.
 - **Stopping workers** started by hand (no Slurm job to cancel): `cluster.py stop <run> [--host NAME ...] [--now]`.
   Default: the workers start no new tasks and exit once their running tasks have finished; `--now` interrupts the
   running tasks (retried by other / later workers). Only workers that started before the request are affected.
@@ -391,8 +395,13 @@ python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dep
   run outdated code. A change that does not run (e.g. saved halfway through an edit) is logged and ignored until the
   files change again; workers started before this feature cannot hand over - restart them once. The check only
   confirms that the new code loads and builds the plan: after a code change, check with `status` (or the successor's
-  log) that the successor runs - if it crashed, the draining worker does not take over again; start a worker by hand. Slurm workers do not
-  hand over (a successor could not outlive the job); their chained jobs start with the current code.
+  log) that the successor runs - if it crashed, the draining worker does not take over again; start a worker by hand.
+  **Slurm workers** (MUSICA) hand over the same way, inside their job: the successor runs in the same job and writes to
+  the same `jobs/worker_<job>.out`; the old worker drains and then waits for it, because the job ends when the job
+  script's process exits. The successor takes over the chaining: it submits the successor job when the old worker
+  would have (the remaining `--chain-after-hours`), or not at all if that job was already submitted. So a `git pull` on
+  MUSICA reaches running jobs within a minute. Worker jobs started before this feature do not hand over (`status`:
+  "no handover in this job"); their chained jobs start with the current code.
 
 **Windows servers** (a separate site from MUSICA - results of the two sites are never mixed):
 the same task pool, one worker per server, started by hand over Remote Desktop. All workers of a pool must see the same

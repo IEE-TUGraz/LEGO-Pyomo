@@ -228,6 +228,21 @@ def test_successor_argv_keeps_the_arguments_and_the_remaining_walltime():
     argv = cluster._successor_argv(["worker", "x", "--hours", "5", "--log"], time.time() + 1800)
     assert argv[:3] == ["worker", "x", "--log"] and argv[3] == "--hours" and 0.49 < float(argv[4]) <= 0.5
     assert cluster._successor_argv(["worker", "x", "--hours=5"], time.time() + 3600)[2] == "--hours"
+    # Slurm handover: the remaining delay until the successor job, or no chaining once the job has submitted it
+    job = ["worker", "x", "--chain-after-hours", "24", "--chain-script", "w.sbatch"]
+    assert cluster._successor_argv(job, None, chain_after_h=1.5) == ["worker", "x", "--chain-script", "w.sbatch", "--chain-after-hours", "1.5000"]
+    assert cluster._successor_argv(job, None, chain=False) == ["worker", "x"]
+
+
+def test_slurm_workers_of_ended_jobs_are_marked_exited(tmp_path):
+    store = pool.Store(tmp_path)
+    old = time.time() - 2 * pool.STALE_S
+    for wid, info in {"crashed": {"slurm_job": "1", "beat": old}, "queued-again": {"slurm_job": "2", "beat": old},
+                      "fresh": {"slurm_job": "3", "beat": time.time()}, "windows": {"beat": old}}.items():
+        pool._write_json_atomic(store.root / "workers" / f"{wid}.json", info)
+    assert store.mark_ended_jobs({"2"}) == ["crashed"]  # job 2 still listed; 3 still beats; no job: not Slurm's to judge
+    assert store.workers()["crashed"]["exit_reason"] == "Slurm job 1 ended"
+    assert store.mark_ended_jobs({"2"}) == []
 
 
 def test_code_handover_only_for_changed_code_that_runs(tmp_path, monkeypatch, capsys):
@@ -245,7 +260,7 @@ def test_code_handover_only_for_changed_code_that_runs(tmp_path, monkeypatch, ca
     class Proc:
         pid = 4242
 
-    handover = cluster._code_handover(tmp_path / "x.toml", ["worker", "x"], None, cluster.code_digest(),
+    handover = cluster._code_handover(tmp_path / "x.toml", lambda: ["worker", "x"], cluster.code_digest(),
                                       spawn=lambda argv: spawned.append(argv) or Proc())
 
     def edit(text):
