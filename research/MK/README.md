@@ -177,9 +177,10 @@ length in the original model as well, so only the time series differ. Skipped (w
 ### `cluster.py` — Cluster runs (Slurm)
 
 `cluster.py` expands the grid of a TOML experiment file into one task per solve with dependencies: every model is solved
-once, and each fixed-decision run starts as soon as its decision source has finished. The tasks run either as one Slurm
-job each (`submit`, job arrays with dependencies) or in a **task pool** on whole nodes (`submit-workers`, see "Task
-pool" below) - the mode used on MUSICA, which prefers full-node jobs.
+once, and each fixed-decision run starts as soon as its decision source has finished. The tasks run in a **task pool**
+(see "Task pool" below): on MUSICA in whole-node worker jobs (`submit-workers`), on the Windows servers in workers
+started by hand. (The former mode with one Slurm job per task, `submit`, was removed: MUSICA prefers full-node jobs.
+`status`, `log`, `resources` and `cancel` still read the old per-task runs, e.g. the pilot.)
 `experiments/experiment.toml` holds all runs of the paper: RTS-GMLC, TX-123BT, NREL-118 × 3/5/7/14/21/28 RPs × demand
 variability 100/50/70/90 % × transition matrix base / shifted by 1 / shifted by 2, plus a random TM (100 % demand only,
 queued last).
@@ -195,26 +196,12 @@ prepare (dataset, demand)               --prepare-only: clustered / demand-stret
      └─ main/<edge>                     NoEnf, Cyclic, Markov (RP models)
          ├─ regret/<edge>, invest-regret/<edge>
          └─ original-regret/<edge>, original-invest-regret/<edge>   (base TM only)
-evaluate                                after all jobs have ended (successful or not)
-```
-
-```bash
-# on the login node, from the repo root (Python >= 3.11, standard library only)
-export MK_MAIL_USER=you@example.org   # optional Slurm mails (arrays: mail_type, default FAIL; evaluation: END,FAIL)
-python research/MK/cluster.py submit research/MK/experiments/experiment.toml --dry-run   # writes runs/<name>-dryrun/
-python research/MK/cluster.py submit research/MK/experiments/experiment.toml
-python research/MK/cluster.py status experiment                        # counts per task kind, failed/blocked/unknown tasks
-python research/MK/cluster.py status experiment --list running --filter 'TX-123BT/*'
-python research/MK/cluster.py log experiment TX-123BT/sd0.5/c21/base/main/Truth
-python research/MK/cluster.py restart experiment --failed --mem-factor 1.5          # all failed tasks
-python research/MK/cluster.py restart experiment 'TX-123BT/sd0.5/c21/*' --time 3-00:00:00
-python research/MK/cluster.py prioritize experiment --nice-step 300    # change the queue-order nice of queued jobs
-python research/MK/cluster.py cancel experiment
+evaluate                                after all other tasks have ended (successful or not)
 ```
 
 **Task keys**: `{dataset}/sd{demand}/c{clusters}/{tm}/{task}/{edge}` (e.g. `TX-123BT/sd0.5/c21/shiftTM1/regret/Markov`),
 `{dataset}/sd{demand}/prepare`, `{dataset}/sd{demand}/truth-original` and `evaluate`. `restart`, `log`, `local` and
-`--filter` take glob patterns.
+`status --filter` take glob patterns (`status experiment --list running --filter 'TX-123BT/*'`).
 
 **Local runs** (no Slurm, e.g. on a laptop to test tasks before submitting): `local` builds the same commands from the
 config (file or name in `experiments/`) and runs the matching tasks in dependency order, from the repo root with the
@@ -238,39 +225,13 @@ the failure are skipped. Gurobi threads per task = the task's `cpus`, at most CP
 code is 1 if a task failed. For long local solves, run at low priority (PowerShell: `(Get-Process -Id $PID).PriorityClass = 'Idle'` first; cmd:
 prefix the command with `start /low /b /wait`, and quote patterns with `"` instead of `'`).
 
-**Job names** start with an 8-character code, because `squeue` shows only 8 characters: dataset (2, first two letters
-of the folder name; lower case for low-priority runs) + task (4) + edge (2), then `_` and the array name, e.g.
-`TXmainMk_main-Markov-TX-123BT`. Task codes: `prep` prepare, `trOr` truth-original, `main`, `oper` operational, `rgrt`
-regret, `iRgr` invest-regret, `oRgr` operational-regret, `OiRg` original-invest-regret, `ORgr` original-regret. Edge
-codes: `Tr` Truth, `NE` NoEnf, `Cy` Cyclic, `Mk` Markov, `--` none, `St` the prepares that wait for the first one. Full names: `squeue -o "%.18i %.40j %.8T %.10M"`.
-
-**Queue order**: `grid.datasets` order (RTS-GMLC, TX-123BT, NREL-118), then the runs of `low_priority` TM variants
-(own arrays ending in `-low`, e.g. `rtmainMk_main-Markov-RTS-GMLC-low`). Every job gets `sbatch --nice` = rank ×
-`[slurm] nice_step` (default 100): 0 / 100 / 200 for the datasets, 300 / 400 / 500 for their low-priority runs. Nice
-is fixed per job (also on `restart`); it acts like submitting the job nice / 30 hours later (MUSICA: age weight 10000
-over 14 days), against your own and other users' jobs. So it orders your jobs only among those that became eligible
-within that margin of each other; a larger step orders more strictly but delays the later ranks more against other
-users. Check with `squeue -u $USER -t PD -S -p -o "%.12i %.32j %.10Q %.6y %.20r"` (`%y` = nice). `prioritize
---nice-step N` re-applies the nice of all queued jobs with a new step (stored for later restarts).
-
-**Status categories**: `done` (completed = optimal result file), `running`, `pending`, `blocked` (waits for a failed
-task, listed under it), `failed` (FAILED, OUT_OF_MEMORY, TIMEOUT, CANCELLED, …, with peak vs requested memory),
-`unknown` (no Slurm record).
-
-**Restart** resubmits the selected tasks (`--failed` and/or patterns; queued ones only with `--include-pending`) as
-single jobs, plus all unfinished downstream tasks (their old jobs are cancelled), and re-queues the evaluation behind
-them. `--mem`/`--mem-factor`/`--cpus`/`--time` apply to the selected tasks only. Finished tasks are never resubmitted;
-delete a result file to recompute it.
-
 **Config** (see `experiments/experiment.toml`):
-- `[slurm]`: account, partition, QoS, optional `nice_step` (see Queue order), optional `mail_user`/`mail_type` (leave them out of versioned configs and use
-  `$MK_MAIL_USER`), `repo` (repo path on the cluster), `setup` (environment lines).
+- `[slurm]`: account, partition, QoS, optional `mail_user`/`mail_type` (leave them out of versioned configs and use
+  `$MK_MAIL_USER`), `repo` (repo path on the cluster), `setup` (environment lines) - for the worker jobs.
 - `[markov]`: `args` for every solve; `node_file_start`: Gurobi `NodefileStart` in GB, one number or a table per dataset
   (`{ default = 8, "TX-123BT" = 16 }`), identical for all solves of a dataset because it affects the runtime. It limits
   only the B&B tree in memory (not the model): once the tree is larger, Gurobi compresses nodes and writes them to the
   node-local `$TMPDIR`. Keep pilot and full run identical. `--threads` is always the allocated core count.
-- `[slurm] disk_min_free_gb` (default 10): every job logs its node-file peak and the free space of the node-file disk
-  (`Node files: peak … MB, min free disk … MB` at the end of the log) and warns below this.
 - `[pool]` (task pool only): `seed_runs` (runs whose measurements seed the estimates, e.g. `["pilot"]`), `cores` and
   `mem` per worker node (required by `submit-workers`), `walltime` (72 h), `chain_after_hours` (24), `workers` (3),
   `mem_fraction` (share of `mem` that is packed, 0.9), `idle_hours` (3), `mem_safety` (1.2, memory lower bounds only), `time_safety` (1.5),
@@ -286,13 +247,13 @@ delete a result file to recompute it.
   datasets (e.g. shifted TMs only for RTS-GMLC).
 - `[resources.<class>]`: `cpus`, `mem`, `time` in a `default` table, overridden per dataset folder name. Classes:
   `prepare`, `rp` (main/operational of the RP models), `full` (all full-year solves), `truth-original` (falls back to
-  `full`), `evaluate`. All solves of a dataset need the same `cpus` (comparable work units / solver times): `submit`
-  refuses other configs, `restart --cpus` warns.
+  `full`), `evaluate`. In the pool, `mem` / `time` are the priors of the estimates and `cpus` the threads per solve.
+  All solves of a dataset need the same `cpus` (comparable work units / solver times): `build_plan` refuses other configs.
 - `[evaluate]`: `args`, `output_dir`.
 
 Run state, command files and logs go to `research/MK/runs/<name>/` (not versioned).
 
-**Task pool** (alternative to one Slurm job per task, sized for whole nodes as MUSICA prefers): `worker` runs the
+**Task pool** (sized for whole nodes as MUSICA prefers): `worker` runs the
 tasks of a config on the machine it is started on, packing them by **estimated memory** and **cores**, and pulls them
 from a shared pool in `runs/<name>/pool/`. Any number of workers (one per node) can work on the same pool at once; each
 task runs exactly once. A task starts when its dependencies are done, it fits (sum of `max(estimate, current RSS)` of the
@@ -505,26 +466,24 @@ Other workers see no heartbeats from it meanwhile: after 10 min they consider it
 lower priority (critical path / 5, like a dataset weighted 5x lower), since it may still be solving them: other
 ready tasks go first. Tasks of a worker known to have ended (marked exited or its process gone) are retried normally.
 
-**Pilot before the full run** (per-task mode; optional for the task pool, which learns its estimates while it runs
-and can be seeded with a pilot via `[pool] seed_runs`): the resources in `experiment.toml` are guesses. `experiments/pilot.toml` runs one grid
-point per dataset (100 % demand, 28 clusters = largest RP models, base TM, all edges and tasks, Original Truth; 78 jobs)
-with generous memory. The full run reuses its results via `--no-overwrite` (same model options), so submit it only
-after the pilot has finished.
+**Pilot** (optional - the task pool learns its estimates while it runs): `experiments/pilot.toml` runs one grid point
+per dataset (100 % demand, 28 clusters = largest RP models, base TM, all edges and tasks, Original Truth; 78 tasks).
+It ran on MUSICA as one Slurm job per task (a mode since removed); its measurements seed the pool estimates of
+`experiment.toml` (`[pool] seed_runs = ["pilot"]`). The full run reuses its results via `--no-overwrite` (same model
+options). A new pilot would run as a pool like any other config (`submit-workers pilot`).
 
 ```bash
-python research/MK/cluster.py submit research/MK/experiments/pilot.toml
-python research/MK/cluster.py resources pilot              # max peak / elapsed per dataset and class, suggested values
+python research/MK/cluster.py resources pilot --save       # max peak / elapsed per dataset and class, suggested values
 python research/MK/cluster.py status pilot --list done     # per task: 'mem' column = peak RSS / requested memory
-seff <jobid>                                                # per job, incl. CPU efficiency
 ```
 
 `resources` groups the finished tasks by dataset and `[resources.*]` class (`prepare`, `truth-original`, `rp`, `full`)
 and suggests `mem` = 1.3× the largest peak and `time` = 2× the longest run (at least 30 min; `--mem-factor`,
 `--time-factor`, `--min-time`), naming the tasks behind both maxima. `--save` writes the measurements to
-`runs/<run>/measurements.json`, the seed for pool runs (`[pool] seed_runs`). Tasks that hit `OUT_OF_MEMORY`/`TIMEOUT` are listed
-with the limit they exceeded (the class needs more than that). Copy the values per dataset into the full experiment's
-TOML; `restart --mem-factor` covers outliers. Keep a larger margin on time: MIP solve times vary more between demand
-levels and TMs than memory does, and the pilot covers only its grid points.
+`runs/<run>/measurements.json` (per-task runs), the seed for pool runs (`[pool] seed_runs`). Tasks that hit
+`OUT_OF_MEMORY`/`TIMEOUT` are listed with the limit they exceeded (the class needs more than that). The suggestions can
+serve as `[resources.*]` priors of the next experiment's TOML; keep a larger margin on time: MIP solve times vary more
+between demand levels and TMs than memory does, and the pilot covers only its grid points.
 
 **Tests** of `cluster.py` / `pool.py` (fake tasks that sleep, allocate memory and exit with a given code - no Gurobi,
 no Slurm, about 1 min):
