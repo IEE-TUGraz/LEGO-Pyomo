@@ -234,7 +234,7 @@ prefix the command with `start /low /b /wait`, and quote patterns with `"` inste
   node-local `$TMPDIR`. Keep pilot and full run identical. `--threads` is always the allocated core count.
 - `[pool]` (task pool only): `seed_runs` (runs whose measurements seed the estimates, e.g. `["pilot"]`), `cores` and
   `mem` per worker node (required by `submit-workers`), `walltime` (72 h), `chain_after_hours` (24), `workers` (3),
-  `mem_fraction` (share of `mem` that is packed, 0.9), `idle_hours` (3), `mem_safety` (1.2, memory lower bounds only), `time_safety` (1.5),
+  `mem_fraction` (share of `mem` that is packed, 0.9), `idle_hours` (3), `guard_free_fraction` (0.04: the memory guard acts below this share of free memory; MUSICA 0.08), `mem_safety` (1.2, memory lower bounds only), `time_safety` (1.5),
   `disk_min_free_gb` (10), `rank_offset_hours` (soft dataset order, see Task pool; absent = strict), `dataset_weights` (weighted dataset order,
   e.g. `{ "RTS-GMLC" = 100, "TX-123BT" = 10 }`, unlisted datasets 1; excludes `rank_offset_hours`), `opportunistic`
   (true; opportunistic starts, see Task pool), `opportunistic_after_minutes` (10), `spool_dir` (local folder for
@@ -281,7 +281,11 @@ once its estimate fits. `attempts` marks opportunistic attempts with `*`. Turn i
 **Memory guard**: when the RAM runs out, it stops one task: opportunistic tasks first, then low-priority tasks, then the
 most recently started one - but never the one using the most memory. A stopped task that used more than its own
 estimate is **evicted** (retried with a higher estimate), any other one is **preempted** (it only made room: retried,
-its peak counts as a minimum, its runtime is not used).
+its peak counts as a minimum, its runtime is not used). "When the RAM runs out" = less than `[pool] guard_free_fraction`
+of the machine's memory free (default 4 %; MUSICA 8 %, about 60 GB, because Gurobi allocates in jumps of ~10 GB per
+solve). If the kernel's out-of-memory killer is faster anyway, the killed task (SIGKILL, which the worker never sends
+on its own) is also recorded as **evicted** and retried with a higher estimate - not as failed, and no restart is needed
+(log: "killed from outside").
 
 ```bash
 python research/MK/cluster.py resources pilot --save                # pilot measurements -> seed of the estimates
@@ -475,11 +479,12 @@ Other workers see no heartbeats from it meanwhile: after 10 min they consider it
 lower priority (critical path / 5, like a dataset weighted 5x lower), since it may still be solving them: other
 ready tasks go first. Tasks of a worker known to have ended (marked exited or its process gone) are retried normally.
 
-**Pilot** (optional - the task pool learns its estimates while it runs): `experiments/pilot.toml` runs one grid point
-per dataset (100 % demand, 28 clusters = largest RP models, base TM, all edges and tasks, Original Truth; 78 tasks).
-It ran on MUSICA as one Slurm job per task (a mode since removed); its measurements seed the pool estimates of
-`experiment.toml` (`[pool] seed_runs = ["pilot"]`). The full run reuses its results via `--no-overwrite` (same model
-options). A new pilot would run as a pool like any other config (`submit-workers pilot`).
+**Pilot** (done; its config `experiments/pilot.toml` has since been removed): one grid point per dataset (100 % demand,
+28 clusters = largest RP models, base TM, all edges and tasks, Original Truth; 78 tasks), run on MUSICA as one Slurm
+job per task (a mode since removed). Its run folder `runs/pilot/` remains: its measurements seed the pool estimates of
+`experiment.toml` (`[pool] seed_runs = ["pilot"]`), and the full run reused its results via `--no-overwrite` (same
+model options). The commands below read that folder, they need no config. A new pilot would be a pool config like any
+other - and optional, as the task pool learns its estimates while it runs.
 
 ```bash
 python research/MK/cluster.py resources pilot --save       # max peak / elapsed per dataset and class, suggested values

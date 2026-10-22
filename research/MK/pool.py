@@ -51,6 +51,10 @@ NEW, RUNNING, RETRY = "new", "running", "retry"
 # estimate starts it (exceeds_ram). Also the Slurm outcome of an OUT_OF_MEMORY job (cluster.resources).
 OOM = "oom"
 NEAR_RAM_FRACTION = 0.85
+# Return code of a task killed by SIGKILL (POSIX). Not sent by the worker (its stops are recorded as such), it is the
+# kernel's out-of-memory killer (MUSICA Oct 2026: "Detected 2 oom_kill events", the memory guard too slow for Gurobi's
+# allocation jumps): recorded as evicted (retried, its peak a lower bound x lower_bound_factor), not as failed
+EXTERNAL_KILL_RC = -9
 # Lost: an attempt whose worker died without writing its result (e.g. the node failed). Never written to results/ - a
 # synthetic record from the dead worker's last heartbeat (Store.lost_records), only for the estimator: its peak there is a
 # lower bound, scaled like an eviction (the node may have died because the task kept growing)
@@ -1097,6 +1101,10 @@ class Worker:
         # Out of memory only with memory packing: without it (local) nothing would keep the retry off this machine
         if outcome == FAILED and self.mem_packing and near_ram(run["peak_mb"], self.mem_mb):
             outcome = OOM
+        # Killed from outside (EXTERNAL_KILL_RC): likewise only with memory packing, which places the retry by its raised estimate
+        external_kill = outcome == FAILED and self.mem_packing and rc == EXTERNAL_KILL_RC
+        if external_kill:
+            outcome = EVICTED
         elapsed = run["end"] - run["start"]
         noop = outcome == DONE and run["log"] is not None and _log_has_marker(run["local_log"], NOOP_MARKER)
         if self.spool and run["log"] is not None:
@@ -1107,6 +1115,8 @@ class Worker:
                   "end": datetime.datetime.fromtimestamp(run["end"]).isoformat(timespec="seconds"), "estimate": run["est"], "opportunistic": run["opp_start"], "log": str(run["log"]) if run["log"] else None}
         if outcome == OOM:
             record["limit_mb"] = round(self.mem_mb, 1)  # the estimator's lower bound: max(peak, limit) x lower_bound_factor
+        if external_kill:
+            record["external_kill"] = True
         if self.spool:  # outputs and result reach the share in the background (the result after the outputs)
             self.spool.queue(key, run["attempt"], record, upload=run["stop"] is None)
         else:
@@ -1118,8 +1128,9 @@ class Worker:
             self.any_failed = True
         peak = f", peak {run['peak_mb'] / 1024:.1f} GB" if run["peak_mb"] else ""
         peak += " (nothing to do - not used as a measurement)" if noop else ""
-        self.log(f"{outcome} {key} after {datetime.timedelta(seconds=int(elapsed))}" + (f" (exit {rc})" if outcome in (FAILED, OOM) else "") + peak
-                 + (f" of {self.mem_mb / 1024:.0f} GB RAM: out of memory - back in the pool for a worker with more RAM" if outcome == OOM else ""))
+        self.log(f"{outcome} {key} after {datetime.timedelta(seconds=int(elapsed))}" + (f" (exit {rc})" if outcome in (FAILED, OOM) or external_kill else "") + peak
+                 + (f" of {self.mem_mb / 1024:.0f} GB RAM: out of memory - back in the pool for a worker with more RAM" if outcome == OOM else "")
+                 + (": killed from outside (probably the kernel's out-of-memory killer) - retried with a higher estimate" if external_kill else ""))
         if self.specs[key].get("retired"):  # removed from the plan while it ran: not started again
             self._set_specs({k: s for k, s in self.specs.items() if k != key})
             self.estimates.pop(key, None)

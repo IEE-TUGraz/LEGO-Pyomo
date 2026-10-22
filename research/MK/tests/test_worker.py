@@ -5,6 +5,8 @@ import sys
 import threading
 import time
 
+import pytest
+
 import cluster
 import pool
 
@@ -474,6 +476,37 @@ def test_a_task_failing_near_the_ram_is_recorded_as_out_of_memory(mk):
     assert record["outcome"] == pool.OOM and record["limit_mb"] == 120 and record["mem_mb"] == 120
     assert store.snapshot(plan)[key][:2] == (pool.RETRY, 1)  # not failed, but not retried on this machine
     assert w.estimates[key]["mem_mb"] > 120 and any("back in the pool" in line for line in logs)
+
+
+def test_a_task_killed_from_outside_is_retried_like_an_eviction(mk, monkeypatch):
+    """SIGKILL the worker did not send (kernel out-of-memory killer): evicted - retried with its peak as a lower bound."""
+    monkeypatch.setattr(pool, "EXTERNAL_KILL_RC", 3)  # stands for -9: a fake task cannot SIGKILL itself on every platform
+    key = "K/sd1/c3/base/main/KILLED"
+    plan = dict([mk.task(key, 2, rc=3, mb=60)])  # long enough for a memory sample
+    cfg = mk.use(plan)
+    store = mk.store()
+    w, logs = mk.worker(cfg, plan, store)
+    thread = threading.Thread(target=w.run)
+    thread.start()
+    deadline = time.time() + 60
+    while not store.results() and time.time() < deadline:
+        time.sleep(0.2)
+    store.request_stop("all", now=False)  # the fake task is "killed" on every retry: drain after the first result
+    thread.join(60)
+    assert not thread.is_alive()
+    record = min(store.results(), key=lambda r: r["attempt"])
+    assert record["outcome"] == pool.EVICTED and record["external_kill"] and record["rc"] == 3
+    assert store.snapshot(plan)[key][0] == pool.RETRY and not w.any_failed
+    assert w.estimates[key]["mem_mb"] > record["peak_rss_mb"] and any("killed from outside" in line for line in logs)
+
+
+def test_guard_free_fraction_comes_from_the_config(mk, tmp_path):
+    plan = dict([mk.task("G/sd1/c3/base/main/A")])
+    cfg = mk.use(plan, guard_free_fraction=0.08)
+    w, _ = mk.worker(cfg, plan, mk.store())
+    assert w.guard_available_fraction == 0.08
+    with pytest.raises(SystemExit):
+        mk.worker(mk.use(plan, guard_free_fraction=0.9), plan, mk.store())
 
 
 def test_handover_drains_the_worker(mk):

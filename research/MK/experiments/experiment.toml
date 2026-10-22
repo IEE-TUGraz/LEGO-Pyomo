@@ -21,7 +21,7 @@ conda activate LEGO-Pyomo_env
 [markov]
 args = ["--network", "TP", "--mip-gap", "0.005"]   # model options of every solve (no whitespace inside an argument)
 # NodefileStart (GB) per dataset, the same for all its solves (it affects the runtime); node files go to node-local $TMPDIR.
-# Must stay below the smallest solve mem of the dataset. Keep pilot.toml and experiment.toml identical.
+# Must stay below the smallest solve mem of the dataset. The pilot (runs/pilot) used the same values.
 node_file_start = { default = 8, "TX-123BT" = 16 }
 
 [grid]
@@ -71,6 +71,8 @@ seed_runs = ["pilot"]
 cores = 192            # zen4_0768 node: 2x AMD EPYC 9654 = 192 physical cores (384 hardware threads)
 mem = "740G"           # of 770000 MB per node (sinfo RealMemory); the rest stays for the OS
 mem_fraction = 0.9     # share of `mem` that tasks are packed into (margin for estimation errors)
+guard_free_fraction = 0.08   # memory guard: stop a task below 8 % free memory (~60 GB; default 4 %) - Gurobi allocates in
+                             # jumps of ~10 GB per solve, and at 4 % the kernel killed solves first (2 oom_kill events, Oct 2026)
 walltime = "3-00:00:00"  # max of the zen4_0768 QoS
 chain_after_hours = 24   # then the job submits its successor (if tasks remain), which queues while this one runs
 workers = 3            # worker chains started by `cluster.py submit-workers` (more can be added at any time)

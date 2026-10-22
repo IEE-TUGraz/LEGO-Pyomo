@@ -747,6 +747,11 @@ def make_worker(cfg: dict, specs: dict, store: "pool.Store", *, cores: int, mem_
     kwargs.setdefault("disk_min_free_mb", float(pcfg.get("disk_min_free_gb", DEFAULT_DISK_MIN_FREE_GB)) * 1024)
     kwargs.setdefault("opportunistic", bool(pcfg.get("opportunistic", True)))
     kwargs.setdefault("opportunistic_after_s", float(pcfg.get("opportunistic_after_minutes", 10)) * 60)
+    # Memory guard: stop a task once less than this share of the machine's memory is free
+    free = float(pcfg.get("guard_free_fraction", 0.04))
+    if not 0 < free < 0.5:
+        sys.exit(f"[pool] guard_free_fraction must be between 0 and 0.5 (got {free:g})")
+    kwargs.setdefault("guard_available_fraction", free)
     try:
         weights = _dataset_weights(cfg)
     except ValueError as e:
