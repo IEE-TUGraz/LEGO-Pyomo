@@ -176,6 +176,12 @@ parser.add_argument("--socp-primary-absolute-tolerance", type=float, default=1e-
 parser.add_argument("--socp-loss-relative-tolerance", type=float, default=1e-6, help="Relative loss degradation allowed in phase 3 (default: 1e-6)")
 parser.add_argument("--socp-loss-absolute-tolerance", type=float, default=1e-8, help="Absolute loss degradation allowed in phase 3 (default: 1e-8)")
 parser.add_argument("--socp-voltage-slack-factor", type=float, default=None, help="Voltage-slack penalty as a factor of ENS cost; default keeps the model value 0.0001")
+# Scenario overrides (e.g. for batch runs); without them the case study is used as is
+parser.add_argument("--pv-invest", nargs="+", default=None, metavar="G", help="Only these PV generators (tec 'Solar') may be invested in; EnableInvest of all other PV generators is set to 0")
+parser.add_argument("--curtailment-pv", type=float, default=None, help="Curtailment limit for PV (share of installed capacity, overrides pCurtailmentPV)")
+parser.add_argument("--curtailment-wind", type=float, default=None, help="Curtailment limit for wind (share of installed capacity, overrides pCurtailmentWind)")
+parser.add_argument("--output", default="model.sqlite", help="Path of the result SQLite file (an existing file is replaced; default: model.sqlite)")
+parser.add_argument("--no-mps", action="store_true", help="Do not write model.mps")
 args = parser.parse_args()
 
 # Load case study
@@ -183,6 +189,19 @@ printer.information(f"Loading case study from '{args.caseStudyDirectory}'\n")
 start_time = time.time()
 cs = CaseStudy(args.caseStudyDirectory)
 #cs = cs.filter_timesteps('k00001','k01000')
+
+# Apply scenario overrides from the command line
+if args.pv_invest is not None:
+    pv_generators = cs.dPower_VRES.index[cs.dPower_VRES["tec"] == "Solar"]
+    unknown = sorted(set(args.pv_invest) - set(pv_generators))
+    if unknown:
+        raise ValueError(f"--pv-invest: unknown PV generators {unknown} (available: {sorted(pv_generators)})")
+    cs.dPower_VRES.loc[pv_generators, "EnableInvest"] = [1 if g in args.pv_invest else 0 for g in pv_generators]
+    printer.information(f"PV investment enabled only for: {args.pv_invest}")
+for name, value in (("pCurtailmentPV", args.curtailment_pv), ("pCurtailmentWind", args.curtailment_wind)):
+    if value is not None:
+        cs.dPower_Parameters[name] = value
+        printer.information(f"{name} set to {value}")
 
 
 rh_length = cs.dGlobal_Parameters["pMovingWindowLength"]
@@ -283,6 +302,10 @@ else:
 
 printer.information(f"Finished in {time.time() - start_time:.2f} seconds")
 
-SQLiteWriter.model_to_sqlite(model, "model.sqlite")
+# Start from an empty file: the writer only replaces tables it writes, old tables of other runs would remain
+if os.path.exists(args.output):
+    os.remove(args.output)
+SQLiteWriter.model_to_sqlite(model, args.output)
 #ExcelWriter.model_to_excel(model, "model.xlsx")
-model.write("model.mps", io_options={'labeler': NameLabeler()})
+if not args.no_mps:
+    model.write("model.mps", io_options={'labeler': NameLabeler()})
