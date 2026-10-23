@@ -25,8 +25,8 @@ def add_element_definitions_and_bounds(model: pyo.ConcreteModel, cs: CaseStudy) 
         printer.warning(f"VRES generators without tec 'Solar'/'Wind' are must-take (no curtailment): {not_curtailable}")
 
     # Parameters
-    model.pCurtailmentPV = pyo.Param( initialize=0.4,doc="Curtailment limit for PV generators")
-    model.pCurtailmentWind = pyo.Param( initialize=0.15,doc="Curtailment limit for Wind generators")
+    model.pCurtailmentPV = pyo.Param( initialize=1,doc="Curtailment limit for PV generators")
+    model.pCurtailmentWind = pyo.Param( initialize=0,doc="Curtailment limit for Wind generators")
     model.pCurtailmentWindEnergy = pyo.Param(initialize=0.01, doc="Max. yearly curtailed energy of each wind generator as share of its available energy (ElWG)")
 
     LEGO.addToParameter(model, "pOMVarCost", cs.dPower_VRES['OMVarCost'])

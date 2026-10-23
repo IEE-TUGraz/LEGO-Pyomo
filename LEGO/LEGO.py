@@ -96,6 +96,20 @@ class LEGO:
                 if solver_name.lower() in ['gurobi', 'gurobi_persistent']:
                     optimizer = pyo.SolverFactory('gurobi_persistent')
                     optimizer.set_instance(self.model)
+
+                    def _opt(name, default=None):
+                        comp = getattr(self.model, name, None)
+                        return default if comp is None else pyo.value(comp)
+
+                    if _opt('pDisableCrossover', False):
+                        optimizer.options['Crossover'] = 0
+                    if _opt('pForceBarrier', False):
+                        optimizer.options['Method'] = 2
+                        optimizer.options['NodeMethod'] = 2
+
+                    mip_gap = _opt('pMIPGap')
+                    optimizer.options['MIPGap'] = 0.05 if mip_gap is None else mip_gap
+
                     results = optimizer.solve(tee=True, load_solutions=True)
                     objective_value = pyo.value(self.model.objective) if results.solver.termination_condition == pyo.TerminationCondition.optimal else -1
                     # Extract work units from Gurobi model

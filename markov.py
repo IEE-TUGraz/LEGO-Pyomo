@@ -70,7 +70,15 @@ def execute_case_studies(case_study_path: str, unit_commitment_result_file: str 
     # Evaluation
     ########################################################################################################################
 
-    optimizer = SolverFactory("gurobi")
+    optimizer = pyo.SolverFactory('gurobi_persistent')
+    optimizer.set_instance(self.model)
+    if getattr(self.model, 'pDisableCrossover', False):
+        optimizer.options['Crossover'] = 1
+    if getattr(self.model, 'pForceBarrier', False):
+        optimizer.options['Method'] = 2
+        optimizer.options['NodeMethod'] = 2
+    if getattr(self.model, 'pMIPGap', None) is not None:
+        optimizer.options['MIPGap'] = 0.03
 
     results = []
 
