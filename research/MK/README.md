@@ -372,7 +372,9 @@ python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dep
 - **Dead Slurm workers** (e.g. `NODE_FAIL`: no exit was recorded, and no later job runs on that node to notice) are
   shown as `lost (no heartbeat)` until `status` or a starting worker job finds that `squeue` no longer lists their job
   (and their heartbeat is older than 10 min): then they are marked `exited` ("Slurm job … ended"), and their tasks are
-  retried normally. Nothing to do by hand; `status --active` hides them afterwards.
+  retried normally. Nothing to do by hand; `status --active` hides them afterwards. Such workers show
+  `exited <time> (N abandoned)`: N tasks were running when the worker died, and the time is when the death was
+  noticed, not when it happened (`sacct -j <job>` has the real end).
 - **Stopping workers** started by hand (no Slurm job to cancel): `cluster.py stop <run> [--host NAME ...] [--now]`.
   Default: the workers start no new tasks and exit once their running tasks have finished; `--now` interrupts the
   running tasks (retried by other / later workers). Only workers that started before the request are affected.

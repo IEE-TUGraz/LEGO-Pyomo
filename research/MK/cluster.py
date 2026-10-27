@@ -1258,12 +1258,19 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict, cfg: dict
     code = code_digest()
     hidden = sum(bool(w.get("exited")) for w in workers.values()) if args.active else 0
     print(f"\nWORKERS ({len(workers)}{f', {hidden} exited not shown' if hidden else ''})  - plan of the config: {current}")
+    rows = []
     for wid, w in sorted(workers.items(), key=lambda x: x[1].get("started", "")):
         if args.active and w.get("exited"):
             continue
         alive = not w.get("exited") and now - w.get("beat", 0) < pool.STALE_S
+        n_running = len(w.get("running", []))
         state = (("draining (handed over)" if w.get("handover") else "stopping" if w.get("stopping") else "active") if alive
                  else ("exited " + w["exited"] if w.get("exited") else "lost (no heartbeat)"))
+        if w.get("exited") and n_running:
+            # Marked exited by mark_ended_jobs / mark_dead_workers (e.g. NODE_FAIL): the heartbeat keeps the last
+            # "running" list (lost_records reads its tasks); those claims are retried by other workers
+            state += f" ({n_running} abandoned)"
+            n_running = 0
         size = f"{w['cores']} cores, {w['mem_mb'] / 1024:.0f} GB, started {w.get('started')}" if w.get("cores") else ""
         plan_note = ""
         # Workers reload a changed config within about a minute and hand over changed code; older workers cannot. Not
@@ -1279,7 +1286,10 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict, cfg: dict
                                   else f"  code: {w['code']} (outdated - hands over within a minute)")
         unsynced = w.get("unsynced") if alive else None  # pool.Spool: written locally, not on the share yet
         unsynced_note = f"  unsynced: {unsynced.get('files', 0)} file(s), {unsynced.get('results', 0)} result(s)" if unsynced else ""
-        print(f"  {wid:<40} {state:<28} {len(w.get('running', [])):>3} running  {size}{plan_note}{unsynced_note}")
+        rows.append((wid, state, n_running, f"{size}{plan_note}{unsynced_note}"))
+    state_width = max([28] + [len(r[1]) for r in rows])
+    for wid, state, n_running, rest in rows:
+        print(f"  {wid:<40} {state:<{state_width}} {n_running:>3} running  {rest}")
     stale_view = store.stale_view(socket.gethostname(), now)
     if stale_view:
         print(f"  note: {stale_view[0]} - this machine probably reads an outdated copy of the pool (e.g. after standby);"
