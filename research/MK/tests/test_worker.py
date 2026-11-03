@@ -162,6 +162,35 @@ def test_walltime_check_uses_measured_runtimes_only(mk):
     assert snap["W/sd1/c3/base/main/NEW"][0] == pool.DONE  # TOML prior (10 min) never blocks
 
 
+def test_estimate_above_a_whole_job_does_not_starve_the_task(mk):
+    tried, partly, sibling = (f"W/sd1/c{c}/base/main/Truth" for c in (3, 5, 7))  # same edge: estimates spread between them
+    plan = dict([mk.task(tried), mk.task(partly), mk.task(sibling)])
+    cfg = mk.use(plan)
+    store = mk.store()
+    store.claim(tried, 1, "gone")  # a whole 1 h job without finishing: estimate 3590 s x 1.25 x 1.5, also for the others
+    store.write_result(tried, 1, {"outcome": pool.INTERRUPTED, "elapsed_s": 3590, "peak_rss_mb": 10})
+    store.claim(partly, 1, "gone")  # stopped early: says nothing about a whole job
+    store.write_result(partly, 1, {"outcome": pool.INTERRUPTED, "elapsed_s": 1800, "peak_rss_mb": 10})
+    w, logs = mk.worker(cfg, plan, store, end_time=time.time() + 3600, job_s=3600, interrupt_margin_s=60)
+    w.run()
+    snap = store.snapshot(plan)
+    assert snap[tried][0] == pool.RETRY
+    assert snap[partly][0] == pool.DONE
+    assert snap[sibling][0] == pool.DONE
+
+
+def test_long_task_waits_for_a_job_with_nearly_all_its_time(mk):
+    key = "W/sd1/c3/base/main/LONG"
+    plan = dict([mk.task(key)])
+    cfg = mk.use(plan)
+    store = mk.store()
+    store.claim(key, 1, "gone")
+    store.write_result(key, 1, {"outcome": pool.INTERRUPTED, "elapsed_s": 1800, "peak_rss_mb": 10})
+    w, _ = mk.worker(cfg, plan, store, end_time=time.time() + 1800, job_s=3600, interrupt_margin_s=60)
+    w.run()
+    assert store.snapshot(plan)[key][0] == pool.RETRY
+
+
 def test_large_task_is_not_starved_by_smaller_ones(mk):
     small = dict(mem="300M")
     plan = dict([mk.task("H/sd1/c3/base/main/S0", 1.5, **small), mk.task("H/sd1/c3/base/main/S1", 1.5, **small),

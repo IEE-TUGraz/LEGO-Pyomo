@@ -846,6 +846,7 @@ def cmd_worker(args) -> None:
                          end_time=end_time, idle_s=idle_h * 3600, max_tasks=args.max_tasks,
                          node_base=args.node_dir or cfg.get("pool", {}).get("node_dir"),
                          chain_after_s=args.chain_after_hours * 3600 if args.chain_script else None, chain=chain,
+                         job_s=_elapsed_s(str(cfg.get("pool", {}).get("walltime", "3-00:00:00"))) if in_slurm else None,
                          info={"code": digest, "code_handover": True, **({"log": str(log_file)} if log_file else {})},
                          handover=_code_handover(config_path, successor_argv, digest, spawn=spawn),
                          reload=_plan_reloader(config_path, cfg["name"], args.patterns or ["*"], plan_hash(plan)), plan_id=plan_hash(plan),
@@ -1309,6 +1310,7 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict, cfg: dict
               f"{sum(r['outcome'] == pool.PREEMPTED for r in retries)} preempted (made room for another task), "
               f"{sum(r['outcome'] == pool.INTERRUPTED for r in retries)} interrupted (walltime / worker stopped)")
     _print_waiting_for_ram(cfg, plan, store, status, workers, now)
+    _print_longer_than_job(cfg, plan, store, status)
     shown = [args.list] if args.list else [FAILED, BLOCKED]
     for cat in shown:
         keys = [k for k, (c, _) in status.items() if c == cat and (args.filter is None or fnmatch.fnmatch(k, args.filter))]
@@ -1342,6 +1344,41 @@ def cmd_pool_status(args, rdir: Path, store: "pool.Store", plan: dict, cfg: dict
         print(f"\nRetry failed tasks (and unblock the tasks waiting for them): cluster.py restart {args.run} --failed")
 
 
+def _open_dependents(plan: dict, status: dict, keys) -> set:
+    """Unfinished tasks that wait for any of keys, directly or indirectly (keys themselves excluded)."""
+    kids = {}
+    for key, task in plan.items():
+        for dep in task["deps"]:
+            kids.setdefault(dep, []).append(key)
+    stack, dependents = list(keys), set()
+    while stack:
+        for kid in kids.get(stack.pop(), []):
+            if kid not in dependents and kid not in keys and status[kid][0] not in (DONE, FAILED):
+                dependents.add(kid)
+                stack.append(kid)
+    return dependents
+
+
+def _print_longer_than_job(cfg: dict, plan: dict, store: "pool.Store", status: dict) -> None:
+    """Pending tasks no Slurm worker starts again: they ran a whole job without finishing (Worker.walltime_blocks).
+    Only for configs with a [pool] walltime (Slurm workers); others have no job end."""
+    walltime = cfg.get("pool", {}).get("walltime")
+    job_s = _elapsed_s(str(walltime)) if walltime else None
+    if not job_s:
+        return
+    longest = pool.ran_whole_job(store.results(), job_s)
+    stuck = {k: s for k, s in longest.items() if k in status and status[k][0] == PENDING}
+    if not stuck:
+        return
+    print(f"\nLONGER THAN A JOB: {len(stuck)} task(s) ran a whole {_fmt_time(job_s)} job without finishing and are not started "
+          f"again; {len(_open_dependents(plan, status, stuck))} more task(s) depend on them. They need a longer walltime "
+          f"([pool] walltime), an easier solve or another machine")
+    for key, seconds in sorted(stuck.items(), key=lambda x: (-x[1], x[0]))[:15]:
+        print(f"  {key:<55} ran {_fmt_time(seconds)}")
+    if len(stuck) > 15:
+        print(f"  ... and {len(stuck) - 15} more")
+
+
 def _print_waiting_for_ram(cfg: dict, plan: dict, store: "pool.Store", status: dict, workers: dict, now: float) -> None:
     """Pending tasks that no active worker starts because their memory estimate exceeds its RAM (pool.exceeds_ram, as in
     Worker.admit), and how many open tasks depend on them. Active = alive and not stopping / draining (they start nothing)."""
@@ -1361,18 +1398,8 @@ def _print_waiting_for_ram(cfg: dict, plan: dict, store: "pool.Store", status: d
             waiting[key] = mem
     if not waiting:
         return
-    kids = {}
-    for key, task in plan.items():
-        for dep in task["deps"]:
-            kids.setdefault(dep, []).append(key)
-    stack, dependents = list(waiting), set()
-    while stack:
-        for kid in kids.get(stack.pop(), []):
-            if kid not in dependents and kid not in waiting and status[kid][0] not in (DONE, FAILED):
-                dependents.add(kid)
-                stack.append(kid)
     print(f"\nWAITING FOR MORE RAM: {len(waiting)} task(s) are estimated above the RAM of every active worker (largest "
-          f"{ram / 1024:.0f} GB); {len(dependents)} more task(s) depend on them")
+          f"{ram / 1024:.0f} GB); {len(_open_dependents(plan, status, waiting))} more task(s) depend on them")
     for key, mem in sorted(waiting.items(), key=lambda x: -x[1])[:15]:
         last = status[key][1]
         oom = (f"  out of memory in attempt {last['attempt']} (peak {last['peak_rss_mb'] / 1024:.1f} GB on {last.get('host') or last.get('worker')})"

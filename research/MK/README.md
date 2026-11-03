@@ -351,6 +351,11 @@ python research/MK/cluster.py restart experiment 'TX-123BT/*/prepare' --with-dep
   work). A chain ends by itself when no tasks are left at that point. This needs `sbatch` on compute nodes; a failed
   submission is logged as `ERROR` in `runs/<name>/pool/jobs/worker_<job>.out` and retried every 10 min. Tasks longer
   than the walltime can never finish (Gurobi cannot resume) - keep `walltime` at the QoS maximum.
+- **Tasks that may not fit a job**: a measured estimate above the job's remaining time holds a task back only until a
+  job with enough time is available. If the estimate exceeds a whole job (it includes safety factors and often comes
+  from similar tasks), the task starts in a job with at least 90 % of its time left. A task that itself ran that long
+  without finishing is not started again: `status` lists it under `LONGER THAN A JOB`, with the tasks waiting for it,
+  and `evaluate` waits too. Raising `[pool] walltime` makes workers in new jobs start it again.
 - **How many chains**: `--estimate-only` sums the estimated memory × runtime (and cores × runtime) of the open tasks
   per node and prints the days for 1-10 chains, bounded below by the longest dependency chain. Before measurements
   exist, the TOML `time` (a limit, not a runtime) makes this a wild upper bound - seed with the pilot first. Start

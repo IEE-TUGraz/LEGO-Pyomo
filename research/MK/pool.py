@@ -59,6 +59,11 @@ EXTERNAL_KILL_RC = -9
 # synthetic record from the dead worker's last heartbeat (Store.lost_records), only for the estimator: its peak there is a
 # lower bound, scaled like an eviction (the node may have died because the task kept growing)
 LOST = "lost"
+# A job's tasks are stopped this long before its end (Worker.guard_walltime)
+INTERRUPT_MARGIN_S = 600
+# Share of a job's usable time that counts as "a whole job": a long task starts only with this much time left, and an
+# attempt stopped after this long shows that the task does not finish within a job. Below 1: a job needs a moment to start
+WHOLE_JOB_FRACTION = 0.9
 
 
 def near_ram(peak_mb: float | None, ram_mb: float | None) -> bool:
@@ -69,6 +74,19 @@ def exceeds_ram(est_mb: float, mem_mb: float, attempt: int, last: dict) -> bool:
     """A worker with mem_mb of RAM never starts a task estimated above it - unless the estimate is a scaled-up eviction
     (the task may fit alone: it runs alone). Applies before the first attempt and after an out-of-memory attempt."""
     return est_mb > mem_mb and (attempt == 0 or (last.get("outcome") == OOM and not last.get("discarded")))
+
+
+def whole_job_s(job_s: float, margin_s: float = INTERRUPT_MARGIN_S) -> float:
+    return WHOLE_JOB_FRACTION * (job_s - margin_s)
+
+
+def ran_whole_job(records: list[dict], job_s: float, margin_s: float = INTERRUPT_MARGIN_S) -> dict:
+    """{key: longest elapsed_s} of the tasks of this pool stopped by a job's end after a whole job (whole_job_s)."""
+    longest = {}
+    for r in records:
+        if r["outcome"] in (INTERRUPTED, "timeout") and "source" not in r and (r.get("elapsed_s") or 0) >= whole_job_s(job_s, margin_s):
+            longest[r["key"]] = max(longest.get(r["key"], 0), r["elapsed_s"])
+    return longest
 
 
 def _safe(key: str) -> str:
@@ -903,9 +921,9 @@ class Worker:
                  max_tasks: int | None = None, thread_cap: int | None = None, keep_going: bool = True, console: bool = False,
                  node_base: Path | None = None, disk_min_free_mb: float = 10 * 1024, seed_records=(), poll_s: float = 15,
                  guard_available_fraction: float = 0.04, guard_rss_fraction: float = 0.97, evict_grace_s: float = 60,
-                 interrupt_margin_s: float = 600, reserve_after_s: float = 1800, rank_offset_s: float | None = None,
+                 interrupt_margin_s: float = INTERRUPT_MARGIN_S, reserve_after_s: float = 1800, rank_offset_s: float | None = None,
                  weights: dict | None = None, opportunistic: bool = True, opportunistic_after_s: float = 600,
-                 chain_after_s: float | None = None,
+                 chain_after_s: float | None = None, job_s: float | None = None,
                  chain=None, chain_retry_s: float = 600, info: dict | None = None, reload=None, reload_s: float = 60, handover=None,
                  plan_id: str | None = None, peers=None, spool: Spool | None = None, spool_drain_s: float = 120, out=print):
         self.store, self.est = store, estimator
@@ -913,6 +931,8 @@ class Worker:
         self.cwd, self.cores, self.mem_mb = cwd, cores, mem_mb
         self.pack_mb = mem_fraction * mem_mb
         self.mem_packing, self.end_time, self.idle_s = mem_packing, end_time, idle_s
+        # Length of a whole job of this worker's kind (see walltime_blocks); None: only the time left in this one counts
+        self.job_s, self.whole_job, self.whole_job_logged = job_s, {}, set()
         self.max_tasks, self.thread_cap, self.keep_going, self.console = max_tasks, thread_cap, keep_going, console
         self.node_base = Path(node_base or os.environ.get("TMPDIR") or tempfile.gettempdir())
         self.node_base.mkdir(parents=True, exist_ok=True)  # the free-space check needs an existing directory
@@ -1006,6 +1026,8 @@ class Worker:
         self.critical = {}
         for key in reversed(list(self.specs)):  # children come after their parents
             self.critical[key] = self.estimates[key]["time_s"] + max((self.critical[c] for c in self.children.get(key, [])), default=0)
+        if self.job_s is not None:
+            self.whole_job = ran_whole_job(records, self.job_s, self.interrupt_margin_s)
 
     def priority(self, key: str) -> tuple:
         """Sort key of a ready task (smaller = first). Strict (rank_offset_s None): rank, then the longest chain of
@@ -1334,6 +1356,21 @@ class Worker:
         ready.sort(key=self.priority)
         return ready, remaining
 
+    def walltime_blocks(self, key: str, est: dict, remaining_s: float | None) -> bool:
+        """Is this job too short for the task? Only measured runtimes count. An estimate above a whole job must not keep
+        the task off every worker: it is inflated by safety factors and mostly comes from similar tasks, so the task gets
+        a job with (nearly) all its time. Only a task that itself ran a whole job without finishing stays off."""
+        if remaining_s is None or est["time_src"] == "prior" or est["time_s"] <= remaining_s:
+            return False
+        if self.job_s is None:
+            return True
+        if key in self.whole_job:
+            if key not in self.whole_job_logged:
+                self.whole_job_logged.add(key)
+                self.log(f"skipping {key}: ran {self.whole_job[key] / 3600:.1f} h without finishing, a job lasts {self.job_s / 3600:.0f} h (it cannot resume)")
+            return True
+        return min(est["time_s"], whole_job_s(self.job_s, self.interrupt_margin_s)) > remaining_s
+
     def admit(self, snap: dict) -> int:
         """Start ready tasks that fit (cores, memory estimate, walltime); returns the number started.
 
@@ -1384,8 +1421,8 @@ class Worker:
                              + ("(out of memory before) " if snap[key][2].get("outcome") == OOM else "") + "- left to other workers")
                 continue
             remaining_s = None if self.end_time is None else self.end_time - self.interrupt_margin_s - time.time()
-            if remaining_s is not None and est["time_src"] != "prior" and est["time_s"] > remaining_s:
-                continue  # measured runtime does not fit into the rest of this job; another worker will take it
+            if self.walltime_blocks(key, est, remaining_s):
+                continue
             if reserving or (low and waiting_normal is not None):
                 # the top task waits too long (keep the freed resources for it) / low-priority tasks come last in
                 # `ready`: none of them while a normal task waits for space - but both may still start opportunistically
