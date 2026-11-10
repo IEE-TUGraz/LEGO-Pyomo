@@ -1,0 +1,55 @@
+# NREL-118 with shifted transition matrices (shift:1, shift:2) of experiment-win-gap0.5-onethird
+# (MIP gap 0.5 %, first 122 days: --limitK k0001-k2928). The base TM runs are in experiment-win-gap0.5-onethird.
+# shiftTM1 goes first: shift:2 is low_priority, i.e. pure backfill (starts only once every ready shiftTM1 task is placed;
+# the memory guard stops low-priority tasks first).
+# One worker per server, started by hand (see README, "Windows servers"):
+#   python research/MK/cluster.py worker experiment-NREL-shift --detach
+#   python research/MK/cluster.py status experiment-NREL-shift     # / stop / restart, from any server
+# Running workers reload this file within a minute of a change (added / removed runs, resources) - no restart needed.
+
+name = "experiment-NREL-shift"   # pool and logs go to research/MK/runs/<name>/ in the repo clone on the network drive
+
+[markov]
+args = ["--network", "TP", "--mip-gap", "0.005", "--limitK", "k0001-k2928"]   # model options (as experiment-win-gap0.5-onethird)
+# NodefileStart (GB): the same for all solves of a dataset (it affects the runtime) - as in experiment-win-gap0.5-onethird.
+node_file_start = { default = 8 }
+
+[grid]
+datasets = ["data/NREL-118"]
+stretch_demand = [1.0, 0.5, 0.7, 0.9]
+clusters = [3, 5, 7, 14, 21, 28]
+tm = ["shift:1",
+      { spec = "shift:2", low_priority = true }]
+edges = ["NoEnf", "Cyclic", "Markov"]                # Truth is added automatically where it applies
+tasks = ["main", "operational", "regret", "invest-regret", "operational-regret"]   # original-* only exist for tm = base
+truth_original = false                                  # only needed by the original-* tasks (base TM)
+
+[resources.prepare]
+default = { cpus = 8, mem = "8G", time = "02:00:00" }
+
+[resources.evaluate]
+default = { cpus = 16, mem = "100G", time = "12:00:00" }
+
+[resources.rp]
+default = { cpus = 8, mem = "8G", time = "00:10:00" }
+"NREL-118" = { mem = "18G", time = "00:50:00" }
+
+[resources.full]
+default = { cpus = 8, mem = "20G", time = "01:00:00" }
+"NREL-118" = { mem = "28G", time = "01:00:00" }
+
+[pool]
+# Estimates start from the NREL-118 measurements of the base-TM one-third pool (same model options and hardware)
+seed_runs = ["experiment-win-gap0.5-onethird"]
+mem_fraction = 0.9     # share of the RAM that tasks are packed into
+idle_hours = 96        # a worker without anything to run waits this long before it exits
+# Work units are only comparable within a CPU class: the main / operational solves of a grid point wait for its main
+# Truth and run on the CPU class it finished on
+cpu_pin = "grid-point"
+# Local folders on each server (read at worker start; --node-dir / --spool-dir override them)
+node_dir = "C:/gurobi-nodes"   # Gurobi node files - a large, fast local disk
+spool_dir = "C:/mk-spool"      # local-first writes: logs, outputs and results survive a dropped share connection
+
+[evaluate]
+args = ["all", "--no-show", "--separateClusters"]
+output_dir = "results/experiment-NREL-shift"
