@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import argparse
 import os
 import pickle
+import re
 import traceback
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
@@ -57,6 +58,8 @@ ST_TOL = em.STORAGE_BOUNDARY_TOL
 OUT = Path(".")
 CACHE = Path(".")
 MIP_GAP = 0.005
+WRITE_FIGURES = True  # False under --extract-only: save() writes only the CSV
+DIRECT_READS = ["R3", "R8", "R9"]  # figures that read result files themselves (via _memo), run by --extract-only
 
 
 def style():
@@ -69,12 +72,32 @@ def style():
 
 def save(fig, name, data=None):
     import matplotlib.pyplot as plt
-    fig.savefig(OUT / f"{name}.png", dpi=600, bbox_inches="tight")
-    fig.savefig(OUT / f"{name}.pdf", bbox_inches="tight")
+    if WRITE_FIGURES:
+        fig.savefig(OUT / f"{name}.png", dpi=600, bbox_inches="tight")
+        fig.savefig(OUT / f"{name}.pdf", bbox_inches="tight")
     if data is not None:
         data.to_csv(OUT / f"{name}.csv", index=False)
     plt.close(fig)
-    print(f"  wrote {name}")
+    print(f"  wrote {name}" + ("" if WRITE_FIGURES else " (CSV only)"))
+
+
+def _memo(path, tag, read):
+    """read() of a result file, cached as _cache/<file name>.<tag>.pkl (like the extraction pass). The figures that read
+    result files themselves go through this, so --reuse on a copied output folder needs no result files at all."""
+    p = CACHE / f"{os.path.basename(path)}.{re.sub(r'[^\w.-]', '_', tag)}.pkl"
+    if p.exists():
+        with open(p, "rb") as fh:
+            return pickle.load(fh)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"{p.name} is not in the cache and the result file {path} is not here: run this figure "
+                                "once where the result files are (e.g. with --extract-only) and copy its output folder")
+    data = read()
+    CACHE.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".part")
+    with open(tmp, "wb") as fh:
+        pickle.dump(data, fh)
+    os.replace(tmp, p)
+    return data
 
 
 def method_handles(methods=METHODS, truth=False):
@@ -115,6 +138,24 @@ XPOS = {c: i for i, c in enumerate(CLUSTERS)}
 
 def present(cases):
     return [c for c in CASES_ORDER if c in set(cases)] + sorted(set(cases) - set(CASES_ORDER))
+
+
+def case_tms(df, tms=("original", "shiftTM1", "shiftTM2")):
+    """(case, tm) pairs present in df: case studies in CASES_ORDER, per case the TMs in `tms` order. Shifted TMs get their
+    own panels / files for every case study that has them (RTS-GMLC, and NREL-118 since experiment-NREL-shift)."""
+    return [(c, t) for c in present(df["case"].dropna()) for t in tms if ((df["case"] == c) & (df["tm"] == t)).any()]
+
+
+def shifted_cases(df):
+    """Case studies with shifted-TM runs in df."""
+    return [c for c in present(df["case"].dropna()) if (df.loc[df["case"] == c, "tm"].str.startswith("shiftTM")).any()]
+
+
+def tm_title(case, tm, cases_with_shift=()):
+    """Panel title: the case alone if it has only the original TM, otherwise case + TM variant."""
+    if tm == "original":
+        return f"{case}\noriginal TM" if case in cases_with_shift else case
+    return f"{case}\n" + TM_LABEL.get(tm, tm).replace(" by ", "\nby ")  # 3 lines: fits narrow panels (up to 7 per row)
 
 
 ########################################################################################################################
@@ -500,10 +541,11 @@ def r2(ctx):
         sfx = "" if kind == "main" else "_operational"
         inst.to_csv(OUT / f"R2a_violation_magnitude{sfx}.csv", index=False)
         cases = present(inst["case"])
-        variants = [[(c, "original") for c in cases]] + ([[("RTS-GMLC", "shiftTM2")]] if ((inst["case"] == "RTS-GMLC") & (inst["tm"] == "shiftTM2")).any() else [])
-        for case_tms in variants:
-            fig, axes = plt.subplots(len(case_tms), len(R2_CHECKS), figsize=(WIDTH_IN, 1.9 * len(case_tms) + 0.9), squeeze=False)
-            for i, (case, tm) in enumerate(case_tms):
+        # One figure with the original TM of all case studies, plus one per case study with shifted-by-2 runs
+        variants = [[(c, "original") for c in cases]] + [[ct] for ct in case_tms(inst, ("shiftTM2",))]
+        for variant in variants:
+            fig, axes = plt.subplots(len(variant), len(R2_CHECKS), figsize=(WIDTH_IN, 1.9 * len(variant) + 0.9), squeeze=False)
+            for i, (case, tm) in enumerate(variant):
                 for j, (check, title) in enumerate(R2_CHECKS):
                     ax = axes[i, j]
                     cell = inst[(inst["case"] == case) & (inst["tm"] == tm) & (inst["check"] == check)]
@@ -524,7 +566,7 @@ def r2(ctx):
                         ax.set_ylabel(case if tm == "original" else f"{case}\n{tm}")
             fig.legend(handles=method_handles(), loc="lower center", ncol=3, frameon=False, bbox_to_anchor=(0.5, -0.02))
             fig.tight_layout(rect=(0, 0.04, 1, 1))
-            save(fig, f"R2a_violation_magnitude{sfx}" + ("" if case_tms[0][1] == "original" else "_RTS-GMLC_shiftTM2"))
+            save(fig, f"R2a_violation_magnitude{sfx}" + ("" if variant[0][1] == "original" else f"_{variant[0][0]}_{variant[0][1]}"))
         # R2b: share of infeasible transitions by RPs, as solved / after rounding (original TM)
         sub = runs[(runs["kind"] == kind) & (runs["tm"] == "original") & runs["method"].isin(METHODS) & ~runs["original_ref"]]
         sub = sub[[k in keep for k in zip(sub["case"], sub["tm"], sub["clusters"].astype(int), sub["sd"])]]
@@ -585,8 +627,7 @@ def r3(ctx):
         jmp["rp_changes"] = jmp["rp"] != jmp["prev_rp"]
         jmp_by_kind[kind] = jmp
         jmp.to_csv(OUT / f"R3b_storage_boundary_jumps_{kind}.csv", index=False)
-        panels = [(c, t) for c, t in [("RTS-GMLC", "original"), ("RTS-GMLC", "shiftTM2")] + [(c, "original") for c in present(jmp["case"]) if c != "RTS-GMLC"]
-                  if ((jmp["case"] == c) & (jmp["tm"] == t)).any()]
+        panels = case_tms(jmp, ("original", "shiftTM2"))
         for split in (False, True):
             fig, axes = plt.subplots(1, len(panels), figsize=(WIDTH_IN, 2.6), sharey=True, squeeze=False)
             for ax, (case, tm) in zip(axes[0], panels):
@@ -600,7 +641,7 @@ def r3(ctx):
                 ax.set_xscale("symlog", linthresh=1)
                 ax.set_xlim(0, cell["abs_jump"].max() * 1.2)
                 ax.axvline(100, color="gray", lw=0.5, ls=":")
-                ax.set_title(case if tm == "original" else f"{case}, {TM_LABEL.get(tm, tm)}")
+                ax.set_title(case if tm == "original" else f"{case},\n{TM_LABEL.get(tm, tm)}")
                 ax.set_xlabel("|Boundary jump| [% of capacity]")
                 ax.grid(color="#e5e4e0", lw=0.5)
             axes[0][0].set_ylabel("Cumulative share of\n(boundary, unit) pairs")
@@ -625,6 +666,11 @@ def r3(ctx):
 
 
 def _chron_level(path, unit, truth):
+    """State of charge of `unit` [% of capacity] over the horizon, and the RP of every day (cached)."""
+    return _memo(path, f"level-{unit}", lambda: _read_chron_level(path, unit, truth))
+
+
+def _read_chron_level(path, unit, truth):
     with closing(em._connect_ro(path)) as conn:
         h, nk = _hindex(conn)
         lv = _table(conn, "vStIntraRes", ["rp", "k", "u"])
@@ -636,6 +682,14 @@ def _chron_level(path, unit, truth):
         else:
             s = h.merge(lv, on=["rp", "k"], how="left")["values"].to_numpy()
         return 100 * s / cap, h["rp"].tolist()[::nk]
+
+
+def _read_storage_caps(path):
+    """Capacity of every intra-day storage unit (pMaxReserve x installed units) of a result file."""
+    with closing(em._connect_ro(path)) as conn:
+        intra = _table(conn, "intraStorageUnits").iloc[:, -1].tolist()
+        nunits = _per_unit(conn, "pExisUnits").add(_per_unit(conn, "vGenInvest"), fill_value=0)
+        return (_per_unit(conn, "pMaxReserve") * nunits.reindex(_per_unit(conn, "pMaxReserve").index).fillna(0)).reindex(intra)
 
 
 def _r3a(runs, jmp):
@@ -657,10 +711,7 @@ def _r3a(runs, jmp):
                      & (runs["kind"] == "operational") & ~runs["original_ref"]].set_index("method")["file"].to_dict()
         if "Truth" not in files:
             continue
-        with closing(em._connect_ro(files["Truth"])) as conn:
-            intra = _table(conn, "intraStorageUnits").iloc[:, -1].tolist()
-            nunits = _per_unit(conn, "pExisUnits").add(_per_unit(conn, "vGenInvest"), fill_value=0)
-            caps = (_per_unit(conn, "pMaxReserve") * nunits.reindex(_per_unit(conn, "pMaxReserve").index).fillna(0)).reindex(intra)
+        caps = _memo(files["Truth"], "storage-caps", lambda: _read_storage_caps(files["Truth"]))
         caps = caps[caps > 1e-9].sort_values(ascending=False)
         unit = caps.index[0]
         _, day_rps = _chron_level(files["Markov"], unit, False)
@@ -795,7 +846,7 @@ def r6(ctx):
     runs = ctx["runs"][~ctx["runs"]["original_ref"] & ctx["runs"]["clusters"].notna()]
     cases = present(runs["case"])
 
-    def fig_a(sub, kind, name):
+    def fig_a(sub, kind, name, cases=cases):
         fig, axes = plt.subplots(len(cases), len(R6_COLS), figsize=(WIDTH_IN, 2.3 * len(cases) + 0.4), squeeze=False)
         for i, case in enumerate(cases):
             for j, (col, title, log) in enumerate(R6_COLS):
@@ -830,12 +881,8 @@ def r6(ctx):
 
     for kind in ("main", "operational"):
         fig_a(runs[runs["tm"] == "original"], kind, f"R6a_scalability_{kind}")
-        shifted = runs[(runs["case"] == "RTS-GMLC") & runs["tm"].isin(["shiftTM1", "shiftTM2"])]
-        if not shifted.empty:
-            cases_bak = cases
-            cases = ["RTS-GMLC"]
-            fig_a(shifted, kind, f"R6a_scalability_{kind}_RTS-GMLC_shiftedTM")
-            cases = cases_bak
+        for case in shifted_cases(runs):  # shifted TMs pooled, one file per case study
+            fig_a(runs[(runs["case"] == case) & runs["tm"].isin(["shiftTM1", "shiftTM2"])], kind, f"R6a_scalability_{kind}_{case}_shiftedTM", [case])
     cols = ["num_nonzeros", "solver_max_mem_gb", "solver_runtime_s", "work_units", "tm_nonzero"]
     sub = runs[runs["kind"].isin(["main", "operational"])]
     k5 = KEYS + ["kind"]
@@ -927,8 +974,8 @@ def r7(ctx):
         print("  R7: no operational runs with a reference")
         return
     df.to_csv(OUT / "R7_operational_metrics_values.csv", index=False)
-    columns = [(c, t, l) for c, t, l in [("RTS-GMLC", "original", "RTS-GMLC\noriginal TM"), ("RTS-GMLC", "shiftTM2", "RTS-GMLC\nTM shifted by 2")]
-               + [(c, "original", c) for c in present(df["case"]) if c != "RTS-GMLC"] if ((df["case"] == c) & (df["tm"] == t)).any()]
+    with_shift = shifted_cases(df)
+    columns = [(c, t, tm_title(c, t, with_shift)) for c, t in case_tms(df, ("original", "shiftTM2"))]
     for methods, name in ((METHODS, "R7_operational_metrics"), (["Cyclic", "Markov"], "R7_operational_metrics_noNoEnf")):
         fig, axes = plt.subplots(len(R7_ROWS), len(columns), figsize=(WIDTH_IN, 9.6), sharey="row", squeeze=False)
         for i, (metric, ylabel) in enumerate(R7_ROWS):
@@ -1006,15 +1053,30 @@ def _tv_halves(x, K):
     return (float((w * tv).sum() / w.sum()) if w.sum() else np.nan), P1, P2, c1, c2
 
 
+def _read_day_rps(path):
+    with closing(em._connect_ro(path)) as conn:
+        h, nk = _hindex(conn)
+    return h["rp"].tolist()[::nk]
+
+
+def _day_rps(path):
+    """RP of every day of an RP run: from its extraction pickle if there is one, else read (cached)."""
+    p = CACHE / (os.path.basename(path) + ".pkl")
+    if p.exists():
+        with open(p, "rb") as fh:
+            d = pickle.load(fh)
+        if "day_rps" in d:
+            return d["day_rps"]
+    return _memo(path, "day-rps", lambda: _read_day_rps(path))
+
+
 def r8(ctx):
     import matplotlib.pyplot as plt
     runs, rng = ctx["runs"], np.random.default_rng(42)
     base = runs[(runs["kind"] == "main") & runs["method"].isin(METHODS) & (runs["tm"] == "original") & (runs["sd"] == 1.0) & ~runs["original_ref"]]
     seqs = {}
     for (case, n, lk), g in base.groupby(["case", "clusters", base["limit_k"].fillna("full year")]):
-        with closing(em._connect_ro(g["file"].iloc[0])) as conn:
-            h, nk = _hindex(conn)
-        x = [int(r.replace("rp", "")) - 1 for r in h["rp"].tolist()[::nk]]
+        x = [int(r.replace("rp", "")) - 1 for r in _day_rps(g["file"].iloc[0])]
         seqs[(f"{lk} ({len(x)} days)" if lk != "full year" else f"full year ({len(x)} days)", case, int(n))] = x
     rows = []
     for (hz, case, n), x in seqs.items():
@@ -1107,14 +1169,15 @@ def r8(ctx):
 def r9ab(ctx):
     import matplotlib.pyplot as plt
     runs = ctx["runs"]
-    panels = [(c, t, l) for c, t, l in [("RTS-GMLC", "original", "RTS-GMLC"), ("RTS-GMLC", "shiftTM1", "RTS-GMLC\nTM shifted by 1"),
-                                        ("RTS-GMLC", "shiftTM2", "RTS-GMLC\nTM shifted by 2")]
-              + [(c, "original", c) for c in present(runs["case"].dropna()) if c != "RTS-GMLC"] if ((runs["case"] == c) & (runs["tm"] == t)).any()]
+    def panels_of(df):  # from the plotted data: a TM variant whose runs are not done yet gets no empty panel
+        return [(c, t, c if t == "original" else tm_title(c, t)) for c, t in case_tms(df)]
+
     summary, upper = [], []
     for clusters, tag in (([3, 5, 7], "357"), (CLUSTERS, "all")):
         sub = runs[runs["clusters"].isin(clusters)]
         for signed in (False, True):
             d = vs_truth(sub, "operational", "vShutdown", signed=signed)
+            panels = panels_of(d)
             fig, axes = plt.subplots(1, len(panels), figsize=(WIDTH_IN, 2.6), sharey=True, squeeze=False)
             for ax, (case, tm, title) in zip(axes[0], panels):
                 cell = d[(d["case"] == case) & (d["tm"] == tm)]
@@ -1137,7 +1200,8 @@ def r9ab(ctx):
         inv = inv[KEYS + ["method", "regret", "reference_objective", "regret_pct"]].dropna(subset=["regret_pct"])
         if inv.empty:
             continue
-        top = max(inv[inv["method"] != "NoEnf"]["regret_pct"].max(), 100 * MIP_GAP) * 1.15
+        panels = panels_of(inv)
+        top =max(inv[inv["method"] != "NoEnf"]["regret_pct"].max(), 100 * MIP_GAP) * 1.15
         bottom = min(inv["regret_pct"].min(), -100 * MIP_GAP) * 1.15
         high = inv["regret_pct"] > top
         fig = plt.figure(figsize=(WIDTH_IN, 3.2))
@@ -1181,13 +1245,23 @@ def r9ab(ctx):
 
 
 def _chron_uc(path, truth):
+    """Per-unit vCommit / vStartup / vShutdown over the horizon, unit -> technology, RP of every hour (cached)."""
+    return _memo(path, "uc", lambda: _read_chron_uc(path, truth))
+
+
+def _uc_shutdowns(path, truth):
+    """Shutdowns per hour of the horizon, summed over the units (cached; small, unlike the per-unit tables)."""
+    return _memo(path, "uc-shutdowns", lambda: _read_chron_uc(path, truth, ("vShutdown",))[0]["vShutdown"].sum(axis=1).to_numpy())
+
+
+def _read_chron_uc(path, truth, variables=("vCommit", "vStartup", "vShutdown")):
     with closing(em._connect_ro(path)) as conn:
         h, _ = _hindex(conn)
         g = _table(conn, "gtec")
         tec = dict(zip(g.iloc[:, -2], g.iloc[:, -1]))
         units = _active(conn)
         out = {}
-        for v in ("vCommit", "vStartup", "vShutdown"):
+        for v in variables:
             d = _table(conn, v, ["rp", "k", "g"])
             d = d[d["g"].isin(units)]
             if truth:
@@ -1210,12 +1284,12 @@ def r9c(ctx, case="TX-123BT"):
     for _, w in dev.iterrows():  # surplus by hour of the day for every sub-case
         f = runs[(runs["case"] == case) & (runs["tm"] == "original") & (runs["clusters"] == w["clusters"]) & (runs["sd"] == w["sd"])
                  & (runs["kind"] == "operational") & ~runs["original_ref"]].set_index("method")["file"]
-        sd_t = _chron_uc(f["Truth"], True)[0]["vShutdown"].sum(axis=1).to_numpy()
-        sd_m = _chron_uc(f["Markov"], False)[0]["vShutdown"].sum(axis=1).to_numpy()
+        sd_t = _uc_shutdowns(f["Truth"], True)
+        sd_m = _uc_shutdowns(f["Markov"], False)
         s = pd.Series(sd_m - sd_t).groupby(np.arange(len(sd_t)) % 24 + 1).sum()
         surplus_rows.append({"clusters": int(w["clusters"]), "sd": w["sd"], "markov_dev_pct": w["value"], "surplus_total": s.sum(),
                              "ref_total": sd_t.sum()} | {f"h{h}": v for h, v in s.items()})
-    pd.DataFrame(surplus_rows).to_csv(OUT / "R9c_surplus_by_hour_all_subcases.csv", index=False)
+    pd.DataFrame(surplus_rows).to_csv(OUT / "R9c_surplus_by_hour_all_tx_subcases.csv", index=False)
     worst = dev.sort_values("value").iloc[-1]
     n, sd = int(worst["clusters"]), float(worst["sd"])
     files = runs[(runs["case"] == case) & (runs["tm"] == "original") & (runs["clusters"] == n) & (runs["sd"] == sd)
@@ -1276,7 +1350,7 @@ def r9c(ctx, case="TX-123BT"):
     fig.align_ylabels()
     hours = pd.DataFrame({"hour": np.arange(T) + 1, "day": np.arange(T) // 24 + 1, "hour_of_day": hod, "rp": rps}
                          | {f"{v}_{m}": data[m][0][v].sum(axis=1).to_numpy() for m in data for v in ("vCommit", "vStartup", "vShutdown")})
-    save(fig, "R9c_unit_commitment", hours)
+    save(fig, "R9c_tx_unit_commitment", hours)
     by_hod.to_csv(OUT / "R9c_surplus_shutdowns_by_hour_of_day.csv")
     by_tec.assign(**{f"{m}_minus_ref": diff[m] for m in diff}).to_csv(OUT / "R9c_shutdowns_by_technology.csv")
 
@@ -1386,7 +1460,7 @@ FIGURES = {"R1": r1, "R2": r2, "R3": r3, "R5": r5, "R6": r6, "R7": r7, "R8": r8,
 
 
 def main():
-    global OUT, CACHE
+    global OUT, CACHE, WRITE_FIGURES
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("folders", nargs="*", default=["."], help="Folders with MK-*.sqlite files (default: current directory)")
     p.add_argument("--output-dir", default="results/figure_requests", help="Output directory (default: results/figure_requests)")
@@ -1394,6 +1468,9 @@ def main():
     p.add_argument("--workers", type=int, default=min(32, os.cpu_count() or 4),
                    help="Max. processes of every pool (EvaluateMarkov's loading and the extraction pass); e.g. 4-8 on a login node")
     p.add_argument("--reuse", action="store_true", help="Reuse markov_runs.csv and the extraction cache of a previous run")
+    p.add_argument("--extract-only", action="store_true",
+                   help="Only fill markov_runs.csv and _cache/ (incl. the reads of R3/R8/R9; CSVs, no figures): copy the output "
+                        "folder and redraw anywhere with --reuse, without the result files")
     p.add_argument("--include-perturbed", action="store_true", help="Also use the perturbed-TM runs (excluded by default)")
     p.add_argument("--require-truth", action="store_true",
                    help="Restrict R1-R3 to sub-cases with an optimal Truth main run (comparisons with the reference always need it)")
@@ -1425,6 +1502,10 @@ def main():
     ctx = {"runs": runs, "keep": truth_subcases(runs) if args.require_truth else all_subcases}
     extract(runs, args.workers)
     wanted = [s.strip().upper() for s in args.only.split(",")] if args.only else list(FIGURES)
+    if args.extract_only:  # the other figures only use markov_runs.csv and the extraction pickles
+        WRITE_FIGURES = False
+        wanted = [w for w in wanted if w in DIRECT_READS]
+        print(f"--extract-only: running {', '.join(wanted) or 'nothing'} to cache their result-file reads (CSV only, no figures)")
     print("R4: skipped (needs new runs: dispatch re-solved with rounded, fixed UC flags)")
     failed = []
     for name in wanted:
