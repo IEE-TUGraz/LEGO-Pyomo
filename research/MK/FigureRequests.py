@@ -10,7 +10,8 @@ Run it where the result files are (e.g. on MUSICA, from the repo root), so that 
 - Loading (run metrics, regret pairing incl. the original reference, chronological comparisons) is done with
   EvaluateMarkov.py, so the numbers match its markov_runs.csv. A second parallel pass extracts what the figures need
   from the RP result files (violations, storage boundary jumps, last-hour commitment). Both are cached in the output
-  directory (markov_runs.csv, _cache/); --reuse skips the loading and reuses the cache.
+  directory (markov_runs.csv, _cache/, per result file); --reuse skips the loading and reuses the cache, --update adds
+  new local result files to a copied cache without the old result files.
 - R4 (repair of the fractional flags) needs new runs and is skipped. R10 is drawn only if TruthOriginal and
   -original-invest-regret runs exist.
 - Every figure: <name>.png (600 dpi) + <name>.pdf + the CSV behind it; 16 cm wide, 8 pt text. A failing figure is
@@ -24,6 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import argparse
+import functools
+import glob
+import json
 import os
 import pickle
 import re
@@ -60,6 +64,8 @@ CACHE = Path(".")
 MIP_GAP = 0.005
 WRITE_FIGURES = True  # False under --extract-only: save() writes only the CSV
 DIRECT_READS = ["R3", "R8", "R9"]  # figures that read result files themselves (via _memo), run by --extract-only
+MISSING_LIST = "missing_result_files.txt"  # in OUT: result files the cache lacks and that are not here (sync_from_share.py --need)
+INDEX = "_files.json"  # in CACHE: {file name: [size, mtime]} of every cached run (sync_from_share.py --known)
 
 
 def style():
@@ -89,8 +95,9 @@ def _memo(path, tag, read):
         with open(p, "rb") as fh:
             return pickle.load(fh)
     if not os.path.exists(path):
-        raise FileNotFoundError(f"{p.name} is not in the cache and the result file {path} is not here: run this figure "
-                                "once where the result files are (e.g. with --extract-only) and copy its output folder")
+        _report_missing([path])
+        raise FileNotFoundError(f"{p.name} is not in the cache and the result file {path} is not here: copy it (listed in "
+                                f"{MISSING_LIST}, see sync_from_share.py --need) or run this figure where the result files are")
     data = read()
     CACHE.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".part")
@@ -162,20 +169,159 @@ def tm_title(case, tm, cases_with_shift=()):
 # Loading: run table (EvaluateMarkov) + per-file extraction
 ########################################################################################################################
 
-def load_runs(folders, reuse, no_chronology):
+def _sig(path):
+    s = os.stat(path)
+    return [s.st_size, s.st_mtime]
+
+
+def _same(a, b):
+    """Same file version: equal size and mtime within 2 s (copies made with shutil.copy2 keep the share's mtime)."""
+    return a is not None and b is not None and a[0] == b[0] and abs(a[1] - b[1]) <= 2
+
+
+def _read_pickle(p):
+    try:
+        with open(p, "rb") as fh:
+            return pickle.load(fh)
+    except (OSError, EOFError, pickle.UnpicklingError):
+        return None
+
+
+def _write_pickle(p, data):
+    tmp = p.with_suffix(".part")
+    with open(tmp, "wb") as fh:
+        pickle.dump(data, fh)
+    os.replace(tmp, p)
+
+
+def _drop_cache(name):
+    """Remove everything cached for result file `name` (entry, chronology, extraction, _memo reads)."""
+    for p in CACHE.glob(glob.escape(name) + ".*"):
+        p.unlink()
+
+
+def _report_missing(paths):
+    """Append result files the cache lacks to OUT/missing_result_files.txt (input of sync_from_share.py --need)."""
+    with open(OUT / MISSING_LIST, "a", encoding="utf-8") as fh:
+        fh.writelines(f"{p}\n" for p in paths)
+
+
+def load_entries_cached(folders, update):
+    """EvaluateMarkov entries (before regret / chronology) of the MK-*.sqlite files in `folders`, each cached as
+    _cache/<file>.entry.pkl with the file's size and mtime. A cached entry is reused while the file is unchanged; a
+    changed file drops everything cached for it. With `update`, runs known only from the cache (result files not on this
+    machine) are included too, so new results can be added without the old result files."""
+    CACHE.mkdir(parents=True, exist_ok=True)
+    cached = {p.name[:-len(".entry.pkl")]: p for p in sorted(CACHE.glob("*.entry.pkl"))}
+    local = {}
+    for folder in folders:
+        for f in sorted(glob.glob(os.path.join(folder, "MK-*.sqlite"))):
+            local.setdefault(os.path.basename(f), f)
+    entries, sigs, todo, changed = {}, {}, [], 0
+    for name, f in local.items():
+        sig = _sig(f)
+        c = _read_pickle(cached[name]) if name in cached else None
+        if c is not None and _same(c["sig"], sig):
+            entry = c["entry"]
+            entry["file"], entry["base_file"] = f, em.classify_file(f)[1]
+            entries[name], sigs[name] = entry, c["sig"]
+        else:
+            if name in cached:
+                _drop_cache(name)
+                changed += 1
+            todo.append((name, f, sig))
+    print(f"{len(local)} local result file(s): {len(local) - len(todo)} cached, {len(todo)} to load"
+          + (f" ({changed} changed since cached: their cache was dropped)" if changed else ""))
+    if todo:
+        with ProcessPoolExecutor(max_workers=min(len(todo), os.cpu_count() or 4)) as ex:
+            loaded = ex.map(functools.partial(em._load_file, full=False, analysis=True), [t[1] for t in todo], chunksize=4)
+            for (name, f, sig), (entry, _) in zip(todo, loaded):
+                entries[name], sigs[name] = entry, sig
+                if entry.get("termination_condition") is not None:  # a failed read is not cached (retried next time)
+                    _write_pickle(CACHE / f"{name}.entry.pkl", {"sig": sig, "entry": entry})
+    only_cached = [n for n in cached if n not in local]
+    if update:
+        for name in only_cached:
+            c = _read_pickle(cached[name])
+            if c is not None:
+                entries[name], sigs[name] = c["entry"], c["sig"]
+        print(f"--update: {len(only_cached)} run(s) taken from the cache only (result file not here)")
+    elif only_cached:
+        print(f"{len(only_cached)} cached run(s) without a local result file are ignored (use --update to include them)")
+    index = {n: s for n, s in sigs.items()}
+    for name in only_cached:
+        if name not in index:
+            c = _read_pickle(cached[name])
+            if c is not None:
+                index[name] = c["sig"]
+    with open(CACHE / INDEX, "w", encoding="utf-8") as fh:
+        json.dump(index, fh)
+    order = list(local) + (only_cached if update else [])  # folder / file order, as em.load_entries (main keeps the first duplicate)
+    return [entries[n] for n in order if n in entries], sigs
+
+
+def attach_chronology_cached(entries, sigs):
+    """em.attach_chronology with a per-file cache (_cache/<file>.chron.pkl). A cached result is valid while the run's
+    file and its reference (Truth-operational of the same sub-case, for operational runs) are unchanged; otherwise both
+    files are needed here. Missing ones are listed in OUT/missing_result_files.txt and the script stops."""
+    truth_files = {(em.tm_key(e), em.subcase_key(e)): e["file"] for e in entries
+                   if e.get("edge_handling") == "Truth" and e["kind"] == "operational" and e.get("reference") is None}
+    jobs = [e for e in entries if e["kind"] in ("main", "operational") and e.get("edge_handling") not in ("Truth", "TruthOriginal")]
+    todo, missing = [], []
+    for e in jobs:
+        ref = truth_files.get((em.tm_key(e), em.subcase_key(e))) if e["kind"] == "operational" else None
+        ref_name = os.path.basename(ref) if ref else None
+        want = {"sig": sigs.get(e["basename"]), "ref": ref_name, "ref_sig": sigs.get(ref_name)}
+        c = _read_pickle(CACHE / f"{e['basename']}.chron.pkl")
+        if c is not None and c["ref"] == ref_name and _same(c["sig"], want["sig"]) and (ref is None or _same(c["ref_sig"], want["ref_sig"])):
+            e.update(c["result"])
+            continue
+        need = [p for p in (e["file"], ref) if p and not os.path.exists(p)]
+        if need:
+            missing += need
+        else:
+            todo.append((e, ref, want))
+    if missing:
+        missing = sorted(set(missing))
+        _report_missing(missing)
+        print(f"Chronological comparisons need {len(missing)} result file(s) that are neither cached nor here "
+              f"(listed in {OUT / MISSING_LIST}):")
+        for p in missing:
+            print(f"  {p}")
+        sys.exit("Copy them (prelimResults/sync_from_share.py --need ...) and run again, or use --no-chronology")
+    print(f"Chronological comparisons: {len(jobs) - len(todo)} cached, {len(todo)} to compute")
+    errors = 0
+    if todo:
+        with ProcessPoolExecutor(max_workers=min(len(todo), os.cpu_count() or 4)) as ex:
+            results = ex.map(em._chronology_worker, [t[0]["file"] for t in todo], [t[1] for t in todo])
+            for (e, _, want), result in zip(todo, results):
+                e.update(result)
+                if "chronology_error" in result:
+                    errors += 1
+                else:
+                    _write_pickle(CACHE / f"{e['basename']}.chron.pkl", want | {"result": result})
+    if errors:
+        print(f"WARNING: chronological comparison failed for {errors} run(s) (see 'chronology_error' in markov_runs.csv)")
+    structure = {}  # as em.attach_chronology: the TM structure of each (TM variant, sub-case) for all its entries
+    for e in jobs:
+        if e.get("tm_off_diag_mass") is not None:
+            structure.setdefault((em.tm_key(e), em.subcase_key(e)), {k: e[k] for k in ("tm_off_diag_mass", "tm_entropy_norm")})
+    for e in entries:
+        for key, value in structure.get((em.tm_key(e), em.subcase_key(e)), {}).items():
+            e.setdefault(key, value)
+
+
+def load_runs(folders, reuse, no_chronology, update=False):
     path = OUT / "markov_runs.csv"
     if reuse and path.exists():
         runs = pd.read_csv(path, low_memory=False)
     else:
-        entries = []
-        for folder in folders:
-            e, _ = em.load_entries(folder, analysis=True)
-            entries += e
+        entries, sigs = load_entries_cached(folders, update)
         if not entries:
-            sys.exit(f"No MK-*.sqlite files in {folders}")
+            sys.exit(f"No MK-*.sqlite files in {folders}" + ("" if update else " (--update also uses the cached runs)"))
         em.attach_regret(entries)
         if not no_chronology:
-            em.attach_chronology(entries)
+            attach_chronology_cached(entries, sigs)
         runs = em.runs_dataframe(entries)
         runs.to_csv(path, index=False)
     runs["case"] = runs["dataset"]
@@ -385,8 +531,7 @@ def _extract_job(args):
         data = _extract_truth(path) if method == "Truth" else _extract_rp(path)
     except Exception as e:
         return path, repr(e)
-    with open(target, "wb") as fh:
-        pickle.dump(data, fh)
+    _write_pickle(target, data)  # atomic: an interrupted run must not leave a truncated pickle that counts as cached
     return path, None
 
 
@@ -397,6 +542,12 @@ def extract(runs, workers):
                 & runs["method"].isin(METHODS + ["Truth"])]
     jobs = [(f, m, CACHE / (os.path.basename(f) + ".pkl")) for f, m in zip(todo["file"], todo["method"])]
     jobs = [j for j in jobs if not j[2].exists()]
+    absent = [j[0] for j in jobs if not os.path.exists(j[0])]
+    if absent:  # runs known from the cache only (--update) whose extraction is not cached: their figures lack them
+        _report_missing(absent)
+        print(f"WARNING: {len(absent)} result file(s) to extract are not here (listed in {OUT / MISSING_LIST}); "
+              "the figures are drawn without them")
+        jobs = [j for j in jobs if os.path.exists(j[0])]
     print(f"Extracting {len(jobs)} result file(s) with {workers} processes ...")
     if not jobs:
         return
@@ -1471,19 +1622,25 @@ def main():
     p.add_argument("--extract-only", action="store_true",
                    help="Only fill markov_runs.csv and _cache/ (incl. the reads of R3/R8/R9; CSVs, no figures): copy the output "
                         "folder and redraw anywhere with --reuse, without the result files")
+    p.add_argument("--update", action="store_true",
+                   help="Also use the runs known only from the cache: add new result files to a copied output folder without "
+                        "the old result files (missing ones are listed in missing_result_files.txt)")
     p.add_argument("--include-perturbed", action="store_true", help="Also use the perturbed-TM runs (excluded by default)")
     p.add_argument("--require-truth", action="store_true",
                    help="Restrict R1-R3 to sub-cases with an optimal Truth main run (comparisons with the reference always need it)")
     p.add_argument("--no-chronology", action="store_true", help="Skip EvaluateMarkov's chronological comparisons (dispatch / storage deviation, TM structure)")
     p.add_argument("--mip-gap", type=float, default=0.005, help="Only runs with this mip_gap run parameter (default 0.005); other runs in the folder are ignored")
     args = p.parse_args()
+    if args.reuse and args.update:
+        p.error("--reuse only redraws from markov_runs.csv; --update rebuilds it from the cache plus the local result files")
     # Cap every process pool (also EvaluateMarkov's, which sizes its pools with os.cpu_count) - e.g. on a login node
     os.cpu_count = lambda: args.workers
     OUT = Path(args.output_dir)
     OUT.mkdir(parents=True, exist_ok=True)
     CACHE = OUT / "_cache"
+    (OUT / MISSING_LIST).unlink(missing_ok=True)  # refilled by this run
     style()
-    runs_all = load_runs(args.folders, args.reuse, args.no_chronology)
+    runs_all = load_runs(args.folders, args.reuse, args.no_chronology, args.update)
     gap = pd.to_numeric(runs_all["mip_gap"], errors="coerce")
     dropped = int((~np.isclose(gap, args.mip_gap)).sum())
     if dropped:
@@ -1515,6 +1672,10 @@ def main():
         except Exception:
             traceback.print_exc()
             failed.append(name)
+    if (OUT / MISSING_LIST).exists():
+        with open(OUT / MISSING_LIST, encoding="utf-8") as fh:
+            n_missing = len(set(fh.read().split()))
+        print(f"NOTE: {n_missing} result file(s) were needed but not here - see {OUT / MISSING_LIST}")
     print("done" + (f"; FAILED: {', '.join(failed)}" if failed else "") + f" - outputs in {OUT}")
 
 
