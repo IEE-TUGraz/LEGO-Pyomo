@@ -452,6 +452,113 @@ def _storage(conn, h, day_rps):
     return {"jumps": pd.DataFrame(rows, columns=["day", "u", "rp", "prev_rp", "jump_pct", "carried_breach"]), "capacity": cap[units]}
 
 
+########################################################################################################################
+# Storage level at the RP boundaries (--extract-storage): level change across a chronological boundary vs. the maximum
+# one-hour change. Separate from _storage (R3b jumps); used by prelimResults/response/scripts (Response to Reviewers).
+########################################################################################################################
+
+STLEVEL = ".stlevel.pkl"  # <cache>/<result file name>.stlevel.pkl
+STLEVEL_KIND = "main"
+
+
+def extract_storage_levels(path):
+    """Per chronological boundary d-1 -> d (d >= 1) and intra-day storage unit with capacity > 0 (vStIntraRes; RP solution
+    laid out along hindex as in _storage):
+      L_prev = vStIntraRes(rp(d-1), k_K), L_next = vStIntraRes(rp(d), k_1) (after hour 1), dL = L_next - L_prev
+      max_down = pMaxProd n w / pDisEffic, max_up = pMaxCons n w pChEffic (n = pExisUnits + vGenInvest, w = pWeight_k(k_1))
+      hydro units (storage balance has inflow - spillage, unweighted): dL is taken net of pStorageInflows(rp(d), k_1), and
+      the downward window is widened by the spillage bound (pMaxReserve (pExisUnits + pMaxInvest pEnabInv) + inflow)
+      excess = max(0, -dL - max_down [- spill_max]) if dL < 0 else max(0, dL - max_up)
+      deviation = 100 excess / (max_down if dL < 0 else max_up); violation if excess > ST_TOL x capacity."""
+    with closing(em._connect_ro(path)) as conn:
+        units = _table(conn, "intraStorageUnits")
+        units = units.iloc[:, -1].tolist() if units is not None and len(units) else []
+        level = _table(conn, "vStIntraRes", ["rp", "k", "u"])
+        if not units or level is None or level.empty:
+            return {"units": [], "pairs": pd.DataFrame(), "source": os.path.basename(path)}
+        h, nk = _hindex(conn)
+        day_rps = h["rp"].tolist()[::nk]
+        ks = sorted(h["k"].unique())
+        k1, kK = ks[0], ks[-1]
+        pu = functools.partial(_per_unit, conn)
+        exis, inv = pu("pExisUnits"), pu("vGenInvest")
+        n = pd.Series({u: exis.get(u, 0) + inv.get(u, 0) for u in units})
+        maxres = pu("pMaxReserve").reindex(units)
+        cap = maxres * n
+        units = [u for u in units if cap.get(u, 0) > 1e-9]
+        if not units:
+            return {"units": [], "pairs": pd.DataFrame(), "source": os.path.basename(path)}
+        hydro = _table(conn, "hydroStorageUnits")
+        hydro = set(hydro.iloc[:, -1]) if hydro is not None and len(hydro) else set()
+        w = pu("pWeight_k").get(k1, 1.0)
+        max_down = pu("pMaxProd").reindex(units) * n[units] * w / pu("pDisEffic").reindex(units).fillna(1)
+        max_up = pu("pMaxCons").reindex(units) * n[units] * w * pu("pChEffic").reindex(units).fillna(1)
+        max_inv, enab = pu("pMaxInvest"), pu("pEnabInv")
+        n_bound = pd.Series({u: exis.get(u, 0) + (max_inv.get(u, n[u]) * enab.get(u, 1) if len(max_inv) else n[u]) for u in units})
+        infl = _table(conn, "pStorageInflows", ["rp", "k", "u"])
+        infl = (infl[infl["k"] == k1].pivot(index="rp", columns="u", values="values") if infl is not None and len(infl)
+                else pd.DataFrame())
+        L = level.pivot_table(index=["rp", "k"], columns="u", values="values")
+        first, last = L.xs(k1, level="k"), L.xs(kK, level="k")
+    rows = []
+    for u in units:
+        hy = u in hydro
+        for d in range(1, len(day_rps)):
+            rp_prev, rp = day_rps[d - 1], day_rps[d]
+            lp, ln = float(last.at[rp_prev, u]), float(first.at[rp, u])
+            q = float(infl.at[rp, u]) if hy and u in infl.columns and rp in infl.index else 0.0
+            spill = float(maxres[u] * n_bound[u]) + q if hy else 0.0  # bound of vStorageSpillage(rp(d), k_1, u)
+            dl = ln - lp - q
+            md, mu = float(max_down[u]), float(max_up[u])
+            if dl < 0:
+                ex, ex_ns, den = max(0.0, -dl - md - spill), max(0.0, -dl - md), md
+            else:
+                ex = ex_ns = max(0.0, dl - mu)
+                den = mu
+            dev = 100 * ex / den if den > 0 else (np.inf if ex > 0 else 0.0)
+            dev_ns = 100 * ex_ns / den if den > 0 else (np.inf if ex_ns > 0 else 0.0)
+            tol = ST_TOL * float(cap[u])
+            rows.append((d, u, rp_prev, rp, rp == rp_prev, hy, lp, ln, q, md, mu, spill, ln - lp, ex, dev, ex > tol, ex_ns, dev_ns,
+                         ex_ns > tol, float(cap[u])))
+    cols = ["day", "u", "rp_prev", "rp", "same_rp", "hydro", "L_prev", "L_next", "inflow_k1", "max_down", "max_up", "spill_max",
+            "dL", "excess", "deviation_pct", "violation", "excess_nospill", "deviation_nospill_pct", "violation_nospill", "capacity"]
+    return {"units": units, "pairs": pd.DataFrame(rows, columns=cols), "source": os.path.basename(path)}
+
+
+def _extract_storage_job(args):
+    path, target = args
+    try:
+        data = extract_storage_levels(path)
+    except Exception as e:  # report, do not stop the batch
+        return path, repr(e)
+    _write_pickle(target, data)
+    return path, None
+
+
+def extract_storage(folders, cache, workers):
+    """Writes <cache>/<file>.stlevel.pkl for the optimal main NoEnf / Cyclic / Markov runs (no original reference) of
+    <cache>/../markov_runs.csv whose result file is in one of `folders`; existing pickles are kept. Run where the result
+    files are (e.g. on MUSICA for the RTS-GMLC full year)."""
+    cache = Path(cache)
+    cache.mkdir(parents=True, exist_ok=True)
+    r = pd.read_csv(cache.parent / "markov_runs.csv", low_memory=False)
+    r = r[(r["kind"] == STLEVEL_KIND) & r["edge_handling"].isin(METHODS) & (r["termination_condition"] == "optimal")
+          & (r["reference"].astype(str) != "original")]
+    jobs, absent = [], 0
+    for b in r["basename"]:
+        src = next((os.path.join(f, b) for f in folders if os.path.exists(os.path.join(f, b))), None)
+        if src is None:
+            absent += 1
+        elif not (cache / (b + STLEVEL)).exists():
+            jobs.append((src, cache / (b + STLEVEL)))
+    print(f"{len(jobs)} file(s) to extract, {absent} result file(s) not in {', '.join(map(str, folders))}")
+    with ProcessPoolExecutor(max_workers=max(1, min(workers, len(jobs) or 1))) as ex:
+        for path, err in ex.map(_extract_storage_job, jobs):
+            if err:
+                print("ERROR", path, err)
+    print(f"finished - {len(list(cache.glob('*' + STLEVEL)))} {STLEVEL} file(s) in {cache}")
+
+
 def _extract_rp(path):
     out = {}
     with closing(em._connect_ro(path)) as conn:
@@ -1630,6 +1737,9 @@ def main():
                    help="Restrict R1-R3 to sub-cases with an optimal Truth main run (comparisons with the reference always need it)")
     p.add_argument("--no-chronology", action="store_true", help="Skip EvaluateMarkov's chronological comparisons (dispatch / storage deviation, TM structure)")
     p.add_argument("--mip-gap", type=float, default=0.005, help="Only runs with this mip_gap run parameter (default 0.005); other runs in the folder are ignored")
+    p.add_argument("--extract-storage", action="store_true",
+                   help="Only write the storage levels at the RP boundaries (<output-dir>/_cache/*.stlevel.pkl) for the runs in "
+                        "<output-dir>/markov_runs.csv whose result files are in the given folders, then stop (no figures)")
     args = p.parse_args()
     if args.reuse and args.update:
         p.error("--reuse only redraws from markov_runs.csv; --update rebuilds it from the cache plus the local result files")
@@ -1638,6 +1748,11 @@ def main():
     OUT = Path(args.output_dir)
     OUT.mkdir(parents=True, exist_ok=True)
     CACHE = OUT / "_cache"
+    if args.extract_storage:
+        if not (OUT / "markov_runs.csv").exists():
+            p.error(f"--extract-storage needs {OUT / 'markov_runs.csv'} (from a previous run with the same --output-dir)")
+        extract_storage(args.folders, CACHE, args.workers)
+        return
     (OUT / MISSING_LIST).unlink(missing_ok=True)  # refilled by this run
     style()
     runs_all = load_runs(args.folders, args.reuse, args.no_chronology, args.update)
