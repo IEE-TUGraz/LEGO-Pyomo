@@ -12,6 +12,10 @@ Run it where the result files are (e.g. on MUSICA, from the repo root), so that 
   from the RP result files (violations, storage boundary jumps, last-hour commitment). Both are cached in the output
   directory (markov_runs.csv, _cache/, per result file); --reuse skips the loading and reuses the cache, --update adds
   new local result files to a copied cache without the old result files.
+- --extract-storage / --extract-logic-rounded: only write <output-dir>/_cache/<file>.stlevel.pkl (storage levels at the RP
+  boundaries) / <file>.logicr.pkl (UC logic u[t]-u[t-1] == su[t]-sd[t] as solved and with u, su, sd each rounded at 0.5)
+  for the optimal main NoEnf / Cyclic / Markov runs of <output-dir>/markov_runs.csv found in the given folders, then stop.
+  Existing pickles are kept; the logic extraction checks its as-solved count against the stored mk_feasibility one.
 - R4 (repair of the fractional flags) needs new runs and is skipped. R10 is drawn only if TruthOriginal and
   -original-invest-regret runs exist.
 - Every figure: <name>.png (600 dpi) + <name>.pdf + the CSV behind it; 16 cm wide, 8 pt text. A failing figure is
@@ -53,7 +57,8 @@ COLOR = {"NoEnf": "#9467bd", "Cyclic": "#ff7f0e", "Markov": "#1f77b4", "Truth": 
 CASE_MARKER = {"RTS-GMLC": "o", "NREL-118": "s", "TX-123BT": "^"}
 CASE_COLOR = {"RTS-GMLC": "#1b9e77", "NREL-118": "#d95f02", "TX-123BT": "#7570b3"}
 TM_COLOR = {"original": "#333333", "shiftTM1": "#2ca02c", "shiftTM2": "#d62728"}
-TM_LABEL = {"original": "original TM", "shiftTM1": "TM shifted by 1", "shiftTM2": "TM shifted by 2"}
+TM_LABEL = {"original": "original TM", "shiftTM1": "TM shifted by 1", "shiftTM2": "TM shifted by 2",
+            "original-perturbTM1": "randomized TM"}
 KEYS = ["case", "tm", "clusters", "sd"]
 WIDTH_IN = 16 / 2.54
 TOL = 1e-4  # Markov.DEFAULT_FEASIBILITY_TOL / DEFAULT_NONBINARY_TOL
@@ -557,6 +562,84 @@ def extract_storage(folders, cache, workers):
             if err:
                 print("ERROR", path, err)
     print(f"finished - {len(list(cache.glob('*' + STLEVEL)))} {STLEVEL} file(s) in {cache}")
+
+
+LOGICR = ".logicr.pkl"  # <cache>/<result file name>.logicr.pkl
+
+
+def extract_logic_rounded(path):
+    """UC logic u[t] - u[t-1] == su[t] - sd[t] along the chronology (Hindex), as solved and with u, su and sd each rounded
+    at 0.5 (independently; deriving su/sd from the rounded u would satisfy it by construction). Same layout as
+    Markov.check_chronological_feasibility: active thermal units, residual > TOL, a violation at hour t belongs to the
+    day of t, only days >= 1 (boundary day d-1 -> d) count. Per check: the violating (day, unit) pairs with their
+    violating hours, of which at the first hour of the day ('boundary_hours'), and the stored as-solved count."""
+    with closing(em._connect_ro(path)) as conn:
+        h, nk = _hindex(conn)
+        units = _active(conn)
+        idx = pd.MultiIndex.from_arrays([h["rp"], h["k"]])
+
+        def wide(v):
+            d = _table(conn, v, ["rp", "k", "g"])
+            return d.pivot_table(index=["rp", "k"], columns="g", values="values").reindex(index=idx, columns=units).fillna(0).to_numpy()
+
+        u, su, sd = (wide(v) for v in ["vCommit", "vStartup", "vShutdown"])
+        feas = _table(conn, "mk_feasibility")
+    day = h["day"].to_numpy()
+    first = np.r_[True, day[1:] != day[:-1]]
+    out = {"feas_instances": int(day.max()) * len(units), "units": len(units),
+           "stored_logic_instances": int(feas["feas_logic_instances"].iloc[0]) if feas is not None and len(feas) else None}
+    rnd = lambda x: (x >= 0.5).astype(float)
+    for name, (uu, ss, dd) in (("logic", (u, su, sd)), ("logic_rounded", (rnd(u), rnd(su), rnd(sd)))):
+        r = np.zeros_like(uu)
+        r[1:] = np.abs(uu[1:] - uu[:-1] - (ss[1:] - dd[1:]))
+        t, g = np.nonzero(r > TOL)
+        v = pd.DataFrame({"day": day[t], "g": np.array(units, dtype=object)[g], "residual": r[t, g], "boundary": first[t]})
+        v = v[v["day"] >= 1]
+        out[name] = (v.groupby(["day", "g"]).agg(hours=("residual", "size"), boundary_hours=("boundary", "sum"),
+                                                 max_residual=("residual", "max")).reset_index())
+    return out
+
+
+def _extract_logic_job(args):
+    path, target = args
+    try:
+        data = extract_logic_rounded(path)
+    except Exception as e:  # report, do not stop the batch
+        return path, repr(e), None
+    _write_pickle(target, data)
+    n, s = len(data["logic"]), data["stored_logic_instances"]
+    return path, None, (None if s is None or n == s else f"as-solved logic pairs {n} != stored {s}")
+
+
+def extract_logic(folders, cache, workers):
+    """Writes <cache>/<file>.logicr.pkl for the optimal main NoEnf / Cyclic / Markov runs (no original reference) of
+    <cache>/../markov_runs.csv whose result file is in one of `folders`; existing pickles are kept. Run where the result
+    files are (e.g. on MUSICA for the RTS-GMLC full year). Checks the recomputed as-solved logic count against the stored one."""
+    cache = Path(cache)
+    cache.mkdir(parents=True, exist_ok=True)
+    r = pd.read_csv(cache.parent / "markov_runs.csv", low_memory=False)
+    r = r[(r["kind"] == "main") & r["edge_handling"].isin(METHODS) & (r["termination_condition"] == "optimal")
+          & (r["reference"].astype(str) != "original")]
+    jobs, absent = [], 0
+    for b in r["basename"]:
+        src = next((os.path.join(f, b) for f in folders if os.path.exists(os.path.join(f, b))), None)
+        if src is None:
+            absent += 1
+        elif not (cache / (b + LOGICR)).exists():
+            jobs.append((src, cache / (b + LOGICR)))
+    print(f"{len(jobs)} file(s) to extract, {absent} result file(s) not in {', '.join(map(str, folders))}")
+    mismatches = 0
+    with ProcessPoolExecutor(max_workers=max(1, min(workers, len(jobs) or 1))) as ex:
+        for i, (path, err, warn) in enumerate(ex.map(_extract_logic_job, jobs), 1):
+            if err:
+                print("ERROR", path, err)
+            if warn:
+                mismatches += 1
+                print("MISMATCH", path, warn)
+            if i % 50 == 0:
+                print(f"  {i}/{len(jobs)}", flush=True)
+    print(f"finished - {len(list(cache.glob('*' + LOGICR)))} {LOGICR} file(s) in {cache}; "
+          f"{mismatches} mismatch(es) with the stored as-solved count")
 
 
 def _extract_rp(path):
@@ -1209,7 +1292,9 @@ R7_ROWS = [("opcost", "Operating cost\ndev. [%]"), ("dispatch", "Hourly dispatch
 R7_SIGNED = {"opcost", "curtail", "shed", "shutdown"}
 
 
-def r7(ctx):
+def r7(ctx, tms=("original", "shiftTM2"), suffix=""):
+    """tms: TM variants drawn as columns (per case); suffix: appended to every output name (e.g. for a perturbed-TM
+    version drawn by prelimResults/response/scripts/perturbed_tm_figures.py)."""
     import matplotlib.pyplot as plt
     runs = ctx["runs"]
     op = runs[(runs["kind"] == "operational") & ~runs["original_ref"] & runs["clusters"].notna()]
@@ -1231,10 +1316,10 @@ def r7(ctx):
     if df.empty:
         print("  R7: no operational runs with a reference")
         return
-    df.to_csv(OUT / "R7_operational_metrics_values.csv", index=False)
-    with_shift = shifted_cases(df)
-    columns = [(c, t, tm_title(c, t, with_shift)) for c, t in case_tms(df, ("original", "shiftTM2"))]
-    for methods, name in ((METHODS, "R7_operational_metrics"), (["Cyclic", "Markov"], "R7_operational_metrics_noNoEnf")):
+    df.to_csv(OUT / f"R7_operational_metrics_values{suffix}.csv", index=False)
+    with_shift = shifted_cases(df) + [c for c in present(df["case"].dropna()) if df.loc[df["case"] == c, "tm"].str.contains("perturb").any()]
+    columns = [(c, t, tm_title(c, t, with_shift)) for c, t in case_tms(df, tms)]
+    for methods, name in ((METHODS, f"R7_operational_metrics{suffix}"), (["Cyclic", "Markov"], f"R7_operational_metrics_noNoEnf{suffix}")):
         fig, axes = plt.subplots(len(R7_ROWS), len(columns), figsize=(WIDTH_IN, 9.6), sharey="row", squeeze=False)
         for i, (metric, ylabel) in enumerate(R7_ROWS):
             part = df[(df["metric"] == metric) & df["method"].isin(methods)]
@@ -1261,12 +1346,12 @@ def r7(ctx):
         save(fig, name)
     agg = df.dropna(subset=["value"]).groupby(["case", "tm", "method", "metric"])["value"].agg(median="median", min="min", max="max", n="size").reset_index()
     agg["latex"] = [f"{m:.2f} [{lo:.2f}, {hi:.2f}]" for m, lo, hi in zip(agg["median"], agg["min"], agg["max"])]
-    agg.to_csv(OUT / "R7_operational_metrics.csv", index=False)
+    agg.to_csv(OUT / f"R7_operational_metrics{suffix}.csv", index=False)
     out = []
     for _, g in df.dropna(subset=["value"]).groupby(["case", "tm", "method", "metric"]):
         q1, q3 = np.percentile(g["value"], [25, 75])
         out.append(g[(g["value"] < q1 - 1.5 * (q3 - q1)) | (g["value"] > q3 + 1.5 * (q3 - q1))])
-    pd.concat(out).to_csv(OUT / "R7_outliers.csv", index=False)
+    pd.concat(out).to_csv(OUT / f"R7_outliers{suffix}.csv", index=False)
 
 
 ########################################################################################################################
@@ -1630,6 +1715,40 @@ def r9c(ctx, case="TX-123BT"):
 # R10 - comparison with the original full chronology (TruthOriginal)
 ########################################################################################################################
 
+def _r10_bars(agg, cases, metrics, name):
+    """Stacked bars per number of RPs and method: clustering error (hatched) + edge-handling error, dot = median total."""
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+    fig, axes = plt.subplots(len(cases), len(metrics), figsize=(WIDTH_IN, 2.4 * len(cases) + 0.5), squeeze=False)
+    for i, case in enumerate(cases):
+        for j, (col, title) in enumerate(metrics):
+            ax = axes[i, j]
+            a = agg[(agg["case"] == case) & (agg["metric"] == col)]
+            for k, m in enumerate(METHODS):
+                p = a[a["method"] == m]
+                x = np.array([XPOS[int(c)] for c in p["clusters"]]) + (k - 1) * 0.27
+                c = p["clustering_error_pct"].fillna(0).to_numpy()
+                ax.bar(x, c, width=0.25, color="#bbbbbb", edgecolor="#777777", lw=0.3, hatch="///")
+                ax.bar(x, p["edge_error_pct"], bottom=c, width=0.25, color=COLOR[m], alpha=0.85)
+                ax.scatter(x, p["total_error_pct"], s=4, color="k", zorder=3)
+            ax.axhline(0, color="gray", lw=0.5)
+            cat_xaxis(ax)
+            ax.grid(axis="y", color="#e5e4e0", lw=0.5)
+            if i == 0:
+                ax.set_title(title)
+            if j == 0:
+                ax.set_ylabel(f"{case}\nvs. original model")
+            if i == len(cases) - 1:
+                ax.set_xlabel("Number of RPs")
+    h = [Patch(facecolor="#bbbbbb", edgecolor="#777777", hatch="///", label="clustering error (reference vs original)")] + method_handles() + \
+        [Line2D([], [], marker="o", ls="", color="k", ms=2, label="median total")]
+    height = fig.get_size_inches()[1]
+    fig.legend(handles=h, loc="lower center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 0))
+    fig.tight_layout(rect=(0, 0.55 / height, 1, 1))  # about 0.55 in for the two legend rows, whatever the number of rows
+    save(fig, name, agg)
+
+
 def r10(ctx):
     import matplotlib.pyplot as plt
     runs = ctx["runs"]
@@ -1659,36 +1778,11 @@ def r10(ctx):
         print("  R10: no sub-case has both TruthOriginal and -original-invest-regret runs - skipped")
         return
     df.to_csv(OUT / "R10_error_decomposition_values.csv", index=False)
-    cases = present(df["case"])
-    fig, axes = plt.subplots(len(cases), len(metrics), figsize=(WIDTH_IN, 2.4 * len(cases) + 0.5), squeeze=False)
     agg = df.groupby(["case", "clusters", "method", "metric"])[["clustering_error_pct", "edge_error_pct", "total_error_pct"]].median().reset_index()
-    for i, case in enumerate(cases):
-        for j, (col, title) in enumerate(metrics):
-            ax = axes[i, j]
-            a = agg[(agg["case"] == case) & (agg["metric"] == col)]
-            for k, m in enumerate(METHODS):
-                p = a[a["method"] == m]
-                x = np.array([XPOS[int(c)] for c in p["clusters"]]) + (k - 1) * 0.27
-                c = p["clustering_error_pct"].fillna(0).to_numpy()
-                ax.bar(x, c, width=0.25, color="#bbbbbb", edgecolor="#777777", lw=0.3, hatch="///")
-                ax.bar(x, p["edge_error_pct"], bottom=c, width=0.25, color=COLOR[m], alpha=0.85)
-                ax.scatter(x, p["total_error_pct"], s=4, color="k", zorder=3)
-            ax.axhline(0, color="gray", lw=0.5)
-            cat_xaxis(ax)
-            ax.grid(axis="y", color="#e5e4e0", lw=0.5)
-            if i == 0:
-                ax.set_title(title)
-            if j == 0:
-                ax.set_ylabel(f"{case}\nvs. original model")
-            if i == len(cases) - 1:
-                ax.set_xlabel("Number of RPs")
-    from matplotlib.lines import Line2D
-    from matplotlib.patches import Patch
-    h = [Patch(facecolor="#bbbbbb", edgecolor="#777777", hatch="///", label="clustering error (reference vs original)")] + method_handles() + \
-        [Line2D([], [], marker="o", ls="", color="k", ms=2, label="median total")]
-    fig.legend(handles=h, loc="lower center", ncol=3, frameon=False, bbox_to_anchor=(0.5, -0.04))
-    fig.tight_layout(rect=(0, 0.07, 1, 1))
-    save(fig, "R10_error_decomposition", agg)
+    _r10_bars(agg, present(df["case"]), metrics, "R10_error_decomposition")
+    # One figure per case study (e.g. RTS-GMLC alone for the response to Reviewer 4, Comment 5)
+    for case in present(df["case"]):
+        _r10_bars(agg[agg["case"] == case], [case], metrics, f"R10_error_decomposition_{case}")
     # compare_original_* equivalent: regret vs TruthOriginal (incl. the reference's own = clustering error)
     for kind, name in (("invest_regret", "R10b_original_invest_regret"), ("regret", "R10c_original_regret")):
         sub = runs[(runs["kind"] == kind) & runs["original_ref"] & (runs["tm"] == "original")].dropna(subset=["regret_pct"])
@@ -1740,6 +1834,9 @@ def main():
     p.add_argument("--extract-storage", action="store_true",
                    help="Only write the storage levels at the RP boundaries (<output-dir>/_cache/*.stlevel.pkl) for the runs in "
                         "<output-dir>/markov_runs.csv whose result files are in the given folders, then stop (no figures)")
+    p.add_argument("--extract-logic-rounded", action="store_true",
+                   help="Only write the UC logic check with u/su/sd each rounded at 0.5 (<output-dir>/_cache/*.logicr.pkl) for the "
+                        "runs in <output-dir>/markov_runs.csv whose result files are in the given folders, then stop (no figures)")
     args = p.parse_args()
     if args.reuse and args.update:
         p.error("--reuse only redraws from markov_runs.csv; --update rebuilds it from the cache plus the local result files")
@@ -1752,6 +1849,11 @@ def main():
         if not (OUT / "markov_runs.csv").exists():
             p.error(f"--extract-storage needs {OUT / 'markov_runs.csv'} (from a previous run with the same --output-dir)")
         extract_storage(args.folders, CACHE, args.workers)
+        return
+    if args.extract_logic_rounded:
+        if not (OUT / "markov_runs.csv").exists():
+            p.error(f"--extract-logic-rounded needs {OUT / 'markov_runs.csv'} (from a previous run with the same --output-dir)")
+        extract_logic(args.folders, CACHE, args.workers)
         return
     (OUT / MISSING_LIST).unlink(missing_ok=True)  # refilled by this run
     style()
