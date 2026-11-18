@@ -2,6 +2,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# InOutModule (submodule) imports its siblings by bare name (`import ExcelReader` in CaseStudy.py); appended, not
+# prepended, so its Utilities.py / printer.py cannot shadow other modules
+sys.path.append(str(Path(__file__).resolve().parents[2] / "InOutModule"))
 
 import argparse
 import gc
